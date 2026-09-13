@@ -7009,7 +7009,10 @@ void GCodeProcessor::store_move_vertex(EMoveType type, EMovePathType path_type, 
                                                                     get_acceleration(normal_mode));
     const float junction_deviation = get_option_value(m_time_processor.machine_limits.machine_max_junction_deviation, normal_mode_id);
     const bool use_jd_jerk = (m_flavor == gcfMarlinFirmware && junction_deviation > 0.0f);
-    const auto axis_jerk_for_preview = [this, use_jd_jerk, move_acceleration](Axis axis) {
+    // [BUILDFIX:VS17.8] normal_mode is a constant-expression enum and the callees take it by
+    // value, so it is not odr-used and needs no capture. MSVC 14.38 (VS 17.8) wrongly demands
+    // it. Drop this capture (and marker) once the toolchain is VS 17.10 or newer.
+    const auto axis_jerk_for_preview = [this, use_jd_jerk, move_acceleration, normal_mode](Axis axis) {
         return use_jd_jerk ? get_axis_max_jerk_with_jd(normal_mode, axis, move_acceleration) : get_axis_max_jerk(normal_mode, axis);
     };
     const float jerk_x = axis_jerk_for_preview(X);
