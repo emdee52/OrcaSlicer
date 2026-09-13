@@ -12,10 +12,12 @@ builds, caching and the dev environment. Run it from the workspace root (it `cd`
 Installed and verified on this machine:
 
 - Visual Studio 2022 Community, with `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`.
-- CMake 4.x (the script sets `CMAKE_POLICY_VERSION_MINIMUM=3.5` for the deps that ask for
-  old policies).
+- **Official Kitware CMake** (`C:\Program Files\CMake\bin`), not the MinGW/WinLibs CMake
+  that a `BrechtSanders.WinLibs` package puts on `PATH`. The script sets
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` for the deps that still ask for old policies.
 - Git (with Git Credential Manager, needed to push branches).
-- Strawberry Perl - **required for the dependency build** (OpenSSL and friends).
+- Strawberry Perl (`C:\Strawberry`) - **required for the dependency build** (OpenSSL and
+  friends).
 
 Install or repair the prerequisites with WinGet:
 
@@ -24,21 +26,39 @@ Install or repair the prerequisites with WinGet:
 .\OrcaSlicer\build_win.bat --install-vs ide   # fresh machine only, then restart the shell
 ```
 
-A prerequisite installed by `-u` only reaches new shells. If Perl is installed but not on
-this shell's `PATH`, prepend its paths for the build:
+A prerequisite installed by WinGet only reaches new shells. Every build shell needs this
+preamble - Kitware CMake first, then Strawberry, plus the TLS variable explained below:
 
 ```powershell
-$env:PATH = "C:\Strawberry\c\bin;C:\Strawberry\perl\bin;$env:PATH"
+$env:PATH = "C:\Program Files\CMake\bin;C:\Strawberry\c\bin;C:\Strawberry\perl\bin;$env:PATH"
+$env:CMAKE_TLS_VERIFY = "0"
 ```
+
+## TLS / dependency downloads (required on this machine)
+
+The dependency build downloads its source archives with CMake's `file(DOWNLOAD)`. On this
+machine Windows Schannel refuses the TLS handshake with `CRYPT_E_REVOCATION_OFFLINE`: it
+cannot reach the certificate revocation servers. Every download then fails with a
+certificate/"SSL connect error", which surfaces as a failed dependency (`dep_libnoise`
+first, in our case). Git is unaffected because it uses OpenSSL rather than Schannel, which
+is why `git push` works while the build's downloads do not.
+
+CMake's own error names the fix: set `CMAKE_TLS_VERIFY=0` in the environment before
+building. This disables certificate verification for CMake's downloads only. It is a
+workaround for a dead revocation path, not a preference - on a machine whose revocation
+servers are reachable, do not set it.
+
+Verified on this machine: `curl --ssl-no-revoke https://github.com` returns 200, and
+`file(DOWNLOAD ... TLS_VERIFY OFF)` succeeds, while the default fails with SSL error 35.
 
 ## First build (the long one)
 
 `OrcaSlicer/deps/build` does not exist yet, so the first run downloads and compiles every
 dependency. This is the multi-hour part. Do it once, before porting, so later builds and
-tests are fast and the toolchain is proven.
+tests are fast and the toolchain is proven. Apply the preamble above first.
 
 ```powershell
-.\OrcaSlicer\build_win.bat -ds
+.\OrcaSlicer\build_win.bat -ds -j 8
 ```
 
 - `-d` builds the dependencies into `OrcaSlicer/deps/build` (cached afterwards).
@@ -91,6 +111,11 @@ Use `-i` to install a self-contained tree (binary + resources) at
 
 ## Troubleshooting
 
+- Dependency downloads fail with a certificate/"SSL connect error": set
+  `$env:CMAKE_TLS_VERIFY = "0"` (see the TLS section above). This is the known issue on
+  this machine.
+- A build that fails after changing CMake: clean the tree and rebuild, because the
+  generator records the CMake that configured it - `.\OrcaSlicer\build_win.bat -d -c`.
 - A dependency build that fails deep in package resolution: retry that stage with
   `.\OrcaSlicer\build_win.bat -d -c -v`.
 - A stale or half-configured tree: `.\OrcaSlicer\build_win.bat -s -c`.
