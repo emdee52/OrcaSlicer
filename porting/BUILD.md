@@ -132,7 +132,7 @@ are kept in their own commits, and are dropped once the underlying toolchain is 
 
 | ID | Where | Why | Drop when |
 |----|-------|-----|-----------|
-| `VS17.8` | `src/libslic3r/GCode/GCodeProcessor.cpp` (`store_move_vertex`, the `axis_jerk_for_preview` lambda) | MSVC 14.38 (VS 17.8) wrongly raises C3493 for a non-odr-used constant-expression enum used without capture; current MSVC, GCC and Clang accept it. Adding `normal_mode` to the capture list is a behaviour-neutral no-op. | Visual Studio is updated to 17.10+ (or the build uses VS 2026). Remove the extra capture and delete this row. |
+| `VS17.8` | `src/libslic3r/GCode/GCodeProcessor.cpp` (`store_move_vertex`: `axis_jerk_for_preview`); `src/OrcaSlicer.cpp` (`ensure_cli_preset_bundle`, `resolve_preset`, `load_config_file`) | MSVC 14.38 (VS 17.8) wrongly raises C3493 for a non-odr-used constant-expression enum used without capture; current MSVC, GCC and Clang accept it. Adding the enum to each capture list is a behaviour-neutral no-op. | Visual Studio is updated to 17.10+ (or the build uses VS 2026). Remove the extra captures and delete this row. |
 
 ## GitHub Actions in this fork
 
