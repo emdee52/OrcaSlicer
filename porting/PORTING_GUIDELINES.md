@@ -90,6 +90,11 @@ Rules:
 
 - `ORCAPORT` is a neutral technical name. Do not put Snapmaker, Neotko, "Libre", or any
   vendor word in a marker or in a new symbol.
+- **Toolchain workarounds use a different tag.** A change that only exists because this
+  machine's compiler/CMake is older than upstream's supported configuration is marked
+  `[BUILDFIX:<id>]`, never `[ORCAPORT:]`, recorded in `OrcaSlicer/porting/BUILD.md`, and
+  committed separately from port work. `verify-markers.ps1` must accept and report these
+  separately, and each one must name the condition under which it can be dropped.
 
 ---
 

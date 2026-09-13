@@ -124,6 +124,16 @@ Use `-i` to install a self-contained tree (binary + resources) at
 - If Strawberry Perl shadows a real CMake, the script reorders `PATH` itself; do not
   "fix" it by hand.
 
+## Known local build fixes
+
+Workarounds for this machine's older toolchain, applied to upstream sources. They are
+**not** part of the port: they carry a `[BUILDFIX:<id>]` marker instead of `[ORCAPORT:]`,
+are kept in their own commits, and are dropped once the underlying toolchain is updated.
+
+| ID | Where | Why | Drop when |
+|----|-------|-----|-----------|
+| `VS17.8` | `src/libslic3r/GCode/GCodeProcessor.cpp` (`store_move_vertex`, the `axis_jerk_for_preview` lambda) | MSVC 14.38 (VS 17.8) wrongly raises C3493 for a non-odr-used constant-expression enum used without capture; current MSVC, GCC and Clang accept it. Adding `normal_mode` to the capture list is a behaviour-neutral no-op. | Visual Studio is updated to 17.10+ (or the build uses VS 2026). Remove the extra capture and delete this row. |
+
 ## GitHub Actions in this fork
 
 Not used for the port. For reference, `OrcaSlicer/.github/workflows/build_all.yml`
