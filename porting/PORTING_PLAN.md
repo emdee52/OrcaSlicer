@@ -9,7 +9,7 @@ Selected source items (IDs refer to `NEOTKO_FEATURE_INVENTORY.md`):
 |----|---------|
 | MT-1 | Hotends that finished switch off |
 | MT-2 | Extra Energy Save (idle tool cooldown) |
-| MT-3 | Bed heats for the hottest filament on the plate |
+| MT-3 | Bed heats for the hottest filament on the plate - **ALREADY UPSTREAM, dropped (Phase 0)** |
 | MT-4 | MMU painter Pro Mode (F1-F4) |
 | SU-1 | PerObject Support |
 | SU-3 | Real floating-object detection (feeds the AS-1 floating trigger) |
@@ -28,10 +28,38 @@ Explicitly **out of scope**: the ColorStitch/Sandwich/PathBlend/Painter/NeoTower
 color pack (`CM-*`), variable-layer-height items (`VL-*`), Photo Mode/Studio, G-code
 Reprocessor, Bump Mapping, NeoStitch, Texture Bump, and all branding/ecosystem items.
 
-**Reality check.** This plan is built from Neotko's release notes only. No symbol, file,
-config key, or commit hash below has been verified against the fork. Phase 0 exists to
-replace every "expected" with a measured fact before any port begins. Per `AGENTS.md`, the
-release notes are an index, not ground truth.
+**Phase 0 status: reconnaissance complete.** The baseline build is green, and every
+selected feature has been located in the fork diff (`git diff v2.3.5 HEAD`). Each ID now
+has a verified note in `OrcaSlicer/porting/notes/<ID>.md` and a row in
+`OrcaSlicer/porting/manifest.tsv`. The release notes were the index; the code is the ground
+truth.
+
+## Phase 0 results
+
+- **MT-3 is already upstream** and is dropped. Target 2.5 already sets the first-layer bed
+  temperature from the hottest used filament: `bed_temperature_formula` (default
+  `btfHighestTemp`, `PrintConfig.cpp:2956`) and `GCode::get_highest_bed_temperature`
+  (`GCode.cpp:4637`). No port needed.
+- **Every other selected key is absent from target** (verified by grep), so the remaining
+  IDs are genuine ports, not duplicates.
+- **Scope is much larger than the release notes implied**, in three places:
+  - `SU-4`: the contact layer depends on the unselected ColorStitch/`NeoweaveEngine`
+    (`ColorStitch.cpp`), which target lacks entirely. Only the wave-roof half is
+    self-contained, and that half is a ~3400-line duplicate of `SupportMaterial`.
+  - `SU-5`/`SU-6`: one very large subsystem - ~1400 diff lines in `SupportMaterial`, plus
+    zone slicing, family/area hashing, per-volume JSON gesture data, and a 366 KB gizmo.
+  - `PQ-3a` cannot ship standalone: its two keys are read only on the
+    `wall_generator == NeoArachne` path, so port it with `PQ-3b` or re-plumb the options
+    into the stock Arachne path (category D).
+- **Shared infrastructure to port or stub first:** `NeoDebug` (referenced by MT-1/MT-2,
+  SU-1/3/4/5/6 and PQ-3) and the `neotko_libre_mode` / `neotko_libre_enabled` gate that
+  surrounds almost every feature's UI and dispatch.
+- **Coupling to cut:** `InstanceContact::cross_object_active()` ORs with
+  `neotko_true_objects` (`InstanceContact.cpp:246`). Remove that term so SU-1/SU-3 do not
+  drag in unselected True Objects.
+- **Upstream drift is real (category D):** MT-4's shared painter/`TriangleSelector`, PQ-1's
+  bridge-angle path, PQ-2's extrusion-quality estimator, and PQ-3's Arachne internals have
+  all changed since the fork's base. Re-implement intent against 2.5; do not paste patches.
 
 ---
 
@@ -435,6 +463,16 @@ Suggested checkpoints (stop and reassess at each):
 4. **U1-specific `M220 B`/`M220 R` cleanup - RESOLVED: dropped.** Not ported with MT-4 (or
    MT-1/MT-2). No Snapmaker-machine G-code cleanup is included.
 
-### Still open (needed before or during Phase 0)
+### Still open (raised by Phase 0 recon)
 
-1. **True Objects (SU-2).** Confirmed excluded. Accept the AS-3 false-bridge limitation?
+1. **SU-2 True Objects.** Confirmed excluded. Accept the AS-3 false-bridge limitation
+   (object lands correctly, but contact faces are still classified by stock slicing)?
+2. **SU-4 scope.** The contact layer is not portable without the ColorStitch pack. Port the
+   wave-roof half only, or defer SU-4 entirely?
+3. **PQ-3 split revisited.** PQ-3a cannot ship standalone (its keys are only reachable via
+   the NeoArachne enum). Port PQ-3a and PQ-3b together, or re-implement the two knobs on the
+   stock Arachne path first?
+4. **AS-1 key.** Use a new dedicated app key for free-Z/floating (recommended) or reuse the
+   fork's `neotko_true_objects`?
+5. **NeoDebug.** Stub it (drop the log channels) or port a reduced version? Several selected
+   features reference it.
