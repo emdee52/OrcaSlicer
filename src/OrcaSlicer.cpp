@@ -1981,7 +1981,8 @@ int CLI::run(int argc, char **argv)
     }
 
     std::unique_ptr<PresetBundle> cli_preset_bundle;
-    auto ensure_cli_preset_bundle = [&cli_preset_bundle](std::string &error) -> PresetBundle * {
+    // [BUILDFIX:VS17.8] capture the constant-expression enum; current MSVC does not require it.
+    auto ensure_cli_preset_bundle = [&cli_preset_bundle, config_substitution_rule](std::string &error) -> PresetBundle * {
         if (cli_preset_bundle)
             return cli_preset_bundle.get();
         try {
@@ -2008,7 +2009,8 @@ int CLI::run(int argc, char **argv)
         }
     };
 
-    auto resolve_preset = [&ensure_cli_preset_bundle](const std::string &file, DynamicPrintConfig &config,
+    // [BUILDFIX:VS17.8] capture the constant-expression enum; current MSVC does not require it.
+    auto resolve_preset = [&ensure_cli_preset_bundle, config_substitution_rule](const std::string &file, DynamicPrintConfig &config,
                                                                                std::string &config_type, const std::string &config_from,
                                                                                bool probe_type, std::string &error) {
         const auto *inherits = config.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS);
@@ -2097,7 +2099,8 @@ int CLI::run(int argc, char **argv)
         return Slic3r::escape_strings_cstyle(keys);
     };
 
-    auto load_config_file = [&resolve_preset](const std::string& file, DynamicPrintConfig& config, std::string& config_type,
+    // [BUILDFIX:VS17.8] capture the constant-expression enum; current MSVC does not require it.
+    auto load_config_file = [&resolve_preset, config_substitution_rule](const std::string& file, DynamicPrintConfig& config, std::string& config_type,
                                 std::string& config_name, std::string& filament_id, std::string& config_from) {
         if (! boost::filesystem::exists(file)) {
             boost::nowide::cerr << __FUNCTION__<< ": can not find setting file: " << file << std::endl;
