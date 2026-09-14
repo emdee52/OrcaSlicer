@@ -1,38 +1,70 @@
-# SU-4 - NeoWave Support
+# SU-4 - NeoWave Support (wave-roof half)
 
 - Source: `NEOTKOCM_RELEASE_2_36.md`, `2_37`, `2_39`.
-- Fork: `OrcaFS-NeotkoCM` @ `e25039606d` (engine), later `c3508e5a92`, `c1d9cc2890`.
-- Category: B/D. Two mechanisms with very different portability.
+- Fork: `OrcaFS-NeotkoCM` @ `e25039606d` (engine), `c3508e5a92`, `c1d9cc2890`.
+- Category: B/D. Status: **ported** (branch `port/SU-4`), wave-roof half; build clean, runtime pending.
 
-## Mechanism 1 - wave-roof hollow support (standalone-able)
-- New files: `src/libslic3r/Support/WaveSupport.cpp/.hpp` (191 KB, ~3400-line duplicate of SupportMaterial), `src/libslic3r/Fill/FillWaveRoof.cpp/.hpp`.
-- Anchors: `Support/SupportCommon.cpp:2054` `wavesupport_generate_toolpaths(...)`; `PrintObject.cpp:5009` dispatch; `PrintConfig.cpp:5856/6104/6126`.
-- Gate to remove: `PrintObject.cpp:5009` `... && m_config.neotko_libre_mode.value`; UI gates `Tab.cpp:8266,8283,8297`.
+## Scope (decided)
+Only the **wave-roof half** (Mecanismo 1). The NeoWave contact layer (Mecanismo 2) is **not ported**:
+it needs the unselected ColorStitch/`NeoweaveEngine` pack, which target 2.5 does not contain.
 
-## Mechanism 2 - neoweave contact layer (BLOCKED without ColorStitch)
-- Applies Z-oscillation to the object's bridge fill above a support roof (`GCode.cpp:9399-9438`).
-- Depends on the **unselected** ColorStitch/`NeoweaveEngine` (`ColorStitch.cpp:3038+`), which target 2.5 does not contain at all, plus `PrintRegionConfig` `interlayer_neoweave_*` / `infill_neoweave_*` keys.
-- Recommendation: port mechanism 1 only, or defer SU-4 entirely until a decision is made.
+## Approach: re-implement, do not copy the duplicate
+The fork ships `Support/WaveSupport.cpp` (~3,400 lines), a copy of `SupportMaterial.cpp` with the wave
+divergence inside. Diffing the fork's `generate_support_toolpaths` against its forked
+`wavesupport_generate_toolpaths` showed the actual wave logic is only ~70 lines: a `FillWaveRoof`
+interface fill and a hollow-wall-loops base branch. So instead of copying the engine, target's
+existing Normal engine (`PrintObjectSupportMaterial` / `SupportCommon`) is reused and the wave logic
+is added, gated on the new support type. That keeps the port reviewable and avoids maintaining a
+3,400-line fork copy.
 
-## Keys (all default-off)
-- `support_type` + enum `neowave` (`PrintConfig.cpp:5860`)
-- `support_interface_pattern` + enum `wave` (`PrintConfig.cpp:6116`)
-- `wavesupport_roof_pattern` | enum {concentric, wave} | `wave` | `:6127`
-- `wavesupport_roof_order` | enum {smart, zigzag, monotonic} | `smart` | `:6142`
-- `wavesupport_roof_reverse` | bool | `false` | `:6159`
-- `wavesupport_wall_loops` | int 0-10 | `0` | `:6170`
-- `support_neoweave_enabled` | bool | `false` | `:6183`
-- `support_neoweave_amplitude` | float 0-2 | `0.1` | `:6195`
-- `support_neoweave_period` | float 0-10 | `0.6` | `:6206`
+## Implementation (target 2.5)
+All inserted code tagged `[ORCAPORT:SU-4]`; the new file pair carries the `[ORCAPORT FILE]` stamp.
 
-## Coupling / blockers
-- Wave roof duplicates `SupportMaterial`; re-implement intent, do not paste.
-- `Support/SupportMaterial.cpp` may have been restructured in 2.5; expect category D.
-- `SurfaceColorMix.cpp` carries an orphan duplicate of NeoweaveEngine (not compiled) - ignore.
+- New `src/libslic3r/Fill/FillWaveRoof.{hpp,cpp}` - the Wave-Huygens roof fill (Wave/Concentric
+  shape, Smart/ZigZag/Monotonic order, reverse). Adapted from the fork (itself adapted from
+  OrcaSlicer-WaveOverhangs by Klappe, AGPLv3): `NeoDebug`/`WAVEROOF_LOG` dropped. **API drift fixed:**
+  target 2.5 stores extrusion paths as 3D `Polyline3`, so the planar algorithm converts at the
+  `ExtrusionPath` boundary (`wave_to_points3` / `wave_to_polyline`).
+- `PrintConfig.{hpp,cpp}` - appended **last** (serialized indices stay stable):
+  `SupportType::stWaveSupport`, `SupportMaterialInterfacePattern::smipWave`, and the two enum mirrors
+  `SupportMaterialWaveRoofPattern{Concentric,Wave}` / `SupportMaterialWaveRoofOrder{Smart,ZigZag,Monotonic}`.
+  New keys `wavesupport_roof_pattern`, `wavesupport_roof_order`, `wavesupport_roof_reverse`,
+  `wavesupport_wall_loops`. `Preset.cpp` key list.
+- `Support/SupportCommon.cpp::generate_support_toolpaths`:
+  - roof fill: when `support_type == stWaveSupport && support_interface_pattern == smipWave` and the
+    layer is TopContact/Interface, fill with `FillWaveRoof`; if it yields nothing, fall back to the
+    normal interface fill (a roof is never left empty).
+  - base: NeoWave hollow body as N concentric perimeters (`wavesupport_wall_loops`), 1st-layer flange
+    kept solid for adhesion.
+- `Support/SupportMaterial.cpp` - the three `stNormalAuto` guard sites also accept `stWaveSupport`
+  (auto-overhang detection and the top-contact guard), matching the fork's local extensions.
+- GUI: `Tab.cpp` appends the four roof options under Support > Advanced. `ConfigManipulation.cpp`
+  coerces base=`Hollow`/interface=`Wave` when NeoWave is selected, greys those two fields, and toggles
+  the roof options only when the NeoWave roof is active. The NeoWave/Wave combo entries come from
+  `PrintConfig.cpp` automatically.
+- `src/libslic3r/CMakeLists.txt` registers the new fill files.
+
+## Behavior-neutral at defaults
+`support_type` still defaults to `stNormalAuto`; the wave branches require `stWaveSupport`, and
+`smipWave`/`wavesupport_*` are inert outside it. Normal/Tree output is unchanged.
+
+## Deviations / gaps
+- The fork's forced `tree_support_wall_count = 2` NeoWave default is not ported (it touches an
+  unrelated tree key); the hollow walls are opt-in via `wavesupport_wall_loops`.
+- The fork's `SupportType::stWaveSupport` was LibreMode-gated; the gate is removed per policy.
+- Contact-layer Z-oscillation (Mecanismo 2) is out of scope (see above).
 
 ## Verification
-- Selecting NeoWave locks base=Hollow/interface=Wave; wave roof closes over a hollow pillar; contact-layer Z variation appears on bridge fill (G-code preview looks flat - known).
+- Build: `build_win.bat -s -j 8` then `-s --no-configure` after killing a running slicer that held
+  the DLL -> 0 errors; `FillWaveRoof.cpp`, `SupportCommon.cpp`, `ConfigManipulation.cpp`, `Tab.cpp`
+  compiled; `OrcaSlicer.dll` linked (2026-09-14).
+- Manual (pending): select Support Type = NeoWave -> base/interface lock to Hollow/Wave; a wave roof
+  is emitted over flat overhang footprints; `wavesupport_wall_loops` produces a hollow walled body;
+  roof shape/order/reverse change the toolpath; Normal/Tree support unchanged.
 
-## Open questions
-- Split wave roof from contact layer? Contact layer is not portable without the ColorStitch pack.
-- Target already has `smipSpiralInset`; append `smipWave` last, never at the fork's index.
+## Files
+- `src/libslic3r/Fill/FillWaveRoof.{hpp,cpp}` (new)
+- `src/libslic3r/PrintConfig.{hpp,cpp}`, `Preset.cpp`, `src/libslic3r/CMakeLists.txt`,
+  `Support/SupportCommon.cpp`, `Support/SupportMaterial.cpp`,
+  `src/slic3r/GUI/Tab.cpp`, `src/slic3r/GUI/ConfigManipulation.cpp`
+- Patch: `porting/patches/10_SU-4.patch`.

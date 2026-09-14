@@ -1,7 +1,7 @@
 # HANDOFF - read this first
 
 This is the start-here doc for a new agent session on this workspace. It summarizes where the
-port stands, the hard-won operational rules, and the next task (SU-4). The detailed, per-feature
+port stands, the hard-won operational rules, and the next task (SU-5). The detailed, per-feature
 truth lives in the other `porting/` docs; this file tells you what to read and what bit us.
 
 ## Read order
@@ -29,7 +29,7 @@ untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git
 | MT-3 | Bed hottest filament | upstream-present (skip) | notes/MT-3.md | - |
 | MT-4 | MMU painter Pro Mode F1-F3 | ported (F4 dropped) | notes/MT-4.md | 04/05 |
 | SU-1 | PerObject Support | ported | notes/SU-1.md | 09_SU-1.patch |
-| SU-4 | NeoWave (wave-roof half) | **planned** | notes/SU-4.md | - |
+| SU-4 | NeoWave (wave-roof half) | ported | notes/SU-4.md | 10_SU-4.patch |
 | SU-5 | Support Zones aimed pillars | **planned** | notes/SU-5.md | - |
 | SU-6 | Support Zones block trees | **planned** | notes/SU-6.md | - |
 | AS-1 | Free-Z placement | ported | notes/AS-1.md | 06_AS-1.patch |
@@ -108,12 +108,16 @@ in `OrcaSlicer/build/src/Release/OrcaSlicer.dll`). A full clean build is ~20 min
 - `manifest.tsv` is the source of truth; keep it and the notes in sync with the code.
 - Do not push unless the user asks. (The user has been asking; commits here are already pushed.)
 
-## Next task: SU-4 NeoWave (wave-roof half)
+## Next task: SU-5 Support Zones (aimed pillars)
+
+SU-4 is **ported** on `port/SU-4` (wave-roof half): `SupportType::NeoWave` handled by the existing
+Normal engine, `FillWaveRoof`, and the `wavesupport_*` keys. The contact layer is dropped (needs the
+unselected ColorStitch pack). Build clean; runtime pending. See `notes/SU-4.md`. The next task is SU-5
+(`notes/SU-5.md`); it is the largest subsystem and must land before SU-6.
 
 SU-1 is **ported** on `port/SU-1`: `OrcaExt/InstanceContact` (cross-object occupancy), the
 `support_cross_object_avoidance` key + GUI, and the tree / classic-grid / organic / pipeline
-integration. Build clean; runtime pending. See `notes/SU-1.md`. The next task is SU-4
-(`notes/SU-4.md`), the wave-roof half only (the contact layer needs the unselected ColorStitch pack).
+integration. Build clean; runtime pending. See `notes/SU-1.md`.
 
 AS-3 is **ported** on `port/AS-3` (full pass): the `GravitySnap` module, the magnet options panel,
 the landing-shadow overlay, the live-drag resolve and the `do_move` commit. Build clean; runtime
