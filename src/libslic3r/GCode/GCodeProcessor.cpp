@@ -9,6 +9,8 @@
 #include "libslic3r/format.hpp"
 #include "GCodeProcessor.hpp"
 
+#include "../OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+
 #include <boost/log/trivial.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -1019,6 +1021,103 @@ private:
     }
 };
 
+// [ORCAPORT:MT-1] [ORCAPORT:MT-2] Build the per-tool "last extruding line" table before the write
+// pass, so the forward pass below can answer "does this tool come back?" from the final G-code.
+// Only extrusion counts as use; a travel or retract does not mean the tool still has work.
+void GCodeProcessor::orcaext_toolsleep_prepare()
+{
+    m_orcaext_toolsleep_last_use.clear();
+    m_orcaext_toolsleep_done.clear();
+    m_orcaext_toolsleep_rewrites   = 0;
+    m_orcaext_toolsleep_tools_used = 0;
+    if (!m_orcaext_toolsleep_enabled)
+        return;
+
+    // Size the table to cover the highest extruder id seen, so it does not depend on a
+    // particular result field name.
+    size_t tools = 1;
+    for (const GCodeProcessorResult::MoveVertex& move : m_result.moves)
+        tools = std::max<size_t>(tools, static_cast<size_t>(move.extruder_id) + 1);
+    m_orcaext_toolsleep_last_use.assign(tools, 0);
+    m_orcaext_toolsleep_done.assign(tools, false);
+
+    for (const GCodeProcessorResult::MoveVertex& move : m_result.moves) {
+        if (move.type != EMoveType::Extrude)
+            continue;
+        const size_t t = static_cast<size_t>(move.extruder_id);
+        if (t < tools && move.gcode_id > m_orcaext_toolsleep_last_use[t])
+            m_orcaext_toolsleep_last_use[t] = move.gcode_id;
+    }
+
+    for (size_t t = 0; t < tools; ++t)
+        if (m_orcaext_toolsleep_last_use[t] > 0)
+            ++m_orcaext_toolsleep_tools_used;
+}
+
+// [ORCAPORT:MT-1] [ORCAPORT:MT-2] Rewrite a parked tool's standby "M104 S<idle> T<n>" into
+// "M104 S0 T<n>" once the tool has no extrusion left (MT-1), or on every park (MT-2, where Orca's
+// own preheat backtrace undoes a shutdown that falls inside the preheat window). The ";cooldown"
+// marker identifies a park and must be preserved, because that backtrace looks for it.
+bool GCodeProcessor::orcaext_toolsleep_rewrite_line(std::string& gcode_line, unsigned int line_id)
+{
+    if (!m_orcaext_toolsleep_enabled || m_orcaext_toolsleep_last_use.empty())
+        return false;
+    if (!GCodeReader::GCodeLine::cmd_is(gcode_line, "M104"))
+        return false;
+
+    GCodeReader::GCodeLine gline;
+    GCodeReader            reader;
+    reader.parse_line(gcode_line, [&gline](GCodeReader& r, const GCodeReader::GCodeLine& l) { gline = l; });
+
+    float tool_f = 0.f;
+    float temp_f = 0.f;
+    // An M104 without an explicit T targets the active tool, which is not the one being parked.
+    if (!gline.has_value('T', tool_f) || !gline.has_value('S', temp_f))
+        return false;
+    if (temp_f <= 0.f)
+        return false; // already off
+    // Only ";cooldown" lines are parks; any other M104 with a T is a working temperature.
+    if (gcode_line.find("cooldown") == std::string::npos)
+        return false;
+
+    const int tool = static_cast<int>(tool_f);
+    if (tool < 0 || static_cast<size_t>(tool) >= m_orcaext_toolsleep_last_use.size())
+        return false;
+    if (!m_orcaext_toolsleep_deep && m_orcaext_toolsleep_done[tool])
+        return false;
+
+    const unsigned int last_use = m_orcaext_toolsleep_last_use[tool];
+    // last_use == 0: the tool never extrudes, so the file's start g-code already decided not to use it.
+    if (last_use == 0)
+        return false;
+    if (!m_orcaext_toolsleep_deep && line_id <= last_use)
+        return false;
+
+    const size_t s_pos = gcode_line.find('S');
+    if (s_pos == std::string::npos)
+        return false;
+    size_t end = s_pos + 1;
+    while (end < gcode_line.size() && (std::isdigit(static_cast<unsigned char>(gcode_line[end])) ||
+                                       gcode_line[end] == '.' || gcode_line[end] == '-'))
+        ++end;
+    if (end == s_pos + 1)
+        return false;
+
+    std::string tail = gcode_line.substr(end);
+    std::string eol;
+    while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r')) {
+        eol.insert(eol.begin(), tail.back());
+        tail.pop_back();
+    }
+    const char* why = (line_id > last_use) ? " ; orca: tool off, not used again"
+                                           : " ; orca: tool off while parked";
+    gcode_line = gcode_line.substr(0, s_pos) + "S0" + tail + why + eol;
+
+    m_orcaext_toolsleep_done[tool] = true;
+    ++m_orcaext_toolsleep_rewrites;
+    return true;
+}
+
 void GCodeProcessor::run_post_process()
 {
     FilePtr in{ boost::nowide::fopen(m_result.filename.c_str(), "rb") };
@@ -1602,6 +1701,9 @@ void GCodeProcessor::run_post_process()
         }
     };
 
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] build the per-tool last-use table from the parsed moves.
+    orcaext_toolsleep_prepare();
+
     {
         // Read the input stream 64kB at a time, extract lines and process them.
         std::vector<char> buffer(65536 * 10, 0);
@@ -1634,6 +1736,9 @@ void GCodeProcessor::run_post_process()
 
                 if (eol) {
                     ++line_id;
+                    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] rewrite a parked tool's standby M104 before
+                    // export_line.update() measures/stores the line, so byte offsets stay in sync.
+                    orcaext_toolsleep_rewrite_line(gcode_line, line_id);
                     const unsigned int internal_g1_lines_counter = export_line.update(gcode_line, line_id, g1_lines_counter);
                     // Orca: track the current layer for preheat temperature selection.
                     // The line is ";" + reserved_tag(Layer_Change) + EOL; match it independent of
@@ -1740,6 +1845,17 @@ void GCodeProcessor::run_post_process()
     }
 
     export_line.flush(out, m_result, out_path);
+
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] The toggle is on but nothing was switched off. The usual
+    // cause is that no standby command exists to rewrite (Ooze prevention off), so say so.
+    if (m_orcaext_toolsleep_enabled && m_orcaext_toolsleep_rewrites == 0 && m_orcaext_toolsleep_tools_used > 1) {
+        const std::string warning = "Turn off unused hotends: no tool could be switched off. This needs a "
+                                    "standby temperature command to rewrite, which the printer only emits "
+                                    "when Ooze prevention is enabled in Print settings.";
+        BOOST_LOG_TRIVIAL(warning) << warning;
+        if (m_print != nullptr)
+            m_print->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, warning);
+    }
 
     out.close();
     in.close();
@@ -2912,6 +3028,14 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
 {
     m_parser.apply_config(config);
 
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] idle hotend power-down is an app-level preference,
+    // mirrored here from the GUI so this libslic3r pass can honour it.
+    {
+        const OrcaExt::IdleToolPowerDownSettings orcaext_s = OrcaExt::idle_tool_power_down_settings();
+        m_orcaext_toolsleep_enabled = orcaext_s.enabled;
+        m_orcaext_toolsleep_deep    = orcaext_s.enabled && orcaext_s.deep;
+    }
+
     m_flavor = config.gcode_flavor;
     m_printer_model = config.printer_model.value;
 
@@ -3481,6 +3605,14 @@ void GCodeProcessor::reset()
     m_extruder_offsets = std::vector<Vec3f>(MIN_EXTRUDERS_COUNT, Vec3f::Zero());
     m_flavor = gcfRepRapSprinter;
     m_nozzle_volume = std::vector<float>(MAXIMUM_EXTRUDER_NUMBER, 0.f);
+
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+    m_orcaext_toolsleep_enabled = false;
+    m_orcaext_toolsleep_deep    = false;
+    m_orcaext_toolsleep_last_use.clear();
+    m_orcaext_toolsleep_done.clear();
+    m_orcaext_toolsleep_rewrites = 0;
+    m_orcaext_toolsleep_tools_used = 0;
 
     m_start_position = { 0.0f, 0.0f, 0.0f, 0.0f };
     m_end_position = { 0.0f, 0.0f, 0.0f, 0.0f };

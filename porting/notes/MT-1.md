@@ -1,39 +1,36 @@
 # MT-1 - Hotends that finished switch off
 
-- Source: `NEOTKOCM_RELEASE_2_45.md` (Hotends that have finished their work now switch off).
-- Fork: `OrcaFS-NeotkoCM` @ `cf1255c741` (2_45 release).
-- Category: B. Target lacks any equivalent.
+- Source: `NEOTKOCM_RELEASE_2_45.md`.
+- Fork: `OrcaFS-NeotkoCM` @ `cf1255c741`.
+- Category: B. App-level preference.
+- Status: **ported** (branch `port/MT-1`), build clean.
 
-## New files
-- `src/slic3r/GUI/NeotkoBedNozzleExtras.{hpp,cpp}` - app-level settings + UI (shared with MT-2).
+## Design (chosen for low coupling)
+The fork mirrored the app preference into a hidden PrintConfig option. We avoid adding a
+print key: the GUI writes an app-level global that the G-code post-processor reads. This
+keeps it out of profiles (it survives profile updates) and adds one anchor in libslic3r.
 
-## Upstream anchors (fork lines)
-- `src/libslic3r/GCode/GCodeProcessor.cpp`
-  - `apply_config()`: `m_neotko_toolsleep_enabled = config.neotko_idle_tool_power_down.value;` (~729)
-  - `reset()`: clear `m_neotko_toolsleep_enabled` (~1214)
-  - new `neotko_toolsleep_prepare()` (~4058) and `neotko_toolsleep_rewrite_line()` (~4107); rewrite to `S0` at ~4136-4189
-  - `run_post_process()` calls prepare before the write pass (~4850) and rewrite per line (~4894)
-- `src/libslic3r/GCode/GCodeProcessor.hpp` - members/methods (~750-769)
-- `src/libslic3r/PrintConfig.cpp` - `neotko_idle_tool_power_down` (~5696)
-- `src/libslic3r/Print.cpp` (~671), `Preset.cpp` (~955)
-- `src/slic3r/GUI/Plater.cpp` - sidebar button + mirror into config (~1040, 2283, 12800)
+- New module: `src/libslic3r/OrcaExt/IdleToolPowerDown.{hpp,cpp}` - `OrcaExt::set_idle_tool_power_down(bool)` / `idle_tool_power_down_settings()`.
+- `src/libslic3r/GCode/GCodeProcessor.cpp` - `orcaext_toolsleep_prepare()` builds a per-tool
+  "last extruding line" table from `m_result.moves`; `orcaext_toolsleep_rewrite_line()`
+  rewrites a parked tool's standby `M104 S<idle> T<n> ;cooldown` to `S0` once
+  `line_id > last_use`. Called before `export_line.update()` so byte offsets stay in sync.
+- `GCodeProcessor::apply_config(const PrintConfig&)` reads the global into members.
+- `src/slic3r/GUI/Preferences.cpp` - checkbox "Turn off unused hotends fully (0 °C)"
+  (app key `orca_ext_idle_tool_power_down`); schedules a background process on change.
+- `src/slic3r/GUI/GUI_App.cpp` - mirrors app_config into the global at startup.
 
-## Keys
-- `neotko_idle_tool_power_down` | `coBool` | default `false` | `PrintConfig.cpp:5696` (mode `comDevelop`)
-- Same string is the app-level preference (owned by Bed and Nozzle Extras).
+## Key
+- `orca_ext_idle_tool_power_down` | app bool | default `false`.
 
-## Gates to remove / change
-- No LibreMode or `ORCA_DEBUG_*` feature gate. The opt-in key is the feature switch.
-- Change: `comDevelop` mode hides it in the UI; expose the Bed and Nozzle Extras dialog normally (we want it ungated).
-- Decision: keep the preferences app-level (not per-profile), as the fork does.
-
-## Coupling / blockers
-- Depends on `NeoDebug` (`src/libslic3r/NeoDebug.{hpp,cpp}`) for log lines. We must stub or reduce NeoDebug (shared by several selected features).
-- Relies on upstream's `;cooldown` marker + preheat backtrace (present in 2.5).
-- The fork mirrors app prefs into `Plater::priv::neotko_full_config()`, which also injects unselected Neotko keys; port only the two toolsleep lines.
+## Notes
+- Only `;cooldown` M104 lines with an explicit `T` are touched; other M104 lines are working
+  temperatures and are left alone.
+- Requires Ooze prevention (only then is a standby command emitted). If nothing is switched
+  off on a multi-tool print, a non-critical warning says so.
 
 ## Verification
-- Multi-tool G-code: a tool with no later extrusion gets standby 0; tools returning inside the preheat window keep heat; single-tool file emits nothing; off = byte-identical.
-
-## Open questions
-- Whether `run_post_process()` is the only export path; upstream adds a second preheat injector pass after it that may interact with the `S0` rewrite.
+- Compile/link: `build_win.bat -s -j 8` -> 0 errors, binary produced.
+- Off-by-default: flag false -> no rewrite, output byte-identical (by construction).
+- Pending: runtime G-code check on a multi-tool slice with Ooze prevention on, asserting
+  `S0` appears on the finished tool's cooldown and nowhere else.

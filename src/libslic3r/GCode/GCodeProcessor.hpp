@@ -1178,6 +1178,19 @@ class Print;
         float m_preheat_time;
         int m_preheat_steps;
         bool m_disable_m73;
+        // [ORCAPORT:MT-1] [ORCAPORT:MT-2] Idle hotend power-down (app-level; see
+        // OrcaExt/IdleToolPowerDown.hpp). Mirrored from app_config by the GUI.
+        bool m_orcaext_toolsleep_enabled{ false };
+        bool m_orcaext_toolsleep_deep{ false };
+        // Per-tool G-code line id of the last line that extrudes with that tool. 0 = never used.
+        std::vector<unsigned int> m_orcaext_toolsleep_last_use;
+        // Tools already switched off, so a tool is never powered down twice.
+        std::vector<bool> m_orcaext_toolsleep_done;
+        unsigned int m_orcaext_toolsleep_rewrites{ 0 };
+        // How many tools actually extrude (not how many slots are loaded).
+        unsigned int m_orcaext_toolsleep_tools_used{ 0 };
+        void orcaext_toolsleep_prepare();
+        bool orcaext_toolsleep_rewrite_line(std::string& gcode_line, unsigned int line_id);
         std::string m_printer_model;
 
         enum class EProducer

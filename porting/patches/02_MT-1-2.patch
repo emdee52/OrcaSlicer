@@ -1,0 +1,390 @@
+From 9d14d0d9e0bce4107e445594abf8aa533a279d8f Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 20:14:06 -0600
+Subject: [PATCH] port(MT-1,MT-2): idle hotend power-down + extra energy save
+ (ORCAPORT:MT-1/MT-2)
+
+---
+ src/libslic3r/CMakeLists.txt                |   2 +
+ src/libslic3r/GCode/GCodeProcessor.cpp      | 132 ++++++++++++++++++++
+ src/libslic3r/GCode/GCodeProcessor.hpp      |  13 ++
+ src/libslic3r/OrcaExt/IdleToolPowerDown.cpp |  30 +++++
+ src/libslic3r/OrcaExt/IdleToolPowerDown.hpp |  27 ++++
+ src/slic3r/GUI/GUI_App.cpp                  |   5 +
+ src/slic3r/GUI/Preferences.cpp              |  37 ++++++
+ 7 files changed, 246 insertions(+)
+ create mode 100644 src/libslic3r/OrcaExt/IdleToolPowerDown.cpp
+ create mode 100644 src/libslic3r/OrcaExt/IdleToolPowerDown.hpp
+
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index ffc6b5cee6..95d026ae8e 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -342,6 +342,8 @@ set(lisbslic3r_sources
+     Optimize/BruteforceOptimizer.hpp
+     Optimize/NLoptOptimizer.hpp
+     Optimize/Optimizer.hpp
++    OrcaExt/IdleToolPowerDown.cpp
++    OrcaExt/IdleToolPowerDown.hpp
+     Orient.cpp
+     Orient.hpp
+     ParameterUtils.cpp
+diff --git a/src/libslic3r/GCode/GCodeProcessor.cpp b/src/libslic3r/GCode/GCodeProcessor.cpp
+index 596dafdaf7..b341da8c75 100644
+--- a/src/libslic3r/GCode/GCodeProcessor.cpp
++++ b/src/libslic3r/GCode/GCodeProcessor.cpp
+@@ -9,6 +9,8 @@
+ #include "libslic3r/format.hpp"
+ #include "GCodeProcessor.hpp"
+ 
++#include "../OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
++
+ #include <boost/log/trivial.hpp>
+ #include <boost/algorithm/string/predicate.hpp>
+ #include <boost/algorithm/string/split.hpp>
+@@ -1019,6 +1021,103 @@ private:
+     }
+ };
+ 
++// [ORCAPORT:MT-1] [ORCAPORT:MT-2] Build the per-tool "last extruding line" table before the write
++// pass, so the forward pass below can answer "does this tool come back?" from the final G-code.
++// Only extrusion counts as use; a travel or retract does not mean the tool still has work.
++void GCodeProcessor::orcaext_toolsleep_prepare()
++{
++    m_orcaext_toolsleep_last_use.clear();
++    m_orcaext_toolsleep_done.clear();
++    m_orcaext_toolsleep_rewrites   = 0;
++    m_orcaext_toolsleep_tools_used = 0;
++    if (!m_orcaext_toolsleep_enabled)
++        return;
++
++    // Size the table to cover the highest extruder id seen, so it does not depend on a
++    // particular result field name.
++    size_t tools = 1;
++    for (const GCodeProcessorResult::MoveVertex& move : m_result.moves)
++        tools = std::max<size_t>(tools, static_cast<size_t>(move.extruder_id) + 1);
++    m_orcaext_toolsleep_last_use.assign(tools, 0);
++    m_orcaext_toolsleep_done.assign(tools, false);
++
++    for (const GCodeProcessorResult::MoveVertex& move : m_result.moves) {
++        if (move.type != EMoveType::Extrude)
++            continue;
++        const size_t t = static_cast<size_t>(move.extruder_id);
++        if (t < tools && move.gcode_id > m_orcaext_toolsleep_last_use[t])
++            m_orcaext_toolsleep_last_use[t] = move.gcode_id;
++    }
++
++    for (size_t t = 0; t < tools; ++t)
++        if (m_orcaext_toolsleep_last_use[t] > 0)
++            ++m_orcaext_toolsleep_tools_used;
++}
++
++// [ORCAPORT:MT-1] [ORCAPORT:MT-2] Rewrite a parked tool's standby "M104 S<idle> T<n>" into
++// "M104 S0 T<n>" once the tool has no extrusion left (MT-1), or on every park (MT-2, where Orca's
++// own preheat backtrace undoes a shutdown that falls inside the preheat window). The ";cooldown"
++// marker identifies a park and must be preserved, because that backtrace looks for it.
++bool GCodeProcessor::orcaext_toolsleep_rewrite_line(std::string& gcode_line, unsigned int line_id)
++{
++    if (!m_orcaext_toolsleep_enabled || m_orcaext_toolsleep_last_use.empty())
++        return false;
++    if (!GCodeReader::GCodeLine::cmd_is(gcode_line, "M104"))
++        return false;
++
++    GCodeReader::GCodeLine gline;
++    GCodeReader            reader;
++    reader.parse_line(gcode_line, [&gline](GCodeReader& r, const GCodeReader::GCodeLine& l) { gline = l; });
++
++    float tool_f = 0.f;
++    float temp_f = 0.f;
++    // An M104 without an explicit T targets the active tool, which is not the one being parked.
++    if (!gline.has_value('T', tool_f) || !gline.has_value('S', temp_f))
++        return false;
++    if (temp_f <= 0.f)
++        return false; // already off
++    // Only ";cooldown" lines are parks; any other M104 with a T is a working temperature.
++    if (gcode_line.find("cooldown") == std::string::npos)
++        return false;
++
++    const int tool = static_cast<int>(tool_f);
++    if (tool < 0 || static_cast<size_t>(tool) >= m_orcaext_toolsleep_last_use.size())
++        return false;
++    if (!m_orcaext_toolsleep_deep && m_orcaext_toolsleep_done[tool])
++        return false;
++
++    const unsigned int last_use = m_orcaext_toolsleep_last_use[tool];
++    // last_use == 0: the tool never extrudes, so the file's start g-code already decided not to use it.
++    if (last_use == 0)
++        return false;
++    if (!m_orcaext_toolsleep_deep && line_id <= last_use)
++        return false;
++
++    const size_t s_pos = gcode_line.find('S');
++    if (s_pos == std::string::npos)
++        return false;
++    size_t end = s_pos + 1;
++    while (end < gcode_line.size() && (std::isdigit(static_cast<unsigned char>(gcode_line[end])) ||
++                                       gcode_line[end] == '.' || gcode_line[end] == '-'))
++        ++end;
++    if (end == s_pos + 1)
++        return false;
++
++    std::string tail = gcode_line.substr(end);
++    std::string eol;
++    while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r')) {
++        eol.insert(eol.begin(), tail.back());
++        tail.pop_back();
++    }
++    const char* why = (line_id > last_use) ? " ; orca: tool off, not used again"
++                                           : " ; orca: tool off while parked";
++    gcode_line = gcode_line.substr(0, s_pos) + "S0" + tail + why + eol;
++
++    m_orcaext_toolsleep_done[tool] = true;
++    ++m_orcaext_toolsleep_rewrites;
++    return true;
++}
++
+ void GCodeProcessor::run_post_process()
+ {
+     FilePtr in{ boost::nowide::fopen(m_result.filename.c_str(), "rb") };
+@@ -1602,6 +1701,9 @@ void GCodeProcessor::run_post_process()
+         }
+     };
+ 
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] build the per-tool last-use table from the parsed moves.
++    orcaext_toolsleep_prepare();
++
+     {
+         // Read the input stream 64kB at a time, extract lines and process them.
+         std::vector<char> buffer(65536 * 10, 0);
+@@ -1634,6 +1736,9 @@ void GCodeProcessor::run_post_process()
+ 
+                 if (eol) {
+                     ++line_id;
++                    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] rewrite a parked tool's standby M104 before
++                    // export_line.update() measures/stores the line, so byte offsets stay in sync.
++                    orcaext_toolsleep_rewrite_line(gcode_line, line_id);
+                     const unsigned int internal_g1_lines_counter = export_line.update(gcode_line, line_id, g1_lines_counter);
+                     // Orca: track the current layer for preheat temperature selection.
+                     // The line is ";" + reserved_tag(Layer_Change) + EOL; match it independent of
+@@ -1741,6 +1846,17 @@ void GCodeProcessor::run_post_process()
+ 
+     export_line.flush(out, m_result, out_path);
+ 
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] The toggle is on but nothing was switched off. The usual
++    // cause is that no standby command exists to rewrite (Ooze prevention off), so say so.
++    if (m_orcaext_toolsleep_enabled && m_orcaext_toolsleep_rewrites == 0 && m_orcaext_toolsleep_tools_used > 1) {
++        const std::string warning = "Turn off unused hotends: no tool could be switched off. This needs a "
++                                    "standby temperature command to rewrite, which the printer only emits "
++                                    "when Ooze prevention is enabled in Print settings.";
++        BOOST_LOG_TRIVIAL(warning) << warning;
++        if (m_print != nullptr)
++            m_print->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, warning);
++    }
++
+     out.close();
+     in.close();
+ 
+@@ -2912,6 +3028,14 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
+ {
+     m_parser.apply_config(config);
+ 
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] idle hotend power-down is an app-level preference,
++    // mirrored here from the GUI so this libslic3r pass can honour it.
++    {
++        const OrcaExt::IdleToolPowerDownSettings orcaext_s = OrcaExt::idle_tool_power_down_settings();
++        m_orcaext_toolsleep_enabled = orcaext_s.enabled;
++        m_orcaext_toolsleep_deep    = orcaext_s.enabled && orcaext_s.deep;
++    }
++
+     m_flavor = config.gcode_flavor;
+     m_printer_model = config.printer_model.value;
+ 
+@@ -3482,6 +3606,14 @@ void GCodeProcessor::reset()
+     m_flavor = gcfRepRapSprinter;
+     m_nozzle_volume = std::vector<float>(MAXIMUM_EXTRUDER_NUMBER, 0.f);
+ 
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
++    m_orcaext_toolsleep_enabled = false;
++    m_orcaext_toolsleep_deep    = false;
++    m_orcaext_toolsleep_last_use.clear();
++    m_orcaext_toolsleep_done.clear();
++    m_orcaext_toolsleep_rewrites = 0;
++    m_orcaext_toolsleep_tools_used = 0;
++
+     m_start_position = { 0.0f, 0.0f, 0.0f, 0.0f };
+     m_end_position = { 0.0f, 0.0f, 0.0f, 0.0f };
+     m_origin = { 0.0f, 0.0f, 0.0f, 0.0f };
+diff --git a/src/libslic3r/GCode/GCodeProcessor.hpp b/src/libslic3r/GCode/GCodeProcessor.hpp
+index 0f211f133e..634f6910ed 100644
+--- a/src/libslic3r/GCode/GCodeProcessor.hpp
++++ b/src/libslic3r/GCode/GCodeProcessor.hpp
+@@ -1178,6 +1178,19 @@ class Print;
+         float m_preheat_time;
+         int m_preheat_steps;
+         bool m_disable_m73;
++        // [ORCAPORT:MT-1] [ORCAPORT:MT-2] Idle hotend power-down (app-level; see
++        // OrcaExt/IdleToolPowerDown.hpp). Mirrored from app_config by the GUI.
++        bool m_orcaext_toolsleep_enabled{ false };
++        bool m_orcaext_toolsleep_deep{ false };
++        // Per-tool G-code line id of the last line that extrudes with that tool. 0 = never used.
++        std::vector<unsigned int> m_orcaext_toolsleep_last_use;
++        // Tools already switched off, so a tool is never powered down twice.
++        std::vector<bool> m_orcaext_toolsleep_done;
++        unsigned int m_orcaext_toolsleep_rewrites{ 0 };
++        // How many tools actually extrude (not how many slots are loaded).
++        unsigned int m_orcaext_toolsleep_tools_used{ 0 };
++        void orcaext_toolsleep_prepare();
++        bool orcaext_toolsleep_rewrite_line(std::string& gcode_line, unsigned int line_id);
+         std::string m_printer_model;
+ 
+         enum class EProducer
+diff --git a/src/libslic3r/OrcaExt/IdleToolPowerDown.cpp b/src/libslic3r/OrcaExt/IdleToolPowerDown.cpp
+new file mode 100644
+index 0000000000..522dfff018
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/IdleToolPowerDown.cpp
+@@ -0,0 +1,30 @@
++#include "IdleToolPowerDown.hpp"
++
++#include <atomic>
++
++namespace Slic3r {
++namespace OrcaExt {
++
++namespace {
++std::atomic<bool> s_idle_tool_power_down{ false };
++std::atomic<bool> s_idle_tool_power_down_deep{ false };
++} // namespace
++
++void set_idle_tool_power_down(bool enabled)
++{
++    s_idle_tool_power_down.store(enabled, std::memory_order_relaxed);
++}
++
++void set_idle_tool_power_down_deep(bool deep)
++{
++    s_idle_tool_power_down_deep.store(deep, std::memory_order_relaxed);
++}
++
++IdleToolPowerDownSettings idle_tool_power_down_settings()
++{
++    return { s_idle_tool_power_down.load(std::memory_order_relaxed),
++             s_idle_tool_power_down_deep.load(std::memory_order_relaxed) };
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/IdleToolPowerDown.hpp b/src/libslic3r/OrcaExt/IdleToolPowerDown.hpp
+new file mode 100644
+index 0000000000..760af36cf8
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/IdleToolPowerDown.hpp
+@@ -0,0 +1,27 @@
++#ifndef slic3r_OrcaExt_IdleToolPowerDown_hpp_
++#define slic3r_OrcaExt_IdleToolPowerDown_hpp_
++
++// [ORCAPORT:MT-1] [ORCAPORT:MT-2] App-level settings for turning off idle hotends.
++//
++// These are not print/profile settings. The GUI stores them in app_config and mirrors them
++// here, so the G-code post-processor in libslic3r can honour them without depending on the
++// GUI. The G-code post-processor needs the FINAL G-code to know whether a tool comes back,
++// which is why the decision lives there and not at plan time.
++
++namespace Slic3r {
++namespace OrcaExt {
++
++struct IdleToolPowerDownSettings
++{
++    bool enabled{ false }; // MT-1: switch a tool off once it has no extrusion left.
++    bool deep{ false };    // MT-2: also switch it off while it merely waits.
++};
++
++void                      set_idle_tool_power_down(bool enabled);
++void                      set_idle_tool_power_down_deep(bool deep);
++IdleToolPowerDownSettings idle_tool_power_down_settings();
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif
+diff --git a/src/slic3r/GUI/GUI_App.cpp b/src/slic3r/GUI/GUI_App.cpp
+index 966cf49013..3c5a527d59 100644
+--- a/src/slic3r/GUI/GUI_App.cpp
++++ b/src/slic3r/GUI/GUI_App.cpp
+@@ -84,6 +84,7 @@
+ #include "libslic3r/Model.hpp"
+ #include "libslic3r/I18N.hpp"
+ #include "libslic3r/PresetBundle.hpp"
++#include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+ #include "libslic3r/Thread.hpp"
+ #include "libslic3r/miniz_extension.hpp"
+ #include "libslic3r/Utils.hpp"
+@@ -2624,6 +2625,10 @@ void GUI_App::init_app_config()
+         }
+ #endif // _WIN32
+     }
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] mirror the app-level idle hotend power-down preferences so
++    // the libslic3r G-code post-processor honours them without depending on the GUI.
++    Slic3r::OrcaExt::set_idle_tool_power_down(app_config->get_bool("orca_ext_idle_tool_power_down"));
++    Slic3r::OrcaExt::set_idle_tool_power_down_deep(app_config->get_bool("orca_ext_idle_tool_deep_sleep"));
+     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
+ 
+ }
+diff --git a/src/slic3r/GUI/Preferences.cpp b/src/slic3r/GUI/Preferences.cpp
+index 73f3a2c90a..a965e67873 100644
+--- a/src/slic3r/GUI/Preferences.cpp
++++ b/src/slic3r/GUI/Preferences.cpp
+@@ -8,6 +8,7 @@
+ #include "MsgDialog.hpp"
+ #include "I18N.hpp"
+ #include "libslic3r/AppConfig.hpp"
++#include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+ #include "libslic3r/Format/DRC.hpp"
+ #include <wx/language.h>
+ #include "OG_CustomCtrl.hpp"
+@@ -1630,6 +1631,42 @@ void PreferencesDialog::create_items()
+     auto item_show_splash_scr  = create_item_checkbox(_L("Show splash screen"), _L("Show the splash screen during startup."), "show_splash_screen");
+     g_sizer->Add(item_show_splash_scr);
+ 
++    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] Idle hotend power-down. App-level machine preferences, not
++    // print settings, so they live in app_config and survive profile updates.
++    {
++        auto add_orcaext_checkbox = [this, g_sizer](const wxString& title, const wxString& tooltip, const char* key, bool deep) {
++            wxBoxSizer* item_sizer = create_item_label(title, tooltip);
++            auto*       checkbox   = new ::CheckBox(m_parent);
++            checkbox->SetValue(app_config->get_bool(key));
++            checkbox->SetToolTip(tooltip);
++            checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox, key, deep](wxCommandEvent& e) {
++                const bool on = checkbox->GetValue();
++                wxGetApp().app_config->set_bool(key, on);
++                wxGetApp().app_config->save();
++                if (deep)
++                    OrcaExt::set_idle_tool_power_down_deep(on);
++                else
++                    OrcaExt::set_idle_tool_power_down(on);
++                // The setting only changes exported G-code; schedule a background pass so it is
++                // re-exported without a manual re-slice.
++                if (wxGetApp().plater() != nullptr)
++                    wxGetApp().plater()->schedule_background_process();
++                e.Skip();
++            });
++            item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
++            g_sizer->Add(item_sizer);
++        };
++        add_orcaext_checkbox(_L("Turn off unused hotends fully (0 °C)"),
++                             _L("After a tool's last extrusion, its standby command is set to 0 °C so it stops "
++                                "heating for the rest of the print. Needs Ooze prevention enabled in Print settings."),
++                             "orca_ext_idle_tool_power_down", false);
++        add_orcaext_checkbox(_L("Extra Energy Save mode"),
++                             _L("Also switches a tool off while it waits, not only when it has finished for good. "
++                                "A tool coming back too soon keeps its heat, because Orca's preheat cancels the "
++                                "shutdown."),
++                             "orca_ext_idle_tool_deep_sleep", true);
++    }
++
+ #ifdef __linux__
+     auto item_window_button_pos  = create_item_checkbox(_L("Use window buttons on left side"), "", "window_buttons_on_left", _L("(Requires restart)"));
+     g_sizer->Add(item_window_button_pos);
+-- 
+2.43.0.windows.1
+

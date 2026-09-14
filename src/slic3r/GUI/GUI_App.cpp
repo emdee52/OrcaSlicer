@@ -84,6 +84,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/I18N.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/miniz_extension.hpp"
 #include "libslic3r/Utils.hpp"
@@ -2624,6 +2625,10 @@ void GUI_App::init_app_config()
         }
 #endif // _WIN32
     }
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] mirror the app-level idle hotend power-down preferences so
+    // the libslic3r G-code post-processor honours them without depending on the GUI.
+    Slic3r::OrcaExt::set_idle_tool_power_down(app_config->get_bool("orca_ext_idle_tool_power_down"));
+    Slic3r::OrcaExt::set_idle_tool_power_down_deep(app_config->get_bool("orca_ext_idle_tool_deep_sleep"));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
