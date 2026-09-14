@@ -8154,6 +8154,16 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             
             ConfigOptionPercents         overhang_overlap_levels({90, 75, 50, 25, 13, 0});
 
+            // [ORCAPORT:PQ-2] The inner wall borrows the slowdown of the overhanging wall it has to
+            // support. Reach is a percentage of line width; 0 disables the effect (stock behaviour).
+            float inner_wall_shadow_ratio = 0.f;
+            float inner_wall_shadow_reach = 0.f;
+            if (is_perimeter(path.role()) && !is_external && NOZZLE_CONFIG(enable_overhang_speed) &&
+                m_config.inner_wall_overhang_slowdown.value) {
+                inner_wall_shadow_ratio = float(m_config.inner_wall_overhang_speed_pct.value) / 100.f;
+                inner_wall_shadow_reach = float(m_config.inner_wall_overhang_reach_pct.value) / 100.f * path.width;
+            }
+
             if (NOZZLE_CONFIG(slowdown_for_curled_perimeters)){
                 ConfigOptionFloatsOrPercents dynamic_overhang_speeds(
                     {FloatOrPercent{100, true},
@@ -8174,7 +8184,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                          FloatOrPercent{NOZZLE_CONFIG(overhang_4_4_speed).get_abs_value(ref_speed) * 100 / ref_speed, true}});
 
                 new_points = m_extrusion_quality_estimator.estimate_extrusion_quality(path, overhang_overlap_levels, dynamic_overhang_speeds,
-                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters));
+                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters),
+                                                                              inner_wall_shadow_ratio, inner_wall_shadow_reach);
         	}else{
                 ConfigOptionFloatsOrPercents dynamic_overhang_speeds(
                                                                      {FloatOrPercent{100, true},
@@ -8193,7 +8204,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                      FloatOrPercent{NOZZLE_CONFIG(bridge_speed) * 100 / ref_speed, true}});
 
                 new_points = m_extrusion_quality_estimator.estimate_extrusion_quality(path, overhang_overlap_levels, dynamic_overhang_speeds,
-                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters));
+                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters),
+                                                                              inner_wall_shadow_ratio, inner_wall_shadow_reach);
             }
             variable_speed = std::any_of(new_points.begin(), new_points.end(),
                                          [speed](const ProcessedPoint &p) { return fabs(double(p.speed) - speed) > 1; }); // Ignore small speed variations (under 1mm/sec)

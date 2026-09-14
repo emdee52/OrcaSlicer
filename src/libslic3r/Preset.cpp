@@ -1222,6 +1222,9 @@ static std::vector<std::string> s_Preset_print_options{
     "support_bottom_interface_spacing",
     "enable_overhang_speed",
     "slowdown_for_curled_perimeters",
+    "inner_wall_overhang_slowdown", // [ORCAPORT:PQ-2]
+    "inner_wall_overhang_speed_pct", // [ORCAPORT:PQ-2]
+    "inner_wall_overhang_reach_pct", // [ORCAPORT:PQ-2]
     "overhang_1_4_speed",
     "overhang_2_4_speed",
     "overhang_3_4_speed",

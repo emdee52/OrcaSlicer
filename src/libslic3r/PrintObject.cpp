@@ -1507,6 +1507,9 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "overhang_reverse_threshold"
             || opt_key == "wall_direction"
             || opt_key == "enable_overhang_speed"
+            || opt_key == "inner_wall_overhang_slowdown" // [ORCAPORT:PQ-2]
+            || opt_key == "inner_wall_overhang_speed_pct" // [ORCAPORT:PQ-2]
+            || opt_key == "inner_wall_overhang_reach_pct" // [ORCAPORT:PQ-2]
             || opt_key == "detect_thin_wall"
             || opt_key == "precise_outer_wall") {
             steps.emplace_back(posPerimeters);
