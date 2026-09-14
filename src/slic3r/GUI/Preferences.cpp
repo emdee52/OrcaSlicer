@@ -8,6 +8,7 @@
 #include "MsgDialog.hpp"
 #include "I18N.hpp"
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
 #include "libslic3r/Format/DRC.hpp"
 #include <wx/language.h>
 #include "OG_CustomCtrl.hpp"
@@ -1629,6 +1630,42 @@ void PreferencesDialog::create_items()
 
     auto item_show_splash_scr  = create_item_checkbox(_L("Show splash screen"), _L("Show the splash screen during startup."), "show_splash_screen");
     g_sizer->Add(item_show_splash_scr);
+
+    // [ORCAPORT:MT-1] [ORCAPORT:MT-2] Idle hotend power-down. App-level machine preferences, not
+    // print settings, so they live in app_config and survive profile updates.
+    {
+        auto add_orcaext_checkbox = [this, g_sizer](const wxString& title, const wxString& tooltip, const char* key, bool deep) {
+            wxBoxSizer* item_sizer = create_item_label(title, tooltip);
+            auto*       checkbox   = new ::CheckBox(m_parent);
+            checkbox->SetValue(app_config->get_bool(key));
+            checkbox->SetToolTip(tooltip);
+            checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox, key, deep](wxCommandEvent& e) {
+                const bool on = checkbox->GetValue();
+                wxGetApp().app_config->set_bool(key, on);
+                wxGetApp().app_config->save();
+                if (deep)
+                    OrcaExt::set_idle_tool_power_down_deep(on);
+                else
+                    OrcaExt::set_idle_tool_power_down(on);
+                // The setting only changes exported G-code; schedule a background pass so it is
+                // re-exported without a manual re-slice.
+                if (wxGetApp().plater() != nullptr)
+                    wxGetApp().plater()->schedule_background_process();
+                e.Skip();
+            });
+            item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
+            g_sizer->Add(item_sizer);
+        };
+        add_orcaext_checkbox(_L("Turn off unused hotends fully (0 °C)"),
+                             _L("After a tool's last extrusion, its standby command is set to 0 °C so it stops "
+                                "heating for the rest of the print. Needs Ooze prevention enabled in Print settings."),
+                             "orca_ext_idle_tool_power_down", false);
+        add_orcaext_checkbox(_L("Extra Energy Save mode"),
+                             _L("Also switches a tool off while it waits, not only when it has finished for good. "
+                                "A tool coming back too soon keeps its heat, because Orca's preheat cancels the "
+                                "shutdown."),
+                             "orca_ext_idle_tool_deep_sleep", true);
+    }
 
 #ifdef __linux__
     auto item_window_button_pos  = create_item_checkbox(_L("Use window buttons on left side"), "", "window_buttons_on_left", _L("(Requires restart)"));
