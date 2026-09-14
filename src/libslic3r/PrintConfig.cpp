@@ -4781,6 +4781,18 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(0.));
 
+    // [ORCAPORT:MT-4] F2: extra walls on painted (multi-material) regions only.
+    def           = this->add("mmu_segmented_region_extra_walls", coInt);
+    def->label    = L("Extra walls on segmented regions");
+    def->tooltip  = L("Adds this many extra perimeter walls to painted (multi-material) regions only, "
+                    "on top of the object's normal wall count. Useful to keep a small painted mark fully "
+                    "solid without thickening the whole object's walls. Zero disables this feature.");
+    def->min      = 0;
+    def->max      = 8;
+    def->category = L("Advanced");
+    def->mode     = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(0));
+
     def           = this->add("interlocking_beam", coBool);
     def->label    = L("Use beam interlocking");
     def->tooltip  = L("Generate interlocking beam structure at the locations where different filaments touch. This improves the adhesion between filaments, especially models printed in different materials.");
