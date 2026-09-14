@@ -150,6 +150,11 @@ private:
     std::vector<Vec3i32>           m_src_neighbors;
     int                            m_src_raycaster_obj_idx { -1 };
     Transform3d                    m_src_world_trafo { Transform3d::Identity() };
+    // [ORCAPORT:AS-2] The mover's transform captured when the source face was picked. Mate is
+    // always computed from this original pose + the captured face data, so pressing Mate again
+    // (or changing an extra) re-derives the same result instead of compounding on the last one.
+    Transform3d                    m_mate_orig_trafo { Transform3d::Identity() };
+    bool                           m_mate_has_orig { false };
 
     // Feature-center snapping (holes on the flat face + negative-volume centers).
     std::vector<MateSnapPoint> m_src_snap_points;

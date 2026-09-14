@@ -274,6 +274,8 @@ void GLGizmoAlignStack::on_set_state()
         restore_highlight();
         m_ordered_object_idxs.clear();
         clear_face_pick();
+        m_mate_mode = false;   // [ORCAPORT:AS-2] don't leave mate-pick intercepting clicks
+        clear_mate_state();
         reset_ghost_geometry();
     }
 }
@@ -512,6 +514,10 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
                                             ? model->objects[face.object_idx] : nullptr;
                 if (!m_mate_awaiting_target) {
                     m_mate_src = face;
+                    if (mo && face.instance_idx >= 0 && face.instance_idx < (int)mo->instances.size()) {
+                        m_mate_orig_trafo = mo->instances[face.instance_idx]->get_matrix();
+                        m_mate_has_orig   = true;
+                    }
                     if (mo)
                         detect_feature_centers(face, mo->raw_mesh(),
                                                mo->instances[face.instance_idx]->get_matrix(), m_src_snap_points);
@@ -1139,6 +1145,7 @@ void GLGizmoAlignStack::clear_mate_state()
     m_mate_src = MateFace();
     m_mate_tgt = MateFace();
     m_mate_awaiting_target = false;
+    m_mate_has_orig = false;
     m_src_snap_points.clear();
     m_tgt_snap_points.clear();
     m_src_snap_hover = m_tgt_snap_hover = -1;
@@ -1311,10 +1318,13 @@ void GLGizmoAlignStack::apply_mate_faces()
     const Vec3d tgt_pos = snap_to(m_mate_tgt.world_pos, m_tgt_snap_points, 2.0);
 
     ModelInstance*    inst = b_obj->instances[m_mate_src.instance_idx];
-    const Transform3d orig = inst->get_matrix();
+    // Always derive from the pose captured at pick time so repeated Mate presses are idempotent.
+    const Transform3d orig = m_mate_has_orig ? m_mate_orig_trafo : inst->get_matrix();
 
     const Vec3d src_n = m_mate_src.world_normal.normalized();
     const Vec3d tgt_n = m_mate_tgt.world_normal.normalized();
+    if (!src_n.allFinite() || !tgt_n.allFinite() || src_n.norm() < 1e-6 || tgt_n.norm() < 1e-6)
+        return;
 
     Transform3d align_rot = Transform3d::Identity();
     align_rot.linear() = Eigen::Quaterniond().setFromTwoVectors(src_n, -tgt_n).toRotationMatrix();
@@ -1397,13 +1407,13 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
 
         std::string name = (model && obj_idx < (int)model->objects.size())
                                ? model->objects[obj_idx]->name : std::string("?");
-        if (name.size() > 10) name = name.substr(0, 9) + "â€¦";
+        if (name.size() > 10) name = name.substr(0, 9) + "...";
 
         ImGui::PushStyleColor(ImGuiCol_Button, col);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, col);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
-        const std::string chip = "#" + std::to_string(number) + " Â· " + name +
+        const std::string chip = "#" + std::to_string(number) + " - " + name +
                                  "##chip" + std::to_string(obj_idx);
         if (ImGui::SmallButton(chip.c_str()))
             toggle_object_order(obj_idx); // click chip = remove from order
