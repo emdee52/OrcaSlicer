@@ -292,6 +292,11 @@ protected:
     bool m_vertical_only = false;
     bool m_horizontal_only = false;
 
+    // [ORCAPORT:MT-4] Brush precision: finer mesh subdivision at the paint boundary. 1.f = stock.
+    float m_precision_factor = 1.f;
+    static constexpr float PrecisionFactorMin = 1.f;
+    static constexpr float PrecisionFactorMax = 8.f;
+
     // It stores the value of the previous mesh_id to which the seed fill was applied.
     // It is used to detect when the mouse has moved from one volume to another one.
     int      m_seed_fill_last_mesh_id     = -1;
