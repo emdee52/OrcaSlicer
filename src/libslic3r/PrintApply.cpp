@@ -987,6 +987,8 @@ static PrintObjectRegions* generate_print_object_regions(
     const std::vector<unsigned int>             &painting_extruders,
     std::vector<int>                            &variant_index,
     const bool                                   has_painted_fuzzy_skin,
+    // [ORCAPORT:MT-4] F2: extra perimeter walls on painted (multi-material) regions only.
+    const int                                    mmu_segmented_region_extra_walls,
     // Per-part gradient: slot_per_part_enabled[s-1] is true when mixed slot s has
     // filament_mixed_gradient_per_part on. Empty / all-false preserves legacy behavior.
     const std::vector<bool>                     &slot_per_part_enabled = {})
@@ -1142,6 +1144,9 @@ static PrintObjectRegions* generate_print_object_regions(
                 if (const PrintObjectRegions::VolumeRegion &parent_region = layer_range.volume_regions[parent_region_id];
                     parent_region.model_volume->is_model_part() || parent_region.model_volume->is_modifier()) {
                     PrintRegionConfig cfg = parent_region.region->config();
+                    // [ORCAPORT:MT-4] F2: extra walls only on the painted region.
+                    if (mmu_segmented_region_extra_walls > 0)
+                        cfg.wall_loops.value = std::max(0, cfg.wall_loops.value) + mmu_segmented_region_extra_walls;
                     cfg.outer_wall_filament_id.value = painted_extruder_id;
                     cfg.inner_wall_filament_id.value = painted_extruder_id;
                     cfg.internal_solid_filament_id.value = painted_extruder_id;
@@ -2000,6 +2005,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 painting_extruders,
                 print_variant_index,
                 print_object.is_fuzzy_skin_painted(),
+                print_object.config().mmu_segmented_region_extra_walls.value, // [ORCAPORT:MT-4]
                 slot_per_part_enabled);
         }
         for (auto it = it_print_object; it != it_print_object_end; ++it)

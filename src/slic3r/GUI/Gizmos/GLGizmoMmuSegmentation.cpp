@@ -538,8 +538,9 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
     }
 
     // [ORCAPORT:MT-4] Painter Pro Mode. F1 "Paint perimeters only" (reuses the existing
-    // mmu_segmented_region_max_width) and F3 "Precision" (finer mesh subdivision at the paint
-    // boundary). F2 (extra walls) and F4 (rectangle/polygon masks) are not ported yet.
+    // mmu_segmented_region_max_width), F2 "Extra walls" (mmu_segmented_region_extra_walls) and
+    // F3 "Precision" (finer mesh subdivision at the paint boundary). F4 (rectangle/polygon
+    // masks) is not ported.
     if (ImGui::CollapsingHeader(_u8L("Pro Mode").c_str())) {
         ModelObject *mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
 
@@ -563,6 +564,25 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", _u8L("Limits the painted color to a ring near the region's contour "
                 "(about wall count x line width) instead of filling the whole selected area.").c_str());
+
+        // F2: extra walls on the painted region only.
+        int extra_walls = (mo && mo->config.has("mmu_segmented_region_extra_walls")) ? mo->config.opt_int("mmu_segmented_region_extra_walls") : 0;
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(_L("Extra walls"));
+        ImGui::SameLine(sliders_left_width);
+        ImGui::PushItemWidth(sliders_width);
+        if (ImGui::InputInt("##mmu_extra_walls", &extra_walls, 1, 1) && mo) {
+            extra_walls = std::clamp(extra_walls, 0, 8);
+            wxGetApp().plater()->take_snapshot("Painter: extra walls");
+            if (extra_walls > 0)
+                mo->config.set_key_value("mmu_segmented_region_extra_walls", new ConfigOptionInt(extra_walls));
+            else
+                mo->config.erase("mmu_segmented_region_extra_walls");
+            wxGetApp().plater()->update();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _u8L("Adds this many extra perimeter walls to the painted region only, "
+                "so a small mark prints fully solid without thickening the rest of the object.").c_str());
 
         ImGui::AlignTextToFramePadding();
         m_imgui->text(_L("Precision"));
