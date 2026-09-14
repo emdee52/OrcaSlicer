@@ -271,12 +271,22 @@ enum LongRectrationLevel
 };
 
 enum SupportMaterialInterfacePattern {
-    smipAuto, smipRectilinear, smipConcentric, smipSpiralInset, smipRectilinearInterlaced, smipGrid
+    smipAuto, smipRectilinear, smipConcentric, smipSpiralInset, smipRectilinearInterlaced, smipGrid,
+    smipWave // [ORCAPORT:SU-4] Wave-Huygens roof; honoured only by SupportType::stWaveSupport. Appended last.
+};
+
+// [ORCAPORT:SU-4] config-layer mirrors of FillWaveRoof's shape/order (NeoWave roof).
+enum SupportMaterialWaveRoofPattern {
+    smwrpConcentric, smwrpWave
+};
+enum SupportMaterialWaveRoofOrder {
+    smwroSmart, smwroZigZag, smwroMonotonic
 };
 
 // BBS
 enum SupportType {
-    stNormalAuto, stTreeAuto, stNormal, stTree
+    stNormalAuto, stTreeAuto, stNormal, stTree,
+    stWaveSupport // [ORCAPORT:SU-4] NeoWave: hollow pillar + Wave-Huygens roof, handled by the Normal engine. Appended last.
 };
 inline bool is_tree(SupportType stype)
 {
@@ -673,6 +683,9 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SlicingMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialStyle)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialInterfacePattern)
+// [ORCAPORT:SU-4]
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofPattern)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
 // BBS
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamPosition)
@@ -1154,6 +1167,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatsNullable,      support_interface_speed))
     ((ConfigOptionEnum<SupportMaterialPattern>, support_base_pattern))
     ((ConfigOptionEnum<SupportMaterialInterfacePattern>, support_interface_pattern))
+    // [ORCAPORT:SU-4] NeoWave roof options (only meaningful for SupportType::stWaveSupport).
+    ((ConfigOptionEnum<SupportMaterialWaveRoofPattern>, wavesupport_roof_pattern))
+    ((ConfigOptionEnum<SupportMaterialWaveRoofOrder>,   wavesupport_roof_order))
+    ((ConfigOptionBool,                wavesupport_roof_reverse))
+    ((ConfigOptionInt,                 wavesupport_wall_loops))
     // Spacing between support material lines (the hatching distance).
     ((ConfigOptionFloat,               support_base_pattern_spacing))
     ((ConfigOptionFloat,               support_expansion))

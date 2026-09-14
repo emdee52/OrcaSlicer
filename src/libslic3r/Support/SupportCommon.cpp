@@ -4,6 +4,7 @@
 #include "../Layer.hpp"
 #include "../Print.hpp"
 #include "../Fill/FillBase.hpp"
+#include "../Fill/FillWaveRoof.hpp" // [ORCAPORT:SU-4] NeoWave roof pattern
 #include "../MutablePolygon.hpp"
 #include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object clamp
 #include "../Geometry.hpp"
@@ -1756,6 +1757,36 @@ void generate_support_toolpaths(
                     filler->spacing = raft_contact ? support_params.raft_interface_flow.spacing() :
                         interface_as_base ? support_params.support_material_flow.spacing() : support_params.support_material_interface_flow.spacing();
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / density));
+                    // [ORCAPORT:SU-4] NeoWave roof (wave-roof half): fill the roof (top contact +
+                    // interface stack) with the Wave-Huygens pattern when the object is NeoWave and
+                    // the interface pattern is Wave. Bottom / raft / interface-as-base keep the
+                    // generic fill. If the wave engine returns nothing, fall through to the normal
+                    // fill so a roof is never left empty.
+                    bool wave_filled = false;
+                    if (config.support_type.value == stWaveSupport && config.support_interface_pattern.value == smipWave &&
+                        (interface_layer_type == InterfaceLayerType::TopContact || interface_layer_type == InterfaceLayerType::Interface)) {
+                        FillWaveRoofParams wave_params;
+                        wave_params.flow = interface_flow;
+                        wave_params.role = ExtrusionRole::erSupportMaterialInterface;
+                        wave_params.shape = config.wavesupport_roof_pattern.value == smwrpConcentric
+                                          ? WaveRoofShape::Concentric : WaveRoofShape::Wave;
+                        switch (config.wavesupport_roof_order.value) {
+                        case smwroZigZag:    wave_params.pattern = WaveRoofPattern::ZigZag;    break;
+                        case smwroMonotonic: wave_params.pattern = WaveRoofPattern::Monotonic; break;
+                        case smwroSmart:
+                        default:             wave_params.pattern = WaveRoofPattern::Smart;     break;
+                        }
+                        wave_params.reverse_order = config.wavesupport_roof_reverse.value;
+                        ExPolygons    roof_area  = union_safety_offset_ex(layer_ex.polygons_to_extrude());
+                        ExtrusionPaths wave_paths = FillWaveRoof().generate(roof_area, wave_params);
+                        if (! wave_paths.empty()) {
+                            layer_ex.extrusions.reserve(layer_ex.extrusions.size() + wave_paths.size());
+                            for (ExtrusionPath &wave_path : wave_paths)
+                                layer_ex.extrusions.emplace_back(new ExtrusionPath(std::move(wave_path)));
+                            wave_filled = true;
+                        }
+                    }
+                    if (! wave_filled)
                     fill_expolygons_generate_paths(
                         // Destination
                         layer_ex.extrusions,
@@ -1809,7 +1840,25 @@ void generate_support_toolpaths(
                 bool  sheath  = support_params.with_sheath;
                 bool  no_sort = false;
                 bool  done    = false;
-                if (base_layer.layer->bottom_z < EPSILON) {
+                // [ORCAPORT:SU-4] NeoWave hollow body: print the support body as N concentric
+                // perimeters with no infill so the wave roof caps a lightweight pillar. The
+                // 1st-layer flange stays solid for bed adhesion.
+                if (config.support_type.value == stWaveSupport && config.wavesupport_wall_loops.value > 0 &&
+                    base_layer.layer->bottom_z >= EPSILON) {
+                    const int    walls        = config.wavesupport_wall_loops.value;
+                    auto         wall_flow    = support_params.support_material_flow.with_height(float(base_layer.layer->height));
+                    const double wall_spacing = wall_flow.scaled_spacing();
+                    const double clip_length  = wall_spacing * 0.15;
+                    for (int w = 0; w < walls; ++w) {
+                        ExPolygons loops = offset_ex(union_ex(base_layer.polygons_to_extrude()), - (float(w) + 0.5f) * float(wall_spacing));
+                        if (loops.empty())
+                            break;
+                        for (ExPolygon &loop : loops)
+                            extrusion_entities_append_paths(base_layer.extrusions, draw_perimeters(loop, clip_length),
+                                ExtrusionRole::erSupportMaterial, wall_flow.mm3_per_mm(), wall_flow.width(), wall_flow.height());
+                    }
+                    done = true;
+                } else if (base_layer.layer->bottom_z < EPSILON) {
                     // Base flange (the 1st layer).
                     filler = filler_first_layer;
                     filler->angle = Geometry::deg2rad(float(config.support_angle.value + 90.));
