@@ -1,0 +1,163 @@
+From a7a5fe4e9f9fc685778470fb0280096426e37c46 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 22:16:01 -0600
+Subject: [PATCH] port(MT-4): painter Pro Mode F2 extra walls on segmented
+ regions (ORCAPORT:MT-4)
+
+---
+ src/libslic3r/Preset.cpp                      |  1 +
+ src/libslic3r/PrintApply.cpp                  |  6 +++++
+ src/libslic3r/PrintConfig.cpp                 | 12 ++++++++++
+ src/libslic3r/PrintConfig.hpp                 |  1 +
+ src/libslic3r/PrintObject.cpp                 |  1 +
+ .../GUI/Gizmos/GLGizmoMmuSegmentation.cpp     | 24 +++++++++++++++++--
+ src/slic3r/GUI/Tab.cpp                        |  1 +
+ 7 files changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index bea7b230f2..664a251c3f 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1332,6 +1332,7 @@ static std::vector<std::string> s_Preset_print_options{
+     "hole_to_polyhole_max_edges",
+     "mmu_segmented_region_max_width",
+     "mmu_segmented_region_interlocking_depth",
++    "mmu_segmented_region_extra_walls", // [ORCAPORT:MT-4]
+     "small_area_infill_flow_compensation",
+     "small_area_infill_flow_compensation_model",
+     "enable_wrapping_detection",
+diff --git a/src/libslic3r/PrintApply.cpp b/src/libslic3r/PrintApply.cpp
+index 90d60b5917..36f4d11c98 100644
+--- a/src/libslic3r/PrintApply.cpp
++++ b/src/libslic3r/PrintApply.cpp
+@@ -987,6 +987,8 @@ static PrintObjectRegions* generate_print_object_regions(
+     const std::vector<unsigned int>             &painting_extruders,
+     std::vector<int>                            &variant_index,
+     const bool                                   has_painted_fuzzy_skin,
++    // [ORCAPORT:MT-4] F2: extra perimeter walls on painted (multi-material) regions only.
++    const int                                    mmu_segmented_region_extra_walls,
+     // Per-part gradient: slot_per_part_enabled[s-1] is true when mixed slot s has
+     // filament_mixed_gradient_per_part on. Empty / all-false preserves legacy behavior.
+     const std::vector<bool>                     &slot_per_part_enabled = {})
+@@ -1142,6 +1144,9 @@ static PrintObjectRegions* generate_print_object_regions(
+                 if (const PrintObjectRegions::VolumeRegion &parent_region = layer_range.volume_regions[parent_region_id];
+                     parent_region.model_volume->is_model_part() || parent_region.model_volume->is_modifier()) {
+                     PrintRegionConfig cfg = parent_region.region->config();
++                    // [ORCAPORT:MT-4] F2: extra walls only on the painted region.
++                    if (mmu_segmented_region_extra_walls > 0)
++                        cfg.wall_loops.value = std::max(0, cfg.wall_loops.value) + mmu_segmented_region_extra_walls;
+                     cfg.outer_wall_filament_id.value = painted_extruder_id;
+                     cfg.inner_wall_filament_id.value = painted_extruder_id;
+                     cfg.internal_solid_filament_id.value = painted_extruder_id;
+@@ -2000,6 +2005,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+                 painting_extruders,
+                 print_variant_index,
+                 print_object.is_fuzzy_skin_painted(),
++                print_object.config().mmu_segmented_region_extra_walls.value, // [ORCAPORT:MT-4]
+                 slot_per_part_enabled);
+         }
+         for (auto it = it_print_object; it != it_print_object_end; ++it)
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index a52fcded43..e9a17a7e21 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -4781,6 +4781,18 @@ void PrintConfigDef::init_fff_params()
+     def->mode     = comAdvanced;
+     def->set_default_value(new ConfigOptionFloat(0.));
+ 
++    // [ORCAPORT:MT-4] F2: extra walls on painted (multi-material) regions only.
++    def           = this->add("mmu_segmented_region_extra_walls", coInt);
++    def->label    = L("Extra walls on segmented regions");
++    def->tooltip  = L("Adds this many extra perimeter walls to painted (multi-material) regions only, "
++                    "on top of the object's normal wall count. Useful to keep a small painted mark fully "
++                    "solid without thickening the whole object's walls. Zero disables this feature.");
++    def->min      = 0;
++    def->max      = 8;
++    def->category = L("Advanced");
++    def->mode     = comAdvanced;
++    def->set_default_value(new ConfigOptionInt(0));
++
+     def           = this->add("interlocking_beam", coBool);
+     def->label    = L("Use beam interlocking");
+     def->tooltip  = L("Generate interlocking beam structure at the locations where different filaments touch. This improves the adhesion between filaments, especially models printed in different materials.");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index 831610ca74..a8d3d8da29 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1121,6 +1121,7 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionFloat,               layer_height))
+     ((ConfigOptionFloat,               mmu_segmented_region_max_width))
+     ((ConfigOptionFloat,               mmu_segmented_region_interlocking_depth))
++    ((ConfigOptionInt,                 mmu_segmented_region_extra_walls)) // [ORCAPORT:MT-4]
+     ((ConfigOptionFloat,               raft_contact_distance))
+     ((ConfigOptionFloat,               raft_expansion))
+     ((ConfigOptionPercent,             raft_first_layer_density))
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index b89d149f2f..5c6a58a4d4 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -1270,6 +1270,7 @@ bool PrintObject::invalidate_state_by_config_options(
+         } else if (
+                opt_key == "layer_height"
+             || opt_key == "mmu_segmented_region_max_width"
++            || opt_key == "mmu_segmented_region_extra_walls" // [ORCAPORT:MT-4]
+             || opt_key == "mmu_segmented_region_interlocking_depth"
+             || opt_key == "raft_layers"
+             || opt_key == "raft_contact_distance"
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
+index 769399abf2..0139807f86 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
+@@ -538,8 +538,9 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
+     }
+ 
+     // [ORCAPORT:MT-4] Painter Pro Mode. F1 "Paint perimeters only" (reuses the existing
+-    // mmu_segmented_region_max_width) and F3 "Precision" (finer mesh subdivision at the paint
+-    // boundary). F2 (extra walls) and F4 (rectangle/polygon masks) are not ported yet.
++    // mmu_segmented_region_max_width), F2 "Extra walls" (mmu_segmented_region_extra_walls) and
++    // F3 "Precision" (finer mesh subdivision at the paint boundary). F4 (rectangle/polygon
++    // masks) is not ported.
+     if (ImGui::CollapsingHeader(_u8L("Pro Mode").c_str())) {
+         ModelObject *mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
+ 
+@@ -564,6 +565,25 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
+             ImGui::SetTooltip("%s", _u8L("Limits the painted color to a ring near the region's contour "
+                 "(about wall count x line width) instead of filling the whole selected area.").c_str());
+ 
++        // F2: extra walls on the painted region only.
++        int extra_walls = (mo && mo->config.has("mmu_segmented_region_extra_walls")) ? mo->config.opt_int("mmu_segmented_region_extra_walls") : 0;
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(_L("Extra walls"));
++        ImGui::SameLine(sliders_left_width);
++        ImGui::PushItemWidth(sliders_width);
++        if (ImGui::InputInt("##mmu_extra_walls", &extra_walls, 1, 1) && mo) {
++            extra_walls = std::clamp(extra_walls, 0, 8);
++            wxGetApp().plater()->take_snapshot("Painter: extra walls");
++            if (extra_walls > 0)
++                mo->config.set_key_value("mmu_segmented_region_extra_walls", new ConfigOptionInt(extra_walls));
++            else
++                mo->config.erase("mmu_segmented_region_extra_walls");
++            wxGetApp().plater()->update();
++        }
++        if (ImGui::IsItemHovered())
++            ImGui::SetTooltip("%s", _u8L("Adds this many extra perimeter walls to the painted region only, "
++                "so a small mark prints fully solid without thickening the rest of the object.").c_str());
++
+         ImGui::AlignTextToFramePadding();
+         m_imgui->text(_L("Precision"));
+         ImGui::SameLine(sliders_left_width);
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 41e74b748a..5d0b198886 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -3031,6 +3031,7 @@ void TabPrint::build()
+         optgroup->append_single_option_line("toolchange_ordering", "multimaterial_settings_advanced#toolchange-ordering");
+         optgroup->append_single_option_line("interface_shells", "multimaterial_settings_advanced#interface-shells");
+         optgroup->append_single_option_line("mmu_segmented_region_max_width", "multimaterial_settings_advanced#maximum-width-of-segmented-region");
++        optgroup->append_single_option_line("mmu_segmented_region_extra_walls", "multimaterial_settings_advanced#maximum-width-of-segmented-region"); // [ORCAPORT:MT-4]
+         optgroup->append_single_option_line("mmu_segmented_region_interlocking_depth", "multimaterial_settings_advanced#interlocking-depth-of-segmented-region");
+         optgroup->append_single_option_line("interlocking_beam_width", "multimaterial_settings_advanced#interlocking-beam-width");
+         optgroup->append_single_option_line("interlocking_orientation", "multimaterial_settings_advanced#interlocking-direction");
+-- 
+2.43.0.windows.1
+
