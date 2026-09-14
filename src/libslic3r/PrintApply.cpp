@@ -1753,6 +1753,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         PrintObjectPtrs print_objects_new;
         print_objects_new.reserve(std::max(m_objects.size(), m_model.objects.size()));
         bool new_objects = false;
+        // [ORCAPORT:SU-1] PerObject Support: the support of an object depends on WHERE the other
+        // objects sit, an edge the step graph does not model. Track any plate-geometry change
+        // (instance moved/added/removed, object added/deleted) and invalidate opted-in support at
+        // the end (conservative: no bbox filtering).
+        bool xobj_plate_changed = false;
         // Walk over all new model objects and check, whether there are matching PrintObjects.
         for (ModelObject *model_object : m_model.objects) {
             ModelObjectStatus &model_object_status = const_cast<ModelObjectStatus&>(model_object_status_db.reuse(*model_object));
@@ -1805,6 +1810,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                     if (status != PrintBase::APPLY_STATUS_UNCHANGED) {
                         size_t extruder_num = new_full_config.option<ConfigOptionFloats>("nozzle_diameter")->size();
                         update_apply_status(status == PrintBase::APPLY_STATUS_INVALIDATED);
+                        xobj_plate_changed = true; // [ORCAPORT:SU-1] instance shifts changed
                     }
 					print_objects_new.emplace_back((*it_old)->print_object);
 					const_cast<PrintObjectStatus*>(*it_old)->status = PrintObjectStatus::Reused;
@@ -1814,6 +1820,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         if (m_objects != print_objects_new) {
             //BBS: add more logs
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: found print object changed.")%__LINE__;
+            xobj_plate_changed = true; // [ORCAPORT:SU-1] object added/deleted/reordered
             this->call_cancel_callback();
 			update_apply_status(this->invalidate_all_steps());
             m_objects = print_objects_new;
@@ -1832,6 +1839,37 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             print_regions_reshuffled = true;
         }
         print_object_status_db.clear();
+
+        // [ORCAPORT:SU-1] any plate-geometry change invalidates the support of every opted-in object
+        // (its occupancy may now differ), including the moved object itself - without this edge the
+        // cached support keeps avoiding a neighbour that is no longer there, or misses one that arrived.
+        if (xobj_plate_changed)
+            for (PrintObject *object : m_objects)
+                if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value) {
+                    update_apply_status(object->invalidate_step(posSupportMaterial));
+                    object->clear_tree_support_preview_cache();
+                }
+
+        // [ORCAPORT:SU-1] cohort coherence for support-vs-support: opted-in objects avoid each
+        // other's GENERATED support, so if any of them must regenerate the whole cohort must
+        // regenerate together - otherwise a survivor keeps avoiding the neighbour's OLD support.
+        // UNGUARDED on purpose: Print::apply already holds the state mutex, so the guarded
+        // is_step_done() would re-lock it and self-deadlock.
+        {
+            bool xobj_any_pending = false;
+            for (PrintObject *object : m_objects)
+                if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value
+                    && !object->is_step_done_unguarded(posSupportMaterial)) {
+                    xobj_any_pending = true;
+                    break;
+                }
+            if (xobj_any_pending)
+                for (PrintObject *object : m_objects)
+                    if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value) {
+                        update_apply_status(object->invalidate_step(posSupportMaterial));
+                        object->clear_tree_support_preview_cache();
+                    }
+        }
 
         // BBS
         for (PrintObject* object : m_objects) {

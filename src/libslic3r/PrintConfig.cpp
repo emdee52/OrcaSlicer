@@ -6819,6 +6819,17 @@ void PrintConfigDef::init_fff_params()
     //Support with too small spacing may touch the object and difficult to remove.
     def->set_default_value(new ConfigOptionFloat(0.2));
 
+    // [ORCAPORT:SU-1] PerObject Support: cross-object support avoidance.
+    def = this->add("support_cross_object_avoidance", coBool);
+    def->label = L("PerObject Support");
+    def->category = L("Support");
+    def->tooltip = L("The support of this object avoids every other object on the plate (and keeps "
+                     "the support/object XY distance from them) instead of generating through them. "
+                     "Useful when separate objects touch or overlap. Only active when printing all "
+                     "objects at once (by layer).");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("support_angle", coFloat);
     def->label = L("Pattern angle");
     def->category = L("Support");

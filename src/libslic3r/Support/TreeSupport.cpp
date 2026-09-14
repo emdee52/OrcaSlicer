@@ -9,6 +9,7 @@
 #include "MinimumSpanningTree.hpp"
 #include "Print.hpp"
 #include "ShortestPath.hpp"
+#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
 #include "SupportCommon.hpp"
 #include "SVG.hpp"
 #include "TreeSupportCommon.hpp"
@@ -3710,6 +3711,10 @@ TreeSupportData::TreeSupportData(const PrintObject &object, coordf_t xy_distance
         else
             m_layer_outlines_below.push_back(union_ex(m_layer_outlines_below.end()[-1], outline));
     }
+
+    // [ORCAPORT:SU-1] cross-object occupancy for the tree-support preview (self-gated: empty when
+    // the toggle is off, the print is by-object, or no neighbour is within range).
+    m_neighbor_occupancy = OrcaExt::neighbor_occupancy(object);
 }
 
 const ExPolygons& TreeSupportData::get_collision(coordf_t radius, size_t layer_nr) const
@@ -3791,6 +3796,11 @@ const ExPolygons& TreeSupportData::calculate_collision(const RadiusLayerPair& ke
     assert(key.layer_nr < m_layer_outlines.size());
 
     ExPolygons collision_areas = offset_ex(m_layer_outlines[key.layer_nr], scale_(key.radius+m_xy_distance));
+    // [ORCAPORT:SU-1] neighbours dilate exactly like the own body (radius + xy distance per queried
+    // radius); avoidances inherit the obstacle because calculate_avoidance derives from this.
+    if (key.layer_nr < m_neighbor_occupancy.size() && !m_neighbor_occupancy[key.layer_nr].empty())
+        collision_areas = union_ex(collision_areas,
+            offset_ex(union_ex(m_neighbor_occupancy[key.layer_nr]), scale_(key.radius + m_xy_distance)));
     collision_areas = expolygons_simplify(collision_areas, scale_(m_radius_sample_resolution));
     // collision_areas.emplace_back(m_machine_border);
     const auto ret = m_collision_cache.insert({ key, std::move(collision_areas) });

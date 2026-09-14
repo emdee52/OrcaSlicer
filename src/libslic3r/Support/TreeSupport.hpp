@@ -322,6 +322,12 @@ public:
     // union contours of all layers below
     std::vector<ExPolygons> m_layer_outlines_below;
 
+    // [ORCAPORT:SU-1] PerObject Support: per-layer footprint of the OTHER objects' instances in
+    // this object's local frame, RAW/undilated (calculate_collision offsets it like the own body).
+    // Kept separate from m_layer_outlines on purpose: those carry "my own object" semantics that
+    // must not see the neighbours. Empty = feature inactive.
+    std::vector<Polygons> m_neighbor_occupancy;
+
     std::vector<double> m_max_move_distances;
 
     /*!
