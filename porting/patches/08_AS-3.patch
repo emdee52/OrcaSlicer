@@ -44,7 +44,7 @@ index 6c7d015221..838a16c9ba 100644
      GUI/GLModel.hpp
      GUI/GLSelectionRectangle.cpp
 diff --git a/src/slic3r/GUI/GLCanvas3D.cpp b/src/slic3r/GUI/GLCanvas3D.cpp
-index 6fc6d29a35..694731c4b1 100644
+index 6fc6d29a35..a7acc88d7c 100644
 --- a/src/slic3r/GUI/GLCanvas3D.cpp
 +++ b/src/slic3r/GUI/GLCanvas3D.cpp
 @@ -6,6 +6,7 @@
@@ -153,7 +153,7 @@ index 6fc6d29a35..694731c4b1 100644
                              m_selection.setup_cache();
                              m_mouse.drag.start_position_3D = m_mouse.scene_position;
                              m_sequential_print_clearance_first_displacement = true;
-@@ -4555,6 +4633,171 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
+@@ -4555,6 +4633,175 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                  TransformationType trafo_type;
                  trafo_type.set_relative();
                  m_selection.translate(cur_pos - m_mouse.drag.start_position_3D, trafo_type);
@@ -319,13 +319,17 @@ index 6fc6d29a35..694731c4b1 100644
 +                        if (!indicator_shown)
 +                            m_snapdrag_indicator.set_visible(false);
 +                    }
++                } else {
++                    // Snap & Drag is off for this drag (feature disabled, or not FFF): drop any
++                    // overlay left over from a previous drag so it cannot linger at a stale spot.
++                    m_snapdrag_indicator.set_visible(false);
 +                }
 +                // [ORCAPORT:AS-3] END
 +
                  if (current_printer_technology() == ptFFF && (fff_print()->config().print_sequence == PrintSequence::ByObject))
                      update_sequential_clearance();
                  // BBS
-@@ -4976,6 +5219,386 @@ void GLCanvas3D::set_tooltip(const std::string& tooltip)
+@@ -4976,6 +5223,386 @@ void GLCanvas3D::set_tooltip(const std::string& tooltip)
          m_tooltip.set_text(tooltip);
  }
  
@@ -712,7 +716,7 @@ index 6fc6d29a35..694731c4b1 100644
  void GLCanvas3D::do_move(const std::string& snapshot_type)
  {
      if (m_model == nullptr)
-@@ -5056,24 +5679,124 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
+@@ -5056,24 +5683,124 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
          }
      }
  
@@ -843,7 +847,15 @@ index 6fc6d29a35..694731c4b1 100644
          wxGetApp().obj_list()->update_info_items(static_cast<size_t>(i.first));
      }
      
-@@ -8611,6 +9334,11 @@ void GLCanvas3D::_render_overlays()
+@@ -5598,6 +6325,7 @@ void GLCanvas3D::mouse_up_cleanup()
+     m_moving = false;
+     m_camera_movement = false;
+     m_mouse.drag.move_volume_idx = -1;
++    m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
+     m_mouse.set_start_position_3D_as_invalid();
+     m_mouse.set_start_position_2D_as_invalid();
+     m_mouse.dragging = false;
+@@ -8611,6 +9339,11 @@ void GLCanvas3D::_render_overlays()
  {
      glsafe(::glDisable(GL_DEPTH_TEST));
  
@@ -855,7 +867,7 @@ index 6fc6d29a35..694731c4b1 100644
      _check_and_update_toolbar_icon_scale();
  
      _render_assemble_control();
-@@ -8662,6 +9390,85 @@ void GLCanvas3D::_render_overlays()
+@@ -8662,6 +9395,85 @@ void GLCanvas3D::_render_overlays()
      _render_canvas_toolbar();
  }
  
