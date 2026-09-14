@@ -9,6 +9,7 @@
 #include "I18N.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
 #include "libslic3r/Format/DRC.hpp"
 #include <wx/language.h>
 #include "OG_CustomCtrl.hpp"
@@ -1665,6 +1666,25 @@ void PreferencesDialog::create_items()
                                 "A tool coming back too soon keeps its heat, because Orca's preheat cancels the "
                                 "shutdown."),
                              "orca_ext_idle_tool_deep_sleep", true);
+    }
+
+    // [ORCAPORT:AS-1] Free-Z placement: let objects stay off the bed so separate objects can be
+    // aligned in Z without assembling them. Printing is always done after assembling.
+    {
+        wxBoxSizer* item_sizer = create_item_label(_L("Allow free Z placement"),
+            _L("Do not snap moved objects back onto the bed, so separate objects can be floated in Z "
+               "for alignment without assembling them."));
+        auto* checkbox = new ::CheckBox(m_parent);
+        checkbox->SetValue(app_config->get_bool("orca_ext_free_z"));
+        checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox](wxCommandEvent& e) {
+            const bool on = checkbox->GetValue();
+            wxGetApp().app_config->set_bool("orca_ext_free_z", on);
+            wxGetApp().app_config->save();
+            OrcaExt::set_free_z(on);
+            e.Skip();
+        });
+        item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
+        g_sizer->Add(item_sizer);
     }
 
 #ifdef __linux__

@@ -342,6 +342,8 @@ set(lisbslic3r_sources
     Optimize/BruteforceOptimizer.hpp
     Optimize/NLoptOptimizer.hpp
     Optimize/Optimizer.hpp
+    OrcaExt/FreeZ.cpp
+    OrcaExt/FreeZ.hpp
     OrcaExt/IdleToolPowerDown.cpp
     OrcaExt/IdleToolPowerDown.hpp
     Orient.cpp

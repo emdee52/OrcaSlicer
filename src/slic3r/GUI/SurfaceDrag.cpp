@@ -2,6 +2,7 @@
 
 #include <libslic3r/Model.hpp> // ModelVolume
 #include <libslic3r/Emboss.hpp>
+#include <libslic3r/OrcaExt/FreeZ.hpp> // [ORCAPORT:AS-1]
 
 #include "slic3r/Utils/RaycastManager.hpp"
 
@@ -378,7 +379,8 @@ bool face_selected_volume_to_camera(const Camera &camera, GLCanvas3D &canvas, co
 
     if (volume.type() == ModelVolumeType::MODEL_PART) {
         object.invalidate_bounding_box();
-        object.ensure_on_bed();
+        if (!OrcaExt::free_z()) // [ORCAPORT:AS-1]
+            object.ensure_on_bed();
     }
 
     canvas.do_rotate(L("Face the camera"));
