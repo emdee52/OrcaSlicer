@@ -147,6 +147,7 @@ private:
     PickingModel m_plate_filament_map_icon;
     PickingModel m_plate_name_edit_icon;
     PickingModel m_move_front_icon;
+    PickingModel m_snapdrag_icon; // [ORCAPORT:AS-3] Snap & Drag options magnet
     GLModel m_plate_idx_icon;
     GLTexture m_texture;
 
@@ -210,7 +211,11 @@ private:
 public:
     static constexpr unsigned int PLATE_NAME_HOVER_ID = 6;
     static constexpr unsigned int PLATE_FILAMENT_MAP_ID = 8;
-    static constexpr unsigned int GRABBER_COUNT = 9;
+    // [ORCAPORT:AS-3] sub-id of the Snap & Drag magnet (layout slot 7). GRABBER_COUNT is the STRIDE
+    // of the plate picking-id space (`plate_index * GRABBER_COUNT + sub_id`); 9 -> 10. Budget:
+    // MAX_PLATE_COUNT (36) * 10 = 360, still well under SceneRaycaster::EIdBase::Volume (1000).
+    static constexpr unsigned int SNAP_DRAG_HOVER_ID = 9;
+    static constexpr unsigned int GRABBER_COUNT = 10;
 
     static ColorRGBA SELECT_COLOR;
     static ColorRGBA UNSELECT_COLOR;
@@ -618,6 +623,9 @@ class PartPlateList : public ObjectBase
     GLTexture m_del_hovered_texture;
     GLTexture m_move_front_hovered_texture;
     GLTexture m_move_front_texture;
+    // [ORCAPORT:AS-3] Snap & Drag magnet
+    GLTexture m_snapdrag_hovered_texture;
+    GLTexture m_snapdrag_texture;
     GLTexture m_arrange_texture;
     GLTexture m_arrange_hovered_texture;
     GLTexture m_orient_texture;
