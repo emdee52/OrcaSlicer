@@ -4795,6 +4795,10 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                         if (!indicator_shown)
                             m_snapdrag_indicator.set_visible(false);
                     }
+                } else {
+                    // Snap & Drag is off for this drag (feature disabled, or not FFF): drop any
+                    // overlay left over from a previous drag so it cannot linger at a stale spot.
+                    m_snapdrag_indicator.set_visible(false);
                 }
                 // [ORCAPORT:AS-3] END
 
@@ -6321,6 +6325,7 @@ void GLCanvas3D::mouse_up_cleanup()
     m_moving = false;
     m_camera_movement = false;
     m_mouse.drag.move_volume_idx = -1;
+    m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;
