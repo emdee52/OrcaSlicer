@@ -99,6 +99,7 @@
 #include "GUI_Preview.hpp"
 #include "3DBed.hpp"
 #include "PartPlate.hpp"
+#include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] the magnet button owns the options panel
 #include "Camera.hpp"
 #include "Mouse3DController.hpp"
 #include "Tab.hpp"
@@ -21851,6 +21852,17 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
         p->partplate_list.update_plates();
         update();
         p->partplate_list.select_plate(0);
+    }
+    // [ORCAPORT:AS-3] the magnet button opens/closes the Snap & Drag options panel. It does NOT
+    // toggle the feature itself; the panel owns the three preferences. No snapshot: nothing about
+    // the model changes.
+    else if ((action == (int)PartPlate::SNAP_DRAG_HOVER_ID) && (!right_click)) {
+        OrcaExt::Gui::GravitySnap::panel_open() = !OrcaExt::Gui::GravitySnap::panel_open();
+        if (GLCanvas3D* canvas = get_view3D_canvas3D()) {
+            canvas->set_as_dirty();
+            canvas->request_extra_frame();
+        }
+        ret = 0;
     }
 
     else

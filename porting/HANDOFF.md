@@ -1,7 +1,7 @@
 # HANDOFF - read this first
 
 This is the start-here doc for a new agent session on this workspace. It summarizes where the
-port stands, the hard-won operational rules, and the next task (AS-3). The detailed, per-feature
+port stands, the hard-won operational rules, and the next task (SU-1). The detailed, per-feature
 truth lives in the other `porting/` docs; this file tells you what to read and what bit us.
 
 ## Read order
@@ -34,7 +34,7 @@ untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git
 | SU-6 | Support Zones block trees | **planned** | notes/SU-6.md | - |
 | AS-1 | Free-Z placement | ported | notes/AS-1.md | 06_AS-1.patch |
 | AS-2 | Align & Stack + face-mate (AS-2F) | ported | notes/AS-2.md | 07_AS-2.patch |
-| AS-3 | Snap & Drag | **NEXT** | notes/AS-3.md | - |
+| AS-3 | Snap & Drag | ported (full pass) | notes/AS-3.md | 08_AS-3.patch |
 | PQ-3 | NeoArachne (a+b together) | **planned** | notes/PQ-3a.md, PQ-3b.md | - |
 
 SU-2 (True Objects) and SU-3 (real floating detection) are **excluded** by user decision.
@@ -108,7 +108,16 @@ in `OrcaSlicer/build/src/Release/OrcaSlicer.dll`). A full clean build is ~20 min
 - `manifest.tsv` is the source of truth; keep it and the notes in sync with the code.
 - Do not push unless the user asks. (The user has been asking; commits here are already pushed.)
 
-## Next task: AS-3 Snap & Drag
+## Next task: SU-1 PerObject Support
+
+AS-3 is **ported** on `port/AS-3` (full pass): the `GravitySnap` module, the magnet options panel,
+the landing-shadow overlay, the live-drag resolve and the `do_move` commit. The three toggles live
+only in the panel (the reduced pass had them in Preferences; that duplication was removed). Build
+clean; runtime pending. See `notes/AS-3.md`. The AS-3 recon below is kept for reference; the next
+task is SU-1 (`notes/SU-1.md`).
+
+### AS-3 recon (historical)
+
 
 Full recon: `porting/notes/AS-3.md`. Branch `port/AS-3` already exists (empty). Key facts:
 

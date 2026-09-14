@@ -6,6 +6,7 @@
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+#include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3]
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Geometry/ConvexHull.hpp"
@@ -2095,6 +2096,7 @@ void GLCanvas3D::render(bool only_init)
     }
 
     _render_sequential_clearance();
+    _render_snapdrag_indicator(); // [ORCAPORT:AS-3]
 #if ENABLE_RENDER_SELECTION_CENTER
     _render_selection_center();
 #endif // ENABLE_RENDER_SELECTION_CENTER
@@ -4148,6 +4150,81 @@ void GLCanvas3D::on_gesture(wxGestureEvent &evt)
     m_dirty = true;
 }
 
+// [ORCAPORT:AS-3] Snap & Drag tuning. ENGAGE_RATIO is the footprint-overlap fraction needed to
+// engage a floor; RELEASE_RATIO the lower one used to keep an already-engaged object floor (so a
+// landing does not flicker off near an edge); STACK_MAX_GAP is how much air still counts as
+// "stacked on" when grouping a multi-object drag.
+namespace {
+namespace GravitySnap = OrcaExt::Gui::GravitySnap;
+
+constexpr double SNAPDRAG_ENGAGE_RATIO  = 0.20;
+constexpr double SNAPDRAG_RELEASE_RATIO = 0.08;
+constexpr double SNAPDRAG_STACK_MAX_GAP = 1.0;
+// Hover lift: hold the object above its landing spot while dragging so the landing overlay
+// underneath stays visible. Scaled down for short parts, where a flat maximum reads as a mistake.
+constexpr double SNAPDRAG_HOVER_LIFT_MIN = 3.0;  // mm
+constexpr double SNAPDRAG_HOVER_LIFT_MAX = 10.0; // mm
+
+// [ORCAPORT:AS-3] scales `p` toward/away from `centroid` by `factor` (both in scaled clipper
+// units). A uniform scale about the centroid, not a true polygon offset - plenty for the soft
+// contact shadow and far cheaper than an offset() call per ring, per frame.
+Point snapdrag_scale_about(const Point &p, const Point &centroid, double factor)
+{
+    const Vec2d pd(unscale_(p.x()), unscale_(p.y()));
+    const Vec2d cd(unscale_(centroid.x()), unscale_(centroid.y()));
+    const Vec2d r = cd + (pd - cd) * factor;
+    return Point::new_scale(r.x(), r.y());
+}
+
+// [ORCAPORT:AS-3] appends the triangles of `ex` laid flat at `z` to `data`.
+void snapdrag_add_flat_polygon(GLModel::Geometry &data, const ExPolygon &ex, double z)
+{
+    const std::vector<Vec3d> tris    = triangulate_expolygon_3d(ex, z);
+    unsigned int             counter = (unsigned int) data.vertices_count();
+    for (const Vec3d &v : tris) {
+        data.add_vertex((Vec3f) v.cast<float>());
+        ++counter;
+        if (counter % 3 == 0)
+            data.add_triangle(counter - 3, counter - 2, counter - 1);
+    }
+}
+
+// Maps every member of a multi-object drag to the member at the bottom of the stack it belongs to
+// ("its root"): itself when nothing else in the drag is under it. Each root resolves its own floor
+// and everyone above it inherits that root's shift, so a picked-up stack keeps its shape while an
+// unrelated object picked up in the same selection still falls on its own.
+std::map<std::pair<int, int>, std::pair<int, int>>
+snapdrag_group_roots(const GLVolumeCollection &volumes, const std::set<std::pair<int, int>> &group)
+{
+    std::map<std::pair<int, int>, std::pair<int, int>> supporter;
+    for (const std::pair<int, int> &id : group) {
+        const std::optional<std::pair<int, int>> sup =
+            OrcaExt::Gui::GravitySnap::support_in_group(volumes, id.first, id.second, group,
+                                                        SNAPDRAG_ENGAGE_RATIO, SNAPDRAG_STACK_MAX_GAP);
+        if (sup.has_value())
+            supporter[id] = *sup;
+    }
+
+    // Walk each chain down to its root; a visited set guards against a geometric ambiguity cycle.
+    std::map<std::pair<int, int>, std::pair<int, int>> roots;
+    for (const std::pair<int, int> &id : group) {
+        std::set<std::pair<int, int>> seen;
+        std::pair<int, int>           cur = id;
+        seen.insert(cur);
+        for (;;) {
+            auto it = supporter.find(cur);
+            if (it == supporter.end())
+                break;
+            if (!seen.insert(it->second).second)
+                break; // cycle: stop at the last sane member
+            cur = it->second;
+        }
+        roots[id] = cur;
+    }
+    return roots;
+}
+} // namespace
+
 void GLCanvas3D::on_mouse(wxMouseEvent& evt)
 {
     if (!m_initialized || !_set_current())
@@ -4496,6 +4573,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                             m_volumes.volumes[volume_idx]->hover = GLVolume::HS_None;
                             // The dragging operation is initiated.
                             m_mouse.drag.move_volume_idx = volume_idx;
+                            m_snapdrag_engaged.clear(); // [ORCAPORT:AS-3] fresh hysteresis state this drag
                             m_selection.setup_cache();
                             m_mouse.drag.start_position_3D = m_mouse.scene_position;
                             m_sequential_print_clearance_first_displacement = true;
@@ -4555,6 +4633,175 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 TransformationType trafo_type;
                 trafo_type.set_relative();
                 m_selection.translate(cur_pos - m_mouse.drag.start_position_3D, trafo_type);
+
+                // [ORCAPORT:AS-3] BEGIN - live floor snap: rest the dragged instances on the real
+                // surface found under their footprint. GLVolume-only: the ModelObject is written once
+                // on mouse-up in do_move, so an interrupted drag never leaves the model inconsistent.
+                if (current_printer_technology() == ptFFF && GravitySnap::enabled()) {
+                    std::set<std::pair<int, int>> moving;
+                    for (unsigned int idx : m_selection.get_volume_idxs()) {
+                        const GLVolume* gv = m_volumes.volumes[idx];
+                        if (gv->is_wipe_tower || gv->is_modifier)
+                            continue;
+                        moving.insert({ gv->object_idx(), gv->instance_idx() });
+                    }
+
+                    // "Move selection as one block" replaces the by-stacks resolution with a single
+                    // rigid shift (see _snapdrag_rigid_frame). Same trigger as the commit in do_move:
+                    // instance count, so the selection does not jump on mouse-up.
+                    if (GravitySnap::move_as_group() && moving.size() > 1) {
+                        _snapdrag_rigid_frame(moving);
+                    } else {
+                        std::set<int> moving_objects;
+                        for (const std::pair<int, int>& id : moving)
+                            moving_objects.insert(id.first);
+                        const bool group_drag = moving_objects.size() > 1;
+                        const std::map<std::pair<int, int>, std::pair<int, int>> group_roots =
+                            group_drag ? snapdrag_group_roots(m_volumes, moving)
+                                       : std::map<std::pair<int, int>, std::pair<int, int>>();
+
+                        struct SnapRoot { GravitySnap::FloorHit hit; double dz; BoundingBoxf3 bbox; Polygon footprint; };
+                        std::map<std::pair<int, int>, SnapRoot> resolved_roots;
+                        BoundingBoxf3 group_bbox;
+                        bool          group_bbox_valid = false;
+                        bool          indicator_shown  = false;
+
+                        for (const std::pair<int, int>& id : moving) {
+                            // In a group drag only the roots ask for a floor; everyone else inherits
+                            // their root's shift (their own answer would have to be ignored anyway).
+                            bool is_root = true;
+                            if (group_drag) {
+                                const auto root_it = group_roots.find(id);
+                                is_root = root_it == group_roots.end() || root_it->second == id;
+                            }
+
+                            std::optional<GravitySnap::FloorHit> hit;
+                            if (is_root) {
+                                const bool   was_engaged  = m_snapdrag_engaged[id];
+                                const double engage_ratio = was_engaged ? SNAPDRAG_RELEASE_RATIO : SNAPDRAG_ENGAGE_RATIO;
+                                hit = GravitySnap::floor_z_for_instance(m_volumes, id.first, id.second, moving, engage_ratio);
+                                // "engaged" tracks an object floor only: the bed always answers, so
+                                // counting it would pin engage_ratio low for the rest of the drag.
+                                m_snapdrag_engaged[id] = hit.has_value() && !hit->is_bed;
+                            }
+
+                            double        min_z    = DBL_MAX;
+                            BoundingBoxf3 inst_bbox;
+                            bool          has_bbox = false;
+                            for (const GLVolume* gv : m_volumes.volumes) {
+                                if (gv->object_idx() == id.first && gv->instance_idx() == id.second && !gv->is_wipe_tower && !gv->is_modifier) {
+                                    const BoundingBoxf3 vb = gv->transformed_convex_hull_bounding_box();
+                                    min_z = std::min(min_z, vb.min.z());
+                                    if (has_bbox)
+                                        inst_bbox.merge(vb);
+                                    else {
+                                        inst_bbox = vb;
+                                        has_bbox  = true;
+                                    }
+                                }
+                            }
+                            if (min_z == DBL_MAX)
+                                continue;
+
+                            if (group_drag) {
+                                if (group_bbox_valid)
+                                    group_bbox.merge(inst_bbox);
+                                else {
+                                    group_bbox       = inst_bbox;
+                                    group_bbox_valid = true;
+                                }
+                                if (is_root && hit.has_value())
+                                    resolved_roots[id] = SnapRoot{ *hit, hit->z - min_z, inst_bbox,
+                                                                   GravitySnap::instance_footprint(m_volumes, id.first, id.second) };
+                                continue;
+                            }
+
+                            // No floor detected -> leave the instance where the drag put it (free
+                            // floating). nullopt must NOT become a drop to the bed; with Allow Bed on
+                            // the bed arrives as a real FloorHit instead.
+                            if (!hit.has_value())
+                                continue;
+                            const double target_z = hit->z;
+
+                            // Hover lift: hold the object above its landing spot WHILE dragging so
+                            // the overlay underneath stays visible. No explicit undo is needed:
+                            // Selection::translate sets each offset absolutely from the drag-start
+                            // cache, so every frame arrives with the lift already gone, and do_move
+                            // recomputes the floor and seats the object exactly on it.
+                            const double lift = std::clamp((inst_bbox.max.z() - inst_bbox.min.z()) * 0.25,
+                                                           SNAPDRAG_HOVER_LIFT_MIN, SNAPDRAG_HOVER_LIFT_MAX);
+
+                            if (!indicator_shown) {
+                                const Polygon footprint = GravitySnap::instance_footprint(m_volumes, id.first, id.second);
+                                BoundingBoxf3 ghost      = inst_bbox;
+                                const Vec3d   ghost_shift(0.0, 0.0, target_z - min_z);
+                                ghost.min += ghost_shift;
+                                ghost.max += ghost_shift;
+                                m_snapdrag_indicator.set(footprint, *hit, ghost, target_z + lift);
+                                indicator_shown = m_snapdrag_indicator.is_visible();
+                            }
+
+                            const double dz = (target_z + lift) - min_z;
+                            if (std::abs(dz) > EPSILON) {
+                                for (GLVolume* gv : m_volumes.volumes) {
+                                    if (gv->object_idx() == id.first && gv->instance_idx() == id.second)
+                                        gv->set_instance_offset(Z, gv->get_instance_offset(Z) + dz);
+                                }
+                            }
+                        }
+
+                        // Group pass 2: each member moves by its root's shift so a picked-up stack
+                        // keeps its shape. A member whose root found no floor stays floating.
+                        if (group_drag && !resolved_roots.empty()) {
+                            const double group_height = group_bbox_valid ? (group_bbox.max.z() - group_bbox.min.z()) : 0.0;
+                            const double lift         = std::clamp(group_height * 0.25, SNAPDRAG_HOVER_LIFT_MIN, SNAPDRAG_HOVER_LIFT_MAX);
+
+                            // The overlay follows the root being corrected the most: the one whose
+                            // floor really decides where the selection ends up.
+                            const std::pair<int, int>* shown_root = nullptr;
+                            for (const auto& kv : resolved_roots) {
+                                if (shown_root == nullptr || kv.second.dz > resolved_roots.at(*shown_root).dz)
+                                    shown_root = &kv.first;
+                            }
+                            if (shown_root != nullptr) {
+                                const SnapRoot& r = resolved_roots.at(*shown_root);
+                                BoundingBoxf3   ghost = r.bbox;
+                                const Vec3d     ghost_shift(0.0, 0.0, r.dz);
+                                ghost.min += ghost_shift;
+                                ghost.max += ghost_shift;
+                                m_snapdrag_indicator.set(r.footprint, r.hit, ghost, r.hit.z + lift);
+                                indicator_shown = m_snapdrag_indicator.is_visible();
+                            }
+
+                            for (const std::pair<int, int>& id : moving) {
+                                const auto root_it = group_roots.find(id);
+                                const std::pair<int, int> root = (root_it != group_roots.end()) ? root_it->second : id;
+                                const auto res_it = resolved_roots.find(root);
+                                if (res_it == resolved_roots.end())
+                                    continue;
+                                const double dz = res_it->second.dz + lift;
+                                if (std::abs(dz) <= EPSILON)
+                                    continue;
+                                for (GLVolume* gv : m_volumes.volumes) {
+                                    // Modifiers are NOT skipped: they share the instance offset.
+                                    if (gv->is_wipe_tower)
+                                        continue;
+                                    if (gv->object_idx() == id.first && gv->instance_idx() == id.second)
+                                        gv->set_instance_offset(Z, gv->get_instance_offset(Z) + dz);
+                                }
+                            }
+                        }
+
+                        if (!indicator_shown)
+                            m_snapdrag_indicator.set_visible(false);
+                    }
+                } else {
+                    // Snap & Drag is off for this drag (feature disabled, or not FFF): drop any
+                    // overlay left over from a previous drag so it cannot linger at a stale spot.
+                    m_snapdrag_indicator.set_visible(false);
+                }
+                // [ORCAPORT:AS-3] END
+
                 if (current_printer_technology() == ptFFF && (fff_print()->config().print_sequence == PrintSequence::ByObject))
                     update_sequential_clearance();
                 // BBS
@@ -4976,6 +5223,386 @@ void GLCanvas3D::set_tooltip(const std::string& tooltip)
         m_tooltip.set_text(tooltip);
 }
 
+// [ORCAPORT:AS-3] Live-drag frame for "move selection as one block": no member changes height
+// relative to any other. There is one shift for the whole selection, the largest any member
+// requires, so the block stops at the first floor it meets without any member being pushed through
+// its own floor. Members that found no floor impose no constraint and simply ride along; if nobody
+// found one, the selection stays exactly where the mouse put it. Committed later in do_move().
+void GLCanvas3D::_snapdrag_rigid_frame(const std::set<std::pair<int, int>>& moving)
+{
+    struct Member {
+        std::pair<int, int>                  id;
+        double                               min_z = 0.0;
+        BoundingBoxf3                        bbox;
+        std::optional<GravitySnap::FloorHit> hit;
+    };
+    std::vector<Member> members;
+    members.reserve(moving.size());
+
+    BoundingBoxf3 group_bbox;
+    bool          group_bbox_valid = false;
+
+    for (const std::pair<int, int>& id : moving) {
+        double        min_z    = DBL_MAX;
+        BoundingBoxf3 inst_bbox;
+        bool          has_bbox = false;
+        for (const GLVolume* gv : m_volumes.volumes) {
+            if (gv->object_idx() == id.first && gv->instance_idx() == id.second && !gv->is_wipe_tower && !gv->is_modifier) {
+                const BoundingBoxf3 vb = gv->transformed_convex_hull_bounding_box();
+                min_z = std::min(min_z, vb.min.z());
+                if (has_bbox)
+                    inst_bbox.merge(vb);
+                else {
+                    inst_bbox = vb;
+                    has_bbox  = true;
+                }
+            }
+        }
+        if (min_z == DBL_MAX)
+            continue;
+
+        const bool   was_engaged  = m_snapdrag_engaged[id];
+        const double engage_ratio = was_engaged ? SNAPDRAG_RELEASE_RATIO : SNAPDRAG_ENGAGE_RATIO;
+        std::optional<GravitySnap::FloorHit> hit =
+            GravitySnap::floor_z_for_instance(m_volumes, id.first, id.second, moving, engage_ratio);
+        m_snapdrag_engaged[id] = hit.has_value() && !hit->is_bed;
+
+        if (group_bbox_valid)
+            group_bbox.merge(inst_bbox);
+        else {
+            group_bbox       = inst_bbox;
+            group_bbox_valid = true;
+        }
+        members.push_back(Member{ id, min_z, inst_bbox, hit });
+    }
+
+    // Whoever needs the largest shift is the one actually deciding where the block lands.
+    const Member* decider = nullptr;
+    double        dz      = 0.0;
+    for (const Member& m : members) {
+        if (!m.hit.has_value())
+            continue;
+        const double d = m.hit->z - m.min_z;
+        if (decider == nullptr || d > dz) {
+            dz      = d;
+            decider = &m;
+        }
+    }
+    if (decider == nullptr) {
+        m_snapdrag_indicator.set_visible(false);
+        return;
+    }
+
+    // Hover lift over the WHOLE selection's height, matching the by-stacks path.
+    const double group_height = group_bbox_valid ? (group_bbox.max.z() - group_bbox.min.z()) : 0.0;
+    const double lift         = std::clamp(group_height * 0.25, SNAPDRAG_HOVER_LIFT_MIN, SNAPDRAG_HOVER_LIFT_MAX);
+
+    // The overlay shows the decider's contact zone: the surface the block is stopped by.
+    BoundingBoxf3 ghost = decider->bbox;
+    const Vec3d   ghost_shift(0.0, 0.0, dz);
+    ghost.min += ghost_shift;
+    ghost.max += ghost_shift;
+    m_snapdrag_indicator.set(GravitySnap::instance_footprint(m_volumes, decider->id.first, decider->id.second),
+                             *decider->hit, ghost, decider->hit->z + lift);
+
+    const double total = dz + lift;
+    if (std::abs(total) <= EPSILON)
+        return;
+    for (const std::pair<int, int>& id : moving) {
+        for (GLVolume* gv : m_volumes.volumes) {
+            if (gv->is_wipe_tower)
+                continue;
+            if (gv->object_idx() == id.first && gv->instance_idx() == id.second)
+                gv->set_instance_offset(Z, gv->get_instance_offset(Z) + total);
+        }
+    }
+}
+
+// [ORCAPORT:AS-3] SnapDragIndicator - see GLCanvas3D.hpp. Everything below is drawn FROM the
+// engine's FloorHit decision; nothing here is recomputed and nothing feeds back into it.
+void GLCanvas3D::SnapDragIndicator::set(const Polygon &footprint_world, const GravitySnap::FloorHit &hit,
+                                        const BoundingBoxf3 &ghost_box, double beam_top_z)
+{
+    const double landing_z = hit.z;
+
+    // Nothing about the decision changed since last frame: keep the models we already have. The
+    // footprint centroid is part of the key, so this does NOT survive actual XY movement; it only
+    // catches the plentiful drag events that fire while the pointer sits still.
+    const Point new_centroid = footprint_world.empty() ? Point(0, 0) : footprint_world.centroid();
+    if (m_key.valid && m_visible && m_key.z == landing_z && m_key.top_z == beam_top_z &&
+        m_key.obj == hit.obj_idx && m_key.inst == hit.inst_idx && m_key.bed == hit.is_bed &&
+        m_key.centroid.x() == new_centroid.x() && m_key.centroid.y() == new_centroid.y())
+        return;
+
+    for (GLModel &ring : m_shadow_rings)
+        ring.reset();
+    m_fill.reset();
+    m_outline.reset();
+    m_beam.reset();
+    m_ghost_box.reset();
+    m_contact_fill.reset();
+    m_contact_outline.reset();
+    m_beam_prism.reset();
+    m_samples.reset();
+    m_visible   = false;
+    m_key.valid = false;
+
+    if (footprint_world.empty())
+        return;
+
+    // The one functional colour of the overlay: cyan = resting on another object, amber = bed.
+    const ColorRGBA cue_base = hit.is_bed ? ColorRGBA(1.0f, 0.72f, 0.25f, 1.0f)
+                                          : ColorRGBA(0.3f, 0.9f, 1.0f, 1.0f);
+    auto cue = [&cue_base](float alpha) -> ColorRGBA { return {cue_base.r(), cue_base.g(), cue_base.b(), alpha}; };
+
+    // Cheap "almost realistic" contact shadow: a few concentric rings grown/shrunk about the
+    // footprint centroid, darker and smaller toward the middle. Purely decorative.
+    struct RingSpec { double scale; float alpha; };
+    static constexpr RingSpec SHADOW_RINGS[SHADOW_RING_COUNT] = {
+        {1.20, 0.10f},
+        {1.10, 0.15f},
+        {1.00, 0.20f},
+        {0.72, 0.30f},
+    };
+    const Point centroid = footprint_world.centroid();
+    for (size_t i = 0; i < SHADOW_RING_COUNT; ++i) {
+        Polygon ring_poly;
+        ring_poly.points.reserve(footprint_world.points.size());
+        for (const Point &p : footprint_world.points)
+            ring_poly.points.push_back(snapdrag_scale_about(p, centroid, SHADOW_RINGS[i].scale));
+        if (ring_poly.empty())
+            continue;
+
+        // Each ring gets its own tiny Z step so coplanar rings do not z-fight.
+        const double             ring_z    = landing_z + 0.005 * double(i + 1);
+        const ExPolygon          ring_ex(ring_poly);
+        const std::vector<Vec3d> ring_tris = triangulate_expolygon_3d(ring_ex, ring_z);
+
+        GLModel::Geometry ring_data;
+        ring_data.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3};
+        ring_data.color  = {0.02f, 0.02f, 0.02f, SHADOW_RINGS[i].alpha};
+        ring_data.reserve_vertices(ring_tris.size());
+        ring_data.reserve_indices(ring_tris.size());
+        unsigned int ring_vertices_counter = 0;
+        for (const Vec3d &v : ring_tris) {
+            ring_data.add_vertex((Vec3f) v.cast<float>());
+            ++ring_vertices_counter;
+            if (ring_vertices_counter % 3 == 0)
+                ring_data.add_triangle(ring_vertices_counter - 3, ring_vertices_counter - 2, ring_vertices_counter - 1);
+        }
+        m_shadow_rings[i].init_from(std::move(ring_data));
+    }
+
+    // Small positive lift to avoid z-fighting with the real resting surface underneath.
+    const double z = landing_z + 0.05;
+
+    GLModel::Geometry fill_data;
+    fill_data.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3};
+    fill_data.color  = cue(0.35f);
+    const ExPolygon          ex(footprint_world);
+    const std::vector<Vec3d> triangulation = triangulate_expolygon_3d(ex, z);
+    fill_data.reserve_vertices(triangulation.size());
+    fill_data.reserve_indices(triangulation.size());
+    unsigned int vertices_counter = 0;
+    for (const Vec3d &v : triangulation) {
+        fill_data.add_vertex((Vec3f) v.cast<float>());
+        ++vertices_counter;
+        if (vertices_counter % 3 == 0)
+            fill_data.add_triangle(vertices_counter - 3, vertices_counter - 2, vertices_counter - 1);
+    }
+    m_fill.init_from(std::move(fill_data));
+
+    m_outline.init_from(Polygons{footprint_world}, float(z + 0.02));
+    m_outline.set_color(cue(0.9f));
+
+    // The zone the engine recognised as floor, drawn on the surface it was found on. Skipped for a
+    // bed hit: there the zone IS the footprint, so it would just double the shadow's ink.
+    if (!hit.is_bed && !hit.contact.contour.points.empty()) {
+        GLModel::Geometry contact_data;
+        contact_data.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3};
+        contact_data.color  = cue(0.55f);
+        snapdrag_add_flat_polygon(contact_data, hit.contact, landing_z + 0.06);
+        if (contact_data.vertices_count() > 0)
+            m_contact_fill.init_from(std::move(contact_data));
+
+        Polygons contact_lines = {hit.contact.contour};
+        for (const Polygon &hole : hit.contact.holes)
+            contact_lines.push_back(hole);
+        m_contact_outline.init_from(contact_lines, float(landing_z + 0.08));
+        m_contact_outline.set_color(cue(1.0f));
+    }
+
+    // The "light beam": a translucent prism standing on the recognised zone and reaching the
+    // dragged object's underside, so the hover gap is a volume you can see and aim with.
+    if (!hit.contact.contour.points.empty() && beam_top_z > landing_z + EPSILON) {
+        const double z_lo = landing_z + 0.06;
+        const double z_hi = beam_top_z;
+
+        GLModel::Geometry prism;
+        prism.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3};
+        prism.color  = cue(0.13f);
+
+        // Cap at the top only - the bottom cap is already the contact fill above.
+        snapdrag_add_flat_polygon(prism, hit.contact, z_hi);
+
+        // Side walls, contour and holes alike (a ring-shaped contact must stay a ring).
+        Polygons walls = {hit.contact.contour};
+        for (const Polygon &hole : hit.contact.holes)
+            walls.push_back(hole);
+        for (const Polygon &poly : walls) {
+            const size_t n = poly.points.size();
+            for (size_t i = 0; i < n; ++i) {
+                const Point &a = poly.points[i];
+                const Point &b = poly.points[(i + 1) % n];
+                const Vec3f  a_lo(float(unscale_(a.x())), float(unscale_(a.y())), float(z_lo));
+                const Vec3f  b_lo(float(unscale_(b.x())), float(unscale_(b.y())), float(z_lo));
+                const Vec3f  a_hi(a_lo.x(), a_lo.y(), float(z_hi));
+                const Vec3f  b_hi(b_lo.x(), b_lo.y(), float(z_hi));
+                const unsigned int base = (unsigned int) prism.vertices_count();
+                prism.add_vertex(a_lo);
+                prism.add_vertex(b_lo);
+                prism.add_vertex(b_hi);
+                prism.add_vertex(a_hi);
+                prism.add_triangle(base, base + 1, base + 2);
+                prism.add_triangle(base, base + 2, base + 3);
+            }
+        }
+        if (prism.vertices_count() > 0)
+            m_beam_prism.init_from(std::move(prism));
+    }
+
+    // The actual raycast hits behind the chosen Z. Empty for a bed hit.
+    if (!hit.samples.empty()) {
+        GLModel::Geometry pts;
+        pts.format = {GLModel::Geometry::EPrimitiveType::Points, GLModel::Geometry::EVertexLayout::P3};
+        pts.color  = cue(1.0f);
+        pts.reserve_vertices(hit.samples.size());
+        pts.reserve_indices(hit.samples.size());
+        unsigned int idx = 0;
+        for (const Vec3d &s : hit.samples) {
+            pts.add_vertex(Vec3f(float(s.x()), float(s.y()), float(s.z() + 0.10)));
+            pts.add_index(idx++);
+        }
+        m_samples.init_from(std::move(pts));
+    }
+
+    // Ghost box: corner ticks of the dragged instance's AABB where it will come to rest. Corners
+    // only, same visual language as Align & Stack's corner aid.
+    {
+        const Vec3d bmin = ghost_box.min;
+        const Vec3d bmax = ghost_box.max;
+        const Vec3d size = bmax - bmin;
+        if (size.x() > EPSILON && size.y() > EPSILON && size.z() > EPSILON) {
+            const Vec3d tick(std::min(size.x() * 0.15, 8.0), std::min(size.y() * 0.15, 8.0), std::min(size.z() * 0.15, 8.0));
+
+            GLModel::Geometry box;
+            box.format        = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3};
+            box.color         = cue(0.85f);
+            unsigned int idx  = 0;
+            for (int cx = 0; cx < 2; ++cx)
+                for (int cy = 0; cy < 2; ++cy)
+                    for (int cz = 0; cz < 2; ++cz) {
+                        const Vec3d corner(cx == 0 ? bmin.x() : bmax.x(), cy == 0 ? bmin.y() : bmax.y(),
+                                           cz == 0 ? bmin.z() : bmax.z());
+                        const Vec3d dirs[3] = {Vec3d(cx == 0 ? tick.x() : -tick.x(), 0.0, 0.0),
+                                               Vec3d(0.0, cy == 0 ? tick.y() : -tick.y(), 0.0),
+                                               Vec3d(0.0, 0.0, cz == 0 ? tick.z() : -tick.z())};
+                        for (const Vec3d &d : dirs) {
+                            box.add_vertex((Vec3f) corner.cast<float>());
+                            box.add_vertex((Vec3f)(corner + d).cast<float>());
+                            box.add_line(idx, idx + 1);
+                            idx += 2;
+                        }
+                    }
+            m_ghost_box.init_from(std::move(box));
+        }
+    }
+
+    // Beam: short vertical tick through the landing point at the footprint centroid. Fixed height:
+    // a spotlight marking the spot, not a gap measurement.
+    constexpr double BEAM_HEIGHT = 15.0; // mm
+    const Vec3f      base(float(unscale_(centroid.x())), float(unscale_(centroid.y())), float(landing_z));
+
+    GLModel::Geometry beam_data;
+    beam_data.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3};
+    beam_data.color  = cue(0.6f);
+    beam_data.reserve_vertices(2);
+    beam_data.reserve_indices(2);
+    const Vec3f tip = base + Vec3f(0.0f, 0.0f, float(BEAM_HEIGHT));
+    beam_data.add_vertex(base);
+    beam_data.add_vertex(tip);
+    beam_data.add_line(0, 1);
+    m_beam.init_from(std::move(beam_data));
+
+    m_visible = true;
+    m_key     = Key{landing_z, beam_top_z, hit.obj_idx, hit.inst_idx, hit.is_bed, new_centroid, true};
+}
+
+void GLCanvas3D::SnapDragIndicator::render()
+{
+    if (!m_visible)
+        return;
+
+    GLShaderProgram *shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    shader->start_using();
+    const Camera &camera = wxGetApp().plater()->get_camera();
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix());
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+    for (GLModel &ring : m_shadow_rings)
+        ring.render();
+
+    m_fill.render();
+    m_outline.render();
+
+    // The recognised zone sits ON a real surface, so offset it toward the camera instead of relying
+    // on the sub-mm lift alone, which z-fights at grazing angles.
+    glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+    glsafe(::glPolygonOffset(-1.0f, -1.0f));
+    m_contact_fill.render();
+    glsafe(::glPolygonOffset(0.0f, 0.0f));
+    glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
+
+    // The beam is a mid-air volume: depth-test ON so real geometry occludes it, but depth writes
+    // OFF so it does not occlude anything itself.
+    glsafe(::glDepthMask(GL_FALSE));
+    m_beam_prism.render();
+    glsafe(::glDepthMask(GL_TRUE));
+
+    glsafe(::glLineWidth(2.0f));
+    m_contact_outline.render();
+    m_ghost_box.render();
+
+    glsafe(::glLineWidth(1.5f));
+    m_beam.render();
+
+    glsafe(::glEnable(GL_POINT_SMOOTH));
+    glsafe(::glPointSize(12.0f));
+    m_samples.render();
+    glsafe(::glPointSize(1.0f));
+    glsafe(::glDisable(GL_POINT_SMOOTH));
+
+    glsafe(::glLineWidth(1.0f));
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
+    glsafe(::glDisable(GL_DEPTH_TEST));
+
+    shader->stop_using();
+}
+
+void GLCanvas3D::_render_snapdrag_indicator()
+{
+    m_snapdrag_indicator.render();
+}
+
 void GLCanvas3D::do_move(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
@@ -5056,24 +5683,124 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
         }
     }
 
+    // [ORCAPORT:AS-3] BEGIN - Snap & Drag commit. Resolve, per dragged instance, the floor it rests
+    // on, then apply the resulting Z shift so the selection commits exactly as it looked mid-drag.
+    // `nullopt` means "leave it floating" and must never become a drop to the bed. The dragged
+    // instances are the selection, matching the live-drag resolve in on_mouse.
+    std::set<std::pair<int, int>> _snapdrag_moving;
+    for (unsigned int idx : m_selection.get_volume_idxs()) {
+        if (idx >= m_volumes.volumes.size())
+            continue;
+        const GLVolume* gv = m_volumes.volumes[idx];
+        if (gv == nullptr || gv->is_wipe_tower || gv->is_modifier)
+            continue;
+        if (gv->object_idx() < 0 || gv->instance_idx() < 0)
+            continue;
+        _snapdrag_moving.insert({ gv->object_idx(), gv->instance_idx() });
+    }
+
+    std::set<int> _snapdrag_objects;
+    for (const std::pair<int, int>& i : _snapdrag_moving)
+        _snapdrag_objects.insert(i.first);
+
+    // Same rules and triggers as the live drag so the selection cannot visibly jump on mouse-up.
+    const bool _snapdrag_rigid = GravitySnap::move_as_group() && _snapdrag_moving.size() > 1;
+    const bool _snapdrag_group = !_snapdrag_rigid && _snapdrag_objects.size() > 1;
+    const std::map<std::pair<int, int>, std::pair<int, int>> _snapdrag_roots =
+        _snapdrag_group ? snapdrag_group_roots(m_volumes, _snapdrag_moving)
+                        : std::map<std::pair<int, int>, std::pair<int, int>>();
+
+    std::map<int, double>                 _snapdrag_target_z;   // single-object path
+    std::map<std::pair<int, int>, double> _snapdrag_root_dz;    // group path
+    bool                                  _snapdrag_rigid_found = false;
+    double                                _snapdrag_rigid_dz    = 0.0;
+    const bool _snapdrag_active =
+        current_printer_technology() == ptFFF && GravitySnap::enabled() && !_snapdrag_moving.empty();
+    if (_snapdrag_active) {
+        for (const std::pair<int, int>& i : _snapdrag_moving) {
+            if (_snapdrag_rigid) {
+                const std::optional<GravitySnap::FloorHit> hit =
+                    GravitySnap::floor_z_for_instance(m_volumes, i.first, i.second, _snapdrag_moving, SNAPDRAG_ENGAGE_RATIO);
+                if (!hit.has_value())
+                    continue; // no floor of its own: rides along, constrains nothing
+                // The model already carries the dropped position, so this shift lands it exactly.
+                const double dz = hit->z - m_model->objects[i.first]->get_instance_min_z(i.second);
+                if (!_snapdrag_rigid_found || dz > _snapdrag_rigid_dz) {
+                    _snapdrag_rigid_dz    = dz;
+                    _snapdrag_rigid_found = true;
+                }
+                continue;
+            }
+            if (_snapdrag_group) {
+                const auto root_it = _snapdrag_roots.find(i);
+                if (root_it != _snapdrag_roots.end() && root_it->second != i)
+                    continue; // not a root: inherits, nothing to resolve
+            }
+            const std::optional<GravitySnap::FloorHit> hit =
+                GravitySnap::floor_z_for_instance(m_volumes, i.first, i.second, _snapdrag_moving, SNAPDRAG_ENGAGE_RATIO);
+            if (!hit.has_value())
+                continue;
+            if (_snapdrag_group)
+                _snapdrag_root_dz[i] = hit->z - m_model->objects[i.first]->get_instance_min_z(i.second);
+            else {
+                auto it = _snapdrag_target_z.find(i.first);
+                if (it == _snapdrag_target_z.end() || hit->z < it->second)
+                    _snapdrag_target_z[i.first] = hit->z; // one Z per object: the lowest of its instances
+            }
+        }
+    }
+    // [ORCAPORT:AS-3] END
+
     // Fixes sinking/flying instances (snaps object to buildplate)
     for (const std::pair<int, int>& i : done) {
         ModelObject* mo = m_model->objects[i.first];
         ModelInstance* mi  = mo->instances[i.second];
             
-        if (!mi->auto_drop) {
-            continue;
-        }
-
         const double shift_z = mo->get_instance_min_z(i.second);
-        //BBS: don't call translate if the z is zero
-        if (!OrcaExt::free_z() && (current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
+
+        // [ORCAPORT:AS-3] BEGIN - commit the resolved floor (see the block above); falls back to the
+        // stock bed snap when Snap & Drag is off.
+        const bool _sd_member = _snapdrag_active && _snapdrag_moving.count(i) != 0;
+        const bool _sd_single = _snapdrag_active && !_snapdrag_group && !_snapdrag_rigid &&
+                                _snapdrag_target_z.count(i.first) != 0;
+        if (_sd_member || _sd_single) {
+            if (_sd_member && _snapdrag_rigid) {
+                if (_snapdrag_rigid_found && std::fabs(_snapdrag_rigid_dz) > EPSILON) {
+                    const Vec3d shift(0.0, 0.0, _snapdrag_rigid_dz);
+                    m_selection.translate(i.first, i.second, shift);
+                    mo->translate_instance(i.second, shift);
+                    m_selection.notify_instance_update(i.first, i.second);
+                }
+            } else if (_sd_member && _snapdrag_group) {
+                const auto root_it = _snapdrag_roots.find(i);
+                const std::pair<int, int> root = (root_it != _snapdrag_roots.end()) ? root_it->second : i;
+                const auto dz_it = _snapdrag_root_dz.find(root);
+                if (dz_it != _snapdrag_root_dz.end() && std::fabs(dz_it->second) > EPSILON) {
+                    const Vec3d shift(0.0, 0.0, dz_it->second);
+                    m_selection.translate(i.first, i.second, shift);
+                    mo->translate_instance(i.second, shift);
+                    m_selection.notify_instance_update(i.first, i.second);
+                }
+            } else if (_sd_single) {
+                const double target_z     = _snapdrag_target_z.at(i.first);
+                const double snap_shift_z = shift_z - target_z;
+                if (std::fabs(snap_shift_z) > EPSILON) {
+                    const Vec3d shift(0.0, 0.0, -snap_shift_z);
+                    m_selection.translate(i.first, i.second, shift);
+                    mo->translate_instance(i.second, shift);
+                    m_selection.notify_instance_update(i.first, i.second);
+                }
+            }
+        } else if (!mi->auto_drop) {
+            continue;
+        } else if (!OrcaExt::free_z() && (current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
             const Vec3d shift(0.0, 0.0, -shift_z);
             m_selection.translate(i.first, i.second, shift);
             mo->translate_instance(i.second, shift);
             //BBS: notify instance updates to part plater list
             m_selection.notify_instance_update(i.first, i.second);
         }
+        // [ORCAPORT:AS-3] END
         wxGetApp().obj_list()->update_info_items(static_cast<size_t>(i.first));
     }
     
@@ -5598,6 +6325,7 @@ void GLCanvas3D::mouse_up_cleanup()
     m_moving = false;
     m_camera_movement = false;
     m_mouse.drag.move_volume_idx = -1;
+    m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;
@@ -8611,6 +9339,11 @@ void GLCanvas3D::_render_overlays()
 {
     glsafe(::glDisable(GL_DEPTH_TEST));
 
+    // [ORCAPORT:AS-3] the Snap & Drag options panel, opened by the magnet icon in the plate column.
+    // Prepare canvas only: dragging objects onto each other is a Prepare-only activity.
+    if (m_canvas_type == CanvasView3D && GravitySnap::panel_open())
+        _render_snapdrag_panel();
+
     _check_and_update_toolbar_icon_scale();
 
     _render_assemble_control();
@@ -8660,6 +9393,85 @@ void GLCanvas3D::_render_overlays()
     _render_3d_navigator();
 
     _render_canvas_toolbar();
+}
+
+// [ORCAPORT:AS-3] the Snap & Drag options panel, opened by the magnet icon in the plate column.
+// One selection-independent home for the three preferences (a context menu cannot host them: any
+// selection that produces a different menu loses them).
+void GLCanvas3D::_render_snapdrag_panel()
+{
+    AppConfig *ac = wxGetApp().app_config;
+    if (ac == nullptr)
+        return;
+
+    ImGui::SetNextWindowSize(ImVec2(300.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(20.0f, 80.0f), ImGuiCond_FirstUseEver);
+
+    bool open = true;
+    ImGui::Begin(_u8L("Snap & Drag").c_str(), &open);
+    if (!open) {
+        ImGui::End();
+        GravitySnap::panel_open() = false;
+        return;
+    }
+
+    // The panel is reachable with free-Z off (the magnet icon is always registered), but the feature
+    // cannot act without it. Say why instead of closing the panel under the user.
+    const bool free_z = OrcaExt::free_z();
+    if (!free_z) {
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "%s",
+                           _u8L("Needs \"Allow free Z placement\" in Preferences.").c_str());
+        ImGui::Separator();
+    }
+
+    // No ImGui::BeginDisabled: this tree bundles an ImGui where that API may not exist. Manual dim +
+    // a guard on the returned value, and the dim is pushed/popped around each checkbox ALONE so a
+    // tooltip never becomes half-transparent.
+    const float dim = ImGui::GetStyle().Alpha * 0.5f;
+
+    bool snap_on = ac->get_bool("orca_ext_snap_drag");
+    if (!free_z) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, dim);
+    if (ImGui::Checkbox(_u8L("Snap & Drag").c_str(), &snap_on) && free_z) {
+        ac->set_bool("orca_ext_snap_drag", snap_on);
+        ac->save();
+    }
+    if (!free_z) ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", _u8L("While dragging, rest the object on the real surface of whatever "
+                                     "part is underneath it. The object hovers just above its landing "
+                                     "spot and the highlighted zone shows the exact surface being read "
+                                     "as the height.").c_str());
+
+    const bool subs_live = free_z && snap_on;
+
+    ImGui::Separator();
+
+    bool bed_on = GravitySnap::bed_is_floor();
+    if (!subs_live) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, dim);
+    if (ImGui::Checkbox(_u8L("Snap to bed").c_str(), &bed_on) && subs_live) {
+        ac->set_bool("orca_ext_snap_drag_bed", bed_on);
+        ac->save();
+    }
+    if (!subs_live) ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", _u8L("Count the build plate as a landing surface. On: an object dragged "
+                                     "over empty space drops to the plate. Off: it stays floating, and "
+                                     "only other objects can catch it.").c_str());
+
+    bool group_on = GravitySnap::move_as_group();
+    if (!subs_live) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, dim);
+    if (ImGui::Checkbox(_u8L("Move selection as one block").c_str(), &group_on) && subs_live) {
+        ac->set_bool("orca_ext_snap_drag_group", group_on);
+        ac->save();
+    }
+    if (!subs_live) ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", _u8L("Off: every object in the selection falls on its own, so parts "
+                                     "picked up together can land at different heights (objects stacked "
+                                     "on each other still travel together). On: the whole selection "
+                                     "moves as one rigid block.").c_str());
+
+    ImGui::End();
 }
 
 void GLCanvas3D::_render_style_editor()

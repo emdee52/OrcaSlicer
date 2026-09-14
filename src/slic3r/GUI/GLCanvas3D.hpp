@@ -5,6 +5,9 @@
 #include <memory>
 #include <chrono>
 #include <cstdint>
+#include <map>
+#include <set>
+#include <utility>
 
 #include "GLToolbar.hpp"
 #include "Event.hpp"
@@ -19,6 +22,7 @@
 #include "SceneRaycaster.hpp"
 #include "IMToolbar.hpp"
 #include "slic3r/GUI/3DBed.hpp"
+#include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] SnapDragIndicator draws a GravitySnap::FloorHit
 #include "libslic3r/Slicing.hpp"
 
 #include <float.h>
@@ -592,6 +596,11 @@ private:
     GLSelectionRectangle m_rectangle_selection;
     bool m_navigator_dragging{ false };
 
+    // [ORCAPORT:AS-3] Per-drag hysteresis state for Snap & Drag, keyed by (object_idx, instance_idx):
+    // true = last frame this instance rested on another object (not the bed). Kept with the lower
+    // release ratio so a floor does not flicker off near an edge; cleared at the start of each drag.
+    std::map<std::pair<int, int>, bool> m_snapdrag_engaged;
+
     //BBS:add plate related logic
     mutable std::vector<int> m_hover_volume_idxs;
     std::vector<int> m_hover_plate_idxs;
@@ -681,6 +690,55 @@ public:
 
     SequentialPrintClearance m_sequential_print_clearance;
     bool m_sequential_print_clearance_first_displacement{ true };
+
+    // [ORCAPORT:AS-3] Landing indicator while dragging with Snap & Drag engaged: a translucent
+    // shadow of the dragged instance's footprint on the recognised surface, the ghost box where it
+    // will come to rest, the contact zone the engine decided on, the raw raycast hits, and a beam
+    // filling the hover gap. Everything is drawn FROM GravitySnap::FloorHit; nothing here feeds
+    // back into the Z decision. One indicator only (not per-instance).
+    class SnapDragIndicator
+    {
+        static constexpr size_t SHADOW_RING_COUNT = 4;
+        GLModel  m_shadow_rings[SHADOW_RING_COUNT];
+        GLModel  m_fill;
+        GLModel  m_outline;
+        GLModel  m_beam;
+        GLModel  m_ghost_box;
+        GLModel  m_contact_fill;
+        GLModel  m_contact_outline;
+        GLModel  m_beam_prism;
+        GLModel  m_samples;
+        bool     m_visible{ false };
+
+        // Rebuild guard: set() is called once per drag frame and rebuilds ~10 GLModels; while
+        // sliding over the same surface nothing changes. Compared as exact doubles on purpose.
+        struct Key
+        {
+            double z{0.0};
+            double top_z{0.0};
+            int    obj{-2};
+            int    inst{-2};
+            bool   bed{false};
+            Point  centroid;
+            bool   valid{false};
+        };
+        Key m_key;
+
+    public:
+        // `footprint_world` = convex-hull polygon (scaled units, world XY) of the dragged instance.
+        // `hit` = the engine's decision, including the zone it recognised. `ghost_box` = the
+        // instance's AABB already translated down to its landing Z. `beam_top_z` = world mm of the
+        // instance's underside right now (landing Z + the hover lift).
+        void set(const Polygon &footprint_world, const OrcaExt::Gui::GravitySnap::FloorHit &hit,
+                 const BoundingBoxf3 &ghost_box, double beam_top_z);
+        void set_visible(bool visible) { m_visible = visible; if (!visible) m_key.valid = false; }
+        bool is_visible() const { return m_visible; }
+        void render();
+
+        friend class GLCanvas3D;
+    };
+
+    SnapDragIndicator m_snapdrag_indicator;
 
     struct ToolbarHighlighter
     {
@@ -1043,6 +1101,8 @@ public:
     void on_render_timer(wxTimerEvent& evt);
     void on_set_color_timer(wxTimerEvent& evt);
     void on_mouse(wxMouseEvent& evt);
+    // [ORCAPORT:AS-3] one live-drag frame in "move selection as one block" mode
+    void _snapdrag_rigid_frame(const std::set<std::pair<int, int>>& moving);
     void on_gesture(wxGestureEvent& evt);
     void on_paint(wxPaintEvent& evt);
     void on_set_focus(wxFocusEvent& evt);
@@ -1263,11 +1323,15 @@ private:
     void _render_plane() const;
     void _render_selection();
     void _render_sequential_clearance();
+    // [ORCAPORT:AS-3] landing shadow/beam while Snap & Drag is dragging
+    void _render_snapdrag_indicator();
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER
     void _check_and_update_toolbar_icon_scale();
     void _render_overlays();
+    // [ORCAPORT:AS-3] Snap & Drag options panel, opened by the magnet icon in the plate column
+    void _render_snapdrag_panel();
     void _render_style_editor();
     void _render_volumes_for_picking(const Camera& camera) const;
     void _render_current_gizmo() const;
