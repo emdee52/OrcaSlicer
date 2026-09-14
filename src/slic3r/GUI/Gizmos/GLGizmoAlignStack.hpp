@@ -61,34 +61,6 @@ private:
     bool  m_place_a_on_bed = true;   // drop A to bed before a Z+ chain
     bool  m_flush_mode     = false;  // false = Touch (contact), true = Flush
 
-    // --- Face-pick state ----------------------------------------------------
-    bool   m_face_pick_mode    = false;
-    bool   m_has_picked_face   = false;
-    double m_picked_face_world_z = 0.0;
-    Vec3d  m_picked_face_world_pos { Vec3d::Zero() };
-    Vec3d  m_picked_face_world_normal { Vec3d::UnitZ() };
-    std::unique_ptr<MeshRaycaster> m_face_raycaster;
-    int                             m_face_raycaster_obj_idx = -1;
-    Transform3d                     m_face_raycaster_world_trafo { Transform3d::Identity() };
-    // Kept alongside the raycaster so we can look up the hit facet's vertices
-    // and draw the highlight region (raw_mesh() = object-space). Normals and
-    // face adjacency are cached so the coplanar flood-fill is cheap on hover.
-    TriangleMesh                    m_face_mesh;
-    std::vector<Vec3f>              m_face_normals;
-    std::vector<Vec3i32>            m_face_neighbors;
-
-    // --- Face highlight (hover + picked) feedback --------------------------
-    // Last mouse position seen while in pick mode (canvas coords), used by
-    // on_render to raycast and light up the triangle under the cursor.
-    Vec2d  m_hover_mouse_pos { Vec2d::Zero() };
-    bool   m_have_hover_pos  = false;
-    int    m_hover_facet_idx = -1;   // facet currently under the cursor (-1 none)
-    int    m_picked_facet_idx = -1;  // facet chosen by the last click (-1 none)
-    GLModel m_hover_face_model;      // teal overlay, rebuilt when hover changes
-    int     m_hover_model_facet = -1;// facet the hover model was built for
-    GLModel m_picked_face_model;     // green overlay for the confirmed face
-    int     m_picked_model_facet = -1;
-
     // --- Scene highlight: original GLVolume colors we tinted ---------------
     // Keyed by a stable (object_idx, volume_idx, instance_idx) id so we can
     // restore by matching live volumes — safe across selection changes AND
@@ -219,6 +191,8 @@ private:
     void apply_flush(int axis, int dir);
     // Center #2 on #1 along axis.
     void apply_center(int axis);
+    // Center #2 on #1 along X, Y and Z in a single move.
+    void apply_center_all();
     // Every ordered object to min_z = 0.
     void apply_all_on_bed();
 
@@ -238,18 +212,7 @@ private:
     // position instead of decoding an abstract X-/X+ button.
     void render_zone_and_ghosts();
 
-    void apply_place_on_picked_face();
-    void clear_face_pick();
-    void ensure_face_raycaster_for_A();
-
-    // Raycast under `mouse_pos` against #1 and update the hovered facet.
-    void update_hover_face(const Vec2d& mouse_pos);
-    // Build a GLModel for the connected coplanar region grown from `facet_idx`
-    // (object space, each triangle lifted a hair along its normal to avoid
-    // z-fighting) tinted with `col`. On a flat face this lights up the whole
-    // face; on curved surfaces it stays a small patch around the cursor.
-    void build_face_model(GLModel& model, int facet_idx, const ColorRGBA& col);
-    // Render the hover/picked face overlays (flat shader, depth-tested).
+    // Render the mate face overlays (hover + picked), flat shader.
     void render_face_highlights();
 };
 

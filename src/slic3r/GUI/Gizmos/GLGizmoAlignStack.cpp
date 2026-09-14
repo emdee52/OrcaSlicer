@@ -273,7 +273,6 @@ void GLGizmoAlignStack::on_set_state()
     } else if (get_state() == Off) {
         restore_highlight();
         m_ordered_object_idxs.clear();
-        clear_face_pick();
         m_mate_mode = false;   // [ORCAPORT:AS-2] don't leave mate-pick intercepting clicks
         clear_mate_state();
         reset_ghost_geometry();
@@ -330,9 +329,6 @@ void GLGizmoAlignStack::toggle_object_order(int object_idx)
         m_ordered_object_idxs.push_back(object_idx);
         sel.add_object((unsigned int)object_idx, false);
     }
-    // Order changed â†’ a previously picked face on the old anchor is stale.
-    if (m_face_pick_mode || m_has_picked_face)
-        clear_face_pick();
     refresh_highlight();
 }
 
@@ -364,7 +360,7 @@ void GLGizmoAlignStack::apply_highlight()
 
     // While picking a face, ghost the whole scene so the highlighted face pops.
     // (render_color picks up the lowered alpha â†’ goes to the transparent pass.)
-    const bool  ghost   = m_face_pick_mode;
+    const bool  ghost   = false;
     const float ghost_a = 0.30f; // dial: lower = fainter scene
 
     const GLVolumePtrs& volumes = m_parent.get_volumes().volumes;
@@ -379,7 +375,7 @@ void GLGizmoAlignStack::apply_highlight()
 
         // #1 stays untinted while picking a face on it so the overlay reads
         // cleanly; every other ordered object keeps its order color.
-        const bool do_tint = (order >= 0) && !(m_face_pick_mode && order == 0);
+        const bool do_tint = (order >= 0);
         if (!do_tint && !ghost)
             continue; // nothing to do for this volume
 
@@ -548,53 +544,6 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
         return false;
     }
 
-    if (m_face_pick_mode) {
-        // Hover feedback: remember where the cursor is so on_render can light up
-        // the triangle under it. Don't consume Moving â€” camera/hover stay live.
-        if (mouse_event.Moving()) {
-            m_hover_mouse_pos = Vec2d(mouse_event.GetX(), mouse_event.GetY());
-            m_have_hover_pos  = true;
-            m_parent.set_as_dirty();
-            m_parent.request_extra_frame();
-            return false;
-        }
-        if (mouse_event.LeftDown()) {
-            const int a_idx = ordered_obj(0);
-            if (a_idx < 0)
-                return false;
-
-            ensure_face_raycaster_for_A();
-            if (!m_face_raycaster)
-                return false;
-
-            const Camera& camera = wxGetApp().plater()->get_camera();
-            const Vec2d mouse_pos(mouse_event.GetX(), mouse_event.GetY());
-
-            Vec3f  hit_local  { 0.f, 0.f, 0.f };
-            Vec3f  hit_normal { 0.f, 0.f, 1.f };
-            size_t facet_idx  = 0;
-
-            if (m_face_raycaster->unproject_on_mesh(mouse_pos,
-                                                    m_face_raycaster_world_trafo,
-                                                    camera, hit_local, hit_normal,
-                                                    nullptr, &facet_idx)) {
-                const Vec3d hit_world =
-                    m_face_raycaster_world_trafo * hit_local.cast<double>();
-                m_picked_face_world_pos    = hit_world;
-                m_picked_face_world_normal = (m_face_raycaster_world_trafo.linear()
-                                               * hit_normal.cast<double>()).normalized();
-                m_picked_face_world_z      = hit_world.z();
-                m_has_picked_face          = true;
-                m_picked_facet_idx         = (int)facet_idx; // confirmed-face overlay
-                m_parent.set_as_dirty();
-                m_parent.request_extra_frame();
-                // Stay in pick mode so the user can re-pick.
-                return true;
-            }
-        }
-        return false;
-    }
-
     // Click-to-order: clicking an object in the scene assigns the next letter;
     // clicking an already-lettered object removes it from the order.
     if (mouse_event.LeftDown() && !mouse_event.Dragging()) {
@@ -612,51 +561,6 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
         return true; // consume: keep global selection stable while ordering
     }
     return false;
-}
-
-void GLGizmoAlignStack::ensure_face_raycaster_for_A()
-{
-    const int a_idx = ordered_obj(0);
-    if (a_idx < 0) {
-        clear_face_pick();
-        return;
-    }
-    const Model* model = m_parent.get_selection().get_model();
-    if (!model || a_idx >= (int)model->objects.size())
-        return;
-    const ModelObject* mo = model->objects[a_idx];
-    if (mo->instances.empty())
-        return;
-
-    // Refresh the world transform every call so a moved/rotated #1 never leaves
-    // a stale raycaster (cheap); only rebuild the mesh + raycaster when #1 itself
-    // changes (raw_mesh() is object-space, so we render with view * this trafo).
-    m_face_raycaster_world_trafo = mo->instances.front()->get_matrix();
-    if (m_face_raycaster && m_face_raycaster_obj_idx == a_idx)
-        return;
-
-    m_face_mesh = mo->raw_mesh();
-    m_face_raycaster.reset(new MeshRaycaster(m_face_mesh)); // copies internally
-    m_face_raycaster_obj_idx = a_idx;
-    // Cache adjacency + normals for the coplanar flood-fill (computed once per #1).
-    m_face_normals   = its_face_normals(m_face_mesh.its);
-    m_face_neighbors = its_face_neighbors(m_face_mesh.its);
-    m_hover_facet_idx = m_hover_model_facet = -1; // force highlight rebuild
-}
-
-void GLGizmoAlignStack::clear_face_pick()
-{
-    m_face_pick_mode         = false;
-    m_has_picked_face        = false;
-    m_face_raycaster.reset();
-    m_face_raycaster_obj_idx = -1;
-    m_have_hover_pos         = false;
-    m_hover_facet_idx        = -1;
-    m_hover_model_facet      = -1;
-    m_picked_facet_idx       = -1;
-    m_picked_model_facet     = -1;
-    m_hover_face_model.reset();
-    m_picked_face_model.reset();
 }
 
 // -----------------------------------------------------------------------------
@@ -725,11 +629,6 @@ void GLGizmoAlignStack::build_mesh_face_model(const TriangleMesh& mesh, const st
     model.set_color(col);
 }
 
-void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const ColorRGBA& col)
-{
-    build_mesh_face_model(m_face_mesh, m_face_normals, m_face_neighbors, model, facet_idx, col);
-}
-
 // [ORCAPORT:AS-2] Cache the mesh/raycaster/normals/adjacency of the object the mate mode is
 // currently asking a face from, so hover highlighting is cheap.
 void GLGizmoAlignStack::ensure_mate_hover_mesh(int object_idx)
@@ -785,7 +684,6 @@ void GLGizmoAlignStack::swap_order()
     if (m_ordered_object_idxs.size() < 2)
         return;
     std::swap(m_ordered_object_idxs[0], m_ordered_object_idxs[1]);
-    clear_face_pick();
     clear_mate_state();
     m_mate_hover_facet       = -1;
     m_mate_hover_model_facet = -1;
@@ -793,27 +691,6 @@ void GLGizmoAlignStack::swap_order()
     m_mate_src_model.reset();
     m_mate_tgt_model.reset();
     refresh_highlight();
-}
-
-void GLGizmoAlignStack::update_hover_face(const Vec2d& mouse_pos)
-{
-    ensure_face_raycaster_for_A();
-    if (!m_face_raycaster) {
-        m_hover_facet_idx = -1;
-        return;
-    }
-
-    const Camera& camera = wxGetApp().plater()->get_camera();
-    Vec3f  hit_local  { 0.f, 0.f, 0.f };
-    Vec3f  hit_normal { 0.f, 0.f, 1.f };
-    size_t facet_idx  = 0;
-
-    if (m_face_raycaster->unproject_on_mesh(mouse_pos, m_face_raycaster_world_trafo,
-                                            camera, hit_local, hit_normal,
-                                            nullptr, &facet_idx))
-        m_hover_facet_idx = (int)facet_idx;
-    else
-        m_hover_facet_idx = -1;
 }
 
 void GLGizmoAlignStack::render_face_highlights()
@@ -855,59 +732,6 @@ void GLGizmoAlignStack::render_face_highlights()
             }
         }
     }
-
-    if (!m_face_pick_mode)
-        return;
-
-    // Refresh the hovered facet from the last known cursor position.
-    if (m_have_hover_pos)
-        update_hover_face(m_hover_mouse_pos);
-
-    // (Re)build overlays only when their facet changed.
-    if (m_hover_facet_idx != m_hover_model_facet) {
-        if (m_hover_facet_idx >= 0)
-            build_face_model(m_hover_face_model, m_hover_facet_idx,
-                             ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f)); // teal hover
-        else
-            m_hover_face_model.reset();
-        m_hover_model_facet = m_hover_facet_idx;
-    }
-    if (m_picked_facet_idx != m_picked_model_facet) {
-        if (m_picked_facet_idx >= 0)
-            build_face_model(m_picked_face_model, m_picked_facet_idx,
-                             ColorRGBA(0.16f, 0.85f, 0.30f, 0.60f)); // green picked
-        else
-            m_picked_face_model.reset();
-        m_picked_model_facet = m_picked_facet_idx;
-    }
-
-    if (!m_hover_face_model.is_initialized() && !m_picked_face_model.is_initialized())
-        return;
-
-    GLShaderProgram* shader = wxGetApp().get_shader("flat");
-    if (shader == nullptr)
-        return;
-
-    shader->start_using();
-    glsafe(::glEnable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE)); // raw-mesh facet winding varies; show both sides
-    glsafe(::glEnable(GL_BLEND));
-    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
-
-    const Camera& camera = wxGetApp().plater()->get_camera();
-    const Transform3d view_model_matrix = camera.get_view_matrix() * m_face_raycaster_world_trafo;
-    shader->set_uniform("view_model_matrix", view_model_matrix);
-    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
-
-    // Picked face underneath, live hover on top.
-    if (m_picked_face_model.is_initialized())
-        m_picked_face_model.render();
-    if (m_hover_face_model.is_initialized())
-        m_hover_face_model.render();
-
-    glsafe(::glDisable(GL_BLEND));
-    glsafe(::glEnable(GL_CULL_FACE));
-    shader->stop_using();
 }
 
 // -----------------------------------------------------------------------------
@@ -1011,16 +835,24 @@ void GLGizmoAlignStack::apply_all_on_bed()
     m_parent.do_move("");
 }
 
-void GLGizmoAlignStack::apply_place_on_picked_face()
+void GLGizmoAlignStack::apply_center_all()
 {
-    if (!m_has_picked_face || m_ordered_object_idxs.size() < 2)
+    if (m_ordered_object_idxs.size() < 2)
         return;
-    Plater::TakeSnapshot snap(wxGetApp().plater(), "Align & Stack: stack on face");
+    Selection& sel = m_parent.get_selection();
+    const int a_idx = m_ordered_object_idxs[0];
     const int b_idx = m_ordered_object_idxs[1];
-    const BoundingBoxf3 bb = world_bbox_of_object(b_idx);
-    if (bb.defined)
-        translate_object(b_idx, Vec3d(0.0, 0.0,
-                         m_picked_face_world_z + (double)m_epsilon_mm - bb.min.z()));
+    const BoundingBoxf3 a_bb = world_bbox_of_object(a_idx);
+    const BoundingBoxf3 b_bb = world_bbox_of_object(b_idx);
+    if (!a_bb.defined || !b_bb.defined)
+        return;
+    const Vec3d delta = compute_center_delta(0, a_bb, b_bb) +
+                        compute_center_delta(1, a_bb, b_bb) +
+                        compute_center_delta(2, a_bb, b_bb);
+    if (delta.norm() < 1e-9)
+        return;
+    Plater::TakeSnapshot snap(wxGetApp().plater(), "Align & Stack: center on #1");
+    translate_object(b_idx, delta);
     m_parent.do_move("");
 }
 
@@ -1090,9 +922,9 @@ void GLGizmoAlignStack::render_zone_and_ghosts()
     // leaves no stale clickable rects behind for on_mouse to hit.
     m_ghost_icon_rects.clear();
 
-    // While picking a face, the scene is already ghosted and the face overlay
-    // owns the read â€” showing placement ghosts on top would just be clutter.
-    if (m_face_pick_mode || m_ordered_object_idxs.empty())
+    // While picking a mate face, the face overlay owns the read â€” showing placement
+    // ghosts on top would just be clutter.
+    if (m_mate_mode || m_ordered_object_idxs.empty())
         return;
 
     const BoundingBoxf3 a_bb = world_bbox_of_object(m_ordered_object_idxs[0]);
@@ -1550,10 +1382,15 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
     }
     if (n > 0) {
         ImGui::SameLine(0.0f, 8.0f);
+        // [ORCAPORT:AS-2] Red, because it clears the whole order.
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.72f, 0.18f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.26f, 0.26f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.60f, 0.12f, 0.12f, 1.0f));
         if (ImGui::SmallButton(_u8L("Reset").c_str())) {
             while (!m_ordered_object_idxs.empty())
                 toggle_object_order(m_ordered_object_idxs.back());
         }
+        ImGui::PopStyleColor(3);
     }
     if (n == 2) {
         ImGui::SameLine(0.0f, 8.0f);
@@ -1613,6 +1450,14 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
         ImGui::SetTooltip("%s", _u8L("Drop every ordered object to the bed (Z = 0)").c_str());
     m_imgui->disabled_end();
 
+    // [ORCAPORT:AS-2] One click: center #2 on #1 along X, Y and Z.
+    m_imgui->disabled_begin(!can_apply);
+    if (ImGui::Button(_u8L("Center #2 on #1 (X/Y/Z)").c_str(), ImVec2(-1.0f, 0.0f)))
+        apply_center_all();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", _u8L("Center the moving object on the anchor on all three axes in one move").c_str());
+    m_imgui->disabled_end();
+
     // --- Options ------------------------------------------------------------------
     ImGui::SetNextItemWidth(90.f);
     ImGui::InputFloat(_u8L("Z gap (mm)").c_str(), &m_epsilon_mm, 0.0f, 0.0f, "%.3f");
@@ -1624,32 +1469,6 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
         ImGui::SetTooltip("%s", _u8L("Drop #1 to the bed before stacking on top of it").c_str());
 
     ImGui::Separator();
-
-    // --- Stack on face ---------------------------------------------------------------
-    ImGui::Text("%s", _u8L("Stack on face").c_str());
-    m_imgui->disabled_begin(!can_apply);
-
-    if (ImGui::Checkbox(_u8L("Pick a face on #1").c_str(), &m_face_pick_mode)) {
-        if (m_face_pick_mode) {
-            m_has_picked_face = false;
-            ensure_face_raycaster_for_A();
-        } else {
-            clear_face_pick();
-        }
-        // #1's tint is suppressed while picking â€” refresh so it shows real
-        // color on entry and regains its order color on exit.
-        refresh_highlight();
-    }
-    if (m_has_picked_face) {
-        ImGui::SameLine();
-        ImGui::Text(_u8L("Z = %.3f mm").c_str(), m_picked_face_world_z);
-        if (ImGui::Button(_u8L("Place #2 on picked face").c_str()))
-            apply_place_on_picked_face();
-    } else if (m_face_pick_mode) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", _u8L("Click a face on #1...").c_str());
-    }
-    m_imgui->disabled_end();
 
     // --- [ORCAPORT:AS-2] Mate faces ------------------------------------------------
     ImGui::Separator();
