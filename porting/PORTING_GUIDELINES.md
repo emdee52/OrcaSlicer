@@ -106,14 +106,35 @@ Rules:
   modules get a folder: `src/libslic3r/OrcaExt/` and `src/slic3r/GUI/OrcaExt/`.
 - **Classes:** `OrcaExt::<Name>`. Do not prefix with vendor or product names.
 - **Tests:** `tests/libslic3r/TestOrcaExt<Name>.cpp`, following `tests/AGENTS.md`.
-- **Print/profile config keys:** preserve the fork's existing key strings verbatim (confirmed
-  policy) so existing 3MF files and profiles remain loadable; record them in the manifest.
-  Rename only a key that contains branding, and record the old->new mapping.
+- **Print/profile config keys:** neutral, descriptive names - never `neotko_*` or any
+  vendor prefix. Record the fork key as a mapping in the manifest. Do not rename an
+  existing upstream key we reuse.
 - **App/preference keys:** prefix `orca_ext_` so they cannot collide with upstream
-  preferences. Keep app-level machine preferences out of print profiles (MT-1/MT-2 must
-  stay app-level, as the fork intends).
-- **Config enum values:** preserve the fork's value strings (e.g. a wall-generator value).
-  Do not rename an existing enum value.
+  preferences. Keep app-level machine preferences out of print profiles (MT-1/MT-2, AS-1,
+  AS-3 stay app-level).
+- **Config enum values:** append new values last (never reorder, or serialized profile
+  indices shift). Name them neutrally; leave existing upstream values untouched.
+- **User-visible feature names:** keep the fork's established, recognizable names (e.g.
+  "NeoWave", "NeoArachne"). Neutralize only internal identifiers, not the labels users see.
+
+### Settings placement (decided: hybrid)
+
+Match the setting's scope to the UI. There is no single catch-all tab.
+
+- **Region/object/global print settings** go into their natural existing Process page, so
+  they also appear in the object/region override dialogs:
+  - `PQ-1` -> Quality > Bridging
+  - `PQ-2` -> Speed > Overhang speed
+  - `SU-1`, `SU-4` -> Support (+ Advanced)
+  - `PQ-3` -> Quality > Wall generator
+  - `MT-4` -> the MMU paint gizmo panel (not a tab)
+- **App-level machine/behavior preferences** (MT-1/MT-2, AS-1 free-Z, AS-3 toggles) are not
+  profile data. Expose them through `orca_ext_*` app keys in Preferences or a small
+  app-level Extras dialog. Putting them in a Process page writes them into every profile and
+  resets them when profiles update.
+- Do not add one "everything" tab: region/object options must live in the normal groups to
+  be overridable, and tab location has no effect on build time (any new option touches
+  `PrintConfig.hpp` and forces a broad rebuild regardless).
 
 ---
 

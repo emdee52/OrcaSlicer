@@ -12,11 +12,10 @@ Selected source items (IDs refer to `NEOTKO_FEATURE_INVENTORY.md`):
 | MT-3 | Bed heats for the hottest filament on the plate - **ALREADY UPSTREAM, dropped (Phase 0)** |
 | MT-4 | MMU painter Pro Mode (F1-F4) |
 | SU-1 | PerObject Support |
-| SU-3 | Real floating-object detection (feeds the AS-1 floating trigger) |
-| SU-4 | NeoWave Support |
+| SU-4 | NeoWave Support (wave-roof half only) |
 | SU-5 | Support Zones - aimed pillars |
 | SU-6 | Support Zones - block trees |
-| AS-1 | Libre Mode **floating-object trigger only** (place at any Z; empty first layer = warning) |
+| AS-1 | Free-Z placement only (move objects off the bed to align without assembling) |
 | AS-2 | Align & Stack gizmo |
 | AS-3 | Snap & Drag |
 | PQ-1 | Bridging infill extra expansion |
@@ -118,7 +117,7 @@ Tasks:
 2. **Locate each selected feature** in the diff. For each ID record, in
    `OrcaSlicer/porting/notes/<ID>.md`:
    - source files touched and a one-line purpose each;
-   - exact config keys / enum values / pref keys used (record verbatim);
+   - neutral names for our keys (never `neotko_*`), with the fork key recorded as a mapping;
    - source commit sha(s) and the `NEOTKOCM_RELEASE_x` that describes it;
    - gate(s) present (Libre Mode, env var, default) to be removed;
    - hidden dependencies on other Neotko features;
@@ -145,32 +144,31 @@ Estimated: 1-2 working days plus background build time.
 
 ## 2. Dependency analysis and build order
 
-Two features drive most of the coupling:
+The coupling is small:
 
-- **A shared "floor / contact measurement" module** is needed by AS-1 (floating trigger),
-  AS-3 (Snap & Drag), and SU-1 (PerObject Support). The fork implements it once and True
-  Objects (SU-2) additionally uses it for slicing. Build the measurement module in Phase 1;
-  do not port True Objects' slicer behaviour.
+- **`InstanceContact`** (cross-instance contact) is now used only by SU-1. It is not a
+  shared substrate: AS-1 is placement-only and AS-3 is GUI-local, so neither needs it.
+  Build it as part of SU-1.
 - **Support Zones (SU-5 -> SU-6)** share one gizmo and one corridor/column-stepping engine.
-  SU-6 is an extension of SU-5, not an independent feature.
+  SU-6 extends SU-5.
+- **PQ-3a cannot stand alone** (recon), so PQ-3a and PQ-3b ship together.
 
-Everything else is largely independent. Recommended order, lowest risk and lowest coupling
-first:
+Recommended order, lowest risk and lowest coupling first:
 
 ```
-Phase 1  shared floor/contact measurement module (internal, no UI)
-Phase 2  standalone config + G-code:  MT-3, PQ-1, PQ-2, MT-1, MT-2, PQ-3a
+Phase 1  retired (the shared measurement module is folded into SU-1)
+Phase 2  standalone config + G-code:  PQ-1, PQ-2, MT-1, MT-2
 Phase 3  painting UI:                 MT-4
-Phase 4  placement:                   AS-1 (floating) + SU-3, AS-2, AS-3
-Phase 5  supports:                    SU-1, SU-4, SU-5 -> SU-6
-Phase 6  wall engine (riskiest last): PQ-3b
+Phase 4  placement:                   AS-1 (free-Z), AS-2, AS-3
+Phase 5  supports:                    SU-1 (incl. InstanceContact), SU-4 (wave roof), SU-5 -> SU-6
+Phase 6  wall engine (riskiest last): PQ-3 (a+b together)
 Phase 7  hardening, tests, final build
 ```
 
-Rationale: Phases 2-3 are small and de-risk the toolchain/conventions. Phases 4-6 are the
-real cost. PQ-3 was split: PQ-3a (pin outer width + blend distance) is small, low-risk and
-lands early with the other config work; PQ-3b (full hybrid routing) is the risky half and
-stays last, so the wall engine is not in the tree while everything else is validated.
+Rationale: Phase 2 is small and de-risks the toolchain/conventions. Placement is
+self-contained GUI work. Supports are the real cost. The hybrid wall generator is the
+riskiest single feature and stays last, so the wall engine is not in the tree while
+everything else is validated.
 
 ---
 
@@ -179,36 +177,18 @@ stays last, so the wall engine is not in the tree while everything else is valid
 Each entry: intent, expected touch points (confirm in Phase 0), ungating, uncoupling,
 verification, risk.
 
-### Phase 1 - Shared floor/contact measurement module
+### Phase 1 - retired
 
-- Intent: for a given object instance and XY footprint, measure the real surface height
-  underneath (bed, own geometry, other objects' bodies, other objects' supports), per
-  instance.
-- Also builds the accurate per-island floating-object detection (SU-3) that AS-1 consumes:
-  real Z gap and XY overlap against the bed and every other object's instances, judged per
-  instance. It is a measurement API, not a slicer behaviour, so it does not pull in True
-  Objects.
-- Expected touch points: new module only; the gizmos/support consume it through a narrow
-  interface. No existing slicer behaviour changes in this phase.
-- Ungating: N/A (internal).
-- Uncabling: this module is the uncoupling artifact. It must not include True Objects'
-  area-based bridge/contact classification.
-- Verification: unit tests over synthetic scenes (object on bed, object stacked on object,
-  two instances at different heights, hollow rim vs interior floor); assert measured heights
-  and contact/no-contact per the release notes' rules.
-- Risk: geometry correctness. The fork notes long-standing bugs here (phantom tower,
-  stale triangle copies), so expect to write this carefully rather than lift it.
+The shared floor/contact module is no longer a phase. AS-1 is placement-only (no slicing
+change) and AS-3 is GUI-local, so only SU-1 needs `InstanceContact`, and it is built with
+SU-1 in Phase 5. SU-3 is dropped: with the user's workflow (align floating, then assemble
+before slicing) the slice-time floating warning is never exercised.
 
 ### Phase 2 - Standalone config and G-code features
 
-**MT-3 Bed heats for the hottest filament**
-- Intent: first-layer and layer-2 bed target = max over the filaments actually used, not
-  whichever prints first.
-- Touch point: the function that chooses initial/transition bed temperature. One call site.
-- Ungating: correctness fix, always active. No change when all filaments agree.
-- Verification: multi-tool plate with differing bed temps; assert `M140`/`M190` equal the
-  max; all-equal plate unchanged.
-- Risk: low. Note: changes emitted G-code on mixed-temp plates (document it).
+**MT-3 Bed heats for the hottest filament - DROPPED (already upstream)**
+- Target already computes this by default (`bed_temperature_formula` = `btfHighestTemp`,
+  `GCode::get_highest_bed_temperature`). No port. See `notes/MT-3.md`.
 
 **PQ-1 Bridging infill extra expansion**
 - Intent: new Quality > Bridging option, mm, default 0, added on top of the existing
@@ -231,19 +211,10 @@ verification, risk.
   change on fully supported inner walls.
 - Risk: medium (speed pipeline).
 
-**PQ-3a NeoArachne low-risk slice (pin outer wall width + blend distance)**
-- Intent: two standalone changes to the Arachne beading solver - "Pin Outer Wall Width"
-  (default on) extends constant outer width down into 1-2 bead regions, and the
-  SkeletalTrapezoidation transition blend distance becomes user-configurable instead of a
-  100 mm hardcode. Both are usable without the full NeoArachne routing.
-- Touch points: the beading solver's outer-width handling; the transition-smoothing
-  distance; two new wall-generation options.
-- Ungating: remove Libre Mode; options appear with the wall generator they belong to.
-- Uncabling: neither change depends on the per-feature routing or the enum. Port them as
-  focused edits to the existing Arachne path; do not add the new generator value yet.
-- Verification: pin on/off changes only thin (1-2 bead) regions; blend distance changes only
-  transition smoothing; Classic and stock Arachne output unchanged at defaults.
-- Risk: low-medium. This deliberately de-risks the PQ-3b half.
+**PQ-3a - moved to Phase 6 (ships with PQ-3b)**
+- Recon shows the two "low-risk" knobs (pin outer width, blend distance) are reachable only
+  on the hybrid-wall-generator path, so they cannot land alone. They are ported together
+  with PQ-3b.
 
 **MT-1 Hotends that finished switch off / MT-2 Extra Energy Save**
 - Intent (MT-1): set a finished tool's standby command to 0 so it stops heating for the
@@ -283,22 +254,19 @@ verification, risk.
 
 ### Phase 4 - Placement
 
-**AS-1 floating-object trigger + SU-3 accurate detection (decided)**
-- Intent: objects may be placed at any Z with no forced bed snap, and an empty first layer
-  becomes a warning instead of an error. This is only the trigger behaviour, not the rest
-  of Libre Mode.
-- Detection: **use the accurate per-island detection (SU-3) built in Phase 1** rather than
-  the "empty first layer" heuristic. An object resting on another no longer gets a bogus
-  floating warning; a genuinely floating island still warns, per island. The old blanket
-  suppression is not ported.
-- Touch points: the placement / first-layer validation path; consumes the Phase 1 module.
-- Ungating: remove the Libre Mode master switch; the behaviour is the ported behaviour.
-- Uncabling: deliberately exclude Libre Mode's assembled-boolean, per-volume XY comp,
-  copy/paste process settings, full assembled-part options.
-- Verification: object placed above the bed does not error; an object stacked on another
-  does not warn; a genuinely floating island warns once, on the right object; two instances
-  of one object at different spots are judged independently.
-- Risk: low-medium.
+**AS-1 Free-Z placement only (decided)**
+- Intent: let an object be moved off the bed in Z and stay there, so two separate objects
+  can be aligned without assembling. Printing is always done after assembling, so no
+  slice-time behaviour changes.
+- Scope: the placement half only - a dedicated app preference (`orca_ext_free_z`, default
+  off) plus the `ensure_on_bed()` skip sites in the GUI (`GLCanvas3D`, `Selection`,
+  `SurfaceDrag`, `GUI_ObjectList`, `GLGizmoSimplify`, `EmbossJob`, `Plater`).
+- Explicitly NOT ported: the `GCode.cpp` empty-first-layer "warning instead of error"
+  downgrade, SU-3 measured floating detection, and the rest of Libre Mode.
+- Key: a new dedicated app key; do not reuse `neotko_true_objects`.
+- Verification: preference off -> objects snap to the bed exactly as stock; on -> an object
+  stays where it is placed and AS-2/AS-3 can leave objects floating.
+- Risk: low.
 
 **AS-2 Align & Stack**
 - Intent: left-toolbar gizmo; anchor #1 and movable #2; "place against" (face-touch,
@@ -317,12 +285,11 @@ verification, risk.
   (overlap hysteresis, real mesh raycasts, highest surface wins, multi-instance uses the
   lowest target, never invents a bed drop, landing indicator). Own magnet panel with
   "Snap & Drag", "Snap to bed", and "Move selection as one block".
-- Touch points: drag/placement handling; uses the Phase 1 measurement module.
+- Touch points: drag/placement handling; GUI-local (raycasts GLVolume meshes).
 - Ungating: no Libre Mode gate. The panel is available; per-object toggle off by default.
-- Uncabling: implement against the Phase 1 measurement only. Do **not** port True Objects'
-  slicing consequences. Document the resulting behaviour gap: the object lands correctly,
-  but contact faces are still classified by stock slicing (possible false bridges) until/if
-  SU-2 is ever ported. This is an accepted limitation, not a bug.
+- Uncabling: GUI-only. It does not call `InstanceContact` or `GravityFloor`; it only needs
+  AS-1's free-Z context so a dragged object may stay off the bed. No slicing changes, no
+  True Objects.
 - Verification: drag over a lower object lands on it; bare grazing does not engage
   (hysteresis); hollow box lands on rim/interior correctly; selection block moves rigidly;
   "Snap to bed" off keeps an object floating.
@@ -375,19 +342,18 @@ verification, risk.
 - Risk: very high. This is the largest and least finished area. Budget accordingly and
   expect to land SU-5 before SU-6.
 
-### Phase 6 - PQ-3b NeoArachne full hybrid routing
+### Phase 6 - PQ-3 NeoArachne (a+b together)
 
-- Intent: `wall_generator` gains a third value (NeoArachne); per-feature routing (outer wall
-  / inner walls / gap fill each Classic / Arachne / NeotkoEdge); a validator auto-aligns
-  combos the beading solver cannot handle; Edge Closure (allowed overlap, min/max bead
-  width, min feature size, preserve short closure tails); wall count hysteresis.
-- Prerequisite: PQ-3a has already landed the pin-outer-width and blend-distance changes, so
-  this phase adds only the routing/enum and the remaining controls.
+- Intent: add the hybrid wall generator (third `wall_generator` value): per-feature routing
+  (outer / inner / gap fill each Classic / Arachne / NeotkoEdge), a validator that
+  auto-aligns invalid combos, Edge Closure controls, wall-count hysteresis, and the
+  pin-outer-width + blend-distance knobs (PQ-3a, which cannot stand alone).
+- Prerequisite: none beyond target 2.5; PQ-3a and PQ-3b are one port.
 - Touch points: wall generator selection and enum; Arachne/SkeletalTrapezoidation internals;
-  new wall-generation options.
-- Ungating: remove Libre Mode; options appear when `wall_generator = NeoArachne`.
-- Verification: Classic and Arachne unchanged; NeoArachne hybrid produces the expected
-  outer/inner/gap-fill routing; invalid combos auto-align; the notes' print tests.
+  new wall-generation options; preview panel.
+- Ungating: remove the Libre Mode checks; options appear when `wall_generator = NeoArachne`.
+- Verification: Classic and Arachne unchanged; hybrid routing correct; invalid combos
+  auto-align; the notes' print tests.
 - Risk: very high. Do last.
 
 ### Phase 7 - Hardening
@@ -423,12 +389,11 @@ after Phase 0, when the real diff is known.
 
 Suggested checkpoints (stop and reassess at each):
 
-1. Baseline builds and tests pass (end Phase 0).
-2. Shared measurement module unit-tested, no behavioural change in the app (end Phase 1).
-3. Phase 2 features verified off-by-default identical (end Phase 2).
-4. Placement works and is independent of supports/color (end Phase 4).
-5. PerObject Support verified; then NeoWave; then Support Zones (three sub-checkpoints).
-6. PQ-3a and PQ-3b verified separately; final full build + test matrix.
+1. Baseline builds and tests pass (Phase 0 done).
+2. Phase 2 features verified off-by-default identical.
+3. Placement works (AS-1/AS-2/AS-3), no slicing change.
+4. PerObject Support verified; then wave support; then Support Zones (three sub-checkpoints).
+5. Hybrid wall generator verified; final full build + test matrix.
 
 ---
 
@@ -439,10 +404,10 @@ Suggested checkpoints (stop and reassess at each):
 | Fork code relies on moved/rewritten 2.5 APIs | all | Phase 0 records target APIs; re-implement, do not paste |
 | Support engine changes regress normal supports | SU-1/4/5/6 | feature-gated, off by default; byte-identical check; targeted tests |
 | Wipe tower interaction (roof filament, zone toolchanges) | SU-4/5/6 | route through existing toolchange planning; verify purge counts |
-| Snap & Drag without True Objects gives false bridges on contact | AS-3 | document limitation; optional SU-2 later |
-| NeoArachne destabilizes Arachne/Classic | PQ-3a, PQ-3b | PQ-3a is isolated and lands early; PQ-3b last; keep Classic/Arachne paths untouched behind the enum default |
+| Snap & Drag changes drag landing | AS-3 | GUI-only, toggles default off; needs AS-1 free-Z; no slicing change |
+| Hybrid wall generator destabilizes Arachne/Classic | PQ-3 | keep Classic/Arachne paths untouched behind the enum default; land it last |
 | Upstream update wipes port | all | markers + patch series + manifest outside `OrcaSlicer/`; apply script |
-| Config key collisions / branding in keys | all | **Decided: preserve fork keys verbatim**; rename only if a key contains branding, and record the mapping |
+| Config key naming | all | **Decided: neutral names, never `neotko_*`**; app keys `orca_ext_*`; record the fork key as a mapping in the manifest |
 | MT-1/MT-2 emit wrong machine commands | MT-1/2 | G-code diff testing; machine-family conditional for U1-specific bits |
 
 ---
@@ -451,28 +416,27 @@ Suggested checkpoints (stop and reassess at each):
 
 ### Resolved
 
-1. **SU-3 accuracy for AS-1 - RESOLVED: fold in.** AS-1 uses the accurate per-island
-   floating-object detection built in Phase 1. The empty-first-layer heuristic is not
-   ported. SU-3 is now a selected item.
-2. **Config key policy - RESOLVED: preserve fork keys verbatim.** Keys are recorded in
-   `OrcaSlicer/porting/notes/<id>.md` and in the manifest. Rename only a key that contains branding,
-   and record the old->new mapping. App preferences use the `orca_ext_` prefix.
-3. **PQ-3 splitting - RESOLVED: split.** PQ-3a (pin outer wall width + configurable blend
-   distance) lands early in Phase 2; PQ-3b (full hybrid routing, Edge Closure, wall-count
-   hysteresis) stays last in Phase 6.
-4. **U1-specific `M220 B`/`M220 R` cleanup - RESOLVED: dropped.** Not ported with MT-4 (or
-   MT-1/MT-2). No Snapmaker-machine G-code cleanup is included.
+1. **MT-3 - DROPPED, already upstream.** Target 2.5 sets the bed temperature from the
+   hottest used filament by default.
+2. **SU-3 - DROPPED.** With "align floating, then assemble before printing", the slice-time
+   floating warning is never exercised. AS-1 is placement-only.
+3. **AS-1 key - new dedicated app key** (`orca_ext_free_z`), default off. Do not reuse
+   `neotko_true_objects`.
+4. **Naming - neutral keys, keep user-visible feature names.** No `neotko_*` or vendor
+   prefixes in any key; app preferences use `orca_ext_`; new print keys are descriptive
+   (record the fork key as a mapping in the manifest). User-visible labels such as "NeoWave"
+   and "NeoArachne" are kept.
+5. **UI placement - hybrid.** Print/region/object settings go into their natural existing
+   Process pages (Quality > Bridging; Speed > Overhang; Support; Quality > Wall generator;
+   the paint gizmo). App-level machine/behavior preferences (MT-1/MT-2, AS-1, AS-3) live in
+   Preferences or a small app-level Extras dialog, not in a profile. No single catch-all tab.
+6. **SU-4 - wave-roof half only.** The contact layer is not portable without the ColorStitch
+   pack.
+7. **PQ-3 - one port (a+b together).** PQ-3a cannot stand alone.
+8. **SU-2 True Objects - excluded.** Printing is done after assembling, so there is no
+   unassembled floating contact to slice.
+9. **NeoDebug - drop the debug lines.** No NeoDebug port; features are ported without the
+   trace channels.
+10. **U1-specific `M220 B`/`M220 R` cleanup - dropped.**
 
-### Still open (raised by Phase 0 recon)
-
-1. **SU-2 True Objects.** Confirmed excluded. Accept the AS-3 false-bridge limitation
-   (object lands correctly, but contact faces are still classified by stock slicing)?
-2. **SU-4 scope.** The contact layer is not portable without the ColorStitch pack. Port the
-   wave-roof half only, or defer SU-4 entirely?
-3. **PQ-3 split revisited.** PQ-3a cannot ship standalone (its keys are only reachable via
-   the NeoArachne enum). Port PQ-3a and PQ-3b together, or re-implement the two knobs on the
-   stock Arachne path first?
-4. **AS-1 key.** Use a new dedicated app key for free-Z/floating (recommended) or reuse the
-   fork's `neotko_true_objects`?
-5. **NeoDebug.** Stub it (drop the log channels) or port a reduced version? Several selected
-   features reference it.
+No open decisions remain. Next: implement Phase 2, starting with PQ-1.
