@@ -537,6 +537,47 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
         }
     }
 
+    // [ORCAPORT:MT-4] Painter Pro Mode. F1 "Paint perimeters only" (reuses the existing
+    // mmu_segmented_region_max_width) and F3 "Precision" (finer mesh subdivision at the paint
+    // boundary). F2 (extra walls) and F4 (rectangle/polygon masks) are not ported yet.
+    if (ImGui::CollapsingHeader(_u8L("Pro Mode").c_str())) {
+        ModelObject *mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
+
+        bool perimeters_only = mo && mo->config.has("mmu_segmented_region_max_width") &&
+                               mo->config.opt_float("mmu_segmented_region_max_width") > 0.0;
+        if (ImGui::Checkbox(_u8L("Paint perimeters only").c_str(), &perimeters_only) && mo) {
+            wxGetApp().plater()->take_snapshot("Painter: perimeters only");
+            if (perimeters_only) {
+                const DynamicPrintConfig &print_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+                const double nozzle = wxGetApp().preset_bundle->printers.get_edited_preset().config.opt_float("nozzle_diameter", 0);
+                double line_width = print_cfg.get_abs_value("line_width", nozzle);
+                if (line_width <= 0.0)
+                    line_width = nozzle > 0.0 ? nozzle : 0.4;
+                const int wall_loops = std::max(1, print_cfg.opt_int("wall_loops"));
+                mo->config.set_key_value("mmu_segmented_region_max_width", new ConfigOptionFloat(wall_loops * line_width));
+            } else {
+                mo->config.erase("mmu_segmented_region_max_width");
+            }
+            wxGetApp().plater()->update();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _u8L("Limits the painted color to a ring near the region's contour "
+                "(about wall count x line width) instead of filling the whole selected area.").c_str());
+
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(_L("Precision"));
+        ImGui::SameLine(sliders_left_width);
+        ImGui::PushItemWidth(sliders_width);
+        if (m_imgui->bbl_slider_float_style("##precision_factor", &m_precision_factor, PrecisionFactorMin, PrecisionFactorMax, "%.0fx", 1.0f, true)) {
+            for (auto &triangle_selector : m_triangle_selectors)
+                if (triangle_selector)
+                    triangle_selector->set_precision_factor(m_precision_factor);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _u8L("Subdivides the mesh more finely while painting, reducing the "
+                "staircase look at the edge of a stroke. Higher values cost more memory/CPU on dense meshes.").c_str());
+    }
+
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
 
     if (m_current_tool != old_tool)

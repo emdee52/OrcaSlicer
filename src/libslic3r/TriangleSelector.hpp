@@ -311,6 +311,8 @@ public:
     // Set a limit to the edge length, below which the edge will not be split by select_patch().
     // Called by select_patch() internally. Made public for debugging purposes, see TriangleSelectorGUI::render_debug().
     void set_edge_limit(float edge_limit);
+    // [ORCAPORT:MT-4] Brush precision: subdivides more finely at the paint boundary. 1.f = stock.
+    void set_precision_factor(float factor);
 
     // Create new object on a TriangleMesh. The referenced mesh must
     // stay valid, a ptr to it is saved and used.
@@ -507,6 +509,7 @@ protected:
 
     // Limiting length of triangle side (squared).
     float m_edge_limit_sqr = 1.f;
+    float m_precision_factor = 1.f; // [ORCAPORT:MT-4] 1.f = stock.
 
     // Number of original vertices and triangles.
     int m_orig_size_vertices = 0;
