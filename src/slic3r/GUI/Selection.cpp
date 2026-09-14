@@ -12,6 +12,7 @@
 #include "slic3r/Utils/UndoRedo.hpp"
 
 #include "libslic3r/LocalesUtils.hpp"
+#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #if ENABLE_ENHANCED_PRINT_VOLUME_FIT
@@ -3095,6 +3096,10 @@ void Selection::synchronize_unselected_volumes()
 
 void Selection::ensure_on_bed()
 {
+    // [ORCAPORT:AS-1] free-Z placement keeps objects where they are put.
+    if (OrcaExt::free_z())
+        return;
+
     typedef std::map<std::pair<int, int>, double> InstancesToZMap;
     InstancesToZMap instances_min_z;
 

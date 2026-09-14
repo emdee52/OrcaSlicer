@@ -85,6 +85,7 @@
 #include "libslic3r/I18N.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/miniz_extension.hpp"
 #include "libslic3r/Utils.hpp"
@@ -2629,6 +2630,8 @@ void GUI_App::init_app_config()
     // the libslic3r G-code post-processor honours them without depending on the GUI.
     Slic3r::OrcaExt::set_idle_tool_power_down(app_config->get_bool("orca_ext_idle_tool_power_down"));
     Slic3r::OrcaExt::set_idle_tool_power_down_deep(app_config->get_bool("orca_ext_idle_tool_deep_sleep"));
+    // [ORCAPORT:AS-1]
+    Slic3r::OrcaExt::set_free_z(app_config->get_bool("orca_ext_free_z"));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
