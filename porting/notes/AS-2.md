@@ -57,3 +57,22 @@ does not have. But its *algorithm* uses only primitives Orca already exposes:
 - Face mode: pick two faces on slanted geometry, confirm the source face mates flush to the target
   normal; extras adjust the result.
 - Snap: hovering a hole center snaps the placement to it.
+
+## Implementation status
+- Phase 1 (base) - DONE. Build clean. Commit on `port/AS-2`.
+- Phase 2 (mate core) - DONE. `apply_mate_faces()`: `Quaterniond().setFromTwoVectors(src, -tgt)`,
+  compose onto #2's picked-instance matrix, translate the source click onto the target click,
+  apply via `Selection::rotate(obj, inst, overwrite)` + `ModelInstance::set_transformation`.
+- Phase 3 (extras) - DONE. Depth along the target normal, rotate around the normal, flip through
+  the plane, mirror H/V (all transform compositions in the target plane basis).
+- Phase 4 (feature-center snapping) - DONE (click-time). `detect_feature_centers()` ports
+  PreFlight's flat-face hole loops + negative-volume centers; `apply_mate_faces` snaps the
+  source/target click to the nearest center within 2 mm.
+  - Deviation from the agreed UX: snapping is applied at click/apply time, not on hover. Hover
+    snap would need a per-frame raycast+projection of the cached centers; left as a follow-up.
+
+## Files
+- `src/slic3r/GUI/Gizmos/GLGizmoAlignStack.{hpp,cpp}`, `GLGizmosManager.{hpp,cpp}`,
+  `src/slic3r/CMakeLists.txt`, `resources/images/toolbar_align_stack{,_dark}.svg`.
+- Patch: `porting/patches/07_AS-2.patch`.
+
