@@ -1787,6 +1787,42 @@ void PrintConfigDef::init_fff_params()
     def->nullable = true;
     def->set_default_value(new ConfigOptionBoolsNullable{ false });
 
+    // [ORCAPORT:PQ-2] Slow down inner walls that support an overhanging outer wall.
+    def = this->add("inner_wall_overhang_slowdown", coBool);
+    def->label = L("Slow down inner walls next to overhangs");
+    def->category = L("Speed");
+    def->tooltip = L("Give the inner wall a share of the slowdown its overhanging neighbour gets.\n\n"
+                     "The outer wall of an overhang is printed onto the inner wall next to it, and that inner wall "
+                     "went down at full speed a few seconds earlier because it is itself supported. This makes the "
+                     "anchor as careful as the wall it has to hold up.\n\n"
+                     "Costs nothing away from an overhang. Requires 'Slow down for overhang', and has no effect when "
+                     "walls are printed outer wall first.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool{ false });
+
+    def = this->add("inner_wall_overhang_speed_pct", coPercent);
+    def->label = L("Inner wall slowdown");
+    def->category = L("Speed");
+    def->tooltip = L("How much of the neighbouring wall's treatment this wall borrows. 100% grades the inner wall "
+                     "exactly as if it were the overhanging wall itself, which also brings the overhang fan with it. "
+                     "50% takes it halfway. 0% disables the effect.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(30));
+
+    def = this->add("inner_wall_overhang_reach_pct", coPercent);
+    def->label = L("Inner wall reach");
+    def->category = L("Speed");
+    def->tooltip = L("How far outwards to look for the wall being mirrored, as a percentage of line width. 100% is "
+                     "the wall immediately next to this one. Larger values mirror something further out.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 1000;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(200));
+
     def = this->add("overhang_1_4_speed", coFloatsOrPercents);
     def->label = "10%";
     def->category = L("Speed");

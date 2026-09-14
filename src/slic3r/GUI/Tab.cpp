@@ -2864,6 +2864,10 @@ void TabPrint::build()
         optgroup->append_single_option_line("enable_overhang_speed", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
 
         optgroup->append_single_option_line("slowdown_for_curled_perimeters", "speed_settings_overhang_speed#slow-down-for-curled-perimeters", 0);
+        // [ORCAPORT:PQ-2]
+        optgroup->append_single_option_line("inner_wall_overhang_slowdown", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
+        optgroup->append_single_option_line("inner_wall_overhang_speed_pct", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
+        optgroup->append_single_option_line("inner_wall_overhang_reach_pct", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
         Line line = { L("Overhang speed"), L("This is the speed for various overhang degrees. Overhang degrees are expressed as a percentage of line width. 0 speed means no slowing down for the overhang degree range and wall speed is used") };
         line.label_path = "speed_settings_overhang_speed#speed";
         line.append_option(optgroup->get_option("overhang_1_4_speed", 0));

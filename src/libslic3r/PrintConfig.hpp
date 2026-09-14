@@ -1405,6 +1405,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                 make_overhang_printable))
     ((ConfigOptionBool,                 extra_perimeters_on_overhangs))
     ((ConfigOptionBoolsNullable,        slowdown_for_curled_perimeters))
+    ((ConfigOptionBool,                 inner_wall_overhang_slowdown)) // [ORCAPORT:PQ-2]
+    ((ConfigOptionPercent,              inner_wall_overhang_speed_pct)) // [ORCAPORT:PQ-2]
+    ((ConfigOptionPercent,              inner_wall_overhang_reach_pct)) // [ORCAPORT:PQ-2]
     ((ConfigOptionBool,                 hole_to_polyhole))
     ((ConfigOptionFloatOrPercent,       hole_to_polyhole_threshold))
     ((ConfigOptionBool,                 hole_to_polyhole_twisted))

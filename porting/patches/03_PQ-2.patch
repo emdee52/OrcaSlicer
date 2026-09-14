@@ -1,0 +1,215 @@
+From a01c54a63977a4f023ef7c8438f2f887af56b7aa Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 21:08:51 -0600
+Subject: [PATCH] port(PQ-2): slow down inner walls next to overhangs
+ (ORCAPORT:PQ-2)
+
+---
+ src/libslic3r/GCode.cpp                    | 16 ++++++++--
+ src/libslic3r/GCode/ExtrusionProcessor.hpp | 14 +++++++--
+ src/libslic3r/Preset.cpp                   |  3 ++
+ src/libslic3r/PrintConfig.cpp              | 36 ++++++++++++++++++++++
+ src/libslic3r/PrintConfig.hpp              |  3 ++
+ src/libslic3r/PrintObject.cpp              |  3 ++
+ src/slic3r/GUI/ConfigManipulation.cpp      |  7 +++++
+ src/slic3r/GUI/Tab.cpp                     |  4 +++
+ 8 files changed, 82 insertions(+), 4 deletions(-)
+
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index e9cdb620e0..81c47c8678 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -8154,6 +8154,16 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+             
+             ConfigOptionPercents         overhang_overlap_levels({90, 75, 50, 25, 13, 0});
+ 
++            // [ORCAPORT:PQ-2] The inner wall borrows the slowdown of the overhanging wall it has to
++            // support. Reach is a percentage of line width; 0 disables the effect (stock behaviour).
++            float inner_wall_shadow_ratio = 0.f;
++            float inner_wall_shadow_reach = 0.f;
++            if (is_perimeter(path.role()) && !is_external && NOZZLE_CONFIG(enable_overhang_speed) &&
++                m_config.inner_wall_overhang_slowdown.value) {
++                inner_wall_shadow_ratio = float(m_config.inner_wall_overhang_speed_pct.value) / 100.f;
++                inner_wall_shadow_reach = float(m_config.inner_wall_overhang_reach_pct.value) / 100.f * path.width;
++            }
++
+             if (NOZZLE_CONFIG(slowdown_for_curled_perimeters)){
+                 ConfigOptionFloatsOrPercents dynamic_overhang_speeds(
+                     {FloatOrPercent{100, true},
+@@ -8174,7 +8184,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+                          FloatOrPercent{NOZZLE_CONFIG(overhang_4_4_speed).get_abs_value(ref_speed) * 100 / ref_speed, true}});
+ 
+                 new_points = m_extrusion_quality_estimator.estimate_extrusion_quality(path, overhang_overlap_levels, dynamic_overhang_speeds,
+-                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters));
++                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters),
++                                                                              inner_wall_shadow_ratio, inner_wall_shadow_reach);
+         	}else{
+                 ConfigOptionFloatsOrPercents dynamic_overhang_speeds(
+                                                                      {FloatOrPercent{100, true},
+@@ -8193,7 +8204,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+                      FloatOrPercent{NOZZLE_CONFIG(bridge_speed) * 100 / ref_speed, true}});
+ 
+                 new_points = m_extrusion_quality_estimator.estimate_extrusion_quality(path, overhang_overlap_levels, dynamic_overhang_speeds,
+-                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters));
++                                                                              ref_speed, speed, NOZZLE_CONFIG(slowdown_for_curled_perimeters),
++                                                                              inner_wall_shadow_ratio, inner_wall_shadow_reach);
+             }
+             variable_speed = std::any_of(new_points.begin(), new_points.end(),
+                                          [speed](const ProcessedPoint &p) { return fabs(double(p.speed) - speed) > 1; }); // Ignore small speed variations (under 1mm/sec)
+diff --git a/src/libslic3r/GCode/ExtrusionProcessor.hpp b/src/libslic3r/GCode/ExtrusionProcessor.hpp
+index 1d65e83f3e..0abdd38d72 100644
+--- a/src/libslic3r/GCode/ExtrusionProcessor.hpp
++++ b/src/libslic3r/GCode/ExtrusionProcessor.hpp
+@@ -423,7 +423,9 @@ public:
+                                                            const ConfigOptionFloatsOrPercents &speeds,
+                                                            float                               ext_perimeter_speed,
+                                                            float                               original_speed,
+-                                                           bool								   slowdown_for_curled_edges)
++                                                           bool								   slowdown_for_curled_edges,
++                                                           float                               overhang_shadow_ratio = 0.f,
++                                                           float                               overhang_shadow_reach = 0.f)
+     {
+         size_t                               speed_sections_count = std::min(overlaps.values.size(), speeds.values.size());
+         std::vector<std::pair<float, float>> speed_sections;
+@@ -558,7 +560,15 @@ public:
+             	extrusion_speed       = std::min(curled_speed, extrusion_speed); // adjust extrusion speed based on what is smallest - the calculated overhang speed or the artificial curled speed
+             }
+             
+-            float overlap = std::min(1 - (curr.distance+artificial_distance_to_curled_lines) * width_inv, 1 - (next.distance+artificial_distance_to_curled_lines) * width_inv);
++            // [ORCAPORT:PQ-2] Grade this point as if it sat at distance + shift, i.e. as the
++            // overhanging wall it supports is graded. ratio 0 -> overhang_shadow_shift 0 -> stock.
++            const float overhang_shadow_shift = overhang_shadow_ratio * overhang_shadow_reach;
++            if (overhang_shadow_shift > 0.f)
++                extrusion_speed = std::min(extrusion_speed, std::min(calculate_speed(curr.distance + overhang_shadow_shift),
++                                                                     calculate_speed(next.distance + overhang_shadow_shift)));
++
++            const float artificial_distance = std::max(artificial_distance_to_curled_lines, overhang_shadow_shift);
++            float overlap = std::min(1 - (curr.distance+artificial_distance) * width_inv, 1 - (next.distance+artificial_distance) * width_inv);
+ 
+             processed_points.push_back({Point3(scaled(curr.position)), extrusion_speed, overlap});
+         }
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index 8d0d9e53eb..bea7b230f2 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1222,6 +1222,9 @@ static std::vector<std::string> s_Preset_print_options{
+     "support_bottom_interface_spacing",
+     "enable_overhang_speed",
+     "slowdown_for_curled_perimeters",
++    "inner_wall_overhang_slowdown", // [ORCAPORT:PQ-2]
++    "inner_wall_overhang_speed_pct", // [ORCAPORT:PQ-2]
++    "inner_wall_overhang_reach_pct", // [ORCAPORT:PQ-2]
+     "overhang_1_4_speed",
+     "overhang_2_4_speed",
+     "overhang_3_4_speed",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 1b2b7235ad..a52fcded43 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -1787,6 +1787,42 @@ void PrintConfigDef::init_fff_params()
+     def->nullable = true;
+     def->set_default_value(new ConfigOptionBoolsNullable{ false });
+ 
++    // [ORCAPORT:PQ-2] Slow down inner walls that support an overhanging outer wall.
++    def = this->add("inner_wall_overhang_slowdown", coBool);
++    def->label = L("Slow down inner walls next to overhangs");
++    def->category = L("Speed");
++    def->tooltip = L("Give the inner wall a share of the slowdown its overhanging neighbour gets.\n\n"
++                     "The outer wall of an overhang is printed onto the inner wall next to it, and that inner wall "
++                     "went down at full speed a few seconds earlier because it is itself supported. This makes the "
++                     "anchor as careful as the wall it has to hold up.\n\n"
++                     "Costs nothing away from an overhang. Requires 'Slow down for overhang', and has no effect when "
++                     "walls are printed outer wall first.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool{ false });
++
++    def = this->add("inner_wall_overhang_speed_pct", coPercent);
++    def->label = L("Inner wall slowdown");
++    def->category = L("Speed");
++    def->tooltip = L("How much of the neighbouring wall's treatment this wall borrows. 100% grades the inner wall "
++                     "exactly as if it were the overhanging wall itself, which also brings the overhang fan with it. "
++                     "50% takes it halfway. 0% disables the effect.");
++    def->sidetext = L("%");
++    def->min = 0;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(30));
++
++    def = this->add("inner_wall_overhang_reach_pct", coPercent);
++    def->label = L("Inner wall reach");
++    def->category = L("Speed");
++    def->tooltip = L("How far outwards to look for the wall being mirrored, as a percentage of line width. 100% is "
++                     "the wall immediately next to this one. Larger values mirror something further out.");
++    def->sidetext = L("%");
++    def->min = 0;
++    def->max = 1000;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(200));
++
+     def = this->add("overhang_1_4_speed", coFloatsOrPercents);
+     def->label = "10%";
+     def->category = L("Speed");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index 97b0f45c39..831610ca74 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1405,6 +1405,9 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionBool,                 make_overhang_printable))
+     ((ConfigOptionBool,                 extra_perimeters_on_overhangs))
+     ((ConfigOptionBoolsNullable,        slowdown_for_curled_perimeters))
++    ((ConfigOptionBool,                 inner_wall_overhang_slowdown)) // [ORCAPORT:PQ-2]
++    ((ConfigOptionPercent,              inner_wall_overhang_speed_pct)) // [ORCAPORT:PQ-2]
++    ((ConfigOptionPercent,              inner_wall_overhang_reach_pct)) // [ORCAPORT:PQ-2]
+     ((ConfigOptionBool,                 hole_to_polyhole))
+     ((ConfigOptionFloatOrPercent,       hole_to_polyhole_threshold))
+     ((ConfigOptionBool,                 hole_to_polyhole_twisted))
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index e6fb737e30..b89d149f2f 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -1507,6 +1507,9 @@ bool PrintObject::invalidate_state_by_config_options(
+             || opt_key == "overhang_reverse_threshold"
+             || opt_key == "wall_direction"
+             || opt_key == "enable_overhang_speed"
++            || opt_key == "inner_wall_overhang_slowdown" // [ORCAPORT:PQ-2]
++            || opt_key == "inner_wall_overhang_speed_pct" // [ORCAPORT:PQ-2]
++            || opt_key == "inner_wall_overhang_reach_pct" // [ORCAPORT:PQ-2]
+             || opt_key == "detect_thin_wall"
+             || opt_key == "precise_outer_wall") {
+             steps.emplace_back(posPerimeters);
+diff --git a/src/slic3r/GUI/ConfigManipulation.cpp b/src/slic3r/GUI/ConfigManipulation.cpp
+index 5bd74e107d..088cebf8a6 100644
+--- a/src/slic3r/GUI/ConfigManipulation.cpp
++++ b/src/slic3r/GUI/ConfigManipulation.cpp
+@@ -1073,6 +1073,13 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
+ 
+     toggle_line("slowdown_for_curled_perimeters", has_overhang_speed, variant_index);
+ 
++    // [ORCAPORT:PQ-2] inner-wall slowdown follows "Slow down for overhang"; the two numbers only
++    // show once the toggle is on. Scalar options, so no variant_index.
++    toggle_line("inner_wall_overhang_slowdown", has_overhang_speed);
++    const bool inner_overhang_on = has_overhang_speed && config->opt_bool("inner_wall_overhang_slowdown");
++    for (auto el : {"inner_wall_overhang_speed_pct", "inner_wall_overhang_reach_pct"})
++        toggle_line(el, inner_overhang_on);
++
+     toggle_line("flush_into_objects", !is_global_config);
+ 
+     toggle_line("support_interface_not_for_body",config->opt_int("support_interface_filament")&&!config->opt_int("support_filament"));
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index a9e265b7ba..41e74b748a 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2864,6 +2864,10 @@ void TabPrint::build()
+         optgroup->append_single_option_line("enable_overhang_speed", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
+ 
+         optgroup->append_single_option_line("slowdown_for_curled_perimeters", "speed_settings_overhang_speed#slow-down-for-curled-perimeters", 0);
++        // [ORCAPORT:PQ-2]
++        optgroup->append_single_option_line("inner_wall_overhang_slowdown", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
++        optgroup->append_single_option_line("inner_wall_overhang_speed_pct", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
++        optgroup->append_single_option_line("inner_wall_overhang_reach_pct", "speed_settings_overhang_speed#slow-down-for-overhang", 0);
+         Line line = { L("Overhang speed"), L("This is the speed for various overhang degrees. Overhang degrees are expressed as a percentage of line width. 0 speed means no slowing down for the overhang degree range and wall speed is used") };
+         line.label_path = "speed_settings_overhang_speed#speed";
+         line.append_option(optgroup->get_option("overhang_1_4_speed", 0));
+-- 
+2.43.0.windows.1
+
