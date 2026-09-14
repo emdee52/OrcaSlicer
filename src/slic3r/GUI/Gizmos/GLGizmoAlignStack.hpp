@@ -162,6 +162,24 @@ private:
     int                        m_src_snap_hover { -1 };
     int                        m_tgt_snap_hover { -1 };
 
+    // [ORCAPORT:AS-2] mate hover/picked highlights + order swap
+    int         m_mate_hover_facet { -1 };
+    int         m_mate_hover_model_facet { -1 };
+    bool        m_mate_have_hover { false };
+    Vec2d       m_mate_hover_mouse { Vec2d::Zero() };
+    GLModel     m_mate_hover_model;
+    Transform3d m_mate_hover_world_trafo { Transform3d::Identity() };
+    GLModel     m_mate_src_model;
+    GLModel     m_mate_tgt_model;
+    Transform3d m_mate_src_world_trafo { Transform3d::Identity() };
+    Transform3d m_mate_tgt_world_trafo { Transform3d::Identity() };
+
+    void ensure_mate_hover_mesh(int object_idx);
+    void update_mate_hover(const Vec2d& mouse_pos);
+    void build_mesh_face_model(const TriangleMesh& mesh, const std::vector<Vec3f>& normals,
+                               const std::vector<Vec3i32>& neighbors, GLModel& model, int facet_idx, const ColorRGBA& col);
+    void swap_order();
+
     void ensure_src_raycaster() = delete; // not used: raycast_mate_face builds a raycaster on demand
     // Raycast a mouse position against every instance of an object; keeps the nearest hit.
     bool raycast_mate_face(int object_idx, const Vec2d& mouse_pos, MateFace& out);

@@ -500,8 +500,13 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
 
     // [ORCAPORT:AS-2] AS-2F: mate faces - pick a source face on #2, then a target face on #1.
     if (m_mate_mode) {
-        if (mouse_event.Moving())
+        if (mouse_event.Moving()) {
+            m_mate_hover_mouse = Vec2d(mouse_event.GetX(), mouse_event.GetY());
+            m_mate_have_hover   = true;
+            m_parent.set_as_dirty();
+            m_parent.request_extra_frame();
             return false;
+        }
         if (mouse_event.LeftDown()) {
             const int pick_idx = m_mate_awaiting_target ? ordered_obj(0) : ordered_obj(1);
             if (pick_idx < 0)
@@ -512,22 +517,28 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
                 const Model* model = m_parent.get_selection().get_model();
                 const ModelObject* mo = (model && face.object_idx < (int)model->objects.size())
                                             ? model->objects[face.object_idx] : nullptr;
-                if (!m_mate_awaiting_target) {
-                    m_mate_src = face;
-                    if (mo && face.instance_idx >= 0 && face.instance_idx < (int)mo->instances.size()) {
-                        m_mate_orig_trafo = mo->instances[face.instance_idx]->get_matrix();
-                        m_mate_has_orig   = true;
+                if (mo && face.instance_idx >= 0 && face.instance_idx < (int)mo->instances.size()) {
+                    const Transform3d world = mo->instances[face.instance_idx]->get_matrix();
+                    TriangleMesh mesh = mo->raw_mesh();
+                    const std::vector<Vec3f>   normals   = its_face_normals(mesh.its);
+                    const std::vector<Vec3i32> neighbors = its_face_neighbors(mesh.its);
+                    if (!m_mate_awaiting_target) {
+                        m_mate_src             = face;
+                        m_mate_orig_trafo      = world;
+                        m_mate_has_orig        = true;
+                        m_mate_src_world_trafo = world;
+                        detect_feature_centers(face, mesh, world, m_src_snap_points);
+                        build_mesh_face_model(mesh, normals, neighbors, m_mate_src_model, face.facet_idx,
+                                              ColorRGBA(0.16f, 0.85f, 0.30f, 0.60f));
+                        m_mate_awaiting_target = true;
+                    } else {
+                        m_mate_tgt             = face;
+                        m_mate_tgt_world_trafo = world;
+                        detect_feature_centers(face, mesh, world, m_tgt_snap_points);
+                        build_mesh_face_model(mesh, normals, neighbors, m_mate_tgt_model, face.facet_idx,
+                                              ColorRGBA(0.95f, 0.55f, 0.10f, 0.60f));
+                        m_mate_awaiting_target = false;
                     }
-                    if (mo)
-                        detect_feature_centers(face, mo->raw_mesh(),
-                                               mo->instances[face.instance_idx]->get_matrix(), m_src_snap_points);
-                    m_mate_awaiting_target = true;
-                } else {
-                    m_mate_tgt = face;
-                    if (mo)
-                        detect_feature_centers(face, mo->raw_mesh(),
-                                               mo->instances[face.instance_idx]->get_matrix(), m_tgt_snap_points);
-                    m_mate_awaiting_target = false;
                 }
                 m_parent.set_as_dirty();
                 m_parent.request_extra_frame();
@@ -653,13 +664,15 @@ void GLGizmoAlignStack::clear_face_pick()
 // so the user gets feedback that a face is about to be / has been chosen.
 // -----------------------------------------------------------------------------
 
-void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const ColorRGBA& col)
+void GLGizmoAlignStack::build_mesh_face_model(const TriangleMesh& mesh, const std::vector<Vec3f>& normals,
+                                             const std::vector<Vec3i32>& neighbors, GLModel& model,
+                                             int facet_idx, const ColorRGBA& col)
 {
     model.reset();
-    const int n_facets = (int)m_face_mesh.its.indices.size();
+    const int n_facets = (int)mesh.its.indices.size();
     if (facet_idx < 0 || facet_idx >= n_facets ||
-        (int)m_face_normals.size()   != n_facets ||
-        (int)m_face_neighbors.size() != n_facets)
+        (int)normals.size()   != n_facets ||
+        (int)neighbors.size() != n_facets)
         return;
 
     // Grow the connected region of facets whose normal stays within a small
@@ -667,7 +680,7 @@ void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const Co
     // patch around the cursor. Capped so a near-flat huge mesh can't explode.
     const float    cos_thresh = 0.94f; // ~20 degrees
     const size_t   max_facets = 40000;
-    const Vec3f    seed_n     = m_face_normals[facet_idx].normalized();
+    const Vec3f    seed_n     = normals[facet_idx].normalized();
 
     std::vector<int> region;
     region.reserve(256);
@@ -679,10 +692,10 @@ void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const Co
         stack.pop_back();
         region.push_back(f);
         for (int e = 0; e < 3; ++e) {
-            const int nb = m_face_neighbors[f][e];
+            const int nb = neighbors[f][e];
             if (nb < 0 || nb >= n_facets || visited[nb])
                 continue;
-            if (m_face_normals[nb].normalized().dot(seed_n) >= cos_thresh) {
+            if (normals[nb].normalized().dot(seed_n) >= cos_thresh) {
                 visited[nb] = 1;
                 stack.push_back(nb);
             }
@@ -695,13 +708,13 @@ void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const Co
     its.indices.reserve(region.size());
     int base = 0;
     for (int f : region) {
-        const Vec3i32 tri = m_face_mesh.its.indices[f];
-        Vec3f n = m_face_normals[f];
+        const Vec3i32 tri = mesh.its.indices[f];
+        Vec3f n = normals[f];
         const float nl = n.norm();
         n = (nl > 1e-6f) ? (n / nl) : seed_n;
-        its.vertices.push_back(m_face_mesh.its.vertices[tri[0]] + n * lift);
-        its.vertices.push_back(m_face_mesh.its.vertices[tri[1]] + n * lift);
-        its.vertices.push_back(m_face_mesh.its.vertices[tri[2]] + n * lift);
+        its.vertices.push_back(mesh.its.vertices[tri[0]] + n * lift);
+        its.vertices.push_back(mesh.its.vertices[tri[1]] + n * lift);
+        its.vertices.push_back(mesh.its.vertices[tri[2]] + n * lift);
         its.indices.emplace_back(base, base + 1, base + 2);
         base += 3;
     }
@@ -710,6 +723,76 @@ void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const Co
         return;
     model.init_from(its);
     model.set_color(col);
+}
+
+void GLGizmoAlignStack::build_face_model(GLModel& model, int facet_idx, const ColorRGBA& col)
+{
+    build_mesh_face_model(m_face_mesh, m_face_normals, m_face_neighbors, model, facet_idx, col);
+}
+
+// [ORCAPORT:AS-2] Cache the mesh/raycaster/normals/adjacency of the object the mate mode is
+// currently asking a face from, so hover highlighting is cheap.
+void GLGizmoAlignStack::ensure_mate_hover_mesh(int object_idx)
+{
+    if (m_src_raycaster && m_src_raycaster_obj_idx == object_idx)
+        return;
+    const Model* model = m_parent.get_selection().get_model();
+    if (!model || object_idx < 0 || object_idx >= (int)model->objects.size())
+        return;
+    const ModelObject* mo = model->objects[object_idx];
+    if (mo->instances.empty())
+        return;
+    m_src_mesh = mo->raw_mesh();
+    m_src_raycaster.reset(new MeshRaycaster(m_src_mesh));
+    m_src_normals    = its_face_normals(m_src_mesh.its);
+    m_src_neighbors  = its_face_neighbors(m_src_mesh.its);
+    m_src_raycaster_obj_idx = object_idx;
+    m_mate_hover_facet       = -1;
+    m_mate_hover_model_facet = -1;
+}
+
+void GLGizmoAlignStack::update_mate_hover(const Vec2d& mouse_pos)
+{
+    const int awaited = m_mate_awaiting_target ? ordered_obj(0) : ordered_obj(1);
+    if (awaited < 0) { m_mate_hover_facet = -1; return; }
+    ensure_mate_hover_mesh(awaited);
+    if (!m_src_raycaster) { m_mate_hover_facet = -1; return; }
+
+    const Model* model = m_parent.get_selection().get_model();
+    if (!model || awaited >= (int)model->objects.size()) { m_mate_hover_facet = -1; return; }
+    const ModelObject* mo = model->objects[awaited];
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const Vec3d cam_pos = camera.get_position();
+
+    double best_sq = std::numeric_limits<double>::max();
+    int    best_facet = -1;
+    Transform3d best_trafo = Transform3d::Identity();
+    for (size_t ii = 0; ii < mo->instances.size(); ++ii) {
+        const Transform3d trafo = mo->instances[ii]->get_matrix();
+        Vec3f hit_local{0,0,0}, hit_normal{0,0,1}; size_t facet = 0;
+        if (m_src_raycaster->unproject_on_mesh(mouse_pos, trafo, camera, hit_local, hit_normal, nullptr, &facet)) {
+            const double d_sq = (trafo * hit_local.cast<double>() - cam_pos).squaredNorm();
+            if (d_sq < best_sq) { best_sq = d_sq; best_facet = (int)facet; best_trafo = trafo; }
+        }
+    }
+    m_mate_hover_facet       = best_facet;
+    m_mate_hover_world_trafo = best_trafo;
+}
+
+// [ORCAPORT:AS-2] Swap which ordered object is the anchor (#1) and which moves (#2).
+void GLGizmoAlignStack::swap_order()
+{
+    if (m_ordered_object_idxs.size() < 2)
+        return;
+    std::swap(m_ordered_object_idxs[0], m_ordered_object_idxs[1]);
+    clear_face_pick();
+    clear_mate_state();
+    m_mate_hover_facet       = -1;
+    m_mate_hover_model_facet = -1;
+    m_mate_hover_model.reset();
+    m_mate_src_model.reset();
+    m_mate_tgt_model.reset();
+    refresh_highlight();
 }
 
 void GLGizmoAlignStack::update_hover_face(const Vec2d& mouse_pos)
@@ -735,6 +818,44 @@ void GLGizmoAlignStack::update_hover_face(const Vec2d& mouse_pos)
 
 void GLGizmoAlignStack::render_face_highlights()
 {
+    // [ORCAPORT:AS-2] mate mode: highlight the face of the object the gizmo asks you to pick,
+    // plus the two already-picked faces (target orange, source green, hover teal).
+    if (m_mate_mode) {
+        if (m_mate_have_hover)
+            update_mate_hover(m_mate_hover_mouse);
+        if (m_mate_hover_facet != m_mate_hover_model_facet) {
+            if (m_mate_hover_facet >= 0)
+                build_mesh_face_model(m_src_mesh, m_src_normals, m_src_neighbors, m_mate_hover_model,
+                                      m_mate_hover_facet, ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+            else
+                m_mate_hover_model.reset();
+            m_mate_hover_model_facet = m_mate_hover_facet;
+        }
+        if (m_mate_hover_model.is_initialized() || m_mate_src_model.is_initialized() || m_mate_tgt_model.is_initialized()) {
+            GLShaderProgram* shader = wxGetApp().get_shader("flat");
+            if (shader != nullptr) {
+                const Camera& camera = wxGetApp().plater()->get_camera();
+                shader->start_using();
+                glsafe(::glEnable(GL_DEPTH_TEST));
+                glsafe(::glDisable(GL_CULL_FACE));
+                glsafe(::glEnable(GL_BLEND));
+                glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+                shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+                auto render_one = [&](GLModel& m, const Transform3d& t) {
+                    if (!m.is_initialized()) return;
+                    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * t);
+                    m.render();
+                };
+                render_one(m_mate_tgt_model, m_mate_tgt_world_trafo);
+                render_one(m_mate_src_model, m_mate_src_world_trafo);
+                render_one(m_mate_hover_model, m_mate_hover_world_trafo);
+                glsafe(::glDisable(GL_BLEND));
+                glsafe(::glEnable(GL_CULL_FACE));
+                shader->stop_using();
+            }
+        }
+    }
+
     if (!m_face_pick_mode)
         return;
 
@@ -1149,6 +1270,12 @@ void GLGizmoAlignStack::clear_mate_state()
     m_src_snap_points.clear();
     m_tgt_snap_points.clear();
     m_src_snap_hover = m_tgt_snap_hover = -1;
+    m_mate_hover_facet       = -1;
+    m_mate_hover_model_facet = -1;
+    m_mate_have_hover        = false;
+    m_mate_hover_model.reset();
+    m_mate_src_model.reset();
+    m_mate_tgt_model.reset();
 }
 
 bool GLGizmoAlignStack::raycast_mate_face(int object_idx, const Vec2d& mouse_pos, MateFace& out)
@@ -1427,6 +1554,13 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
             while (!m_ordered_object_idxs.empty())
                 toggle_object_order(m_ordered_object_idxs.back());
         }
+    }
+    if (n == 2) {
+        ImGui::SameLine(0.0f, 8.0f);
+        if (ImGui::SmallButton(_u8L("Swap #1/#2").c_str()))
+            swap_order();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", _u8L("Make the current #2 the anchor and #1 the object that moves").c_str());
     }
 
     ImGui::Separator();
