@@ -1,0 +1,158 @@
+From 196e58bcb5844e1f8903ac2ca6882f78899cd7be Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 21:40:42 -0600
+Subject: [PATCH] port(MT-4): painter Pro Mode F1 perimeters-only + F3 brush
+ precision (F2/F4 pending)
+
+---
+ src/libslic3r/TriangleSelector.cpp            | 11 ++++-
+ src/libslic3r/TriangleSelector.hpp            |  3 ++
+ .../GUI/Gizmos/GLGizmoMmuSegmentation.cpp     | 41 +++++++++++++++++++
+ src/slic3r/GUI/Gizmos/GLGizmoPainterBase.cpp  |  2 +
+ src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp  |  5 +++
+ 5 files changed, 60 insertions(+), 2 deletions(-)
+
+diff --git a/src/libslic3r/TriangleSelector.cpp b/src/libslic3r/TriangleSelector.cpp
+index b47004fca5..c394cb9cf0 100644
+--- a/src/libslic3r/TriangleSelector.cpp
++++ b/src/libslic3r/TriangleSelector.cpp
+@@ -295,11 +295,12 @@ void TriangleSelector::select_patch(int facet_start, std::unique_ptr<Cursor> &&c
+         // BBS: improve details for large cursor radius
+         TriangleSelector::HeightRange* hr_cursor = dynamic_cast<TriangleSelector::HeightRange*>(m_cursor.get());
+         if (hr_cursor == nullptr) {
+-            set_edge_limit(std::min(std::sqrt(m_cursor->radius_sqr) / 5.f, 0.05f));
++            // [ORCAPORT:MT-4] precision factor subdivides more finely; 1.f = stock.
++            set_edge_limit(std::min(std::sqrt(m_cursor->radius_sqr) / (5.f * m_precision_factor), 0.05f / m_precision_factor));
+             m_old_cursor_radius_sqr = m_cursor->radius_sqr;
+         }
+         else {
+-            set_edge_limit(0.1);
++            set_edge_limit(0.1f / m_precision_factor);
+             m_old_cursor_radius_sqr = 0.1;
+         }
+     }
+@@ -1353,6 +1354,12 @@ void TriangleSelector::set_edge_limit(float edge_limit)
+     m_edge_limit_sqr = std::pow(edge_limit, 2.f);
+ }
+ 
++// [ORCAPORT:MT-4]
++void TriangleSelector::set_precision_factor(float factor)
++{
++    m_precision_factor = std::clamp(factor, 1.f, 16.f);
++}
++
+ int TriangleSelector::push_triangle(int a, int b, int c, int source_triangle, const EnforcerBlockerType state)
+ {
+     for (int i : {a, b, c}) {
+diff --git a/src/libslic3r/TriangleSelector.hpp b/src/libslic3r/TriangleSelector.hpp
+index 594f710e45..78b9c817f9 100644
+--- a/src/libslic3r/TriangleSelector.hpp
++++ b/src/libslic3r/TriangleSelector.hpp
+@@ -311,6 +311,8 @@ public:
+     // Set a limit to the edge length, below which the edge will not be split by select_patch().
+     // Called by select_patch() internally. Made public for debugging purposes, see TriangleSelectorGUI::render_debug().
+     void set_edge_limit(float edge_limit);
++    // [ORCAPORT:MT-4] Brush precision: subdivides more finely at the paint boundary. 1.f = stock.
++    void set_precision_factor(float factor);
+ 
+     // Create new object on a TriangleMesh. The referenced mesh must
+     // stay valid, a ptr to it is saved and used.
+@@ -507,6 +509,7 @@ protected:
+ 
+     // Limiting length of triangle side (squared).
+     float m_edge_limit_sqr = 1.f;
++    float m_precision_factor = 1.f; // [ORCAPORT:MT-4] 1.f = stock.
+ 
+     // Number of original vertices and triangles.
+     int m_orig_size_vertices = 0;
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
+index 3d4af75cde..769399abf2 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMmuSegmentation.cpp
+@@ -537,6 +537,47 @@ void GLGizmoMmuSegmentation::on_render_input_window(float x, float y, float bott
+         }
+     }
+ 
++    // [ORCAPORT:MT-4] Painter Pro Mode. F1 "Paint perimeters only" (reuses the existing
++    // mmu_segmented_region_max_width) and F3 "Precision" (finer mesh subdivision at the paint
++    // boundary). F2 (extra walls) and F4 (rectangle/polygon masks) are not ported yet.
++    if (ImGui::CollapsingHeader(_u8L("Pro Mode").c_str())) {
++        ModelObject *mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
++
++        bool perimeters_only = mo && mo->config.has("mmu_segmented_region_max_width") &&
++                               mo->config.opt_float("mmu_segmented_region_max_width") > 0.0;
++        if (ImGui::Checkbox(_u8L("Paint perimeters only").c_str(), &perimeters_only) && mo) {
++            wxGetApp().plater()->take_snapshot("Painter: perimeters only");
++            if (perimeters_only) {
++                const DynamicPrintConfig &print_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
++                const double nozzle = wxGetApp().preset_bundle->printers.get_edited_preset().config.opt_float("nozzle_diameter", 0);
++                double line_width = print_cfg.get_abs_value("line_width", nozzle);
++                if (line_width <= 0.0)
++                    line_width = nozzle > 0.0 ? nozzle : 0.4;
++                const int wall_loops = std::max(1, print_cfg.opt_int("wall_loops"));
++                mo->config.set_key_value("mmu_segmented_region_max_width", new ConfigOptionFloat(wall_loops * line_width));
++            } else {
++                mo->config.erase("mmu_segmented_region_max_width");
++            }
++            wxGetApp().plater()->update();
++        }
++        if (ImGui::IsItemHovered())
++            ImGui::SetTooltip("%s", _u8L("Limits the painted color to a ring near the region's contour "
++                "(about wall count x line width) instead of filling the whole selected area.").c_str());
++
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(_L("Precision"));
++        ImGui::SameLine(sliders_left_width);
++        ImGui::PushItemWidth(sliders_width);
++        if (m_imgui->bbl_slider_float_style("##precision_factor", &m_precision_factor, PrecisionFactorMin, PrecisionFactorMax, "%.0fx", 1.0f, true)) {
++            for (auto &triangle_selector : m_triangle_selectors)
++                if (triangle_selector)
++                    triangle_selector->set_precision_factor(m_precision_factor);
++        }
++        if (ImGui::IsItemHovered())
++            ImGui::SetTooltip("%s", _u8L("Subdivides the mesh more finely while painting, reducing the "
++                "staircase look at the edge of a stroke. Higher values cost more memory/CPU on dense meshes.").c_str());
++    }
++
+     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+ 
+     if (m_current_tool != old_tool)
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.cpp
+index 3dcf51cbb5..1f3b252e51 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.cpp
+@@ -799,6 +799,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
+                 // Calculate direction from camera to the hit (in mesh coords):
+                 Vec3f camera_pos = (trafo_matrix.inverse() * camera.get_position()).cast<float>();
+                 const TriangleSelector::ClippingPlane& clp = this->get_clipping_plane_in_volume_coordinates(trafo_matrix);
++                m_triangle_selectors[mesh_idx]->set_precision_factor(m_precision_factor); // [ORCAPORT:MT-4]
+ 
+                 std::unique_ptr<TriangleSelector::Cursor> cursor = TriangleSelector::SinglePointCursor::cursor_factory(phr.z_world,
+                     camera_pos, m_cursor_height, trafo_matrix, clp);
+@@ -847,6 +848,7 @@ bool GLGizmoPainterBase::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
+ 
+             assert(mesh_idx < int(m_triangle_selectors.size()));
+             const TriangleSelector::ClippingPlane &clp = this->get_clipping_plane_in_volume_coordinates(trafo_matrix);
++            m_triangle_selectors[mesh_idx]->set_precision_factor(m_precision_factor); // [ORCAPORT:MT-4]
+             if (m_tool_type == ToolType::SMART_FILL || m_tool_type == ToolType::BUCKET_FILL || (m_tool_type == ToolType::BRUSH && m_cursor_type == TriangleSelector::CursorType::POINTER)) {
+                 for(const ProjectedMousePosition &projected_mouse_position : projected_mouse_positions) {
+                     assert(projected_mouse_position.mesh_idx == mesh_idx);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
+index 8ec1cb1fb0..1945cbceb5 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
+@@ -292,6 +292,11 @@ protected:
+     bool m_vertical_only = false;
+     bool m_horizontal_only = false;
+ 
++    // [ORCAPORT:MT-4] Brush precision: finer mesh subdivision at the paint boundary. 1.f = stock.
++    float m_precision_factor = 1.f;
++    static constexpr float PrecisionFactorMin = 1.f;
++    static constexpr float PrecisionFactorMax = 8.f;
++
+     // It stores the value of the previous mesh_id to which the seed fill was applied.
+     // It is used to detect when the mouse has moved from one volume to another one.
+     int      m_seed_fill_last_mesh_id     = -1;
+-- 
+2.43.0.windows.1
+
