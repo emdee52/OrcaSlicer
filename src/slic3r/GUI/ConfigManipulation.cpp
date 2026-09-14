@@ -575,6 +575,24 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
             new_conf.set_key_value("support_style", new ConfigOptionEnum<SupportMaterialStyle>(smsDefault));
             apply(config, &new_conf);
         }
+
+        // [ORCAPORT:SU-4] NeoWave ships an opinionated, tested default set: a Hollow base capped by
+        // a Wave roof. Coerce the base/interface patterns to that combo (the fields are also
+        // disabled in toggle_print_fff_options, so the irrelevant alternatives cannot be picked).
+        if (support_type == stWaveSupport) {
+            DynamicPrintConfig new_conf = *config;
+            bool changed = false;
+            if (config->opt_enum<SupportMaterialPattern>("support_base_pattern") != smpNone) {
+                new_conf.set_key_value("support_base_pattern", new ConfigOptionEnum<SupportMaterialPattern>(smpNone));
+                changed = true;
+            }
+            if (config->opt_enum<SupportMaterialInterfacePattern>("support_interface_pattern") != smipWave) {
+                new_conf.set_key_value("support_interface_pattern", new ConfigOptionEnum<SupportMaterialInterfacePattern>(smipWave));
+                changed = true;
+            }
+            if (changed)
+                apply(config, &new_conf);
+        }
     }
 
     // BBS
@@ -940,6 +958,20 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_field("support_threshold_angle", have_support_material && is_auto(support_type));
     toggle_field("support_threshold_overlap", config->opt_int("support_threshold_angle") == 0 && have_support_material && is_auto(support_type));
     //toggle_field("support_closing_radius", have_support_material && support_style == smsSnug);
+
+    // [ORCAPORT:SU-4] NeoWave locks its base/interface pattern to the tested Hollow + Wave combo
+    // (coerced in update_print_fff_config), so grey the two fields out.
+    if (have_support_material && support_type == stWaveSupport) {
+        toggle_field("support_base_pattern", false);
+        toggle_field("support_interface_pattern", false);
+    }
+    // [ORCAPORT:SU-4] the roof variant controls apply only to the NeoWave roof.
+    const bool have_wave_roof = have_support_material && support_type == stWaveSupport &&
+        config->opt_enum<SupportMaterialInterfacePattern>("support_interface_pattern") == smipWave;
+    toggle_line("wavesupport_roof_pattern", have_wave_roof);
+    toggle_line("wavesupport_roof_order",   have_wave_roof);
+    toggle_line("wavesupport_roof_reverse", have_wave_roof);
+    toggle_line("wavesupport_wall_loops",   have_wave_roof);
 
     bool support_is_tree = config->opt_bool("enable_support") && is_tree(support_type);
     bool support_is_organic = support_is_tree && (support_style == smsTreeOrganic || support_style == smsDefault);

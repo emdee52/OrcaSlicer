@@ -1135,6 +1135,7 @@ static std::vector<std::string> s_Preset_print_options{
     "support_interface_top_layers",
     "support_interface_bottom_layers",
     "support_interface_pattern",
+    "wavesupport_roof_pattern", "wavesupport_roof_order", "wavesupport_roof_reverse", "wavesupport_wall_loops", // [ORCAPORT:SU-4]
     "support_interface_spacing",
     "support_interface_loop_pattern",
     "support_top_z_distance",

@@ -374,15 +374,31 @@ static t_config_enum_values s_keys_map_SupportMaterialInterfacePattern {
     { "concentric",     smipConcentric },
     { "spiralinset",    smipSpiralInset },
     { "rectilinear_interlaced", smipRectilinearInterlaced},
-    { "grid",           smipGrid }
+    { "grid",           smipGrid },
+    { "wave",           smipWave } // [ORCAPORT:SU-4]
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialInterfacePattern)
+
+// [ORCAPORT:SU-4] NeoWave roof shape/order maps.
+static t_config_enum_values s_keys_map_SupportMaterialWaveRoofPattern {
+    { "concentric", smwrpConcentric },
+    { "wave",       smwrpWave }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialWaveRoofPattern)
+
+static t_config_enum_values s_keys_map_SupportMaterialWaveRoofOrder {
+    { "smart",     smwroSmart },
+    { "zigzag",    smwroZigZag },
+    { "monotonic", smwroMonotonic }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
 
 static t_config_enum_values s_keys_map_SupportType{
     { "normal(auto)",   stNormalAuto },
     { "tree(auto)", stTreeAuto },
     { "normal(manual)", stNormal },
-    { "tree(manual)", stTree }
+    { "tree(manual)", stTree },
+    { "neowave", stWaveSupport } // [ORCAPORT:SU-4]
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportType)
 
@@ -6790,10 +6806,12 @@ void PrintConfigDef::init_fff_params()
     def->enum_values.push_back("tree(auto)");
     def->enum_values.push_back("normal(manual)");
     def->enum_values.push_back("tree(manual)");
+    def->enum_values.push_back("neowave"); // [ORCAPORT:SU-4]
     def->enum_labels.push_back(L("Normal (auto)"));
     def->enum_labels.push_back(L("Tree (auto)"));
     def->enum_labels.push_back(L("Normal (manual)"));
     def->enum_labels.push_back(L("Tree (manual)"));
+    def->enum_labels.push_back(L("NeoWave")); // [ORCAPORT:SU-4]
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionEnum<SupportType>(stNormalAuto));
 
@@ -7049,14 +7067,59 @@ void PrintConfigDef::init_fff_params()
 	def->enum_values.push_back("spiralinset");
     def->enum_values.push_back("rectilinear_interlaced");
     def->enum_values.push_back("grid");
+    def->enum_values.push_back("wave"); // [ORCAPORT:SU-4]
     def->enum_labels.push_back(L("Default"));
     def->enum_labels.push_back(L("Rectilinear"));
     def->enum_labels.push_back(L("Concentric"));
 	def->enum_labels.push_back(L("Spiral Inset"));
     def->enum_labels.push_back(L("Rectilinear Interlaced"));
     def->enum_labels.push_back(L("Grid"));
+    def->enum_labels.push_back(L("Wave")); // [ORCAPORT:SU-4]
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<SupportMaterialInterfacePattern>(smipAuto));
+
+    // [ORCAPORT:SU-4] NeoWave roof options. Only meaningful for SupportType::stWaveSupport.
+    def = this->add("wavesupport_roof_pattern", coEnum);
+    def->label = L("NeoWave roof shape");
+    def->category = L("Support");
+    def->tooltip = L("Shape of the NeoWave support roof. Concentric nests rings inward; Wave sweeps open arcs across the roof.");
+    def->enum_keys_map = &ConfigOptionEnum<SupportMaterialWaveRoofPattern>::get_enum_values();
+    def->enum_values.push_back("concentric");
+    def->enum_values.push_back("wave");
+    def->enum_labels.push_back(L("Concentric"));
+    def->enum_labels.push_back(L("Wave"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SupportMaterialWaveRoofPattern>(smwrpWave));
+
+    def = this->add("wavesupport_roof_order", coEnum);
+    def->label = L("NeoWave roof order");
+    def->category = L("Support");
+    def->tooltip = L("Print order of the NeoWave roof fronts.");
+    def->enum_keys_map = &ConfigOptionEnum<SupportMaterialWaveRoofOrder>::get_enum_values();
+    def->enum_values.push_back("smart");
+    def->enum_values.push_back("zigzag");
+    def->enum_values.push_back("monotonic");
+    def->enum_labels.push_back(L("Smart"));
+    def->enum_labels.push_back(L("ZigZag"));
+    def->enum_labels.push_back(L("Monotonic"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SupportMaterialWaveRoofOrder>(smwroSmart));
+
+    def = this->add("wavesupport_roof_reverse", coBool);
+    def->label = L("NeoWave roof reverse");
+    def->category = L("Support");
+    def->tooltip = L("Reverse the sweep / ring order of the NeoWave roof.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("wavesupport_wall_loops", coInt);
+    def->label = L("NeoWave wall loops");
+    def->category = L("Support");
+    def->tooltip = L("Number of concentric perimeters printed around a hollow NeoWave support body (0 = solid).");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 10;
+    def->set_default_value(new ConfigOptionInt(0));
 
     def = this->add("support_base_pattern_spacing", coFloat);
     def->label = L("Base pattern spacing");

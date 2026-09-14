@@ -2959,6 +2959,11 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_top_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_bottom_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_pattern", "support_settings_advanced#interface-pattern");
+        // [ORCAPORT:SU-4] NeoWave roof options (only meaningful for SupportType::NeoWave).
+        optgroup->append_single_option_line("wavesupport_roof_pattern", "support_settings_advanced#interface-pattern");
+        optgroup->append_single_option_line("wavesupport_roof_order", "support_settings_advanced#interface-pattern");
+        optgroup->append_single_option_line("wavesupport_roof_reverse", "support_settings_advanced#interface-pattern");
+        optgroup->append_single_option_line("wavesupport_wall_loops", "support_settings_advanced#support-wall-loops");
         optgroup->append_single_option_line("support_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_bottom_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_expansion", "support_settings_advanced#normal-support-expansion");
