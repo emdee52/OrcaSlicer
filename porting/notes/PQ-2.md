@@ -2,35 +2,38 @@
 
 - Source: `NEOTKOCM_RELEASE_2_45.md`.
 - Fork: `OrcaFS-NeotkoCM` @ `cf1255c741`.
-- Category: B/D. Moderate risk; target's estimator was refactored.
+- Category: D (target's estimator was refactored). Status: **ported** (branch `port/PQ-2`), build clean.
 
-## Upstream anchors (fork lines)
-- `src/libslic3r/GCode.cpp` overhang-speed block (~9068)
-  - compute `shadow_ratio` / `shadow_reach` (~9087-9094); pass to `estimate_extrusion_quality` (~9115, ~9136)
-- `src/libslic3r/GCode/ExtrusionProcessor.hpp`
-  - `estimate_extrusion_quality` gains `overhang_shadow_ratio`, `overhang_shadow_reach` (~318)
-  - `overhang_shadow_shift = overhang_shadow_ratio * overhang_shadow_reach;` (~386); speed clamp (~467); fan/overlap (~472)
-- `PrintConfig.cpp:1363`, `PrintConfig.hpp:1320`, `PrintObject.cpp:1464` (invalidation), `src/slic3r/GUI/Tab.cpp:7772`, `ConfigManipulation.cpp:966`
+## Keys (neutral names; fork keys are a mapping)
+- `inner_wall_overhang_slowdown` | `coBool` | `false` | Speed, `comAdvanced`
+- `inner_wall_overhang_speed_pct` | `coPercent` | `30` | Speed
+- `inner_wall_overhang_reach_pct` | `coPercent` | `200` | Speed
 
-## Keys
-- `overhang_shadow_inner_wall` | `coBool` | `false` | `PrintConfig.cpp:1363`
-- `overhang_shadow_speed_ratio` | `coPercent` | `30` | `:1376`
-- `overhang_shadow_distance` | `coPercent` | `200` | `:1390`
-- All Speed / `comAdvanced`.
+Fork: `overhang_shadow_inner_wall`, `overhang_shadow_speed_ratio`, `overhang_shadow_distance`.
 
-## Gates to remove
-- `GCode.cpp:9089` - drop the `neotko_libre_mode.value &&` conjunct.
-- `ConfigManipulation.cpp:966-968` - remove the `libre_active` term from `toggle_line("overhang_shadow_inner_wall", ...)`.
-- Keep the UI append (`Tab.cpp:7772`).
+## Implementation (target 2.5)
+All inserted code is tagged `[ORCAPORT:PQ-2]`.
+- `src/libslic3r/GCode/ExtrusionProcessor.hpp` - `estimate_extrusion_quality` gains
+  `overhang_shadow_ratio` / `overhang_shadow_reach` (default 0). In the per-point loop,
+  `overhang_shadow_shift = ratio * reach`; when > 0 the point's speed is clamped with
+  `calculate_speed(distance + shift)`, and the shift joins
+  `artificial_distance_to_curled_lines` for the overlap (fan) computation.
+- `src/libslic3r/GCode.cpp` - in the overhang-speed block, for the **inner** perimeter only
+  (`is_perimeter && !is_external`) with `enable_overhang_speed` on and the toggle set:
+  `ratio = speed_pct/100`, `reach = reach_pct/100 * path.width`; both are passed to the
+  estimator in the curled and non-curled branches.
+- `PrintConfig.cpp/.hpp`, `Preset.cpp`, `PrintObject.cpp` (invalidation -> `posPerimeters` +
+  `posSupportMaterial`), `Tab.cpp` (Speed > Overhang speed), `ConfigManipulation.cpp` (the
+  toggle follows "Slow down for overhang"; the two numbers follow the toggle; no LibreMode).
 
-## Coupling / blockers
-- No dependency on other Neotko features.
-- Requires "Slow down for overhang" (`enable_overhang_speed`); inert when walls print outer-wall-first.
-- Target's `estimate_extrusion_quality` has a different, lambda-based signature (`ExtrusionProcessor.hpp:421`), and target's GCode block uses `NOZZLE_CONFIG/FILAMENT_CONFIG` macros - re-implement, category D.
+## Gates
+- The fork's `neotko_libre_mode` conjunct was dropped. Visibility now depends only on
+  "Slow down for overhang".
 
 ## Verification
-- Inner-wall speed changes only near overhangs; no change on fully supported inner walls; ratio 0 = byte-identical; fan follows.
-
-## Open questions
-- Map `path.role() == erPerimeter` to 2.5's `is_perimeter`/`is_external_perimeter`.
-- The code does not itself test `wall_sequence`; the "inert outer-wall-first" claim relies on upstream ordering - verify.
+- Compile/link: `build_win.bat -s --no-configure -j 8` -> 0 errors, binary produced.
+- Off-by-default: ratio 0 (toggle off) -> `overhang_shadow_shift` 0 -> stock path,
+  byte-identical.
+- Pending runtime check: slice a shallow-slope overhang model with the toggle on; the inner
+  wall next to the overhang should slow (and the overhang fan should follow), with no change
+  away from overhangs. The notes' own SLOWINNER-style plate is the reference.
