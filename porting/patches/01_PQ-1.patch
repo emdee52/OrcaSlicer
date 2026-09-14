@@ -1,0 +1,146 @@
+From c86902d7788f225913cd627acc001b35aa790238 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 18:49:05 -0600
+Subject: [PATCH] port(PQ-1): bridging infill extra expansion (ORCAPORT:PQ-1)
+
+---
+ src/libslic3r/LayerRegion.cpp | 25 ++++++++++++++++++++++++-
+ src/libslic3r/Preset.cpp      |  1 +
+ src/libslic3r/PrintConfig.cpp | 20 ++++++++++++++++++++
+ src/libslic3r/PrintConfig.hpp |  1 +
+ src/libslic3r/PrintObject.cpp |  1 +
+ src/slic3r/GUI/Tab.cpp        |  1 +
+ 6 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/src/libslic3r/LayerRegion.cpp b/src/libslic3r/LayerRegion.cpp
+index 22e0a26898..754a157ff0 100644
+--- a/src/libslic3r/LayerRegion.cpp
++++ b/src/libslic3r/LayerRegion.cpp
+@@ -509,7 +509,10 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
+     // Scaled expansions of the respective external surfaces.
+     float                           expansion_top           = shell_width * sqrt(2.);
+     float                           expansion_bottom        = expansion_top;
+-    float                           expansion_bottom_bridge = expansion_top;
++    // [ORCAPORT:PQ-1] extra bridge anchoring in mm, independent of the wall count. With the
++    // default 0 this is exactly expansion_top, so output is unchanged.
++    float                           expansion_bottom_bridge = expansion_top
++        + scaled<float>(std::max(0., this->region().config().bridge_expansion_extra.value));
+     // Expand by waves of expansion_step size (expansion_step is scaled), but with no more steps than max_nr_expansion_steps.
+     const float                     expansion_step          = scaled<float>(0.1);
+     // Don't take more than max_nr_steps for small expansion_step.
+@@ -531,6 +534,15 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
+         ExpansionZone{std::move(top_expolygons), expansion_params_into_solid_infill},
+     };
+ 
++    // [ORCAPORT:PQ-1] stBottom joins the bridge donor zones only when extra expansion is on,
++    // so the default path keeps the stock three-zone list and byte-identical output.
++    const bool bridge_extra_on = this->region().config().bridge_expansion_extra.value > 0.;
++    if (bridge_extra_on) {
++        ExPolygons bottom_expolygons = union_ex(
++            fill_surfaces_extract_expolygons(this->fill_surfaces.surfaces, { stBottom }, layer_thickness));
++        expansion_zones.push_back(ExpansionZone{ std::move(bottom_expolygons), expansion_params_into_solid_infill });
++    }
++
+     SurfaceCollection bridges;
+     {
+         BOOST_LOG_TRIVIAL(trace) << "Processing external surface, detecting bridges. layer" << this->layer()->print_z;
+@@ -564,6 +576,17 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
+ #endif
+     }
+ 
++    // [ORCAPORT:PQ-1] return the stBottom remnant before the stTop block pops the top zone.
++    // expand_merge_surfaces already subtracted what the bridge claimed, so this is the bottom
++    // area that did not become bridge. Present only when the extra zone was added.
++    if (bridge_extra_on) {
++        this->fill_surfaces.remove_types({ stBottom });
++        Surface bottom_templ(stBottom, {});
++        bottom_templ.thickness = layer_thickness;
++        this->fill_surfaces.append(std::move(expansion_zones.back().expolygons), bottom_templ);
++        expansion_zones.pop_back();
++    }
++
+     this->fill_surfaces.remove_types({stTop});
+     {
+         Surface top_templ(stTop, {});
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index e974ffd7f8..8d0d9e53eb 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1178,6 +1178,7 @@ static std::vector<std::string> s_Preset_print_options{
+     "infill_wall_overlap",
+     "top_bottom_infill_wall_overlap",
+     "bridge_flow",
++    "bridge_expansion_extra", // [ORCAPORT:PQ-1]
+     "bridge_line_width",
+     "internal_bridge_flow",
+     "elefant_foot_compensation",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 4c27995ba0..1b2b7235ad 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -1494,6 +1494,26 @@ void PrintConfigDef::init_fff_params()
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionFloat(1));
+ 
++    // [ORCAPORT:PQ-1] extra anchor distance for bridges, in mm, added on top of the automatic
++    // expansion (which is derived from the wall count). Additive: 0 = stock behaviour.
++    def = this->add("bridge_expansion_extra", coFloat);
++    def->label = L("Bridging infill extra expansion");
++    def->category = L("Quality");
++    def->tooltip = L("Extra distance the bridging infill grows into the surrounding area of the same part, "
++                     "on top of the automatic expansion.\n\n"
++                     "The bridge then starts extruding over solid material before it reaches the gap, so the "
++                     "strand is already anchored when it begins to span. Raise this if bridges detach or curl "
++                     "at their ends.\n\n"
++                     "With a large value the bridge takes over the whole surrounding region and the entire "
++                     "layer prints as one continuous bridge.\n\n"
++                     "0 = automatic expansion only (unchanged behaviour). The automatic amount is derived from "
++                     "the wall count, so this setting also decouples bridge anchoring from the number of walls.");
++    def->sidetext = L("mm");
++    def->min = 0;
++    def->max = 999;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionFloat(0));
++
+     def = this->add("bridge_line_width", coFloatOrPercent);
+     def->label = L("Bridge");
+     def->category = L("Quality");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index f7cbe8b2e5..97b0f45c39 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1267,6 +1267,7 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionFloat,                internal_bridge_angle)) // ORCA: Internal bridge angle override
+     ((ConfigOptionBool,                 relative_bridge_angle)) // ORCA: Relative bridge angle flag
+     ((ConfigOptionFloat,                bridge_flow))
++    ((ConfigOptionFloat,                bridge_expansion_extra)) // [ORCAPORT:PQ-1]
+     ((ConfigOptionFloatOrPercent,       bridge_line_width))
+     ((ConfigOptionFloat,                internal_bridge_flow))
+     ((ConfigOptionFloatsNullable,       bridge_speed))
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index 54378b3b16..e6fb737e30 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -1417,6 +1417,7 @@ bool PrintObject::invalidate_state_by_config_options(
+             //BBS
+             || opt_key == "bridge_line_width"
+             || opt_key == "bridge_density"
++            || opt_key == "bridge_expansion_extra" // [ORCAPORT:PQ-1]
+             || opt_key == "internal_bridge_density") {
+             steps.emplace_back(posPrepareInfill);
+         } else if (
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 2dedb23365..a9e265b7ba 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2751,6 +2751,7 @@ void TabPrint::build()
+         optgroup = page->new_optgroup(L("Bridging"), L"param_bridge");
+         optgroup->append_single_option_line("bridge_flow", "quality_settings_bridging#flow-ratio");
+         optgroup->append_single_option_line("internal_bridge_flow", "quality_settings_bridging#flow-ratio");
++        optgroup->append_single_option_line("bridge_expansion_extra"); // [ORCAPORT:PQ-1]
+         optgroup->append_single_option_line("bridge_density", "quality_settings_bridging#bridge-density");
+         optgroup->append_single_option_line("internal_bridge_density", "quality_settings_bridging#bridge-density");
+         optgroup->append_single_option_line("thick_bridges", "quality_settings_bridging#thick-bridges");
+-- 
+2.43.0.windows.1
+
