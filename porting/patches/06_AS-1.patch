@@ -1,0 +1,241 @@
+From db5a192f17701ee8c56262e73b76ba6517b45752 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Sun, 13 Sep 2026 22:39:25 -0600
+Subject: [PATCH] port(AS-1): free-Z placement for aligning without assembling
+ (ORCAPORT:AS-1)
+
+---
+ src/libslic3r/CMakeLists.txt    |  2 ++
+ src/libslic3r/OrcaExt/FreeZ.cpp | 23 +++++++++++++++++++++++
+ src/libslic3r/OrcaExt/FreeZ.hpp | 19 +++++++++++++++++++
+ src/slic3r/GUI/GLCanvas3D.cpp   |  9 +++++----
+ src/slic3r/GUI/GUI_App.cpp      |  3 +++
+ src/slic3r/GUI/Preferences.cpp  | 20 ++++++++++++++++++++
+ src/slic3r/GUI/Selection.cpp    |  5 +++++
+ src/slic3r/GUI/SurfaceDrag.cpp  |  4 +++-
+ 8 files changed, 80 insertions(+), 5 deletions(-)
+ create mode 100644 src/libslic3r/OrcaExt/FreeZ.cpp
+ create mode 100644 src/libslic3r/OrcaExt/FreeZ.hpp
+
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 95d026ae8e..778f59bdad 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -342,6 +342,8 @@ set(lisbslic3r_sources
+     Optimize/BruteforceOptimizer.hpp
+     Optimize/NLoptOptimizer.hpp
+     Optimize/Optimizer.hpp
++    OrcaExt/FreeZ.cpp
++    OrcaExt/FreeZ.hpp
+     OrcaExt/IdleToolPowerDown.cpp
+     OrcaExt/IdleToolPowerDown.hpp
+     Orient.cpp
+diff --git a/src/libslic3r/OrcaExt/FreeZ.cpp b/src/libslic3r/OrcaExt/FreeZ.cpp
+new file mode 100644
+index 0000000000..be3d2aba55
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/FreeZ.cpp
+@@ -0,0 +1,23 @@
++#include "FreeZ.hpp"
++
++#include <atomic>
++
++namespace Slic3r {
++namespace OrcaExt {
++
++namespace {
++std::atomic<bool> s_free_z{ false };
++} // namespace
++
++void set_free_z(bool enabled)
++{
++    s_free_z.store(enabled, std::memory_order_relaxed);
++}
++
++bool free_z()
++{
++    return s_free_z.load(std::memory_order_relaxed);
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/FreeZ.hpp b/src/libslic3r/OrcaExt/FreeZ.hpp
+new file mode 100644
+index 0000000000..799e8196bb
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/FreeZ.hpp
+@@ -0,0 +1,19 @@
++#ifndef slic3r_OrcaExt_FreeZ_hpp_
++#define slic3r_OrcaExt_FreeZ_hpp_
++
++// [ORCAPORT:AS-1] App-level "free Z" placement preference.
++//
++// When enabled, the GUI stops force-snapping a moved object back down to the bed, so objects
++// can be floated in Z to align against each other without assembling them. Printing is done
++// after assembling, so this is placement-only: it never changes slicing.
++
++namespace Slic3r {
++namespace OrcaExt {
++
++void set_free_z(bool enabled);
++bool free_z();
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif
+diff --git a/src/slic3r/GUI/GLCanvas3D.cpp b/src/slic3r/GUI/GLCanvas3D.cpp
+index e63501eec1..6fc6d29a35 100644
+--- a/src/slic3r/GUI/GLCanvas3D.cpp
++++ b/src/slic3r/GUI/GLCanvas3D.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "libslic3r/BuildVolume.hpp"
+ #include "libslic3r/ClipperUtils.hpp"
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+ #include "libslic3r/PrintConfig.hpp"
+ #include "libslic3r/GCode/ThumbnailData.hpp"
+ #include "libslic3r/Geometry/ConvexHull.hpp"
+@@ -5066,7 +5067,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type)
+ 
+         const double shift_z = mo->get_instance_min_z(i.second);
+         //BBS: don't call translate if the z is zero
+-        if ((current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
++        if (!OrcaExt::free_z() && (current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
+             const Vec3d shift(0.0, 0.0, -shift_z);
+             m_selection.translate(i.first, i.second, shift);
+             mo->translate_instance(i.second, shift);
+@@ -5186,7 +5187,7 @@ void GLCanvas3D::do_rotate(const std::string& snapshot_type)
+             // BBS: don't call translate if the z is zero
+             const double shift_z = mo->get_instance_min_z(i.second);
+             // leave sinking instances as sinking
+-            if ((min_zs.find({i.first, i.second})->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
++            if (!OrcaExt::free_z() && (min_zs.find({i.first, i.second})->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
+                 const Vec3d shift(0.0, 0.0, -shift_z);
+                 m_selection.translate(i.first, i.second, shift);
+                 mo->translate_instance(i.second, shift);
+@@ -5278,7 +5279,7 @@ void GLCanvas3D::do_scale(const std::string& snapshot_type)
+         //BBS: don't call translate if the z is zero
+         double shift_z = mo->get_instance_min_z(i.second);
+         // leave sinking instances as sinking
+-        if ((min_zs.empty() || min_zs.find({ i.first, i.second })->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
++        if (!OrcaExt::free_z() && (min_zs.empty() || min_zs.find({ i.first, i.second })->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
+             Vec3d shift(0.0, 0.0, -shift_z);
+             m_selection.translate(i.first, i.second, shift);
+             mo->translate_instance(i.second, shift);
+@@ -5388,7 +5389,7 @@ void GLCanvas3D::do_mirror(const std::string& snapshot_type)
+         //BBS: don't call translate if the z is zero
+         double shift_z = mo->get_instance_min_z(i.second);
+         // leave sinking instances as sinking
+-        if ((min_zs.empty() || min_zs.find({ i.first, i.second })->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD)&&(shift_z != 0.0f)) {
++        if (!OrcaExt::free_z() && (min_zs.empty() || min_zs.find({ i.first, i.second })->second >= SINKING_Z_THRESHOLD || shift_z > SINKING_Z_THRESHOLD)&&(shift_z != 0.0f)) {
+             Vec3d shift(0.0, 0.0, -shift_z);
+             m_selection.translate(i.first, i.second, shift);
+             mo->translate_instance(i.second, shift);
+diff --git a/src/slic3r/GUI/GUI_App.cpp b/src/slic3r/GUI/GUI_App.cpp
+index 3c5a527d59..bc764b95de 100644
+--- a/src/slic3r/GUI/GUI_App.cpp
++++ b/src/slic3r/GUI/GUI_App.cpp
+@@ -85,6 +85,7 @@
+ #include "libslic3r/I18N.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+ #include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+ #include "libslic3r/Thread.hpp"
+ #include "libslic3r/miniz_extension.hpp"
+ #include "libslic3r/Utils.hpp"
+@@ -2629,6 +2630,8 @@ void GUI_App::init_app_config()
+     // the libslic3r G-code post-processor honours them without depending on the GUI.
+     Slic3r::OrcaExt::set_idle_tool_power_down(app_config->get_bool("orca_ext_idle_tool_power_down"));
+     Slic3r::OrcaExt::set_idle_tool_power_down_deep(app_config->get_bool("orca_ext_idle_tool_deep_sleep"));
++    // [ORCAPORT:AS-1]
++    Slic3r::OrcaExt::set_free_z(app_config->get_bool("orca_ext_free_z"));
+     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
+ 
+ }
+diff --git a/src/slic3r/GUI/Preferences.cpp b/src/slic3r/GUI/Preferences.cpp
+index a965e67873..2fb5f6263a 100644
+--- a/src/slic3r/GUI/Preferences.cpp
++++ b/src/slic3r/GUI/Preferences.cpp
+@@ -9,6 +9,7 @@
+ #include "I18N.hpp"
+ #include "libslic3r/AppConfig.hpp"
+ #include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+ #include "libslic3r/Format/DRC.hpp"
+ #include <wx/language.h>
+ #include "OG_CustomCtrl.hpp"
+@@ -1667,6 +1668,25 @@ void PreferencesDialog::create_items()
+                              "orca_ext_idle_tool_deep_sleep", true);
+     }
+ 
++    // [ORCAPORT:AS-1] Free-Z placement: let objects stay off the bed so separate objects can be
++    // aligned in Z without assembling them. Printing is always done after assembling.
++    {
++        wxBoxSizer* item_sizer = create_item_label(_L("Allow free Z placement"),
++            _L("Do not snap moved objects back onto the bed, so separate objects can be floated in Z "
++               "for alignment without assembling them."));
++        auto* checkbox = new ::CheckBox(m_parent);
++        checkbox->SetValue(app_config->get_bool("orca_ext_free_z"));
++        checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox](wxCommandEvent& e) {
++            const bool on = checkbox->GetValue();
++            wxGetApp().app_config->set_bool("orca_ext_free_z", on);
++            wxGetApp().app_config->save();
++            OrcaExt::set_free_z(on);
++            e.Skip();
++        });
++        item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
++        g_sizer->Add(item_sizer);
++    }
++
+ #ifdef __linux__
+     auto item_window_button_pos  = create_item_checkbox(_L("Use window buttons on left side"), "", "window_buttons_on_left", _L("(Requires restart)"));
+     g_sizer->Add(item_window_button_pos);
+diff --git a/src/slic3r/GUI/Selection.cpp b/src/slic3r/GUI/Selection.cpp
+index 84f4a0b836..6d0fa7675c 100644
+--- a/src/slic3r/GUI/Selection.cpp
++++ b/src/slic3r/GUI/Selection.cpp
+@@ -12,6 +12,7 @@
+ #include "slic3r/Utils/UndoRedo.hpp"
+ 
+ #include "libslic3r/LocalesUtils.hpp"
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+ #include "libslic3r/Model.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+ #if ENABLE_ENHANCED_PRINT_VOLUME_FIT
+@@ -3095,6 +3096,10 @@ void Selection::synchronize_unselected_volumes()
+ 
+ void Selection::ensure_on_bed()
+ {
++    // [ORCAPORT:AS-1] free-Z placement keeps objects where they are put.
++    if (OrcaExt::free_z())
++        return;
++
+     typedef std::map<std::pair<int, int>, double> InstancesToZMap;
+     InstancesToZMap instances_min_z;
+ 
+diff --git a/src/slic3r/GUI/SurfaceDrag.cpp b/src/slic3r/GUI/SurfaceDrag.cpp
+index 025b1d71c6..8e66c9c82b 100644
+--- a/src/slic3r/GUI/SurfaceDrag.cpp
++++ b/src/slic3r/GUI/SurfaceDrag.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <libslic3r/Model.hpp> // ModelVolume
+ #include <libslic3r/Emboss.hpp>
++#include <libslic3r/OrcaExt/FreeZ.hpp> // [ORCAPORT:AS-1]
+ 
+ #include "slic3r/Utils/RaycastManager.hpp"
+ 
+@@ -378,7 +379,8 @@ bool face_selected_volume_to_camera(const Camera &camera, GLCanvas3D &canvas, co
+ 
+     if (volume.type() == ModelVolumeType::MODEL_PART) {
+         object.invalidate_bounding_box();
+-        object.ensure_on_bed();
++        if (!OrcaExt::free_z()) // [ORCAPORT:AS-1]
++            object.ensure_on_bed();
+     }
+ 
+     canvas.do_rotate(L("Face the camera"));
+-- 
+2.43.0.windows.1
+

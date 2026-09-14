@@ -1,32 +1,37 @@
 # AS-1 - Free-Z placement (align without assembling)
 
 - Source: `NEOTKOCM_RELEASE_2_3.md` (floating objects), re-keyed in `2_39`.
-- Fork: `OrcaFS-NeotkoCM` @ `cca8426cfe` (Libre Mode), `c3508e5a92` (Gravity axis).
-- Category: B. **Placement only** (decision).
+- Fork: `OrcaFS-NeotkoCM` @ `cca8426cfe`, `c3508e5a92`.
+- Category: B. Status: **ported** (branch `port/AS-1`), build clean.
 
 ## Scope (decided)
-The user aligns objects floating, then **assembles before slicing**. Therefore:
-- Port ONLY the placement half: objects can be moved off the bed in Z and stay there.
-- Do NOT port the `GCode.cpp` empty-first-layer "warning instead of error" downgrade.
-- Do NOT port SU-3 measured floating detection (dropped).
-- Do NOT port anything else from Libre Mode.
+Placement only. The user aligns objects floating, then assembles before slicing. So:
+- Port ONLY "objects stay off the bed" (no forced bed snap).
+- Not ported: the `GCode.cpp` empty-first-layer warning downgrade, SU-3 detection, True Objects,
+  or anything else from Libre Mode.
 
-## Implementation shape
-- One app preference `orca_ext_free_z` (default `false`; off = stock bed snapping).
-- Many GUI call sites currently force `ensure_on_bed()`. In the fork a helper
-  (`gravity_allow_free_z()`) short-circuits them. We will add an equivalent predicate and
-  make the same call sites consult it. Expected sites (target 2.5 - confirm line numbers):
-  `GLCanvas3D.cpp`, `Selection.cpp`, `SurfaceDrag.cpp`, `GUI_ObjectList.cpp`,
-  `Gizmos/GLGizmoSimplify.cpp`, `Jobs/EmbossJob.cpp`, `Plater.cpp`.
-- No `PrintConfig` key, no slicing change, no `InstanceContact`.
+## Implementation (target 2.5)
+All inserted code tagged `[ORCAPORT:AS-1]`.
+- New app-level global: `src/libslic3r/OrcaExt/FreeZ.{hpp,cpp}` -
+  `OrcaExt::set_free_z(bool)` / `OrcaExt::free_z()`.
+- `src/slic3r/GUI/Preferences.cpp` - checkbox "Allow free Z placement" (app key
+  `orca_ext_free_z`, default false), writes the global.
+- `src/slic3r/GUI/GUI_App.cpp` - mirrors `app_config` into the global at startup.
+- Guarded snap sites (skip the snap when free-Z is on):
+  - `GLCanvas3D.cpp` - the four "Fixes sinking/flying instances (snaps object to buildplate)"
+    post-move blocks (move/drag/rotate).
+  - `Selection.cpp` - `Selection::ensure_on_bed()` returns early.
+  - `SurfaceDrag.cpp` - face-drag snap.
 
-## Fork reference (for behaviour only)
-- `src/slic3r/GUI/GUI_App.cpp:7625` `gravity_allow_free_z()` reads app_config.
-- `MainFrame.cpp:1662-1707` merges Libre Mode + True Objects; we replace with our single key.
-- `AppConfig.cpp:177-178` Libre Mode -> True Objects migration; not ported.
+## Notes / limits
+- Only the move/transform snap paths are guarded. Sites that intentionally place a *new*
+  object on the bed (import, paste, emboss, orient, object-list add) still snap; that is
+  desirable and matches the fork's selection of guarded sites.
+- If a specific action still snaps a floated object back, add the same
+  `if (!OrcaExt::free_z())` guard at that call site.
 
 ## Verification
-- Preference off: placed objects snap to the bed exactly as stock.
-- Preference on: an object stays where it is placed; AS-2 Align & Stack and AS-3 Snap & Drag
-  can leave objects floating.
-- No change to sliced output (GUI/placement only).
+- Compile/link: 0 errors, binary produced.
+- Off: preference false -> every guarded site behaves exactly as stock.
+- On: drag an object up in Z and it stays; place a second object against it for alignment.
+- No slicing change (GUI/placement only).
