@@ -10,6 +10,7 @@
 #define slic3r_TreeModelVolumes_hpp
 
 #include <mutex>
+#include <limits>
 #include <unordered_map>
 
 #include <boost/functional/hash.hpp>
@@ -434,6 +435,10 @@ private:
      * \brief The index to access the outline corresponding with the currently processing mesh
      */
     size_t m_current_outline_idx;
+    // [ORCAPORT:SU-1] index of the injected cross-object neighbour group in m_layer_outlines
+    // (npos = none). The neighbour is collision-only: it must never contribute placeable
+    // ("rest on model") areas, because landing on a neighbour is not part of this feature.
+    size_t m_neighbor_outline_idx = std::numeric_limits<size_t>::max();
     /*!
      * \brief The minimum required clearance between the model and the tree branches
      */

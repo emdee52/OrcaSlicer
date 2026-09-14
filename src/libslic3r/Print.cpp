@@ -2356,6 +2356,13 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             return false;
         if (model_obj1->config.get() != model_obj2->config.get())
             return false;
+        // [ORCAPORT:SU-1] cross-object support avoidance: the support of an opted-in object depends
+        // on where its neighbours sit RELATIVE to it, and copy_layers_from_shared_object() copies
+        // m_support_layers wholesale - two geometrically identical objects at different plate
+        // positions would inherit a support that avoids the wrong relative neighbours. Opt-in only:
+        // plates without the toggle keep the full dedup.
+        if (object1->config().support_cross_object_avoidance.value || object2->config().support_cross_object_avoidance.value)
+            return false;
         return true;
     };
     int object_count = m_objects.size();
@@ -2511,12 +2518,29 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             for (size_t i = 0; i < m_objects.size(); ++i)
                 sup_was_done[i] = m_objects[i]->is_step_done(posSupportMaterial) ? 1 : 0;
 
+        // [ORCAPORT:SU-1] support-vs-support: an opted-in object must see the ALREADY generated
+        // support of its neighbours (OrcaExt::neighbor_occupancy reads other->support_layers() once
+        // posSupportMaterial is done), so those objects cannot generate inside the parallel batch:
+        // they run serially AFTER it, in plate order - deterministic, and each one sees every
+        // parallel object plus every earlier serial one. Untoggled objects keep the full parallel path.
+        std::vector<PrintObject*> xobj_serial_support;
+        if (m_config.print_sequence == PrintSequence::ByLayer)
+            for (PrintObject *obj : m_objects)
+                if (need_slicing_objects.count(obj) != 0
+                    && obj->config().enable_support.value
+                    && obj->config().support_cross_object_avoidance.value)
+                    xobj_serial_support.emplace_back(obj);
+        auto is_xobj_serial = [&xobj_serial_support](const PrintObject *obj) {
+            return std::find(xobj_serial_support.begin(), xobj_serial_support.end(), obj) != xobj_serial_support.end();
+        };
+
         tbb::parallel_for(tbb::blocked_range<int>(0, int(m_objects.size())),
-            [this, need_slicing_objects](const tbb::blocked_range<int>& range) {
+            [this, need_slicing_objects, &is_xobj_serial](const tbb::blocked_range<int>& range) {
                 for (int i = range.begin(); i < range.end(); i++) {
                     PrintObject* obj = m_objects[i];
                     if (need_slicing_objects.count(obj) != 0) {
-                        obj->generate_support_material();
+                        if (!is_xobj_serial(obj))
+                            obj->generate_support_material();
                     }
                     else {
                         if (obj->set_started(posSupportMaterial))
@@ -2525,6 +2549,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 }
             }
         );
+        for (PrintObject *obj : xobj_serial_support)
+            obj->generate_support_material();
 
         if (m_pipeline_plugin_active)
             for (size_t i = 0; i < m_objects.size(); ++i)

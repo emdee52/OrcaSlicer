@@ -93,6 +93,10 @@ private:
 	SlicingParameters	     m_slicing_params;
 	// Various precomputed support parameters to be shared with external functions.
 	SupportParameters   	 m_support_params;
+	// [ORCAPORT:SU-1] PerObject Support: per-object-layer footprint of the OTHER objects' bodies
+	// plus already-generated support, injected into trim_support_layers_by_object so classic/grid
+	// support avoids the neighbours. Empty when the feature is off (built once in generate()).
+	std::vector<Polygons>    m_neighbor_occupancy;
 };
 
 } // namespace Slic3r

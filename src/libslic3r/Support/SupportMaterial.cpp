@@ -8,6 +8,7 @@
 #include "Geometry.hpp"
 #include "Point.hpp"
 #include "MutablePolygon.hpp"
+#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
 
 #include <cmath>
 #include <memory>
@@ -373,6 +374,10 @@ static constexpr const std::initializer_list<SupporLayerType> support_types_inte
 void PrintObjectSupportMaterial::generate(PrintObject &object)
 {
     BOOST_LOG_TRIVIAL(info) << "Support generator - Start";
+
+    // [ORCAPORT:SU-1] build the cross-object occupancy once (empty when PerObject Support is off),
+    // consumed by trim_support_layers_by_object.
+    m_neighbor_occupancy = OrcaExt::neighbor_occupancy(object);
 
     coordf_t max_object_layer_height = 0.;
     for (size_t i = 0; i < object.layer_count(); ++ i)
@@ -3168,6 +3173,11 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
                                                    scale_(no_overlap_xy_gap);
                         polygons_append(polygons_trimming, offset({ expoly }, trimming_offset, SUPPORT_SURFACES_OFFSET_PARAMETERS));
                     }
+                    // [ORCAPORT:SU-1] trim the classic/grid support by the OTHER objects too (their
+                    // body + already-generated support), mapped by the same object-layer index i.
+                    // Empty when PerObject Support is off.
+                    if (i < m_neighbor_occupancy.size() && !m_neighbor_occupancy[i].empty())
+                        polygons_append(polygons_trimming, offset(m_neighbor_occupancy[i], gap_xy_scaled, SUPPORT_SURFACES_OFFSET_PARAMETERS));
                 }
                 if (!m_slicing_params.zero_gap_interface_top && m_object_config->thick_bridges) {
                     // Collect all bottom surfaces, which will be extruded with a bridging flow.
