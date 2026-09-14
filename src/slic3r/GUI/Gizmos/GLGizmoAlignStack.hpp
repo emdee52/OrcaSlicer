@@ -115,6 +115,58 @@ private:
     struct GhostIconRect { float x0, y0, x1, y1; int axis; int dir; bool is_center; };
     std::vector<GhostIconRect> m_ghost_icon_rects;
 
+    // --- [ORCAPORT:AS-2] AS-2F: mate faces (PreFlight algorithm, native APIs) ---
+    struct MateFace
+    {
+        bool  valid { false };
+        Vec3d world_pos { Vec3d::Zero() };
+        Vec3d world_normal { Vec3d::UnitZ() };
+        int   object_idx { -1 };
+        int   instance_idx { 0 };
+        int   facet_idx { -1 };
+    };
+    struct MateSnapPoint
+    {
+        Vec3d pos { Vec3d::Zero() };
+        Vec3d normal { Vec3d::UnitZ() };
+    };
+
+    bool     m_mate_mode { false };
+    MateFace m_mate_src;  // face picked on #2 (the object that moves)
+    MateFace m_mate_tgt;  // face picked on #1 (the anchor)
+    // Which ordered slot the next mate click targets: 1 = #2 (source) first, then 0 = #1 (target).
+    bool     m_mate_awaiting_target { false };
+
+    float m_mate_depth { 0.f };       // along the target normal (mm; negative embeds)
+    float m_mate_rotation { 0.f };    // around the target normal (deg)
+    bool  m_mate_flip { false };      // mirror through the target plane
+    bool  m_mate_mirror_h { false };  // mirror on the target plane X axis
+    bool  m_mate_mirror_v { false };  // mirror on the target plane Y axis
+
+    // Source (#2) raycaster + mesh, separate from the stack-on-face (#1) one.
+    std::unique_ptr<MeshRaycaster> m_src_raycaster;
+    TriangleMesh                   m_src_mesh;
+    std::vector<Vec3f>             m_src_normals;
+    std::vector<Vec3i32>           m_src_neighbors;
+    int                            m_src_raycaster_obj_idx { -1 };
+    Transform3d                    m_src_world_trafo { Transform3d::Identity() };
+
+    // Feature-center snapping (holes on the flat face + negative-volume centers).
+    std::vector<MateSnapPoint> m_src_snap_points;
+    std::vector<MateSnapPoint> m_tgt_snap_points;
+    int                        m_src_snap_hover { -1 };
+    int                        m_tgt_snap_hover { -1 };
+
+    void ensure_src_raycaster() = delete; // not used: raycast_mate_face builds a raycaster on demand
+    // Raycast a mouse position against every instance of an object; keeps the nearest hit.
+    bool raycast_mate_face(int object_idx, const Vec2d& mouse_pos, MateFace& out);
+    void clear_mate_state();
+    void apply_mate_faces();
+    static void build_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis);
+    // Ported from PreFlight GLGizmoAlign::detect_feature_centers: flat-face holes + negative volumes.
+    void detect_feature_centers(const MateFace& face, const TriangleMesh& mesh, const Transform3d& world_trafo,
+                                std::vector<MateSnapPoint>& out);
+
     // --- Helpers ------------------------------------------------------------
     void seed_order_from_selection();
     void prune_dead_objects();

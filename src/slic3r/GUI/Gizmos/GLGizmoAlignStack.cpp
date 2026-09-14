@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <set>
+#include <unordered_map>
 
 namespace Slic3r { namespace GUI {
 
@@ -493,6 +494,41 @@ bool GLGizmoAlignStack::on_mouse(const wxMouseEvent& mouse_event)
             else                   apply_touch(r.axis, r.dir);
             return true;
         }
+    }
+
+    // [ORCAPORT:AS-2] AS-2F: mate faces - pick a source face on #2, then a target face on #1.
+    if (m_mate_mode) {
+        if (mouse_event.Moving())
+            return false;
+        if (mouse_event.LeftDown()) {
+            const int pick_idx = m_mate_awaiting_target ? ordered_obj(0) : ordered_obj(1);
+            if (pick_idx < 0)
+                return false;
+            MateFace face;
+            const Vec2d mouse_pos(mouse_event.GetX(), mouse_event.GetY());
+            if (raycast_mate_face(pick_idx, mouse_pos, face)) {
+                const Model* model = m_parent.get_selection().get_model();
+                const ModelObject* mo = (model && face.object_idx < (int)model->objects.size())
+                                            ? model->objects[face.object_idx] : nullptr;
+                if (!m_mate_awaiting_target) {
+                    m_mate_src = face;
+                    if (mo)
+                        detect_feature_centers(face, mo->raw_mesh(),
+                                               mo->instances[face.instance_idx]->get_matrix(), m_src_snap_points);
+                    m_mate_awaiting_target = true;
+                } else {
+                    m_mate_tgt = face;
+                    if (mo)
+                        detect_feature_centers(face, mo->raw_mesh(),
+                                               mo->instances[face.instance_idx]->get_matrix(), m_tgt_snap_points);
+                    m_mate_awaiting_target = false;
+                }
+                m_parent.set_as_dirty();
+                m_parent.request_extra_frame();
+                return true;
+            }
+        }
+        return false;
     }
 
     if (m_face_pick_mode) {
@@ -1078,6 +1114,256 @@ void GLGizmoAlignStack::render_zone_and_ghosts()
 // Input window (panel)
 // -----------------------------------------------------------------------------
 
+// =============================================================================
+// [ORCAPORT:AS-2] AS-2F - mate faces (PreFlight algorithm, native Orca APIs).
+// =============================================================================
+
+void GLGizmoAlignStack::build_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis)
+{
+    const Vec3d  z     = normal.normalized();
+    const double z_dot = z.dot(Vec3d::UnitZ());
+    if (std::abs(z_dot) > 0.9) {
+        x_axis = Vec3d::UnitX();
+        y_axis = z.cross(x_axis).normalized();
+        if (z_dot < 0) y_axis = -y_axis;
+        x_axis = y_axis.cross(z).normalized();
+    } else {
+        x_axis = Vec3d::UnitZ().cross(z).normalized();
+        y_axis = z.cross(x_axis).normalized();
+        if (y_axis.z() < 0) { y_axis = -y_axis; x_axis = -x_axis; }
+    }
+}
+
+void GLGizmoAlignStack::clear_mate_state()
+{
+    m_mate_src = MateFace();
+    m_mate_tgt = MateFace();
+    m_mate_awaiting_target = false;
+    m_src_snap_points.clear();
+    m_tgt_snap_points.clear();
+    m_src_snap_hover = m_tgt_snap_hover = -1;
+}
+
+bool GLGizmoAlignStack::raycast_mate_face(int object_idx, const Vec2d& mouse_pos, MateFace& out)
+{
+    const Model* model = m_parent.get_selection().get_model();
+    if (!model || object_idx < 0 || object_idx >= (int)model->objects.size())
+        return false;
+    const ModelObject* mo = model->objects[object_idx];
+    if (mo->instances.empty())
+        return false;
+
+    TriangleMesh  mesh = mo->raw_mesh();
+    MeshRaycaster raycaster(mesh);
+    const Camera& camera = wxGetApp().plater()->get_camera();
+
+    double     best_sq = std::numeric_limits<double>::max();
+    bool       found   = false;
+    const Vec3d cam_pos = camera.get_position();
+    for (size_t ii = 0; ii < mo->instances.size(); ++ii) {
+        const Transform3d world_trafo = mo->instances[ii]->get_matrix();
+        Vec3f  hit_local { 0.f, 0.f, 0.f };
+        Vec3f  hit_normal { 0.f, 0.f, 1.f };
+        size_t facet = 0;
+        if (raycaster.unproject_on_mesh(mouse_pos, world_trafo, camera, hit_local, hit_normal, nullptr, &facet)) {
+            const Vec3d  world_hit = world_trafo * hit_local.cast<double>();
+            const double d_sq      = (world_hit - cam_pos).squaredNorm();
+            if (d_sq < best_sq) {
+                best_sq = d_sq;
+                found   = true;
+                const Matrix3d normal_matrix = world_trafo.linear().inverse().transpose();
+                out.valid        = true;
+                out.object_idx   = object_idx;
+                out.instance_idx = (int)ii;
+                out.facet_idx    = (int)facet;
+                out.world_pos    = world_hit;
+                out.world_normal = (normal_matrix * hit_normal.cast<double>()).normalized();
+            }
+        }
+    }
+    return found;
+}
+
+// Ported from PreFlight GLGizmoAlign::detect_feature_centers: negative-volume centers plus
+// interior boundary loops (holes) on the picked coplanar face.
+void GLGizmoAlignStack::detect_feature_centers(const MateFace& face, const TriangleMesh& mesh,
+                                               const Transform3d& world_trafo, std::vector<MateSnapPoint>& out)
+{
+    out.clear();
+    const indexed_triangle_set& its = mesh.its;
+    if (face.facet_idx < 0 || face.facet_idx >= (int)its.indices.size())
+        return;
+    const Vec3d z_axis = face.world_normal.normalized();
+
+    const Model* model = m_parent.get_selection().get_model();
+    if (model && face.object_idx >= 0 && face.object_idx < (int)model->objects.size()) {
+        const ModelObject* obj = model->objects[face.object_idx];
+        for (const ModelVolume* vol : obj->volumes) {
+            if (vol == nullptr || !vol->is_negative_volume())
+                continue;
+            const Vec3d c_world   = world_trafo * vol->mesh().bounding_box().center();
+            const Vec3d projected = c_world + z_axis * (face.world_pos.dot(z_axis) - c_world.dot(z_axis));
+            out.push_back({ projected, face.world_normal });
+        }
+    }
+
+    const Vec3i32& seed  = its.indices[face.facet_idx];
+    const Vec3f  lnorm = (its.vertices[seed[1]] - its.vertices[seed[0]])
+                             .cross(its.vertices[seed[2]] - its.vertices[seed[0]]).normalized();
+    const float  seed_d = its.vertices[seed[0]].dot(lnorm);
+
+    std::vector<bool> coplanar(its.indices.size(), false);
+    for (size_t fi = 0; fi < its.indices.size(); ++fi) {
+        const Vec3i32& t = its.indices[fi];
+        const Vec3f  n = (its.vertices[t[1]] - its.vertices[t[0]])
+                             .cross(its.vertices[t[2]] - its.vertices[t[0]]).normalized();
+        if ((double)lnorm.dot(n) < 0.999)
+            continue;
+        if (std::abs(its.vertices[t[0]].dot(lnorm) - seed_d) > 0.5f)
+            continue;
+        coplanar[fi] = true;
+    }
+
+    auto ekey = [](int a, int b) { if (a > b) std::swap(a, b); return (uint64_t(uint32_t(a)) << 32) | uint32_t(b); };
+    std::unordered_map<uint64_t, int> edge_count;
+    for (size_t fi = 0; fi < its.indices.size(); ++fi) {
+        if (!coplanar[fi]) continue;
+        const Vec3i32& t = its.indices[fi];
+        for (int e = 0; e < 3; ++e) edge_count[ekey(t[e], t[(e + 1) % 3])]++;
+    }
+    std::unordered_multimap<int, int> dir_edges;
+    for (size_t fi = 0; fi < its.indices.size(); ++fi) {
+        if (!coplanar[fi]) continue;
+        const Vec3i32& t = its.indices[fi];
+        for (int e = 0; e < 3; ++e) {
+            const int v0 = t[e], v1 = t[(e + 1) % 3];
+            if (edge_count[ekey(v0, v1)] == 1) dir_edges.emplace(v0, v1);
+        }
+    }
+    if (dir_edges.empty()) return;
+
+    std::vector<std::vector<int>> loops;
+    while (!dir_edges.empty()) {
+        const int start = dir_edges.begin()->first;
+        std::vector<int> loop;
+        int cur = start;
+        while (true) {
+            auto it = dir_edges.find(cur);
+            if (it == dir_edges.end()) break;
+            const int nxt = it->second;
+            dir_edges.erase(it);
+            loop.push_back(cur);
+            if (nxt == start) break;
+            cur = nxt;
+            if (loop.size() > its.vertices.size()) break;
+        }
+        if (loop.size() >= 3) loops.push_back(std::move(loop));
+    }
+    if (loops.size() <= 1) return; // only the outer perimeter
+
+    Vec3d px, py;
+    build_plane_axes(face.world_normal, px, py);
+    auto loop_area = [&](const std::vector<int>& L) {
+        double a = 0; const size_t n = L.size();
+        for (size_t j = 0; j < n; ++j) {
+            const Vec3d p0 = world_trafo * its.vertices[L[j]].cast<double>();
+            const Vec3d p1 = world_trafo * its.vertices[L[(j + 1) % n]].cast<double>();
+            a += (p0.dot(px) * p1.dot(py) - p1.dot(px) * p0.dot(py));
+        }
+        return std::abs(a) * 0.5;
+    };
+    size_t largest = 0; double largest_area = 0;
+    for (size_t i = 0; i < loops.size(); ++i) {
+        const double a = loop_area(loops[i]);
+        if (a > largest_area) { largest_area = a; largest = i; }
+    }
+    const double hit_depth = face.world_pos.dot(z_axis);
+    for (size_t i = 0; i < loops.size(); ++i) {
+        if (i == largest || loop_area(loops[i]) < 1.0) continue;
+        Vec3d c = Vec3d::Zero();
+        for (int vi : loops[i]) c += world_trafo * its.vertices[vi].cast<double>();
+        c /= double(loops[i].size());
+        c += z_axis * (hit_depth - c.dot(z_axis));
+        out.push_back({ c, face.world_normal });
+    }
+}
+
+void GLGizmoAlignStack::apply_mate_faces()
+{
+    if (!m_mate_src.valid || !m_mate_tgt.valid)
+        return;
+    const Model* model = m_parent.get_selection().get_model();
+    if (!model || m_mate_src.object_idx < 0 || m_mate_src.object_idx >= (int)model->objects.size())
+        return;
+    ModelObject* b_obj = const_cast<ModelObject*>(model->objects[m_mate_src.object_idx]);
+    if (m_mate_src.instance_idx < 0 || m_mate_src.instance_idx >= (int)b_obj->instances.size())
+        return;
+
+    auto snap_to = [](const Vec3d& p, const std::vector<MateSnapPoint>& pts, double tol) {
+        double best = tol; Vec3d out = p;
+        for (const MateSnapPoint& s : pts) {
+            const double d = (s.pos - p).norm();
+            if (d < best) { best = d; out = s.pos; }
+        }
+        return out;
+    };
+    const Vec3d src_pos = snap_to(m_mate_src.world_pos, m_src_snap_points, 2.0);
+    const Vec3d tgt_pos = snap_to(m_mate_tgt.world_pos, m_tgt_snap_points, 2.0);
+
+    ModelInstance*    inst = b_obj->instances[m_mate_src.instance_idx];
+    const Transform3d orig = inst->get_matrix();
+
+    const Vec3d src_n = m_mate_src.world_normal.normalized();
+    const Vec3d tgt_n = m_mate_tgt.world_normal.normalized();
+
+    Transform3d align_rot = Transform3d::Identity();
+    align_rot.linear() = Eigen::Quaterniond().setFromTwoVectors(src_n, -tgt_n).toRotationMatrix();
+
+    const Matrix3d new_linear = align_rot.linear() * orig.linear();
+    Transform3d    rotated    = Transform3d::Identity();
+    rotated.linear()      = new_linear;
+    rotated.translation() = orig.translation();
+
+    const Vec3d src_local   = orig.inverse() * src_pos;
+    const Vec3d rotated_src = rotated * src_local;
+
+    Vec3d x_axis, y_axis;
+    build_plane_axes(tgt_n, x_axis, y_axis);
+    const Vec3d target_with_offset = tgt_pos + tgt_n * (double)m_mate_depth;
+    const Vec3d translation_fix    = target_with_offset - rotated_src;
+
+    Transform3d new_trafo = Transform3d::Identity();
+    new_trafo.linear()      = new_linear;
+    new_trafo.translation() = orig.translation() + translation_fix;
+
+    if (std::abs(m_mate_rotation) > 0.001) {
+        const Eigen::AngleAxisd plane_rot(m_mate_rotation * M_PI / 180.0, tgt_n);
+        new_trafo = Eigen::Translation3d(target_with_offset) * plane_rot *
+                    Eigen::Translation3d(-target_with_offset) * new_trafo;
+    }
+
+    if (m_mate_mirror_h || m_mate_mirror_v || m_mate_flip) {
+        const double mx = m_mate_mirror_h ? -1.0 : 1.0;
+        const double my = m_mate_mirror_v ? -1.0 : 1.0;
+        const double mz = m_mate_flip ? -1.0 : 1.0;
+        Matrix3d plane_basis;
+        plane_basis.col(0) = x_axis; plane_basis.col(1) = y_axis; plane_basis.col(2) = tgt_n;
+        const Matrix3d   world_mirror = plane_basis * Eigen::Scaling(mx, my, mz) * plane_basis.transpose();
+        const Transform3d mirror_trafo = Eigen::Translation3d(target_with_offset) * Transform3d(world_mirror) *
+                                         Eigen::Translation3d(-target_with_offset);
+        new_trafo = mirror_trafo * new_trafo;
+    }
+
+    Plater::TakeSnapshot snap(wxGetApp().plater(), "Align & Stack: mate faces");
+    Selection& selection = m_parent.get_selection();
+    selection.rotate((unsigned int)m_mate_src.object_idx, (unsigned int)m_mate_src.instance_idx, new_trafo);
+    Geometry::Transformation new_transformation;
+    new_transformation.set_matrix(new_trafo);
+    inst->set_transformation(new_transformation);
+    b_obj->invalidate_bounding_box();
+    m_parent.do_move("");
+}
+
 void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_limit)
 {
     prune_dead_objects();
@@ -1218,6 +1504,38 @@ void GLGizmoAlignStack::on_render_input_window(float x, float y, float bottom_li
     } else if (m_face_pick_mode) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s", _u8L("Click a face on #1...").c_str());
+    }
+    m_imgui->disabled_end();
+
+    // --- [ORCAPORT:AS-2] Mate faces ------------------------------------------------
+    ImGui::Separator();
+    ImGui::Text("%s", _u8L("Mate faces (slanted)").c_str());
+    m_imgui->disabled_begin(n < 2);
+    if (ImGui::Checkbox(_u8L("Face to face").c_str(), &m_mate_mode)) {
+        clear_mate_state();
+    }
+    if (m_mate_mode) {
+        if (!m_mate_src.valid)
+            ImGui::TextDisabled("%s", _u8L("Click a face on #2 (the object that moves)...").c_str());
+        else if (!m_mate_tgt.valid)
+            ImGui::TextDisabled("%s", _u8L("Click a face on #1 (the anchor)...").c_str());
+        else
+            ImGui::Text("%s", _u8L("Faces picked. Adjust and apply.").c_str());
+
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputFloat(_u8L("Depth (mm)").c_str(), &m_mate_depth, 0.0f, 0.0f, "%.3f");
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputFloat(_u8L("Rotation (deg)").c_str(), &m_mate_rotation, 0.0f, 0.0f, "%.1f");
+        ImGui::Checkbox(_u8L("Flip").c_str(), &m_mate_flip);
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::Checkbox(_u8L("Mirror H").c_str(), &m_mate_mirror_h);
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::Checkbox(_u8L("Mirror V").c_str(), &m_mate_mirror_v);
+
+        m_imgui->disabled_begin(!(m_mate_src.valid && m_mate_tgt.valid));
+        if (ImGui::Button(_u8L("Mate").c_str()))
+            apply_mate_faces();
+        m_imgui->disabled_end();
     }
     m_imgui->disabled_end();
 
