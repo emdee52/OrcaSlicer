@@ -1,0 +1,662 @@
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 778f59bdad..ac2051c436 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -346,6 +346,8 @@ set(lisbslic3r_sources
+     OrcaExt/FreeZ.hpp
+     OrcaExt/IdleToolPowerDown.cpp
+     OrcaExt/IdleToolPowerDown.hpp
++    OrcaExt/InstanceContact.cpp
++    OrcaExt/InstanceContact.hpp
+     Orient.cpp
+     Orient.hpp
+     ParameterUtils.cpp
+diff --git a/src/libslic3r/Layer.hpp b/src/libslic3r/Layer.hpp
+index 8a5aa78036..ceae7dd2a1 100644
+--- a/src/libslic3r/Layer.hpp
++++ b/src/libslic3r/Layer.hpp
+@@ -304,6 +304,12 @@ public:
+ 
+     void simplify_support_extrusion_path() { this->simplify_support_entity_collection(&support_fills); }
+ 
++    // [ORCAPORT:SU-1] read-only access to the printed tree areas for the cross-object support
++    // occupancy builder (OrcaExt::neighbor_occupancy); the members themselves stay protected.
++    const ExPolygons& tree_roof_areas()     const { return roof_areas; }
++    const ExPolygons& tree_roof_1st_layer() const { return roof_1st_layer; }
++    const ExPolygons& tree_floor_areas()    const { return floor_areas; }
++
+ protected:
+     friend class PrintObject;
+     friend class TreeSupport;
+diff --git a/src/libslic3r/OrcaExt/InstanceContact.cpp b/src/libslic3r/OrcaExt/InstanceContact.cpp
+new file mode 100644
+index 0000000000..64baee5043
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/InstanceContact.cpp
+@@ -0,0 +1,148 @@
++// [ORCAPORT FILE] OrcaExt InstanceContact - see InstanceContact.hpp.
++// Source: NEOTKOCM_RELEASE_2_39.md; fork sha c3508e5a92.
++
++#include "InstanceContact.hpp"
++
++#include "libslic3r/libslic3r.h"
++#include "libslic3r/BoundingBox.hpp"
++#include "libslic3r/ClipperUtils.hpp"
++#include "libslic3r/Layer.hpp"
++#include "libslic3r/Print.hpp"
++#include "libslic3r/PrintConfig.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++namespace Slic3r {
++namespace OrcaExt {
++
++// Pair pruning margin. Perf-only: a pair of instances whose XY bboxes are farther apart than this
++// can only matter to a tree branch leaning >50 mm outside its own object, so accepting that miss
++// keeps plates of well-separated objects at zero cost.
++static constexpr double XOBJ_PRUNE_MARGIN_MM = 50.0;
++
++bool cross_object_active(const PrintObject &object)
++{
++    const Print *print = object.print();
++    // By-object printing: the neighbour may not exist yet at a given Z, and the physical head
++    // clearance is handled elsewhere, so gate to by-layer only.
++    return object.config().support_cross_object_avoidance.value
++        && print != nullptr
++        && print->config().print_sequence == PrintSequence::ByLayer;
++}
++
++std::vector<Polygons> neighbor_occupancy(const PrintObject &object)
++{
++    const Print *print = object.print();
++    if (print == nullptr || object.layer_count() == 0)
++        return {};
++    if (!cross_object_active(object))
++        return {};
++
++    // 2D bbox of an object's local geometry, accumulated once from the per-island bboxes.
++    auto object_bbox = [](const PrintObject &po) {
++        BoundingBox bb;
++        for (const Layer *layer : po.layers())
++            for (const BoundingBox &b : layer->lslices_bboxes)
++                bb.merge(b);
++        return bb;
++    };
++
++    const BoundingBox a_bbox = object_bbox(object);
++    if (!a_bbox.defined)
++        return {}; // all layers empty - nothing to protect
++    const coord_t margin = scale_(XOBJ_PRUNE_MARGIN_MM);
++
++    const size_t          num_layers = object.layer_count();
++    std::vector<Polygons> occupancy(num_layers);
++    bool                  any = false;
++
++    for (const PrintObject *other : print->objects()) {
++        if (other == &object || other->layer_count() == 0)
++            continue;
++
++        // The neighbour's ALREADY GENERATED support is an obstacle too (tree-vs-tree entanglement).
++        // Deterministic because opted-in objects generate their support serially in plate order.
++        // SupportLayer::lslices only carries the brim/skirt outline, so gather the real printed
++        // geometry: support_islands (classic) plus the tree base/roof/floor areas.
++        std::vector<std::pair<const Layer *, Polygons>> b_support;
++        if (other->is_step_done(posSupportMaterial))
++            for (const SupportLayer *sl : other->support_layers()) {
++                Polygons geo = to_polygons(sl->support_islands);
++                polygons_append(geo, to_polygons(sl->base_areas));
++                polygons_append(geo, to_polygons(sl->tree_roof_areas()));
++                polygons_append(geo, to_polygons(sl->tree_roof_1st_layer()));
++                polygons_append(geo, to_polygons(sl->tree_floor_areas()));
++                if (!geo.empty())
++                    b_support.emplace_back(sl, std::move(geo));
++            }
++
++        // XY deltas (B-local -> A-local: local_B + shift_B - shift_A) that survive bbox pruning.
++        // Conservative multi-instance union: every copy of A sees every copy of B, because the
++        // support is generated once per object and replicated per instance.
++        BoundingBox b_bbox = object_bbox(*other);
++        for (const auto &sl : b_support)
++            b_bbox.merge(get_extents(sl.second));
++        if (!b_bbox.defined)
++            continue;
++        std::vector<Point> deltas;
++        for (const PrintInstance &ai : object.instances())
++            for (const PrintInstance &bi : other->instances()) {
++                const Point  delta = bi.shift - ai.shift;
++                BoundingBox b_in_a = b_bbox;
++                b_in_a.translate(delta.x(), delta.y());
++                b_in_a.offset(margin);
++                if (b_in_a.overlap(a_bbox))
++                    deltas.push_back(delta);
++            }
++        if (deltas.empty())
++            continue;
++
++        // Z mapping by real [bottom_z, print_z) range overlap (adaptive layer heights - never by
++        // index). Both stacks ascend, so a single forward cursor over B suffices. Runs once over
++        // B's body layers and once over B's generated support layers.
++        auto accumulate_stack = [&](size_t stack_size, auto &&layer_at, auto &&geo_at) {
++            size_t jb = 0;
++            for (size_t ia = 0; ia < num_layers; ++ia) {
++                const Layer *la       = object.get_layer(int(ia));
++                const double a_bottom = la->bottom_z();
++                const double a_top    = la->print_z;
++                while (jb < stack_size && layer_at(jb)->print_z <= a_bottom + EPSILON)
++                    ++jb;
++                Polygons b_local;
++                for (size_t j = jb; j < stack_size; ++j) {
++                    if (layer_at(j)->bottom_z() >= a_top - EPSILON)
++                        break;
++                    polygons_append(b_local, geo_at(j));
++                }
++                if (b_local.empty())
++                    continue;
++                b_local = union_(b_local);
++                for (const Point &delta : deltas) {
++                    Polygons shifted = b_local;
++                    for (Polygon &poly : shifted)
++                        poly.translate(delta);
++                    polygons_append(occupancy[ia], std::move(shifted));
++                }
++                any = true;
++            }
++        };
++        accumulate_stack(other->layer_count(),
++            [&](size_t j) { return other->get_layer(int(j)); },
++            [&](size_t j) { return to_polygons(other->get_layer(int(j))->lslices); });
++        if (!b_support.empty())
++            accumulate_stack(b_support.size(),
++                [&](size_t j) { return b_support[j].first; },
++                [&](size_t j) -> const Polygons & { return b_support[j].second; });
++    }
++
++    if (!any)
++        return {};
++    for (Polygons &polys : occupancy)
++        if (!polys.empty())
++            polys = union_(polys);
++    return occupancy;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/InstanceContact.hpp b/src/libslic3r/OrcaExt/InstanceContact.hpp
+new file mode 100644
+index 0000000000..45473ea0fa
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/InstanceContact.hpp
+@@ -0,0 +1,32 @@
++#ifndef slic3r_OrcaExt_InstanceContact_hpp_
++#define slic3r_OrcaExt_InstanceContact_hpp_
++
++// [ORCAPORT FILE] OrcaExt InstanceContact - PerObject Support (SU-1): cross-object support
++// avoidance. Builds, per object layer, the footprint of every OTHER PrintObject's instances
++// (body plus already-generated support) in this object's local frame, for injection into the
++// support collision volumes. Read-only; requires lslices of all objects (posSlice done).
++// Source: NEOTKOCM_RELEASE_2_39.md; fork sha c3508e5a92.
++
++#include <vector>
++
++#include "Polygon.hpp"
++
++namespace Slic3r {
++class PrintObject;
++
++namespace OrcaExt {
++
++// Per-layer occupancy of the other objects' instances, indexed by this object's layer number and
++// expressed in this object's local frame. Empty when the feature is inactive (toggle off,
++// by-object print, or no neighbour within range) so callers can no-op at zero cost.
++std::vector<Polygons> neighbor_occupancy(const PrintObject &object);
++
++// True when cross-object support avoidance is effectively active for this object: the per-object
++// toggle is on AND the plate prints by layer (in by-object mode the neighbours may not exist yet,
++// so the avoidance is inert). Single source of truth for every place that reacts to the feature.
++bool cross_object_active(const PrintObject &object);
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index 664a251c3f..42f392e2d0 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1121,7 +1121,7 @@ static std::vector<std::string> s_Preset_print_options{
+     "fuzzy_skin", "fuzzy_skin_thickness", "fuzzy_skin_point_distance", "fuzzy_skin_first_layer", "fuzzy_skin_noise_type", "fuzzy_skin_mode", "fuzzy_skin_scale", "fuzzy_skin_octaves", "fuzzy_skin_persistence", "fuzzy_skin_ripples_per_layer", "fuzzy_skin_ripple_offset", "fuzzy_skin_layers_between_ripple_offset",
+     "max_volumetric_extrusion_rate_slope", "max_volumetric_extrusion_rate_slope_segment_length","extrusion_rate_smoothing_external_perimeter_only",
+     "inner_wall_speed", "outer_wall_speed", "sparse_infill_speed", "internal_solid_infill_speed",
+-    "top_surface_speed", "support_speed", "support_object_xy_distance", "support_object_first_layer_gap", "support_interface_speed",
++    "top_surface_speed", "support_speed", "support_object_xy_distance", "support_object_first_layer_gap", "support_cross_object_avoidance", "support_interface_speed",
+     "bridge_speed", "internal_bridge_speed", "gap_infill_speed", "travel_speed", "travel_speed_z", "initial_layer_speed",
+     "outer_wall_acceleration", "initial_layer_acceleration", "top_surface_acceleration", "default_acceleration", "skirt_type", "skirt_loops", "skirt_speed","min_skirt_length", "skirt_distance", "skirt_start_angle", "skirt_height","single_loop_draft_shield", "draft_shield",
+     "brim_width", "brim_object_gap", "brim_flow_ratio", "brim_use_efc_outline", "combine_brims", "brim_type", "brim_ears_max_angle", "brim_ears_detection_length", "brim_ears_outer_only", "enable_support", "support_type", "support_threshold_angle", "support_threshold_overlap","enforce_support_layers",
+diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
+index 60f747ce04..996769b0f9 100644
+--- a/src/libslic3r/Print.cpp
++++ b/src/libslic3r/Print.cpp
+@@ -2356,6 +2356,13 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
+             return false;
+         if (model_obj1->config.get() != model_obj2->config.get())
+             return false;
++        // [ORCAPORT:SU-1] cross-object support avoidance: the support of an opted-in object depends
++        // on where its neighbours sit RELATIVE to it, and copy_layers_from_shared_object() copies
++        // m_support_layers wholesale - two geometrically identical objects at different plate
++        // positions would inherit a support that avoids the wrong relative neighbours. Opt-in only:
++        // plates without the toggle keep the full dedup.
++        if (object1->config().support_cross_object_avoidance.value || object2->config().support_cross_object_avoidance.value)
++            return false;
+         return true;
+     };
+     int object_count = m_objects.size();
+@@ -2511,12 +2518,29 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
+             for (size_t i = 0; i < m_objects.size(); ++i)
+                 sup_was_done[i] = m_objects[i]->is_step_done(posSupportMaterial) ? 1 : 0;
+ 
++        // [ORCAPORT:SU-1] support-vs-support: an opted-in object must see the ALREADY generated
++        // support of its neighbours (OrcaExt::neighbor_occupancy reads other->support_layers() once
++        // posSupportMaterial is done), so those objects cannot generate inside the parallel batch:
++        // they run serially AFTER it, in plate order - deterministic, and each one sees every
++        // parallel object plus every earlier serial one. Untoggled objects keep the full parallel path.
++        std::vector<PrintObject*> xobj_serial_support;
++        if (m_config.print_sequence == PrintSequence::ByLayer)
++            for (PrintObject *obj : m_objects)
++                if (need_slicing_objects.count(obj) != 0
++                    && obj->config().enable_support.value
++                    && obj->config().support_cross_object_avoidance.value)
++                    xobj_serial_support.emplace_back(obj);
++        auto is_xobj_serial = [&xobj_serial_support](const PrintObject *obj) {
++            return std::find(xobj_serial_support.begin(), xobj_serial_support.end(), obj) != xobj_serial_support.end();
++        };
++
+         tbb::parallel_for(tbb::blocked_range<int>(0, int(m_objects.size())),
+-            [this, need_slicing_objects](const tbb::blocked_range<int>& range) {
++            [this, need_slicing_objects, &is_xobj_serial](const tbb::blocked_range<int>& range) {
+                 for (int i = range.begin(); i < range.end(); i++) {
+                     PrintObject* obj = m_objects[i];
+                     if (need_slicing_objects.count(obj) != 0) {
+-                        obj->generate_support_material();
++                        if (!is_xobj_serial(obj))
++                            obj->generate_support_material();
+                     }
+                     else {
+                         if (obj->set_started(posSupportMaterial))
+@@ -2525,6 +2549,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
+                 }
+             }
+         );
++        for (PrintObject *obj : xobj_serial_support)
++            obj->generate_support_material();
+ 
+         if (m_pipeline_plugin_active)
+             for (size_t i = 0; i < m_objects.size(); ++i)
+diff --git a/src/libslic3r/PrintApply.cpp b/src/libslic3r/PrintApply.cpp
+index 36f4d11c98..695cecdfde 100644
+--- a/src/libslic3r/PrintApply.cpp
++++ b/src/libslic3r/PrintApply.cpp
+@@ -1753,6 +1753,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+         PrintObjectPtrs print_objects_new;
+         print_objects_new.reserve(std::max(m_objects.size(), m_model.objects.size()));
+         bool new_objects = false;
++        // [ORCAPORT:SU-1] PerObject Support: the support of an object depends on WHERE the other
++        // objects sit, an edge the step graph does not model. Track any plate-geometry change
++        // (instance moved/added/removed, object added/deleted) and invalidate opted-in support at
++        // the end (conservative: no bbox filtering).
++        bool xobj_plate_changed = false;
+         // Walk over all new model objects and check, whether there are matching PrintObjects.
+         for (ModelObject *model_object : m_model.objects) {
+             ModelObjectStatus &model_object_status = const_cast<ModelObjectStatus&>(model_object_status_db.reuse(*model_object));
+@@ -1805,6 +1810,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+                     if (status != PrintBase::APPLY_STATUS_UNCHANGED) {
+                         size_t extruder_num = new_full_config.option<ConfigOptionFloats>("nozzle_diameter")->size();
+                         update_apply_status(status == PrintBase::APPLY_STATUS_INVALIDATED);
++                        xobj_plate_changed = true; // [ORCAPORT:SU-1] instance shifts changed
+                     }
+ 					print_objects_new.emplace_back((*it_old)->print_object);
+ 					const_cast<PrintObjectStatus*>(*it_old)->status = PrintObjectStatus::Reused;
+@@ -1814,6 +1820,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+         if (m_objects != print_objects_new) {
+             //BBS: add more logs
+             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: found print object changed.")%__LINE__;
++            xobj_plate_changed = true; // [ORCAPORT:SU-1] object added/deleted/reordered
+             this->call_cancel_callback();
+ 			update_apply_status(this->invalidate_all_steps());
+             m_objects = print_objects_new;
+@@ -1833,6 +1840,37 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+         }
+         print_object_status_db.clear();
+ 
++        // [ORCAPORT:SU-1] any plate-geometry change invalidates the support of every opted-in object
++        // (its occupancy may now differ), including the moved object itself - without this edge the
++        // cached support keeps avoiding a neighbour that is no longer there, or misses one that arrived.
++        if (xobj_plate_changed)
++            for (PrintObject *object : m_objects)
++                if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value) {
++                    update_apply_status(object->invalidate_step(posSupportMaterial));
++                    object->clear_tree_support_preview_cache();
++                }
++
++        // [ORCAPORT:SU-1] cohort coherence for support-vs-support: opted-in objects avoid each
++        // other's GENERATED support, so if any of them must regenerate the whole cohort must
++        // regenerate together - otherwise a survivor keeps avoiding the neighbour's OLD support.
++        // UNGUARDED on purpose: Print::apply already holds the state mutex, so the guarded
++        // is_step_done() would re-lock it and self-deadlock.
++        {
++            bool xobj_any_pending = false;
++            for (PrintObject *object : m_objects)
++                if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value
++                    && !object->is_step_done_unguarded(posSupportMaterial)) {
++                    xobj_any_pending = true;
++                    break;
++                }
++            if (xobj_any_pending)
++                for (PrintObject *object : m_objects)
++                    if (object->config().support_cross_object_avoidance.value && object->config().enable_support.value) {
++                        update_apply_status(object->invalidate_step(posSupportMaterial));
++                        object->clear_tree_support_preview_cache();
++                    }
++        }
++
+         // BBS
+         for (PrintObject* object : m_objects) {
+             auto ept_iter = std::find(print_diff.begin(), print_diff.end(), "enable_prime_tower");
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index e9a17a7e21..381d10db77 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -6819,6 +6819,17 @@ void PrintConfigDef::init_fff_params()
+     //Support with too small spacing may touch the object and difficult to remove.
+     def->set_default_value(new ConfigOptionFloat(0.2));
+ 
++    // [ORCAPORT:SU-1] PerObject Support: cross-object support avoidance.
++    def = this->add("support_cross_object_avoidance", coBool);
++    def->label = L("PerObject Support");
++    def->category = L("Support");
++    def->tooltip = L("The support of this object avoids every other object on the plate (and keeps "
++                     "the support/object XY distance from them) instead of generating through them. "
++                     "Useful when separate objects touch or overlap. Only active when printing all "
++                     "objects at once (by layer).");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(false));
++
+     def = this->add("support_angle", coFloat);
+     def->label = L("Pattern angle");
+     def->category = L("Support");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index a8d3d8da29..6fdd18cf7b 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1180,6 +1180,7 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionFloatOrPercent,      support_threshold_overlap))
+     ((ConfigOptionFloat,               support_object_xy_distance))
+     ((ConfigOptionFloat,               support_object_first_layer_gap))
++    ((ConfigOptionBool,                support_cross_object_avoidance)) // [ORCAPORT:SU-1] PerObject Support
+     ((ConfigOptionBool,                support_ironing))
+     ((ConfigOptionEnum<InfillPattern>, support_ironing_pattern))
+     ((ConfigOptionPercent,             support_ironing_flow))
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index 5c6a58a4d4..35247bd28b 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -1337,6 +1337,7 @@ bool PrintObject::invalidate_state_by_config_options(
+             || opt_key == "support_style"
+             || opt_key == "support_object_xy_distance"
+             || opt_key == "support_object_first_layer_gap"
++            || opt_key == "support_cross_object_avoidance" // [ORCAPORT:SU-1]
+             || opt_key == "support_base_pattern_spacing"
+             || opt_key == "support_expansion"
+             || opt_key == "independent_support_layer_height" // Orca
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index e734608803..e20e2d468d 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -5,6 +5,7 @@
+ #include "../Print.hpp"
+ #include "../Fill/FillBase.hpp"
+ #include "../MutablePolygon.hpp"
++#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object clamp
+ #include "../Geometry.hpp"
+ #include "../Point.hpp"
+ #include "clipper/clipper_z.hpp"
+@@ -298,7 +299,13 @@ SupportGeneratorLayersPtr generate_raft_base(
+ 
+     // How much to inflate the support columns to be stable. This also applies to the 1st layer, if no raft layers are to be printed.
+     const float inflate_factor_fine      = float(scale_((slicing_params.raft_layers() > 1) ? 0.5 : EPSILON));
+-    const float inflate_factor_1st_layer = std::max(0.f, float(scale_(object.config().raft_first_layer_expansion)) - inflate_factor_fine);
++    // [ORCAPORT:SU-1] this first-layer inflation (the organic engine's version of the tree brim)
++    // is a free outward offset that is never clipped against anything: exaggerate it and the bases
++    // collide even with themselves, which is why organic support bases overlap across objects.
++    // Clamp it to 0 under cross-object avoidance so organic bases stay put (a deliberate
++    // adhesion/no-collision trade-off of the mode).
++    const float raft_1st_expansion       = OrcaExt::cross_object_active(object) ? 0.f : float(scale_(object.config().raft_first_layer_expansion));
++    const float inflate_factor_1st_layer = std::max(0.f, raft_1st_expansion - inflate_factor_fine);
+     SupportGeneratorLayer       *contacts         = top_contacts         .empty() ? nullptr : top_contacts         .front();
+     SupportGeneratorLayer       *interfaces       = interface_layers     .empty() ? nullptr : interface_layers     .front();
+     SupportGeneratorLayer       *base_interfaces  = base_interface_layers.empty() ? nullptr : base_interface_layers.front();
+diff --git a/src/libslic3r/Support/SupportMaterial.cpp b/src/libslic3r/Support/SupportMaterial.cpp
+index a955eb5ca7..92a2a9bc68 100644
+--- a/src/libslic3r/Support/SupportMaterial.cpp
++++ b/src/libslic3r/Support/SupportMaterial.cpp
+@@ -8,6 +8,7 @@
+ #include "Geometry.hpp"
+ #include "Point.hpp"
+ #include "MutablePolygon.hpp"
++#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
+ 
+ #include <cmath>
+ #include <memory>
+@@ -374,6 +375,10 @@ void PrintObjectSupportMaterial::generate(PrintObject &object)
+ {
+     BOOST_LOG_TRIVIAL(info) << "Support generator - Start";
+ 
++    // [ORCAPORT:SU-1] build the cross-object occupancy once (empty when PerObject Support is off),
++    // consumed by trim_support_layers_by_object.
++    m_neighbor_occupancy = OrcaExt::neighbor_occupancy(object);
++
+     coordf_t max_object_layer_height = 0.;
+     for (size_t i = 0; i < object.layer_count(); ++ i)
+         max_object_layer_height = std::max(max_object_layer_height, object.layers()[i]->height);
+@@ -3168,6 +3173,11 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
+                                                    scale_(no_overlap_xy_gap);
+                         polygons_append(polygons_trimming, offset({ expoly }, trimming_offset, SUPPORT_SURFACES_OFFSET_PARAMETERS));
+                     }
++                    // [ORCAPORT:SU-1] trim the classic/grid support by the OTHER objects too (their
++                    // body + already-generated support), mapped by the same object-layer index i.
++                    // Empty when PerObject Support is off.
++                    if (i < m_neighbor_occupancy.size() && !m_neighbor_occupancy[i].empty())
++                        polygons_append(polygons_trimming, offset(m_neighbor_occupancy[i], gap_xy_scaled, SUPPORT_SURFACES_OFFSET_PARAMETERS));
+                 }
+                 if (!m_slicing_params.zero_gap_interface_top && m_object_config->thick_bridges) {
+                     // Collect all bottom surfaces, which will be extruded with a bridging flow.
+diff --git a/src/libslic3r/Support/SupportMaterial.hpp b/src/libslic3r/Support/SupportMaterial.hpp
+index 6d5355dab1..7b5f91df60 100644
+--- a/src/libslic3r/Support/SupportMaterial.hpp
++++ b/src/libslic3r/Support/SupportMaterial.hpp
+@@ -93,6 +93,10 @@ private:
+ 	SlicingParameters	     m_slicing_params;
+ 	// Various precomputed support parameters to be shared with external functions.
+ 	SupportParameters   	 m_support_params;
++	// [ORCAPORT:SU-1] PerObject Support: per-object-layer footprint of the OTHER objects' bodies
++	// plus already-generated support, injected into trim_support_layers_by_object so classic/grid
++	// support avoids the neighbours. Empty when the feature is off (built once in generate()).
++	std::vector<Polygons>    m_neighbor_occupancy;
+ };
+ 
+ } // namespace Slic3r
+diff --git a/src/libslic3r/Support/TreeModelVolumes.cpp b/src/libslic3r/Support/TreeModelVolumes.cpp
+index 70c33aab0d..e562ed8616 100644
+--- a/src/libslic3r/Support/TreeModelVolumes.cpp
++++ b/src/libslic3r/Support/TreeModelVolumes.cpp
+@@ -13,6 +13,7 @@
+ #include "../ClipperUtils.hpp"
+ #include "../Flow.hpp"
+ #include "../Layer.hpp"
++#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
+ #include "../Point.hpp"
+ #include "../Print.hpp"
+ #include "../PrintConfig.hpp"
+@@ -114,6 +115,26 @@ TreeModelVolumes::TreeModelVolumes(
+             for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx)
+                 outlines[layer_idx] = polygons_simplify(to_polygons(print_object.get_layer(layer_idx - num_raft_layers)->lslices), mesh_settings.resolution, polygons_strictly_simple);
+         });
++
++        // [ORCAPORT:SU-1] cross-object support avoidance: the other objects' instances enter as an
++        // extra outline group. calculateCollision applies each group's own support_xy_distance, so
++        // neighbours get the standard support/object gap and every derived avoidance inherits the
++        // obstacle for free. The occupancy is already resampled to this object's layer grid (real Z
++        // ranges); mirror the raft prefix so both groups share indices. Self-gated: empty when the
++        // toggle is off, the print is by-object, or no neighbour is within range.
++        if (std::vector<Polygons> neighbors = OrcaExt::neighbor_occupancy(print_object); !neighbors.empty()) {
++            TreeSupportMeshGroupSettings neighbor_settings = mesh_settings;
++            // Keep m_support_rests_on_model driven by the REAL object only: the neighbour group is
++            // collision-only, never a placeable ("rest on") surface.
++            neighbor_settings.support_material_buildplate_only = true;
++            m_neighbor_outline_idx = m_layer_outlines.size();
++            m_layer_outlines.emplace_back(std::move(neighbor_settings), std::vector<Polygons>{});
++            std::vector<Polygons> &neighbor_outlines = m_layer_outlines.back().second;
++            neighbor_outlines.assign(num_layers, Polygons{});
++            for (size_t layer_idx = num_raft_layers; layer_idx < num_layers; ++ layer_idx)
++                if (size_t src = layer_idx - num_raft_layers; src < neighbors.size())
++                    neighbor_outlines[layer_idx] = std::move(neighbors[src]);
++        }
+     }
+ #endif
+ 
+@@ -432,8 +453,18 @@ void TreeModelVolumes::calculateCollision(const coord_t radius, const LayerIndex
+     if (calculate_placable)
+         data_placeable.allocate(data.begin(), data.end());
+ 
++    // [ORCAPORT:SU-1] resolve the actually-last processed (non-empty) outline group up front. The
++    // injected neighbour group can change which group is processed last, and the finalize step
++    // (final union + simplify + support-blocker merge) must run on it or the collision is incomplete.
++    size_t last_processed_outline_idx = std::numeric_limits<size_t>::max();
++    for (size_t outline_idx : layer_outline_indices)
++        if (! m_layer_outlines[outline_idx].second.empty())
++            last_processed_outline_idx = outline_idx;
++
+     for (size_t outline_idx : layer_outline_indices)
+         if (const std::vector<Polygons> &outlines = m_layer_outlines[outline_idx].second; ! outlines.empty()) {
++            // [ORCAPORT:SU-1] the injected cross-object group is collision-only.
++            const bool neighbor_group = outline_idx == m_neighbor_outline_idx;
+             const TreeSupportMeshGroupSettings  &settings = m_layer_outlines[outline_idx].first;
+             const coord_t       layer_height              = settings.layer_height;
+             const int           z_distance_bottom_layers  = int(round(double(settings.support_bottom_distance) / double(layer_height)));
+@@ -469,7 +500,7 @@ void TreeModelVolumes::calculateCollision(const coord_t radius, const LayerIndex
+             });
+ 
+             // 2) Sum over top / bottom ranges.
+-            const bool processing_last_mesh = outline_idx == layer_outline_indices.back();
++            const bool processing_last_mesh = outline_idx == last_processed_outline_idx; // [ORCAPORT:SU-1]
+             tbb::parallel_for(tbb::blocked_range<LayerIndex>(data.begin(), data.end()),
+                 [&collision_areas_offsetted, &outlines, &machine_border = m_machine_border, &anti_overhang = m_anti_overhang, radius, 
+                     xy_distance, z_distance_bottom_layers, z_distance_top_layers, min_resolution = m_min_resolution, &data, processing_last_mesh, &throw_on_cancel]
+@@ -536,7 +567,7 @@ void TreeModelVolumes::calculateCollision(const coord_t radius, const LayerIndex
+             if (calculate_placable) {
+                 // Now calculate the placable areas.
+                 tbb::parallel_for(tbb::blocked_range<LayerIndex>(std::max(z_distance_bottom_layers + 1, data.begin()), data.end()),
+-                    [&collision_areas_offsetted, &outlines, &anti_overhang = m_anti_overhang, processing_last_mesh,
++                    [&collision_areas_offsetted, &outlines, &anti_overhang = m_anti_overhang, processing_last_mesh, neighbor_group,
+                      min_resolution = m_min_resolution, z_distance_bottom_layers, xy_distance, &data_placeable, &throw_on_cancel]
+                 (const tbb::blocked_range<LayerIndex>& range) {
+                     for (LayerIndex layer_idx = range.begin(); layer_idx != range.end(); ++ layer_idx) {
+@@ -544,7 +575,10 @@ void TreeModelVolumes::calculateCollision(const coord_t radius, const LayerIndex
+                         assert(layer_idx_below >= 0);
+                         const Polygons &current = collision_areas_offsetted[layer_idx];
+                         const Polygons &below   = outlines[layer_idx_below];
+-                        Polygons placable = diff(
++                        // [ORCAPORT:SU-1] the cross-object group contributes NO placeable area
++                        // (landing on a neighbour is not this feature), but the finalize path below
++                        // must still run in case it is the last processed group.
++                        Polygons placable = neighbor_group ? Polygons{} : diff(
+                             // Inflate the surface to sit on by the separation distance to increase chance of a support being placed on a sloped surface.
+                             offset(below, xy_distance), 
+                             layer_idx_below < int(anti_overhang.size()) ? union_(current, anti_overhang[layer_idx_below]) : current);
+diff --git a/src/libslic3r/Support/TreeModelVolumes.hpp b/src/libslic3r/Support/TreeModelVolumes.hpp
+index eff4cadcaf..12fe6e2299 100644
+--- a/src/libslic3r/Support/TreeModelVolumes.hpp
++++ b/src/libslic3r/Support/TreeModelVolumes.hpp
+@@ -10,6 +10,7 @@
+ #define slic3r_TreeModelVolumes_hpp
+ 
+ #include <mutex>
++#include <limits>
+ #include <unordered_map>
+ 
+ #include <boost/functional/hash.hpp>
+@@ -434,6 +435,10 @@ private:
+      * \brief The index to access the outline corresponding with the currently processing mesh
+      */
+     size_t m_current_outline_idx;
++    // [ORCAPORT:SU-1] index of the injected cross-object neighbour group in m_layer_outlines
++    // (npos = none). The neighbour is collision-only: it must never contribute placeable
++    // ("rest on model") areas, because landing on a neighbour is not part of this feature.
++    size_t m_neighbor_outline_idx = std::numeric_limits<size_t>::max();
+     /*!
+      * \brief The minimum required clearance between the model and the tree branches
+      */
+diff --git a/src/libslic3r/Support/TreeSupport.cpp b/src/libslic3r/Support/TreeSupport.cpp
+index 519b6e826e..0d02bb1ab3 100644
+--- a/src/libslic3r/Support/TreeSupport.cpp
++++ b/src/libslic3r/Support/TreeSupport.cpp
+@@ -9,6 +9,7 @@
+ #include "MinimumSpanningTree.hpp"
+ #include "Print.hpp"
+ #include "ShortestPath.hpp"
++#include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
+ #include "SupportCommon.hpp"
+ #include "SVG.hpp"
+ #include "TreeSupportCommon.hpp"
+@@ -3710,6 +3711,10 @@ TreeSupportData::TreeSupportData(const PrintObject &object, coordf_t xy_distance
+         else
+             m_layer_outlines_below.push_back(union_ex(m_layer_outlines_below.end()[-1], outline));
+     }
++
++    // [ORCAPORT:SU-1] cross-object occupancy for the tree-support preview (self-gated: empty when
++    // the toggle is off, the print is by-object, or no neighbour is within range).
++    m_neighbor_occupancy = OrcaExt::neighbor_occupancy(object);
+ }
+ 
+ const ExPolygons& TreeSupportData::get_collision(coordf_t radius, size_t layer_nr) const
+@@ -3791,6 +3796,11 @@ const ExPolygons& TreeSupportData::calculate_collision(const RadiusLayerPair& ke
+     assert(key.layer_nr < m_layer_outlines.size());
+ 
+     ExPolygons collision_areas = offset_ex(m_layer_outlines[key.layer_nr], scale_(key.radius+m_xy_distance));
++    // [ORCAPORT:SU-1] neighbours dilate exactly like the own body (radius + xy distance per queried
++    // radius); avoidances inherit the obstacle because calculate_avoidance derives from this.
++    if (key.layer_nr < m_neighbor_occupancy.size() && !m_neighbor_occupancy[key.layer_nr].empty())
++        collision_areas = union_ex(collision_areas,
++            offset_ex(union_ex(m_neighbor_occupancy[key.layer_nr]), scale_(key.radius + m_xy_distance)));
+     collision_areas = expolygons_simplify(collision_areas, scale_(m_radius_sample_resolution));
+     // collision_areas.emplace_back(m_machine_border);
+     const auto ret = m_collision_cache.insert({ key, std::move(collision_areas) });
+diff --git a/src/libslic3r/Support/TreeSupport.hpp b/src/libslic3r/Support/TreeSupport.hpp
+index bd5a154e26..ece6f7c38f 100644
+--- a/src/libslic3r/Support/TreeSupport.hpp
++++ b/src/libslic3r/Support/TreeSupport.hpp
+@@ -322,6 +322,12 @@ public:
+     // union contours of all layers below
+     std::vector<ExPolygons> m_layer_outlines_below;
+ 
++    // [ORCAPORT:SU-1] PerObject Support: per-layer footprint of the OTHER objects' instances in
++    // this object's local frame, RAW/undilated (calculate_collision offsets it like the own body).
++    // Kept separate from m_layer_outlines on purpose: those carry "my own object" semantics that
++    // must not see the neighbours. Empty = feature inactive.
++    std::vector<Polygons> m_neighbor_occupancy;
++
+     std::vector<double> m_max_move_distances;
+ 
+     /*!
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 5d0b198886..5dd7c0c4e8 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2919,6 +2919,7 @@ void TabPrint::build()
+     page = add_options_page(L("Support"), "custom-gcode_support"); // ORCA: icon only visible on placeholders
+         optgroup = page->new_optgroup(L("Support"), L"param_support");
+         optgroup->append_single_option_line("enable_support", "support_settings_support");
++        optgroup->append_single_option_line("support_cross_object_avoidance", "support_settings_support"); // [ORCAPORT:SU-1]
+         optgroup->append_single_option_line("support_type", "support_settings_support#type");
+         optgroup->append_single_option_line("support_style", "support_settings_support#style");
+         optgroup->append_single_option_line("support_threshold_angle", "support_settings_support#threshold-angle");
