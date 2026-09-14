@@ -1417,6 +1417,7 @@ bool PrintObject::invalidate_state_by_config_options(
             //BBS
             || opt_key == "bridge_line_width"
             || opt_key == "bridge_density"
+            || opt_key == "bridge_expansion_extra" // [ORCAPORT:PQ-1]
             || opt_key == "internal_bridge_density") {
             steps.emplace_back(posPrepareInfill);
         } else if (

@@ -1494,6 +1494,26 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(1));
 
+    // [ORCAPORT:PQ-1] extra anchor distance for bridges, in mm, added on top of the automatic
+    // expansion (which is derived from the wall count). Additive: 0 = stock behaviour.
+    def = this->add("bridge_expansion_extra", coFloat);
+    def->label = L("Bridging infill extra expansion");
+    def->category = L("Quality");
+    def->tooltip = L("Extra distance the bridging infill grows into the surrounding area of the same part, "
+                     "on top of the automatic expansion.\n\n"
+                     "The bridge then starts extruding over solid material before it reaches the gap, so the "
+                     "strand is already anchored when it begins to span. Raise this if bridges detach or curl "
+                     "at their ends.\n\n"
+                     "With a large value the bridge takes over the whole surrounding region and the entire "
+                     "layer prints as one continuous bridge.\n\n"
+                     "0 = automatic expansion only (unchanged behaviour). The automatic amount is derived from "
+                     "the wall count, so this setting also decouples bridge anchoring from the number of walls.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 999;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0));
+
     def = this->add("bridge_line_width", coFloatOrPercent);
     def->label = L("Bridge");
     def->category = L("Quality");
