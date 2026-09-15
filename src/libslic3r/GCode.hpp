@@ -463,6 +463,13 @@ private:
         const ExtrusionEntityCollection  *support;
         // erSupportMaterial / erSupportMaterialInterface / erSupportTransition or erMixed.
         ExtrusionRole                     support_extrusion_role;
+        // [ORCAPORT:SU-5] Which zone families this cube emits, split by role (empty = all, the
+        // normal case). Two families can share the body extruder, so a single role field would let
+        // one overwrite the other.
+        std::vector<int>                  support_family_base;
+        std::vector<int>                  support_family_intf;
+        // Per-first-level-entity tags (SupportLayer::support_fills_family), or nullptr.
+        const std::vector<int>           *support_families { nullptr };
 
         struct Island
         {
@@ -521,7 +528,8 @@ private:
 
     std::string     extrude_perimeters(const Print& print, const std::vector<ObjectByExtruder::Island::Region>& by_region, bool is_first_layer, bool is_infill_first);
     std::string     extrude_infill(const Print& print, const std::vector<ObjectByExtruder::Island::Region>& by_region, bool ironing);
-    std::string     extrude_support(const ExtrusionEntityCollection& support_fills, const ExtrusionRole support_extrusion_role);
+    std::string     extrude_support(const ExtrusionEntityCollection& support_fills, const ExtrusionRole support_extrusion_role,
+                                    const std::vector<int> *families = nullptr, const std::vector<int> *want_families = nullptr); // [ORCAPORT:SU-5]
 
     // Farthest-point timelapse: find the extrusion point farthest from camera (0,0)
     void compute_farthest_point(const std::vector<LayerToPrint> &layers, int most_used_extruder,

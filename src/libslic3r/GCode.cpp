@@ -25,6 +25,7 @@
 #include "Time.hpp"
 #include "GCode/ExtrusionProcessor.hpp"
 #include <algorithm>
+#include <map> // [ORCAPORT:SU-5] per-zone family roles
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
@@ -5935,6 +5936,55 @@ LayerResult GCode::process_layer(
                     support_filaments[{ &support_layer, erSupportMaterialInterface }] =
                         single_extruder ? (has_support ? support_extruder : interface_extruder) : interface_extruder;
                 }
+                // [ORCAPORT:SU-5] Per-zone family split: one cube per extruder over the SAME
+                // support_fills, each emitting only its own families (same pattern the base/interface
+                // split already uses, keyed by family instead of role). Only when the split left tags.
+                const std::vector<int> &fams = support_layer.support_fills_family;
+                if (! fams.empty()) {
+                    const auto &families = object.support_family_areas().families;
+                    const int   n_fil    = int(m_config.nozzle_diameter.size());
+                    struct FamRoles { bool body { false }; bool intf { false }; };
+                    std::map<int, FamRoles> present;
+                    {
+                        const auto  &ents  = support_layer.support_fills.entities;
+                        const size_t n_tag = std::min(ents.size(), fams.size());
+                        for (size_t i = 0; i < n_tag; ++i) {
+                            const int fi = fams[i];
+                            if (fi < 0 || fi >= int(families.size()) || ents[i] == nullptr)
+                                continue;
+                            const ExtrusionRole r = ents[i]->role();
+                            FamRoles &fr = present[fi];
+                            if (r == erSupportMaterialInterface)
+                                fr.intf = true;
+                            else if (r == erSupportMaterial || r == erSupportTransition)
+                                fr.body = true;
+                            else if (r == erMixed)
+                                fr.body = fr.intf = true;
+                        }
+                    }
+                    for (const auto &kv : present) {
+                        const int fi = kv.first;
+                        const int bf = (families[fi].body_filament      > 0 && families[fi].body_filament      <= n_fil) ? families[fi].body_filament      : 0;
+                        const int rf = (families[fi].interface_filament > 0 && families[fi].interface_filament <= n_fil) ? families[fi].interface_filament : 0;
+                        // 0 = "as the object": that family uses the normal support extruder.
+                        const int body = bf > 0 ? bf - 1 : int(support_extruder);
+                        const int intf = rf > 0 ? rf - 1 : int(interface_extruder);
+                        if (kv.second.body) {
+                            ObjectByExtruder &ob = object_by_extruder(by_extruder, unsigned(body), &layer_to_print - layers.data(), layers.size());
+                            ob.support                = &support_layer.support_fills;
+                            ob.support_extrusion_role = erMixed;
+                            ob.support_families       = &fams;
+                            ob.support_family_base.push_back(fi);
+                        }
+                        if (kv.second.intf) {
+                            ObjectByExtruder &oi = object_by_extruder(by_extruder, unsigned(intf), &layer_to_print - layers.data(), layers.size());
+                            oi.support                = &support_layer.support_fills;
+                            oi.support_extrusion_role = erMixed;
+                            oi.support_families       = &fams;
+                            oi.support_family_intf.push_back(fi);
+                        }
+                    }
+                } else {
                 // Assign an extruder to the base.
                 ObjectByExtruder &obj = object_by_extruder(by_extruder, has_support ? support_extruder : interface_extruder, &layer_to_print - layers.data(), layers.size());
                 obj.support = &support_layer.support_fills;
@@ -5943,6 +5993,7 @@ LayerResult GCode::process_layer(
                     ObjectByExtruder &obj_interface = object_by_extruder(by_extruder, interface_extruder, &layer_to_print - layers.data(), layers.size());
                     obj_interface.support = &support_layer.support_fills;
                     obj_interface.support_extrusion_role = erSupportMaterialInterface;
+                }
                 }
             }
         }
@@ -6863,10 +6914,24 @@ LayerResult GCode::process_layer(
                         m_need_change_layer_lift_z = true;
                     }
                     ExtrusionRole support_role = instance_to_print.object_by_extruder.support_extrusion_role;
+                    // [ORCAPORT:SU-5] per-family emission when this cube carries zone families: two
+                    // filtered emissions (base/interface), each with the families this cube emits.
+                    const std::vector<int> *fams = instance_to_print.object_by_extruder.support_families;
+                    if (fams != nullptr) {
+                        const auto &base_f = instance_to_print.object_by_extruder.support_family_base;
+                        const auto &intf_f = instance_to_print.object_by_extruder.support_family_intf;
+                        if (!base_f.empty())
+                            gcode += this->extrude_support(*instance_to_print.object_by_extruder.support, erSupportMaterial, fams, &base_f);
+                        if (!intf_f.empty()) {
+                            gcode += this->extrude_support(*instance_to_print.object_by_extruder.support, erSupportMaterialInterface, fams, &intf_f);
+                            gcode += this->extrude_support(*instance_to_print.object_by_extruder.support, erIroning, fams, &intf_f);
+                        }
+                    } else {
                     gcode += this->extrude_support(*instance_to_print.object_by_extruder.support, support_role);
                     // Make sure ironing is the last (Orca names this role erIroning, not erSupportIroning).
                     if (support_role == erMixed || support_role == erSupportMaterialInterface)
                         gcode += this->extrude_support(*instance_to_print.object_by_extruder.support, erIroning);
+                    }
                 }
 
                 // --- Shared instance footer (mirrors Orca's main instance loop) ---
@@ -7629,7 +7694,8 @@ std::string GCode::extrude_infill(const Print &print, const std::vector<ObjectBy
     return gcode;
 }
 
-std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fills, const ExtrusionRole support_extrusion_role)
+std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fills, const ExtrusionRole support_extrusion_role,
+                                   const std::vector<int> *families, const std::vector<int> *want_families)
 {
     static constexpr const char* support_label            = "support material";
     static constexpr const char* support_interface_label  = "support material interface";
@@ -7659,7 +7725,14 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
 
         ExtrusionEntitiesPtr extrusions;
         extrusions.reserve(support_fills.entities.size());
-        for (ExtrusionEntity* ee : support_fills.entities) {
+        for (size_t i = 0; i < support_fills.entities.size(); ++i) {
+            ExtrusionEntity* ee = support_fills.entities[i];
+            // [ORCAPORT:SU-5] extra filter for the per-zone family split. want_families null = normal.
+            if (want_families != nullptr && ! want_families->empty() && families != nullptr) {
+                if (i >= families->size() ||
+                    std::find(want_families->begin(), want_families->end(), (*families)[i]) == want_families->end())
+                    continue;
+            }
             const auto role = ee->role();
             if ((role == support_extrusion_role) || (support_extrusion_role == erMixed && role != erIroning)) {
                 extrusions.emplace_back(ee);
