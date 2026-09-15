@@ -1067,6 +1067,15 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     // Orca: Force solid support interface when using support ironing
     toggle_field("support_interface_spacing", have_support_material && have_support_interface && !has_support_ironing);
 
+    // [ORCAPORT:SU-4b] NeoWave contact layer: the master toggle follows "enable support"; the
+    // target and wave parameters appear only once it is on.
+    {
+        const bool neoweave_on = config->has("support_neoweave_enabled") && config->opt_bool("support_neoweave_enabled");
+        toggle_line("support_neoweave_enabled", have_support_material);
+        for (auto el : { "support_neoweave_target", "support_neoweave_amplitude", "support_neoweave_period", "support_neoweave_max_z_speed" })
+            toggle_line(el, have_support_material && neoweave_on);
+    }
+
 //    see issue #10915
 //    bool have_skirt_height = have_skirt &&
 //    (config->opt_int("skirt_height") > 1 || config->opt_enum<DraftShield>("draft_shield") != dsEnabled);

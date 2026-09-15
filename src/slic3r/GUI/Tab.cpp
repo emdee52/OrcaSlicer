@@ -2977,6 +2977,13 @@ void TabPrint::build()
         optgroup->append_single_option_line("wavesupport_roof_order", "support_settings_advanced#interface-pattern");
         optgroup->append_single_option_line("wavesupport_roof_reverse", "support_settings_advanced#interface-pattern");
         optgroup->append_single_option_line("wavesupport_wall_loops", "support_settings_advanced#support-wall-loops");
+        // [ORCAPORT:SU-4b] NeoWave contact layer (toggle + target + wave params). Visibility is
+        // handled in toggle_options(): master when support is on, the rest when it is enabled.
+        optgroup->append_single_option_line("support_neoweave_enabled", "support_settings_advanced");
+        optgroup->append_single_option_line("support_neoweave_target", "support_settings_advanced");
+        optgroup->append_single_option_line("support_neoweave_amplitude", "support_settings_advanced");
+        optgroup->append_single_option_line("support_neoweave_period", "support_settings_advanced");
+        optgroup->append_single_option_line("support_neoweave_max_z_speed", "support_settings_advanced");
         optgroup->append_single_option_line("support_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_bottom_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_expansion", "support_settings_advanced#normal-support-expansion");
