@@ -228,7 +228,7 @@ index e8348b3bd5..a26bfbbfed 100644
      }
  
 diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
-index 5caf7b1617..4d53693459 100644
+index 5caf7b1617..c985312c43 100644
 --- a/src/libslic3r/GCode.cpp
 +++ b/src/libslic3r/GCode.cpp
 @@ -500,6 +500,18 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
@@ -250,7 +250,28 @@ index 5caf7b1617..4d53693459 100644
          return { retraction_length_before_wipe, retraction_length_during_wipe, retraction_length_after_wipe };
      }
  
-@@ -8360,6 +8372,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+@@ -7614,6 +7626,20 @@ std::string GCode::extrude_entity(const ExtrusionEntity&      entity,
+         return this->extrude_multi_path(*multipath, description, speed);
+     else if (const ExtrusionLoop* loop = dynamic_cast<const ExtrusionLoop*>(&entity))
+         return this->extrude_loop(*loop, description, speed, region_perimeters);
++    // [ORCAPORT:PQ-3] accept a nested ExtrusionEntityCollection. NeoArachne wraps its per-island
++    // inner walls in a no_sort collection so the outer chain still visits islands by proximity.
++    // Without this the dispatcher threw "Invalid argument supplied to extrude()".
++    else if (const ExtrusionEntityCollection* coll = dynamic_cast<const ExtrusionEntityCollection*>(&entity)) {
++        std::string gcode;
++        if (coll->no_sort) {
++            for (const ExtrusionEntity* ee : coll->entities)
++                gcode += this->extrude_entity(*ee, description, speed, region_perimeters);
++        } else {
++            for (ExtrusionEntity* ee : coll->chained_path_from(this->last_pos()).entities)
++                gcode += this->extrude_entity(*ee, description, speed, region_perimeters);
++        }
++        return gcode;
++    }
+     else
+         throw Slic3r::InvalidArgument("Invalid argument supplied to extrude()");
+     return "";
+@@ -8360,6 +8386,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
      char buf[64];
      assert(is_decimal_separator_point());
  
@@ -260,7 +281,7 @@ index 5caf7b1617..4d53693459 100644
      if (path.role() != m_last_processor_extrusion_role) {
          m_last_processor_extrusion_role = path.role();
          sprintf(buf, ";%s%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role).c_str(), ExtrusionEntity::role_to_string(m_last_processor_extrusion_role).c_str());
-@@ -9215,6 +9230,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
+@@ -9215,6 +9244,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
          else {
              lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
          }
@@ -270,7 +291,7 @@ index 5caf7b1617..4d53693459 100644
          return true;
      }
  
-@@ -9249,6 +9267,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
+@@ -9249,6 +9281,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
      else {
          lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
      }

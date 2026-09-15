@@ -107,3 +107,17 @@ all `NeoArachne/*`, `WallToolPaths.cpp`, `BeadingStrategyFactory.cpp`, `GCode.cp
 Classic/Arachne output is unchanged (no edits on those paths). Runtime verification of the
 hybrid path is pending (manual: slice with `wall_generator = NeoArachne`, sweep the
 per-feature selectors and the pin/hysteresis/transition knobs).
+
+### Post-merge fix (runtime, found by the user)
+- First runtime test with `wall_generator = NeoArachne` failed: slicing threw
+  `Slic3r::InvalidArgument` from `GCode::extrude_entity`. Cause: `NeoArachne::Interior`
+  appends a nested `ExtrusionEntityCollection` (the per-island bucket) to `g.loops`, but
+  target 2.5's dispatcher only knew `ExtrusionPath`/`ExtrusionMultiPath`/`ExtrusionLoop`.
+  Fixed by porting the fork's `Inc2e` branch: recurse into a nested collection, keeping the
+  stored order when `no_sort` and chaining by proximity otherwise (`GCode.cpp`). This was the
+  only Inc2e change not already present; Inc2a/b/c/d were ported originally. Rebuild clean;
+  slicing now proceeds past the dispatcher.
+- Known minor gap (same as the fork): `GCode::extrude_loop`'s `wipe_before_external_loop`
+  neighbour scan iterates `region_perimeters` and calls `as_polyline()`, which is empty for a
+  nested collection, so that heuristic under-counts when wipe-before-external-loop is enabled.
+  No crash; only affects that optional wipe mode.
