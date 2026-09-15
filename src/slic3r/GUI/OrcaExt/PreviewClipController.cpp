@@ -210,15 +210,57 @@ std::string PreviewClipController::get_object_name() const
 
 void PreviewClipController::render_imgui()
 {
-    if (!m_active)
-        return;
-
     ImGuiWrapper& imgui = *wxGetApp().imgui();
 
     const auto cnv_size = wxGetApp().plater()->get_current_canvas3D()->get_canvas_size();
     imgui.set_next_window_pos(static_cast<float>(cnv_size.get_width()) * 0.5f, 10.0f, ImGuiCond_Once, 0.5f, 0.0f);
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+
+    // [ORCAPORT:PF-6] always-visible toggle in the preview; right-click is unreliable there
+    if (!m_active)
+    {
+        const std::string title = "Clipping Plane###PreviewClipControllerToggle";
+        ImGui::Begin(title.c_str(), nullptr, flags);
+        if (ImGui::Button("Clipping Plane"))
+        {
+            // Clip the selected object, else the first object that has shells
+            GCodeViewer* viewer = get_current_gcode_viewer();
+            if (viewer != nullptr)
+            {
+                GLVolumeCollection& shells = viewer->get_shells_volumes();
+                int object_id = -1;
+                Plater* plater = wxGetApp().plater();
+                if (plater != nullptr)
+                {
+                    const int selected = plater->get_selected_object_idx();
+                    for (GLVolume* v : shells.volumes)
+                    {
+                        if (v != nullptr && v->composite_id.object_id == selected)
+                        {
+                            object_id = selected;
+                            break;
+                        }
+                    }
+                }
+                if (object_id < 0)
+                {
+                    for (GLVolume* v : shells.volumes)
+                    {
+                        if (v != nullptr && v->composite_id.object_id >= 0)
+                        {
+                            object_id = v->composite_id.object_id;
+                            break;
+                        }
+                    }
+                }
+                if (object_id >= 0)
+                    activate(object_id);
+            }
+        }
+        ImGui::End();
+        return;
+    }
 
     const std::string title = "Clipping Plane - " + get_object_name() + "###PreviewClipController";
     ImGui::Begin(title.c_str(), nullptr, flags);
