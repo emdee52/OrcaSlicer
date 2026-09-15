@@ -147,20 +147,6 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             lower_polygons_series = &perimeter_generator.m_lower_polygons_series;
             extrusion_mm3_per_mm = perimeter_generator.mm3_per_mm();
             extrusion_width = perimeter_generator.perimeter_flow.width();
-
-            // [ORCAPORT:PF-9] interlocking shells: vary bead width/flow by tier so alternating
-            // layers nest into each other. Shell 0 adjacent to the regular walls is the boundary
-            // bead (wider on even layers, nominal on odd); deeper shells are over-extruded (200%).
-            if (perimeter_generator.m_interlock_active &&
-                (int) loop.depth > perimeter_generator.m_interlock_base_depth) {
-                const int    k          = (int) loop.depth - perimeter_generator.m_interlock_base_depth - 1;
-                const double tier_flow  = (k == 0)
-                                              ? (perimeter_generator.m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0)
-                                              : 2.0;
-                const double flow_ratio = tier_flow * perimeter_generator.m_interlock_strength;
-                extrusion_mm3_per_mm    = perimeter_generator.mm3_per_mm() * flow_ratio;
-                extrusion_width         = perimeter_generator.perimeter_flow.width() * std::sqrt(flow_ratio);
-            }
         }
 
         // Apply fuzzy skin if it is enabled for at least some part of the polygon.
@@ -1334,6 +1320,78 @@ static void reorient_perimeters(ExtrusionEntityCollection &entities, bool steep_
     }
 }
 
+// [ORCAPORT:PF-9] Generate the interlocking perimeter rings inside `zone` (the area inside the
+// regular walls). The rings follow PF-9's alternating schedule so consecutive layers nest:
+//  - even layers: shell 0 is the wider boundary bead; odd layers: shell 0 is nominal;
+//  - inner shells are over-extruded (200% flow); `strength` scales the excess;
+//  - the first/last ring spacing swaps between layers so the stack is offset by ~half a spacing.
+// `covered` receives the ring footprints so infill fills the channels between them.
+void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone, ExtrusionEntityCollection &out, ExPolygons &covered)
+{
+    if (!m_interlock_active || zone.empty())
+        return;
+
+    const coord_t w         = this->perimeter_flow.scaled_width();
+    const coord_t main_w    = coord_t(double(w) * std::sqrt(2.0));
+    const coord_t bnd_w     = coord_t(double(w) * std::sqrt(INTERLOCK_BOUNDARY_FLOW));
+    const coord_t bnd_shift = std::max<coord_t>(0, (bnd_w - w) / 2);
+    const coord_t perim_sp  = this->perimeter_flow.scaled_spacing();
+    const coord_t overlap_amount  = std::max<coord_t>(0, w - perim_sp) + m_interlock_overlap_extra;
+    const coord_t il_adjacent     = std::max<coord_t>(1, (w + main_w) / 2 - overlap_amount);
+    const coord_t il_gapped       = 2 * il_adjacent;
+    const bool    odd             = !m_interlock_even;
+    const coord_t spacing_0         = odd ? il_adjacent : std::max<coord_t>(1, il_gapped - bnd_shift);
+    const coord_t spacing_x         = il_gapped;
+    const coord_t spacing_innermost = odd ? std::max<coord_t>(1, il_gapped - bnd_shift) : il_adjacent;
+
+    int actual_shells = std::max(0, this->config->interlock_perimeter_count.value);
+    const BoundingBox bbox    = get_extents(zone);
+    const coord_t     min_dim = std::min(bbox.size().x(), bbox.size().y());
+    if (w > 0 && min_dim < coord_t(actual_shells) * w * 2)
+        actual_shells = int(min_dim / (w * 2));
+    if (actual_shells <= 0)
+        return;
+
+    const double base_mm3 = this->perimeter_flow.mm3_per_mm();
+    const float  height   = float(this->layer_height);
+    coord_t      dist     = 0;
+    for (int k = 0; k < actual_shells; ++k) {
+        if (k == 0)
+            dist += spacing_0;
+        else if (k == actual_shells - 1)
+            dist += spacing_innermost;
+        else
+            dist += spacing_x;
+
+        const ExPolygons ring = offset_ex(zone, -float(dist));
+        if (ring.empty())
+            break;
+
+        const double tier_flow  = (k == 0) ? (m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0) : 2.0;
+        const double flow_ratio = 1.0 + (tier_flow - 1.0) * m_interlock_strength;
+        const float  width      = float((k == 0 && m_interlock_even) ? bnd_w : w);
+        const double mm3        = base_mm3 * flow_ratio;
+
+        for (const ExPolygon &ex : ring) {
+            auto add_loop = [&](const Polygon &poly, ExtrusionLoopRole role) {
+                ExtrusionPaths paths;
+                ExtrusionPath   p(erPerimeter);
+                p.polyline   = Polyline3(poly.split_at_first_point());
+                p.mm3_per_mm = mm3;
+                p.width      = width;
+                p.height     = height;
+                paths.emplace_back(std::move(p));
+                out.append(ExtrusionLoop(std::move(paths), role));
+            };
+            add_loop(ex.contour, elrDefault);
+            for (const Polygon &hole : ex.holes)
+                add_loop(hole, elrHole);
+        }
+
+        append(covered, offset_ex(ring, float(width) / 2.f));
+    }
+}
+
 void PerimeterGenerator::process_classic()
 {
     group_region_by_fuzzify(*this);
@@ -1421,26 +1479,22 @@ void PerimeterGenerator::process_classic()
         const Surface &surface = all_surfaces[surface_order[order_idx]];
         // detect how many perimeters must be generated for this island
         int sparse_infill_density = this->config->sparse_infill_density.value;
-        // [ORCAPORT:PF-9] interlocking perimeters: add interlocking shells inside the regular
-        // walls on every layer with alternating tier widths/flows; optionally reduce the regular
-        // wall count on those layers. Classic wall generator only.
+        // [ORCAPORT:PF-9] interlocking perimeters (Classic only): the rings are generated by a
+        // dedicated pass after the regular walls (see generate_interlocking_perimeters), so the
+        // regular onion loop only produces the normal walls here.
         const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
                                !m_spiral_vase && sparse_infill_density > 0 &&
                                this->object_config->wall_generator.value == PerimeterGeneratorType::Classic;
-        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
         int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
         if (interlock && this->config->interlock_regular_perimeters.value > 0)
             base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
         int loop_number = base_loop_number;  // 0-indexed loops
-        if (interlock)
-            loop_number += interlock_count;
-        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+        if (!interlock && this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
             loop_number++;
-        // [ORCAPORT:PF-9] interlock state consumed by traverse_loops
+        // [ORCAPORT:PF-9] interlock state consumed by generate_interlocking_perimeters
         m_interlock_active = interlock;
         if (interlock) {
             m_interlock_even          = (this->layer_id % 2 == 0);
-            m_interlock_base_depth    = base_loop_number;
             m_interlock_strength      = this->config->interlock_perimeter_strength.value / 100.0;
             const double ov           = this->config->interlock_perimeter_overlap.get_abs_value(this->layer_height);
             m_interlock_overlap_extra = (ov > 0.0) ? coord_t(scale_(ov)) : coord_t(0);
@@ -1527,10 +1581,6 @@ void PerimeterGenerator::process_classic()
                     //FIXME Is this offset correct if the line width of the inner perimeters differs
                     // from the line width of the infill?
                     coord_t distance = (i == 1) ? ext_perimeter_spacing2 : perimeter_spacing;
-                    // [ORCAPORT:PF-9] interlocking shells are spaced more tightly (overlap) so the
-                    // over-extruded beads compress into the previous layer's gaps.
-                    if (m_interlock_active && (int) i > m_interlock_base_depth && m_interlock_overlap_extra > 0)
-                        distance = std::max<coord_t>(1, distance - m_interlock_overlap_extra);
                     //BBS
                     //offsets = this->config->thin_walls ?
                         // This path will ensure, that the perimeters do not overfill, as in
@@ -1848,6 +1898,19 @@ void PerimeterGenerator::process_classic()
             // append perimeters for this slice as a collection
             if (! entities.empty())
                 this->loops->append(entities);
+
+            // [ORCAPORT:PF-9] interlocking rings, generated after the regular walls from the area
+            // left inside them. The infill fill area is reduced by their footprints so the infill
+            // fills the channels between the rings instead of overlapping them.
+            if (m_interlock_active && !last.empty()) {
+                ExtrusionEntityCollection il_entities;
+                ExPolygons                il_covered;
+                generate_interlocking_perimeters(last, il_entities, il_covered);
+                if (!il_entities.empty())
+                    this->loops->append(il_entities);
+                if (!il_covered.empty())
+                    last = diff_ex(last, il_covered);
+            }
 
         } // for each loop of an island
 
@@ -2430,21 +2493,11 @@ void PerimeterGenerator::process_arachne()
     for (const Surface& surface : all_surfaces) {
         coord_t bead_width_0 = ext_perimeter_spacing;
         // detect how many perimeters must be generated for this island
+        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1; // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
-        // [ORCAPORT:PF-9] interlocking perimeters (Arachne: extra shells; the tier width/flow
-        // alternation is applied on the Classic generator only).
-        const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
-                               !m_spiral_vase && sparse_infill_density > 0;
-        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
-        int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
-        if (interlock && this->config->interlock_regular_perimeters.value > 0)
-            base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
-        int loop_number = base_loop_number; // 0-indexed loops
-        if (interlock)
-            loop_number += interlock_count;
-        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+        if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
             loop_number++;
-        m_interlock_active = false; // Arachne output does not consume the Classic tier overrides
+        // [ORCAPORT:PF-9] interlocking perimeters are Classic-only; Arachne keeps the normal walls.
 
         // Set the bottommost layer to be one wall
         const bool is_bottom_layer = (this->layer_id == object_config->raft_layers) ? true : false;

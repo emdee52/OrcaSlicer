@@ -40,36 +40,44 @@ New `PrintRegionConfig` keys (default off, PF-9 defaults):
 Dropped: `interlock_flow_detection` (Athena-specific boundary sampling) and
 `interlocking_perimeter_extruder` (multi-extruder scope). Reuses `erPerimeter` (no new role).
 
-Behaviour:
-- When enabled, `process_classic` and `process_arachne` set `loop_number = base + count` on **every**
-  layer (subject to the gates), so the onion loop generates `count` extra interlocking rings inside
-  the regular walls. `interlock_regular_perimeters` overrides the regular wall count first.
-- **Classic tier overrides** (`traverse_loops`): for depths beyond `m_interlock_base_depth`,
-  - shell 0 (adjacent to the regular walls): boundary bead, flow `INTERLOCK_BOUNDARY_FLOW` =
-    `(3 + 2*sqrt2)/4` ~= 145.7% on **even** layers, nominal 100% on **odd** layers;
-  - inner shells: 200% flow.
-  Width and `mm3_per_mm` are both scaled by `flow_ratio = 1 + (tier_flow - 1) * strength`, so
-  `strength = 0` is a no-op (normal walls) and `strength = 100%` gives the PF-9 tiers. Width scales
-  as `sqrt(flow_ratio)` (round-bead assumption), matching PF-9's `main_w = w*sqrt(2)`.
-- **`interlock_perimeter_overlap`** tightens the onion spacing for the interlocking depths
-  (`distance -= overlap`), compressing more material into the pattern.
+Behaviour (Classic wall generator only):
+- `process_classic` produces the normal walls, then `generate_interlocking_perimeters` adds the
+  interlocking rings inside the area left by them (all infill types work). `interlock_regular_perimeters`
+  overrides the regular wall count first.
+- The rings follow PF-9's **alternating spacing schedule** so consecutive layers nest:
+  - `w = perimeter width`, `main_w = w*sqrt2`, `boundary_w = w*sqrt(INTERLOCK_BOUNDARY_FLOW)`,
+    `boundary_shift = (boundary_w - w)/2`;
+  - `overlap_amount = (w - perimeter_spacing) + interlock_overlap`,
+    `il_adjacent = (w + main_w)/2 - overlap_amount`, `il_gapped = 2*il_adjacent`;
+  - first-ring offset `spacing_0` = odd ? `il_adjacent` : `il_gapped - boundary_shift`; ring-to-ring
+    `spacing_x = il_gapped`; innermost `spacing_innermost` = odd ? `il_gapped - boundary_shift`
+    : `il_adjacent`. The `spacing_0`/`spacing_innermost` swap shifts the stack by ~half a spacing
+    between layers -> the diamond nesting.
+- Per ring: shell 0 geometry width is `boundary_w` on even layers and `w` on odd; inner shells are `w`.
+  The flow tier (shell 0: `INTERLOCK_BOUNDARY_FLOW` even / 1.0 odd; inner: 2.0) multiplies
+  `path.mm3_per_mm` by `1 + (tier - 1)*strength`, so the over-extrusion is in the flow (as PF-9 does),
+  not the width. `strength = 0` is a no-op; `strength = 100%` gives the PF-9 tiers.
+- Ring footprints (`offset(ring, width/2)`) are subtracted from the fill area so the infill fills the
+  channels between the rings.
 - **Solid margins**: `LayerRegion::make_perimeters` walks `upper_layer`/`lower_layer` and marks
   `g.interlock_solid_margin_ok = false` if a top surface (layer extends beyond the one above) is
   within `interlock_solid_layers_top` layers or a bottom surface within `..._bottom`. Interlocking is
   skipped on those layers.
-- **Arachne**: gets `count` / `interlock_regular_perimeters` / solid margins only; the tier
-  width/flow alternation is Classic-only (`m_interlock_active` stays false in `process_arachne`).
+- **Arachne**: not supported; the keys are disabled when `wall_generator != Classic`.
 - Gated off for spiral vase and when sparse infill density is 0, and requires
   `ensure_vertical_shell_thickness != All` (warned/auto-fixed in `ConfigManipulation.cpp`).
 
+**Fix history.** The first implementation reused the onion loop's standard spacing and only varied
+bead widths, so the rings stacked directly and did not interlock (confirmed by cross-section
+comparison). The dedicated ring pass above was added to reproduce the alternating spacing.
+
 ## Approximation vs PF-9 (known limitations)
 
-- The interlocking rings use Orca's **standard perimeter spacing** (adjusted only by the overlap
-  key), not PF-9's bespoke `il_adjacent`/`il_gapped`/`il_external`/`il_innermost` centerline
-  distances. The alternating tier widths and over-extrusion are reproduced; the exact nesting
-  geometry (and the derived boundary shift that aligns 200% beads across layers) is not. Expect a
-  functionally similar but not pixel-identical pattern.
-- Generated from the onion rings (all infill types work), not Athena's skeleton, so no
+- The rings are generated with plain polygon offsets on Orca's Classic path, not PF-9's Athena
+  skeletal trapezoidation, so the exact bead placement (and the derived boundary shift that aligns
+  200% beads across layers) is approximated rather than identical. The alternating spacing schedule
+  and over-flow reproduce the nesting intent.
+- Generated from the innermost area (all infill types work), not Athena's skeleton, so no
   flow-through/visibility rework and no `interlock_flow_detection`.
 - Arachne has no tier overrides.
 
@@ -79,8 +87,8 @@ Behaviour:
 - `src/libslic3r/PrintConfig.cpp` - registration (`[ORCAPORT:PF-9]` block).
 - `src/libslic3r/Preset.cpp :: s_Preset_print_options` - key list.
 - `src/libslic3r/PerimeterGenerator.hpp` - `interlock_solid_margin_ok` + interlock state.
-- `src/libslic3r/PerimeterGenerator.cpp :: traverse_loops` (tier width/flow), `process_classic`
-  (loop count + state + spacing), `process_arachne` (count only).
+- `src/libslic3r/PerimeterGenerator.cpp :: generate_interlocking_perimeters` (ring pass + spacing
+  schedule), `process_classic` (state + call site + fill coverage), `process_arachne` (Classic-only).
 - `src/libslic3r/LayerRegion.cpp :: make_perimeters` - solid-margin precompute.
 - `src/slic3r/GUI/Tab.cpp` (Strength > Walls), `ConfigManipulation.cpp` (master toggle + EVST conflict).
 

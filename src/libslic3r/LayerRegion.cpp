@@ -139,7 +139,8 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
     // [ORCAPORT:PF-9] solid top/bottom margin: only interlock when at least interlock_solid_layers_*
     // layers away from a top/bottom surface. A layer has a top surface where it extends beyond the
     // layer above (bottom: beyond the layer below).
-    if (region_config.interlock_perimeters_enabled.value) {
+    if (region_config.interlock_perimeters_enabled.value &&
+        object_config.wall_generator.value == PerimeterGeneratorType::Classic) {
         auto has_top_surface = [](const Layer* l) -> bool {
             return l != nullptr && (l->upper_layer == nullptr || !diff_ex(l->lslices, l->upper_layer->lslices).empty());
         };
