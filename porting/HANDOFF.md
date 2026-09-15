@@ -42,6 +42,26 @@ SU-2 (True Objects) and SU-3 (real floating detection) are **excluded** by user 
 AS-2F extra decisions: picked-instance only; extras = depth/rotate/flip/mirror; feature-center
 snapping included (click-time, not hover).
 
+### preFlight ports (`PF-*`)
+
+Second source: `preFlight/` (`github.com/oozebot/preFlight` v1.3.0, a PrusaSlicer fork).
+Source list: `PREFLIGHT_FEATURE_INVENTORY.md`. Plan: the preFlight addendum in
+`PORTING_PLAN.md`. Note: preFlight's **Athena is its Arachne fork** - we use Orca's
+Classic/Arachne/NeoArachne, no Athena work.
+
+| ID | Feature | Status | Notes file | Patch |
+|----|---------|--------|-----------|-------|
+| PF-1 | Nip & Tuck seams (Holes-only default) | in-progress | notes/PF-1.md | - |
+| PF-2 | Counterbore Bridge gizmo | planned | notes/PF-2.md | - |
+| PF-3 | Auto Speed | planned | notes/PF-3.md | - |
+| PF-4 | Width Control | planned | notes/PF-4.md | - |
+| PF-5 | Max Commands Per Second | planned | notes/PF-5.md | - |
+| PF-6 | Preview Clipping Plane | planned | notes/PF-6.md | - |
+| PF-7 | Manual fan controls | planned | notes/PF-7.md | - |
+| PF-8 | Serpentine | planned | notes/PF-8.md | - |
+| PF-9 | Interlocking perimeters | planned | notes/PF-9.md | - |
+| PF-10 | Baobab supports (recon first) | planned | notes/PF-10.md | - |
+
 ## Environment & build
 
 **Windows only, local builds only. Do not use GitHub Actions.** Read `porting/BUILD.md`.
