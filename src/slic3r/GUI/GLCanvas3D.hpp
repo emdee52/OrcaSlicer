@@ -1157,6 +1157,14 @@ public:
 
     int get_move_volume_id() const { return m_mouse.drag.move_volume_idx; }
     int get_first_hover_volume_idx() const { return m_hover_volume_idxs.empty() ? -1 : m_hover_volume_idxs.front(); }
+    // [ORCAPORT:PF-6] model object id of the volume under the cursor, or -1
+    int get_first_hover_object_id() const
+    {
+        const int idx = get_first_hover_volume_idx();
+        if (idx < 0 || idx >= static_cast<int>(m_volumes.volumes.size()) || m_volumes.volumes[idx] == nullptr)
+            return -1;
+        return m_volumes.volumes[idx]->object_idx();
+    }
     void set_selected_extruder(int extruder) { m_selected_extruder = extruder;}
 
     class WipeTowerInfo {

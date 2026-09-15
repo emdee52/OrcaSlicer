@@ -64,6 +64,8 @@ std::pair<bool, std::string> GLShadersManager::init()
 #endif // SLIC3R_OPENGL_ES
     // used to render bed axes and model, selection hints, gcode sequential view marker model, preview shells, options in gcode preview
     valid &= append_shader("gouraud_light", { prefix + "gouraud_light.vs", prefix + "gouraud_light.fs" });
+    // [ORCAPORT:PF-6] clipped variant of gouraud_light, used to render preview shells cut by the preview clipping plane
+    valid &= append_shader("gouraud_light_clip", { prefix + "gouraud_light_clip.vs", prefix + "gouraud_light_clip.fs" });
     //used to render thumbnail
     valid &= append_shader("thumbnail", { prefix + "thumbnail.vs", prefix + "thumbnail.fs"});
     // used to render printbed

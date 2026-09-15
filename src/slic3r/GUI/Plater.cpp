@@ -7121,6 +7121,8 @@ struct Plater::priv
     void on_object_select(SimpleEvent&);
     void show_right_click_menu(Vec2d mouse_position, wxMenu *menu);
     void on_right_click(RBtnEvent&);
+    // [ORCAPORT:PF-6] preview clipping plane right-click entry
+    void on_preview_right_click(RBtnEvent&);
     //BBS: add model repair
     void on_repair_model(wxCommandEvent &event);
     void on_filament_color_changed(wxCommandEvent &event);
@@ -7657,6 +7659,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     if (wxGetApp().is_editor()) {
         preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_TAB, [this](SimpleEvent&) { select_next_view_3D(); });
         preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_COLLAPSE_SIDEBAR, [this](SimpleEvent&) { this->q->collapse_sidebar(!this->q->is_sidebar_collapsed());  });
+        // [ORCAPORT:PF-6] preview right-click shows the clipping plane entry
+        preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_RIGHT_CLICK, &priv::on_preview_right_click, this);
         preview->get_wxglcanvas()->Bind(EVT_CUSTOMEVT_TICKSCHANGED, [this](wxCommandEvent& event) {
             Type tick_event_type = (Type)event.GetInt();
             Model& model = wxGetApp().plater()->model();
@@ -13348,6 +13352,31 @@ void Plater::priv::on_right_click(RBtnEvent& evt)
         show_right_click_menu(evt.data.first, menu);
     }
 }
+
+// [ORCAPORT:PF-6] BEGIN - right-click an object in Preview to clip the preview around it
+void Plater::priv::on_preview_right_click(RBtnEvent& evt)
+{
+    if (!wxGetApp().is_gcode_viewer())
+        return;
+
+    GLCanvas3D* canvas = preview->get_canvas3d();
+    if (canvas == nullptr)
+        return;
+
+    const int object_id = canvas->get_first_hover_object_id();
+    if (object_id < 0)
+        return;
+
+    wxMenu menu;
+    const int clip_id = wxWindow::NewControlId();
+    menu.Append(clip_id, _L("Clipping Plane"));
+    menu.Bind(wxEVT_MENU, [canvas, object_id](wxCommandEvent&) {
+        canvas->get_gcode_viewer().get_preview_clip_controller().activate(object_id);
+    }, clip_id);
+
+    show_right_click_menu(evt.data.first, &menu);
+}
+// [ORCAPORT:PF-6] END
 
 //BBS: add part plate related logic
 void Plater::priv::on_plate_right_click(RBtnPlateEvent& evt)

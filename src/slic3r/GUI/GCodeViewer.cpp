@@ -1589,6 +1589,9 @@ void GCodeViewer::reset_shell()
 
 void GCodeViewer::reset()
 {
+    // [ORCAPORT:PF-6] drop any active preview clipping plane when the preview is cleared
+    m_preview_clip_controller.deactivate();
+
     //BBS: should also reset the result id
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": current result id %1% ")%m_last_result_id;
     m_last_result_id = -1;
@@ -1683,6 +1686,9 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
 
     //BBS render slider
     render_slider(canvas_width, canvas_height);
+
+    // [ORCAPORT:PF-6] interactive clipping plane overlay
+    m_preview_clip_controller.render_imgui();
 }
 
 #define ENABLE_CALIBRATION_THUMBNAIL_OUTPUT 0
@@ -2526,7 +2532,7 @@ void GCodeViewer::render_shells(int canvas_width, int canvas_height)
         //if (!m_shells.visible || m_shells.volumes.empty())
         return;
 
-    GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
+    GLShaderProgram* shader = wxGetApp().get_shader(m_preview_clipping_plane.has_value() ? "gouraud_light_clip" : "gouraud_light");
     if (shader == nullptr)
         return;
 
@@ -2537,6 +2543,10 @@ void GCodeViewer::render_shells(int canvas_width, int canvas_height)
     const Camera& camera = wxGetApp().plater()->get_camera();
     shader->set_uniform("z_far", camera.get_far_z());
     shader->set_uniform("z_near", camera.get_near_z());
+    // [ORCAPORT:PF-6] clip the preview shells with the active preview clipping plane
+    m_shells.volumes.set_clipping_plane(m_preview_clipping_plane.has_value()
+                                            ? m_preview_clipping_plane.value()
+                                            : std::array<double, 4>{ 0.0, 0.0, 0.0, 0.0 });
     m_shells.volumes.render(GLVolumeCollection::ERenderType::Transparent, false, camera.get_view_matrix(), camera.get_projection_matrix(), {canvas_width, canvas_height});
     shader->set_uniform("emission_factor", 0.0f);
     shader->stop_using();

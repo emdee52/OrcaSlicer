@@ -406,6 +406,13 @@ public:
     //
     size_t get_used_gpu_memory() const;
 
+    // [ORCAPORT:PF-6] BEGIN - toolpath clipping plane for the Preview clipping feature.
+    // Fragments with dot(vec4(pos, 1.0), clipping_plane) < 0 are discarded.
+    // Default state clips nothing (offset = FLT_MAX).
+    void set_clipping_plane(float nx, float ny, float nz, float offset);
+    void reset_clipping_plane();
+    // [ORCAPORT:PF-6] END
+
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
     //
     // Returns the position of the center of gravity of the toolpaths.
