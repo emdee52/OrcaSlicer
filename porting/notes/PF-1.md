@@ -46,33 +46,57 @@ seam sits on a sharp corner already.
 2. New `seam_notch_target`: `All external` / **`Holes only` (default)** / `Outer only`.
    Holes are `(loop.loop_role() & ExtrusionLoopRole::elrHole) != 0`.
 3. Re-implement the notch on `ExtrusionPaths`; no dependency on preFlight types.
-4. **v1 scope: external-perimeter notch only.** The inner-perimeter trim (preFlight
-   `apply_seam_notch_pair` splitting/trimming `perimeter_index == 1`) needs cross-loop pairing
-   inside `extrude_loop`, which does not exist there - deferred to a follow-up. Documented as a
-   known gap; the visible V channel is complete in v1.
+4. **Approach A - keep the loop closed.** The seam endpoints stay at nominal and only the
+   interior points inside the taper are pushed in (profile `depth * sin(pi*d/taper)`). This is a
+   deliberate deviation from preFlight, which moves the seam point itself.
 
-## Inward direction (v1)
+## Amendment (post-test)
 
-`T` = unit travel direction at the seam (from the first path's first segment / last path's last
-segment). `L = (-T.y, T.x)` (rotate +90). `inward = ccw ? L : -L`, then negate when `is_hole`
-(enclosed region is the void for a hole). The push direction is the seam bisector
-`normalize(dir_start - dir_end)` (fallback `L`), oriented so `dot(bisect, inward) > 0`.
+First build mangled bores and made the outer-wall seam vanish. Root causes:
+
+1. **Seam vanishes (Nip / Tuck / Alt):** Orca's preview records a seam only when the external
+   loop's end returns within 0.25 mm of its start (`GCodeProcessor.cpp:5416`,
+   `squaredNorm() < 0.0625`). Moving only one endpoint by `depth = 0.9*width` (~0.38 mm) breaks
+   that, so no seam is stored. Nip/Tuck moved both ends equally, so it kept the seam - exactly
+   what the user saw.
+2. **Mangled bore (gap + hook):** same open-loop cause, plus the push used preFlight's
+   `normalize(d0 - d1)` bisector, which degenerates to noise on Orca's polygonized seam.
+3. **Corner check on holes:** a polygonized bore's seam sits on a vertex, so the 44 deg check
+   disabled the notch intermittently (on/off per layer).
+
+Fixes applied:
+- **Approach A** (endpoints nominal, interior sine taper) -> loop stays closed -> seam detected
+  in every mode and no open wall.
+- **Corner check dropped for holes**, kept for outer contours.
+- **Push along the inward normal** (`left` oriented to the solid), not the bisector.
+- **Min-loop-length guard** (`loop_len < notch_width*3` -> skip) + taper clamped to <= 25% of
+  the loop.
+- **Inner relief** (`trim_inner`): the first inner perimeter emitted after a notched external,
+  within 3 mm of the projected V-leg, is nudged deeper along the notch direction. Orca-native
+  (offset) instead of preFlight's cut-a-gap, so the inner loop also stays closed. Consumed once
+  per external via `m_seam_notch`/`m_seam_notch_trimmed` in `GCode`.
+- **Debug flag:** set `ORCA_SEAM_NOTCH_DEBUG=1` to log per-loop `layer, hole, ccw, width,
+  loop_len, apply/skip+reason, taper, depth, push` (and the inner relief) at warning level.
+
+## Inward direction
+
+`T` = unit travel direction at the seam. `left = rotate(T, +90)`. `inward = loop_ccw ? left : -left`,
+negated for a hole. That is the radial direction into the solid on a bore and is stable
+regardless of the loop being reversed for wall direction.
 
 ## Verification
 
-- Off by default (`seam_type = regular`) -> no notch is applied; byte-identical G-code.
-- Build: `build_win.bat -s -j 8` -> 0 errors; `SeamNotch.cpp`, `GCode.cpp`, `PrintConfig.cpp`,
-  `ConfigManipulation.cpp`, `Tab.cpp` compiled; `OrcaSlicer.dll` linked 2026-09-15 05:16.
-- Manual (pending): slice a part with bores + smooth outer walls; with `Holes only` the bore
-  seams get a V channel and the outer contour seams stay normal; `Outer only` inverts that;
-  `Nip` shapes only the start, `Tuck` only the end, `Alternating` swaps per layer; sharp-corner
-  seams are skipped per `seam_notch_angle`.
+- Off by default (`seam_type = regular`) -> byte-identical G-code.
+- Build: `build_win.bat -s --no-configure -j 8`.
+- Manual (pending): with `Holes only`, bores get a closed V channel and keep their seam; outer
+  seams untouched. With `Outer only`, the outer wall keeps its seam in every mode (Nip, Tuck,
+  Nip/Tuck, Alt). Sharp outer corners are skipped per `seam_notch_angle`; holes always notch.
 
 ## Known gaps
 
-- v1 does **not** trim the adjacent inner perimeter (preFlight's `apply_seam_notch_pair`
-  inner split). Requires pairing the external loop with `perimeter_index == 1` across
-  separate `extrude_loop` calls; deferred. The visible external V channel is complete.
+- v1 trims only the inner perimeter emitted **after** the external (default OuterInner wall
+  order) and only the one nearest the seam (within 3 mm). InnerOuter order would miss it.
+- The inner relief is an offset, not preFlight's gap cut; no inner split/seam is introduced.
 
 ## Files
 
