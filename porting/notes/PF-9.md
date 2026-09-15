@@ -75,9 +75,11 @@ the coverage offset used the unscaled width, producing ~2 mm beads; `path.width`
 unscaled width. A second follow-up fixed the fill coverage: `covered` was built with
 `offset_ex(ring, +w/2)`, which grows the **filled** ring polygon and swallows the whole centre, so
 the infill vanished (0.03 g on a 30 mm cube). It now subtracts only the ring band
-(`offset_ex(ring, +w/2) − offset_ex(ring, −w/2)`). The bead width is flow-proportional
-(`base · flow_ratio`, up to 2× on the inner shells) so the over-extrusion is visible, matching
-PF-9's ~1.5-2× interlocking beads.
+(`offset_ex(ring, +w/2) − offset_ex(ring, −w/2)`). The geometry width uses PF-9's `sqrt(flow)·w`
+(<=1.414x, ~0.59 mm inner) so the widest bead stays printable on a 0.4 mm nozzle; the over-extrusion
+itself is carried by `mm3_per_mm` (PF-9 applies it as a per-segment flow in GCode). A true
+over-extruded bead is also physically taller, which Orca's constant-layer-height preview cannot show
+(known visual difference vs PF-9).
 
 ## Approximation vs PF-9 (known limitations)
 
