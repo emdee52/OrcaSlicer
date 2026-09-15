@@ -4,11 +4,14 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <mutex>
+#include <sstream>
 
-#include <boost/log/trivial.hpp>
+#include <boost/filesystem.hpp>
 
+#include "../Utils.hpp"
 #include "../libslic3r.h"
 
 namespace Slic3r {
@@ -19,25 +22,64 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-bool debug_enabled() {
-    static const bool enabled = std::getenv("ORCA_SEAM_NOTCH_DEBUG") != nullptr;
-    return enabled;
+void notch_log(const std::string &line) {
+    static std::mutex        m;
+    std::lock_guard<std::mutex> lock(m);
+    static std::ofstream     out = []() {
+        try {
+            const boost::filesystem::path dir = boost::filesystem::path(data_dir()) / "log";
+            boost::filesystem::create_directories(dir);
+            return std::ofstream((dir / "seam_notch_debug.log").string(), std::ios::app);
+        } catch (...) {
+            return std::ofstream();
+        }
+    }();
+    if (out)
+        out << line << "\n";
 }
 
-Vec2d first_dir(const Polyline3 &pl) {
-    if (pl.points.size() < 2)
-        return Vec2d::Zero();
-    const Point3 &a = pl.points[0];
-    const Point3 &b = pl.points[1];
-    return Vec2d(double(b.x() - a.x()), double(b.y() - a.y()));
-}
+// Always-on file logger so a slice leaves evidence behind without an env var. Only constructed
+// where the notch code actually runs (i.e. the feature is enabled).
+struct LogStream {
+    std::ostringstream ss;
+    template <class T> LogStream &operator<<(const T &v) {
+        ss << v;
+        return *this;
+    }
+    ~LogStream() { notch_log(ss.str()); }
+};
 
-Vec2d last_dir(const Polyline3 &pl) {
-    if (pl.points.size() < 2)
+// Direction at one end. Prefer a baseline of at least 0.1 mm so a coincident seam segment does
+// not degenerate the result, but fall back to the longest available direction when the whole
+// loop is shorter than that (e.g. a degenerate two-point loop) so we never skip a layer.
+Vec2d seam_dir(const Polyline3 &pl, bool front) {
+    const Points3 &p = pl.points;
+    if (p.size() < 2)
         return Vec2d::Zero();
-    const Point3 &a = pl.points[pl.points.size() - 2];
-    const Point3 &b = pl.points.back();
-    return Vec2d(double(b.x() - a.x()), double(b.y() - a.y()));
+    const double min_base = scale_(0.1);
+    Vec2d        best     = Vec2d::Zero();
+    double       best_len = 0.0;
+    auto         consider = [&](const Vec2d &d) {
+        const double len = d.norm();
+        if (len >= min_base)
+            return true;
+        if (len > best_len) {
+            best     = d;
+            best_len = len;
+        }
+        return false;
+    };
+    if (front) {
+        for (size_t i = 1; i < p.size(); ++i)
+            if (consider(Vec2d(double(p[i].x() - p[0].x()), double(p[i].y() - p[0].y()))))
+                return Vec2d(double(p[i].x() - p[0].x()), double(p[i].y() - p[0].y()));
+    } else {
+        const size_t n = p.size();
+        for (size_t i = n - 1; i-- > 0;)
+            if (consider(Vec2d(double(p[n - 1].x() - p[i].x()), double(p[n - 1].y() - p[i].y()))))
+                return Vec2d(double(p[n - 1].x() - p[i].x()), double(p[n - 1].y() - p[i].y()));
+    }
+    return best;
 }
 
 // Push the interior points within `taper` of one end inward by depth * sin(pi*d/taper). The
@@ -97,7 +139,7 @@ void push_zone(Polyline3 &pl, bool at_start, double taper, double depth, const V
 
 ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
                              SeamNotchTarget target, double notch_width_factor,
-                             double corner_threshold_deg, int layer_index) {
+                             double corner_threshold_deg, double width_fallback_mm, int layer_index) {
     ExternalNotch result;
     if (type == sntRegular || paths.empty())
         return result;
@@ -110,14 +152,30 @@ ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole,
     if (notch == sntAlternating)
         notch = (layer_index % 2 == 0) ? sntNip : sntTuck;
 
-    const double ext_width = paths.front().width;
-    if (!(ext_width > 0.0))
+    // Do not notch the first layer: the bottom edge is a solid boundary and the notch shows as a
+    // defect there (on upper layers it is buried inside the part). The seam itself is unaffected.
+    if (layer_index == 0) {
+        LogStream() << "[ORCAPORT:PF-1] notch skip: first layer hole=" << (is_hole ? 1 : 0);
         return result;
+    }
 
-    Vec2d d0 = first_dir(paths.front().polyline);
-    Vec2d d1 = last_dir(paths.back().polyline);
-    if (d0.squaredNorm() < 1e-12 || d1.squaredNorm() < 1e-12)
+    double ext_width = paths.front().width;
+    if (!(ext_width > 0.0))
+        ext_width = width_fallback_mm;
+    if (!(ext_width > 0.0)) {
+        LogStream() << "[ORCAPORT:PF-1] notch skip: bad width layer=" << layer_index
+                                       << " hole=" << (is_hole ? 1 : 0);
         return result;
+    }
+
+    Vec2d d0 = seam_dir(paths.front().polyline, true);
+    Vec2d d1 = seam_dir(paths.back().polyline, false);
+    if (d0.squaredNorm() < 1e-12 || d1.squaredNorm() < 1e-12) {
+        LogStream()
+                << "[ORCAPORT:PF-1] notch skip: degenerate dir layer=" << layer_index
+                << " hole=" << (is_hole ? 1 : 0) << " pts=" << paths.front().polyline.points.size();
+        return result;
+    }
     d0.normalize();
     d1.normalize();
 
@@ -125,8 +183,8 @@ ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole,
     // "corners" are artifacts - never skip a hole on this test.
     if (!is_hole && corner_threshold_deg > 0.0
         && d0.dot(d1) < std::cos(corner_threshold_deg * kPi / 180.0)) {
-        if (debug_enabled())
-            BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] notch skip: sharp corner";
+        LogStream() << "[ORCAPORT:PF-1] notch skip: sharp corner layer=" << layer_index
+                                       << " dot=" << d0.dot(d1);
         return result;
     }
 
@@ -136,8 +194,7 @@ ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole,
         loop_len += p.polyline.length();
     const double notch_width_mm = notch_width_factor * ext_width;
     if (loop_len < scale_(notch_width_mm * 3.0)) {
-        if (debug_enabled())
-            BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] notch skip: loop too short " << unscale_(loop_len)
+        LogStream() << "[ORCAPORT:PF-1] notch skip: loop too short " << unscale_(loop_len)
                                        << "mm < " << (notch_width_mm * 3.0) << "mm";
         return result;
     }
@@ -164,12 +221,13 @@ ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole,
     result.taper   = taper;
     result.width   = scale_(ext_width);
 
-    if (debug_enabled())
-        BOOST_LOG_TRIVIAL(warning)
+    LogStream()
             << "[ORCAPORT:PF-1] notch APPLY layer=" << layer_index << " hole=" << (is_hole ? 1 : 0)
             << " ccw=" << (loop_ccw ? 1 : 0) << " type=" << int(notch) << " width=" << ext_width
             << " loop_len=" << unscale_(loop_len) << " taper=" << unscale_(taper)
-            << " depth=" << unscale_(depth) << " push=(" << inward.x() << "," << inward.y() << ")";
+            << " depth=" << unscale_(depth)
+            << " seam=(" << unscale_(result.seam.x()) << "," << unscale_(result.seam.y()) << ")"
+            << " push=(" << inward.x() << "," << inward.y() << ")";
     return result;
 }
 
@@ -203,8 +261,10 @@ bool trim_inner(ExtrusionPaths &paths, const ExternalNotch &notch, double inner_
     }
     if (best_d2 == std::numeric_limits<double>::max())
         return false;
-    // Only relieve an inner wall that belongs to the same seam (avoids cross-island trims).
-    const double guard = double(scale_(3.0));
+    // Only relieve an inner wall that belongs to the same seam: require it within ~2 external
+    // bead widths of the projected V-leg. A fixed 3 mm guard was biting unrelated loops on the
+    // first layer, where the bore and other walls are close.
+    const double guard = 2.0 * notch.width;
     if (best_d2 > guard * guard)
         return false;
 
@@ -225,8 +285,7 @@ bool trim_inner(ExtrusionPaths &paths, const ExternalNotch &notch, double inner_
             moved = true;
         }
     }
-    if (debug_enabled())
-        BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] inner relief " << (moved ? "APPLY" : "skip");
+    LogStream() << "[ORCAPORT:PF-1] inner relief " << (moved ? "APPLY" : "skip");
     return moved;
 }
 

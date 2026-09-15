@@ -7345,7 +7345,9 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
             m_seam_notch = OrcaExt::SeamNotch::apply_external(
                 paths, loop.polygon().is_counter_clockwise(), is_hole, m_config.seam_type.value,
                 m_config.seam_notch_target.value, m_config.seam_notch_width.value,
-                m_config.seam_notch_angle.value, layer_id());
+                m_config.seam_notch_angle.value,
+                m_config.outer_wall_line_width.get_abs_value(EXTRUDER_CONFIG(nozzle_diameter)),
+                layer_id());
             m_seam_notch_trimmed = !m_seam_notch.applied;
         } else if (loop.role() == erPerimeter && m_seam_notch.applied && !m_seam_notch_trimmed) {
             const double inner_width = paths.front().width;

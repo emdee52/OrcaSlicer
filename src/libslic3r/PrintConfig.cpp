@@ -6308,13 +6308,15 @@ void PrintConfigDef::init_fff_params()
     def = this->add("seam_notch_angle", coFloat);
     def->label = L("Seam notch corner threshold");
     def->category = L("Quality");
-    def->tooltip = L("Skip the seam notch on corners sharper than this angle - a sharp corner "
-        "already conceals the junction. Set to 0 to notch every seam regardless of corner angle.");
+    def->tooltip = L("Skip the seam notch when the seam sits on an outer corner sharper than this "
+        "angle - a sharp corner already conceals the junction. 0 (default) notches every seam, "
+        "which is what round parts need; raise it if outer wall corners should be left alone. "
+        "Never applied to holes.");
     def->sidetext = L("\u00B0");
     def->min = 0;
     def->max = 90;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(44.0));
+    def->set_default_value(new ConfigOptionFloat(0.0));
     
     def = this->add("seam_gap", coFloatOrPercent);
     def->label = L("Seam gap");
