@@ -232,6 +232,25 @@ struct PrintInstance
 
 typedef std::vector<PrintInstance> PrintInstances;
 
+// [ORCAPORT:SU-5] One support zone (a SUPPORT_ENFORCER ModelVolume), sliced on its own. See
+// Feature/SupportZones/SupportZoneProbe.hpp and docs/FUTURE/SUPPORT_ZONES_PLAN.md.
+struct SupportZoneSlices
+{
+    // Position in ModelObject::volumes (creation order); deterministic priority.
+    size_t             priority { 0 };
+    const ModelVolume *model_volume { nullptr };
+    // Lean angle the zone was drawn at, in degrees (0 => default).
+    double             lean_deg { 0. };
+    // The whole block descends as the column, not just the contact section.
+    bool               solid { false };
+    // Only land at the end of the descent (do not rest on every shelf the column crosses).
+    bool               land_only { false };
+    // Indexed by object layer, like slice_support_volumes()'s output.
+    std::vector<Polygons> slices;
+    // Object layer index where the zone's top ends (roof band), one truth for both consumers.
+    std::vector<char>     roof_layer;
+};
+
 class PrintObjectRegions
 {
 public:
@@ -468,9 +487,37 @@ public:
     std::vector<Polygons>       slice_support_volumes(const ModelVolumeType model_volume_type) const;
     std::vector<Polygons>       slice_support_blockers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_BLOCKER); }
     std::vector<Polygons>       slice_support_enforcers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_ENFORCER); }
+    // [ORCAPORT:SU-5] One stream per enforcer volume (same slicing, no union across volumes, so the
+    // per-zone identity survives to the corridor engine).
+    std::vector<SupportZoneSlices> slice_support_enforcers_per_zone() const;
 
     // Helpers to project custom facets on slices
     void project_and_append_custom_facets(bool seam, EnforcerBlockerType type, std::vector<Polygons>& expolys, std::vector<std::pair<Vec3f,Vec3f>>* vertical_points=nullptr) const;
+
+    // [ORCAPORT:SU-5] Per-family support areas, for routing each zone's toolpaths to its filament.
+    struct SupportFamily
+    {
+        int body_filament      { 0 }; // 0 = as the object
+        int interface_filament { 0 };
+    };
+    struct SupportFamilyAreas
+    {
+        std::vector<SupportFamily>             families;
+        std::vector<std::vector<Polygons>>     areas;         // [object layer][family]
+        std::vector<float>                     layer_print_z; // object layer print_z
+        bool trivial() const { return families.size() < 2; }
+    };
+    const SupportFamilyAreas& support_family_areas() const { return m_support_family_areas; }
+    const std::vector<Polygons>* support_family_areas_at(float print_z) const;
+    void set_support_family_areas(SupportFamilyAreas &&a) const { m_support_family_areas = std::move(a); }
+
+    // [ORCAPORT:SU-5] passthrough for the support generator to warn about a non-Snug style with
+    // painted support zones (active_step_add_warning() is protected).
+    void push_support_zone_style_warning(const std::string &message)
+    {
+        this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, message,
+                                      PrintStateBase::SlicingDefaultNotification);
+    }
 
     //BBS
     BoundingBox get_first_layer_bbox(float& area, float& layer_height, std::string& name);
@@ -516,6 +563,9 @@ public:
     static PrintObjectConfig object_config_from_model_object(const PrintObjectConfig &default_object_config, const ModelObject &object, size_t num_extruders, std::vector<int>& variant_index);
 
 private:
+    // [ORCAPORT:SU-5] Filled by the support generator (a const step), derived model cache.
+    mutable SupportFamilyAreas m_support_family_areas;
+
     void make_perimeters();
     void prepare_infill();
     void infill();

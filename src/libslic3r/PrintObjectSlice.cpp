@@ -5,6 +5,7 @@
 #include "ClipperUtils.hpp"
 #include "ElephantFootCompensation.hpp"
 #include "Exception.hpp"
+#include "Feature/SupportZones/SupportZoneProbe.hpp" // [ORCAPORT:SU-5] zone constants
 #include "I18N.hpp"
 #include "Layer.hpp"
 #include "MultiMaterialSegmentation.hpp"
@@ -1600,6 +1601,111 @@ std::vector<Polygons> PrintObject::slice_support_volumes(const ModelVolumeType m
         }
     }
     return slices;
+}
+
+// [ORCAPORT:SU-5] Per-family support areas of the object layer matching a support print_z.
+const std::vector<Polygons>* PrintObject::support_family_areas_at(float print_z) const
+{
+    const SupportFamilyAreas &fa = m_support_family_areas;
+    if (fa.trivial() || fa.areas.empty() || fa.layer_print_z.size() != fa.areas.size())
+        return nullptr;
+    auto it = std::lower_bound(fa.layer_print_z.begin(), fa.layer_print_z.end(), print_z - float(EPSILON));
+    if (it == fa.layer_print_z.end())
+        it = std::prev(fa.layer_print_z.end());
+    const size_t idx = size_t(it - fa.layer_print_z.begin());
+    return &fa.areas[idx];
+}
+
+// [ORCAPORT:SU-5] Same slicing as slice_support_volumes(), one stream per enforcer volume: no union
+// across volumes, so the per-zone identity survives to the corridor engine.
+std::vector<SupportZoneSlices> PrintObject::slice_support_enforcers_per_zone() const
+{
+    std::vector<SupportZoneSlices> zones;
+    const ModelObject *mo = this->model_object();
+    if (mo == nullptr)
+        return zones;
+
+    size_t n_enforcers = 0;
+    for (const ModelVolume *v : mo->volumes)
+        if (v->type() == ModelVolumeType::SUPPORT_ENFORCER)
+            ++n_enforcers;
+    if (n_enforcers == 0)
+        return zones;
+
+    std::vector<float> zs = zs_from_layers(this->layers());
+    const Print       *print = this->print();
+    auto               throw_on_cancel_callback = std::function<void()>([print]() { print->throw_if_canceled(); });
+    MeshSlicingParamsEx params;
+    params.trafo = this->trafo_centered();
+
+    zones.reserve(n_enforcers);
+    size_t priority = 0;
+    for (const ModelVolume *v : mo->volumes) {
+        if (v->type() != ModelVolumeType::SUPPORT_ENFORCER)
+            continue;
+        std::vector<ExPolygons> slices2 = slice_volume(*v, zs, params, throw_on_cancel_callback);
+        SupportZoneSlices zone;
+        zone.priority     = priority++;
+        zone.model_volume = v;
+
+        if (const auto *so = dynamic_cast<const ConfigOptionBool *>(v->config.option("support_zone_solid")); so != nullptr)
+            zone.solid = so->value;
+        if (const auto *lo = dynamic_cast<const ConfigOptionBool *>(v->config.option("support_zone_land_only")); lo != nullptr)
+            zone.land_only = lo->value;
+
+        zone.lean_deg = SupportZones::SUPPORT_ZONE_DEFAULT_LEAN_DEG;
+        if (v->config.has("support_zone_lean_deg")) {
+            const double a = v->config.opt_float("support_zone_lean_deg");
+            if (a > 0.)
+                zone.lean_deg = std::min(a, SupportZones::SUPPORT_ZONE_MAX_LEAN_DEG);
+        }
+        zone.slices.reserve(slices2.size());
+        for (ExPolygons &src : slices2)
+            zone.slices.emplace_back(to_polygons(std::move(src)));
+        zone.slices.resize(zs.size(), Polygons());
+
+        // Top of the block, computed once: compensate the block's per-layer shift before diffing so
+        // an inclined wall does not read as a roof.
+        {
+            auto centroid_of = [](const Polygons &polys) -> Vec2d {
+                double area_total = 0.;
+                Vec2d  acc        = Vec2d::Zero();
+                for (const Polygon &poly : polys) {
+                    if (poly.size() < 3)
+                        continue;
+                    const double a = std::abs(poly.area());
+                    if (a <= 0.)
+                        continue;
+                    const Point c = poly.centroid();
+                    acc        += Vec2d(double(c.x()), double(c.y())) * a;
+                    area_total += a;
+                }
+                return (area_total > 0.) ? Vec2d(acc / area_total) : Vec2d::Zero();
+            };
+            const size_t n = zone.slices.size();
+            zone.roof_layer.assign(n, char(0));
+            for (size_t i = 0; i < n; ++i) {
+                if (zone.slices[i].empty())
+                    continue;
+                if (i + 1 >= n || zone.slices[i + 1].empty()) {
+                    zone.roof_layer[i] = char(1);
+                    continue;
+                }
+                const Vec2d v = centroid_of(zone.slices[i]) - centroid_of(zone.slices[i + 1]);
+                Polygons above = zone.slices[i + 1];
+                const Point shift(coord_t(std::lround(v.x())), coord_t(std::lround(v.y())));
+                for (Polygon &p : above)
+                    p.translate(shift);
+                const Polygons band = diff(zone.slices[i], above);
+                const double a_layer = std::abs(area(zone.slices[i]));
+                if (!band.empty() && a_layer > 0. && std::abs(area(band)) > 0.02 * a_layer)
+                    zone.roof_layer[i] = char(1);
+            }
+        }
+
+        zones.emplace_back(std::move(zone));
+    }
+    return zones;
 }
 
 } // namespace Slic3r

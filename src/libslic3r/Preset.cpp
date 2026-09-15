@@ -1334,6 +1334,9 @@ static std::vector<std::string> s_Preset_print_options{
     "mmu_segmented_region_max_width",
     "mmu_segmented_region_interlocking_depth",
     "mmu_segmented_region_extra_walls", // [ORCAPORT:MT-4]
+    // [ORCAPORT:SU-5] Support Zones per-volume keys: without these the gesture blob and zone
+    // options would not travel to the 3mf.
+    "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only", "support_zone_solid", "support_zone_land_only",
     "small_area_infill_flow_compensation",
     "small_area_infill_flow_compensation_model",
     "enable_wrapping_detection",

@@ -964,6 +964,44 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
             }
         }
         if (has_interface) layer_tools.extruders.push_back(extruder_interface);
+
+        // [ORCAPORT:SU-5] A layer can need MORE than one support extruder: the zone family split
+        // tagged the entities (support_fills_family), so the per-zone filaments are scheduled HERE.
+        // Only enters when the split left tags (different materials between zones); otherwise
+        // support_fills_family is empty and this is untouched.
+        if (!support_layer->support_fills_family.empty()) {
+            const auto &fam  = object.support_family_areas().families;
+            const auto &ents = support_layer->support_fills.entities;
+            // Look at the roles actually present, per family, instead of assuming body+interface.
+            struct FamRoles { bool body { false }; bool interface_ { false }; };
+            std::map<int, FamRoles> present;
+            const size_t n_tag = std::min(ents.size(), support_layer->support_fills_family.size());
+            for (size_t i = 0; i < n_tag; ++i) {
+                const int fi = support_layer->support_fills_family[i];
+                if (fi < 0 || fi >= int(fam.size()) || ents[i] == nullptr)
+                    continue;
+                const ExtrusionRole r = ents[i]->role();
+                FamRoles &fr = present[fi];
+                if (r == erSupportMaterialInterface)
+                    fr.interface_ = true;
+                else if (r == erSupportMaterial || r == erSupportTransition)
+                    fr.body = true;
+                else if (r == erMixed)
+                    fr.body = fr.interface_ = true;
+            }
+            // 0 = "as the object" (already covered by extruder_support/extruder_interface). Clamp to
+            // the number of physical extruders so a stale 3mf slot cannot schedule an unknown tool.
+            // 1-BASED: layer_tools.extruders is 1-based during collect_extruders.
+            const int n_fil = int(object.print()->config().filament_diameter.size());
+            for (const auto &kv : present) {
+                const auto &f = fam[kv.first];
+                if (kv.second.body && f.body_filament > 0 && f.body_filament <= n_fil)
+                    layer_tools.extruders.push_back(unsigned(f.body_filament));
+                if (kv.second.interface_ && f.interface_filament > 0 && f.interface_filament <= n_fil)
+                    layer_tools.extruders.push_back(unsigned(f.interface_filament));
+            }
+        }
+
         if (has_support || has_interface) {
             layer_tools.has_support = true;
             layer_tools.wiping_extrusions().is_support_overriddable_and_mark(role, object);

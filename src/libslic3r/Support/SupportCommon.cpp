@@ -1424,6 +1424,71 @@ SupportGeneratorLayersPtr generate_support_layers(
     return layers_sorted;
 }
 
+// [ORCAPORT:SU-5] Split a support layer's extrusions between families by CLIPPING the polylines
+// (not tagging a whole path by one of its points: a fill path can cross the seam between two zones,
+// and clipping is exact). A clipped loop becomes an open path, which only happens at a material
+// seam where that is the correct behaviour.
+static Polyline to_polyline2d(const Polyline3 &pl)
+{
+    Polyline out;
+    out.points.reserve(pl.points.size());
+    for (const Point3 &p : pl.points)
+        out.points.emplace_back(p.x(), p.y());
+    return out;
+}
+
+static void split_support_fills_by_family(SupportLayer &support_layer, const std::vector<Polygons> &areas)
+{
+    ExtrusionEntityCollection out;
+    std::vector<int>          out_family;
+
+    std::function<void(const ExtrusionEntity *)> take = [&](const ExtrusionEntity *ee) {
+        if (const auto *coll = dynamic_cast<const ExtrusionEntityCollection *>(ee)) {
+            for (const ExtrusionEntity *child : coll->entities)
+                take(child);
+            return;
+        }
+        Polylines    pls;
+        double       width = 0., height = 0., mm3 = 0.;
+        ExtrusionRole role = ee->role();
+        if (const auto *path = dynamic_cast<const ExtrusionPath *>(ee)) {
+            pls.push_back(to_polyline2d(path->polyline));
+            width = path->width; height = path->height; mm3 = path->mm3_per_mm;
+        } else if (const auto *mp = dynamic_cast<const ExtrusionMultiPath *>(ee)) {
+            for (const ExtrusionPath &p : mp->paths)
+                pls.push_back(to_polyline2d(p.polyline));
+            if (!mp->paths.empty()) { width = mp->paths.front().width; height = mp->paths.front().height; mm3 = mp->paths.front().mm3_per_mm; }
+        } else if (const auto *loop = dynamic_cast<const ExtrusionLoop *>(ee)) {
+            for (const ExtrusionPath &p : loop->paths)
+                pls.push_back(to_polyline2d(p.polyline));
+            if (!loop->paths.empty()) { width = loop->paths.front().width; height = loop->paths.front().height; mm3 = loop->paths.front().mm3_per_mm; }
+        } else {
+            return; // a type we cannot clip: dropped rather than emitted in the wrong family
+        }
+        for (size_t f = 0; f < areas.size(); ++f) {
+            if (areas[f].empty())
+                continue;
+            Polylines clipped = intersection_pl(pls, areas[f]);
+            for (Polyline &pl : clipped) {
+                if (pl.size() < 2)
+                    continue;
+                auto *path = new ExtrusionPath(role, mm3, float(width), float(height));
+                path->polyline = Polyline3(pl);
+                out.entities.emplace_back(path);
+                out_family.push_back(int(f));
+            }
+        }
+    };
+
+    for (const ExtrusionEntity *ee : support_layer.support_fills.entities)
+        take(ee);
+
+    if (out.entities.empty())
+        return; // nothing fell inside any family: leave the layer as it was
+    support_layer.support_fills        = std::move(out);
+    support_layer.support_fills_family = std::move(out_family);
+}
+
 void generate_support_toolpaths(
     SupportLayerPtrs                    &support_layers,
     const PrintObjectConfig             &config,
@@ -1434,7 +1499,9 @@ void generate_support_toolpaths(
     const SupportGeneratorLayersPtr     &top_contacts,
     const SupportGeneratorLayersPtr     &intermediate_layers,
     const SupportGeneratorLayersPtr     &interface_layers,
-    const SupportGeneratorLayersPtr     &base_interface_layers)
+    const SupportGeneratorLayersPtr     &base_interface_layers,
+    // [ORCAPORT:SU-5] optional: split the emitted support between per-zone families (zone materials).
+    const PrintObject                   *object_for_families)
 {
     // loop_interface_processor with a given circle radius.
     LoopInterfaceProcessor loop_interface_processor(1.5 * support_params.support_material_interface_flow.scaled_width());
@@ -1945,7 +2012,7 @@ void generate_support_toolpaths(
 
     // Now modulate the support layer height in parallel.
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
-        [&support_layers, &layer_caches, &support_params, &bbox_object]
+            [&support_layers, &layer_caches, &support_params, &bbox_object, object_for_families]
             (const tbb::blocked_range<size_t>& range) {
         for (size_t support_layer_id = range.begin(); support_layer_id < range.end(); ++ support_layer_id) {
             SupportLayer &support_layer = *support_layers[support_layer_id];
@@ -1956,6 +2023,11 @@ void generate_support_toolpaths(
                 modulate_extrusion_by_overlapping_layers(layer_cache_item.layer_extruded->extrusions, *layer_cache_item.layer_extruded->layer, layer_cache_item.overlapping);
                 support_layer.support_fills.append(std::move(layer_cache_item.layer_extruded->extrusions));
             }
+
+            // [ORCAPORT:SU-5] redistribute this layer's extrusions between the per-zone families.
+            if (object_for_families != nullptr)
+                if (const std::vector<Polygons> *areas = object_for_families->support_family_areas_at(float(support_layer.print_z)))
+                    split_support_fills_by_family(support_layer, *areas);
 
             // Orca: Generate iron toolpath for contact layer
             if (!layer_cache.polys_to_iron.empty()) {

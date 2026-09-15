@@ -7121,6 +7121,36 @@ void PrintConfigDef::init_fff_params()
     def->max = 10;
     def->set_default_value(new ConfigOptionInt(0));
 
+    // [ORCAPORT:SU-5] Support Zones per-volume keys. Hidden (comDevelop); written by the gizmo,
+    // read by the support engine.
+    def = this->add("support_zone_gesture", coString);
+    def->label = L("Support zone gesture");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("support_zone_lean_deg", coFloat);
+    def->label = L("Support zone lean angle");
+    def->sidetext = L("°");
+    def->min = 0;
+    def->max = 89;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("support_zone_roof_only", coBool);
+    def->label = L("Support zone: only under unsupported surface");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_zone_solid", coBool);
+    def->label = L("Support zone: print the whole block");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_zone_land_only", coBool);
+    def->label = L("Support zone: only land at the end");
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("support_base_pattern_spacing", coFloat);
     def->label = L("Base pattern spacing");
     def->category = L("Support");
