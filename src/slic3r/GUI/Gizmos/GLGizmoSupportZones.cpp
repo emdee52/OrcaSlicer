@@ -4514,7 +4514,10 @@ bool GLGizmoSupportZones::seed_support_defaults(ModelObject &mo)
     seed("support_interface_spacing",    new ConfigOptionFloat(0.));   // techo macizo
     seed("support_interface_pattern",
          new ConfigOptionEnum<SupportMaterialInterfacePattern>(smipRectilinear));
-    seed("support_neoweave_enabled",     new ConfigOptionBool(false));
+    // [ORCAPORT:SU-5] The fork also seeded "support_neoweave_enabled" here, but that key belongs to
+    // the unported ColorStitch/Neoweave feature and is registered in no config class. Storing an
+    // unknown key into the object config makes UndoRedo's cereal snapshot null-deref
+    // (DynamicPrintConfig::save -> print_config_def.get(key) == nullptr). Dropped.
 
     // 🚨 s287-bis — EL TIPO, y sólo cuando es ÁRBOL.
     //

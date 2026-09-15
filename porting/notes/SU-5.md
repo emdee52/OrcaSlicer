@@ -91,4 +91,31 @@ Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's bas
 
 **Status: ported** (build clean; runtime verification pending).
 
+## Post-merge fix (runtime, found by the user)
+
+Symptom: the app crashed (ACCESS_VIOLATION) whenever an undo snapshot was taken with a
+zone-created object present - deleting a zone card, `Plater::remove_selected`,
+`Selection::remove_all`, `apply_only_my_zones`. Crash logs at
+`%APPDATA%\OrcaSlicer\log\crash_*.log` all showed the same signature:
+
+```
+xsputn / cereal::BinaryOutputArchive::saveBinary
+cereal::save<...>  PrintConfig.hpp:2571   (DynamicPrintConfig::save)
+UndoRedo::StackImpl::save_mutable_object<ModelConfigObject>
+```
+
+Cause: `GLGizmoSupportZones::seed_support_defaults` seeded `"support_neoweave_enabled"`, a
+key that belongs to the unported ColorStitch/Neoweave feature and is registered in **no**
+config class here (SU-4 only defines `wavesupport_*`). `ConfigBase::set_key_value` stores
+unknown keys without validation; `DynamicPrintConfig::save` then does
+`print_config_def.get(key)` -> nullptr and dereferences it. Release builds compile out the
+`assert`, so this is a hard crash, not a diagnostic.
+
+Fix: drop that seed (`GLGizmoSupportZones.cpp`). No reader exists for the key, so removing
+it changes nothing except the crash. Verified there are no other unregistered
+`set_key_value` keys in the support/zone code.
+
+Note: this is the only place the fork used the key. If Neoweave support is ever ported,
+re-add a seed then.
+
 
