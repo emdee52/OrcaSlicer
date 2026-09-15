@@ -63,29 +63,32 @@ identically. Explicit styles use new states:
 
 ## Multi-pass composition (PF-10-paint-b)
 
-The dispatcher (`PrintObject::_generate_support_material`) now runs at most one classic pass plus
-one tree pass and merges them:
+The dispatcher (`PrintObject::_generate_support_material`) is **region-limited**: it runs one pass
+per painted type plus a default pass, then merges them.
 
-- **Classic pass** (object default + painted Snug/Grid, or a sole painted NeoWave): the single
-  classic style is forced on the object config; other painted tree styles are projected as
-  blockers. Several classic styles in one object fall back to the object's own style (Orca's
-  classic style is object-level) - a documented limitation.
-- **Tree pass** (painted Organic/Baobab): runs **enforcer-only** (`support_type = stTree`) when it
-  composes with the classic pass, so auto overhangs are not built twice; classic facets are
-  projected as blockers.
-- **Composition plumbing** (the blockers found during recon):
+- **Default pass**: the object's own support type/style (auto) over the unpainted overhangs and the
+  legacy generic enforcer, with every explicitly painted state projected as a blocker.
+- **One enforcer-only pass per painted type**: classic styles use `stNormal` (manual, so no auto
+  overhangs) and tree styles use `stTree`; each projects only its own state as an enforcer and
+  blocks the other painted states plus the legacy `ENFORCER` (owned by the default pass). NeoWave
+  runs as a manual Normal pass with hollow base, wave interface, wave roof, smart order and one
+  wall loop.
+- **Wave decoupling**: the NeoWave roof/hollow-body triggers now key on the `smipWave` interface
+  pattern and `wavesupport_wall_loops` instead of on `support_type == stWaveSupport`, so a manual
+  per-region NeoWave pass gets the wave too.
+- **Composition plumbing**:
   1. `TreeSupport::detect_overhangs` no longer clears unconditionally; the dispatcher owns the
-     clear and sets `PrintObject::support_pass_appends()` for a composing tree pass.
-  2. `generate_support_layers` continues the support-layer id sequence when appending instead of
-     restarting at 0.
-  3. `TreeSupport3D::generate_support_areas` toolpaths only the layers it just created, so the
-     classic layers are not re-toolpathed.
+     clear and sets `PrintObject::support_pass_appends()` for every pass after the first.
+  2. `generate_support_layers` continues the support-layer id sequence when appending.
+  3. `PrintObjectSupportMaterial::generate` and `TreeSupport3D::generate_support_areas` toolpath
+     only the layers they just created, so earlier passes are not re-toolpathed.
   4. `PrintObject::merge_duplicate_support_layers` (ported from preFlight, with
-     `clip_extrusion_entities`) merges same-`print_z` layers: fills are clipped against the base
+     `clip_extrusion_entities`) merges same-`print_z` layers: fills clipped against the base
      islands, islands unioned, ids reassigned.
 
-Still deferred: mixing **NeoWave with Snug/Grid** in one object needs a second classic pass, which
-`generate_support_layers`/`generate_support_toolpaths` do not support without a wider refactor.
+Known gap: with **raft layers** enabled, each pass may add its own raft (merged by z); multi-pass
+with a raft is untested. `Default` painting is the legacy generic enforcer and keeps the object's own
+style, so it is the recommended way to "leave this region to the object default".
 
 ## Automatic painting
 
