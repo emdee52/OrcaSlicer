@@ -72,8 +72,12 @@ bead widths, so the rings stacked directly and did not interlock (confirmed by c
 comparison). The dedicated ring pass above was added to reproduce the alternating spacing. A
 follow-up fixed a units error: the scaled bead width was written into `path.width` (which is mm) and
 the coverage offset used the unscaled width, producing ~2 mm beads; `path.width` now uses the
-unscaled width and geometry width follows `sqrt(flow_ratio)` (`main_w`/`boundary_w`), with `mm3_per_mm`
-carrying the over-extrusion.
+unscaled width. A second follow-up fixed the fill coverage: `covered` was built with
+`offset_ex(ring, +w/2)`, which grows the **filled** ring polygon and swallows the whole centre, so
+the infill vanished (0.03 g on a 30 mm cube). It now subtracts only the ring band
+(`offset_ex(ring, +w/2) − offset_ex(ring, −w/2)`). The bead width is flow-proportional
+(`base · flow_ratio`, up to 2× on the inner shells) so the over-extrusion is visible, matching
+PF-9's ~1.5-2× interlocking beads.
 
 ## Approximation vs PF-9 (known limitations)
 
