@@ -70,6 +70,11 @@ private:
     // generic enforcer by default, so existing painted projects behave unchanged.
     EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
 
+    // [ORCAPORT:PF-10-auto] Automatic painting: after a forced support preview finishes, classify
+    // the support contact regions and paint them.
+    bool m_auto_paint_pending = false;
+    void apply_auto_paint();
+
     //BBS: add support preview logic
     void init_print_instance();
     void update_support_volumes();
