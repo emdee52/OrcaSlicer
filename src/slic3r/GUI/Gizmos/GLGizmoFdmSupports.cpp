@@ -4,6 +4,7 @@
 //BBS
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Thread.hpp"
+#include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
 
 //#include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -21,6 +22,20 @@
 #include <boost/log/trivial.hpp>
 
 namespace Slic3r::GUI {
+
+namespace {
+// [ORCAPORT:PF-10-paint] Localize a registry label using the existing translated terms.
+wxString localized_support_label(const Slic3r::OrcaExt::SupportPaintType &t)
+{
+    const std::string l = t.label != nullptr ? t.label : "";
+    if (l == "Default") return _L("Default");
+    if (l == "Snug")    return _L("Snug");
+    if (l == "Grid")    return _L("Grid");
+    if (l == "Organic") return _L("Organic");
+    if (l == "NeoWave") return _L("NeoWave");
+    return wxString::FromUTF8(l);
+}
+} // namespace
 
 GLGizmoFdmSupports::GLGizmoFdmSupports(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
     : GLGizmoPainterBase(parent, icon_filename, sprite_id), m_current_tool(ImGui::CircleButtonIcon)
@@ -85,6 +100,7 @@ bool GLGizmoFdmSupports::on_init()
     m_desc["remove_all"]         = _L("Erase all");
     m_desc["highlight_by_angle"] = _L("Highlight overhangs");
     m_desc["tool_type"]          = _L("Tool type");
+    m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
     m_desc["gap_fill"]           = _L("Gap fill");
     m_desc["reset_direction"]    = _L("Reset direction");
     m_desc["clipping_of_view"]   = _L("Section view");
@@ -300,6 +316,29 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
 
     if (m_current_tool != old_tool)
         this->tool_changed(old_tool, m_current_tool);
+
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+
+    // [ORCAPORT:PF-10-paint] Paintable support type, driven by the OrcaExt registry so a new
+    // support type only needs a table row (see OrcaExt/SupportPaintTypes.hpp). Right mouse
+    // button always paints a blocker.
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("support_type"));
+    {
+        const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
+        for (size_t i = 0; i < types.size(); ++i) {
+            if (i != 0)
+                ImGui::SameLine();
+            if (m_imgui->radio_button(localized_support_label(types[i]), m_enforcer_type == types[i].state) &&
+                m_enforcer_type != types[i].state) {
+                m_enforcer_type = types[i].state;
+                for (auto &triangle_selector : m_triangle_selectors) {
+                    triangle_selector->seed_fill_unselect_all_triangles();
+                    triangle_selector->request_update_render_data();
+                }
+            }
+        }
+    }
 
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
 
@@ -573,7 +612,7 @@ void GLGizmoFdmSupports::select_facets_by_angle(float threshold_deg, bool block)
         const indexed_triangle_set &its = mv->mesh().its;
         for (const stl_triangle_vertex_indices &face : its.indices) {
             if (its_face_normal(its, face).dot(down) > dot_limit) {
-                m_triangle_selectors[mesh_id]->set_facet(idx, block ? EnforcerBlockerType::BLOCKER : EnforcerBlockerType::ENFORCER);
+                m_triangle_selectors[mesh_id]->set_facet(idx, block ? EnforcerBlockerType::BLOCKER : m_enforcer_type); // [ORCAPORT:PF-10-paint]
                 m_triangle_selectors.back()->request_update_render_data();
             }
             ++ idx;
@@ -621,10 +660,19 @@ void GLGizmoFdmSupports::update_from_model_object(bool first_update)
     m_volume_timestamps.clear();
 
     int volume_id = -1;
+    // [ORCAPORT:PF-10-paint] Colour table indexed by paint state, covering every registered
+    // support type (the patch renderer indexes by state), plus the legacy enforcer/blocker.
     std::vector<ColorRGBA> ebt_colors;
-    ebt_colors.push_back(GLVolume::NEUTRAL_COLOR);
-    ebt_colors.push_back(TriangleSelectorGUI::enforcers_color);
-    ebt_colors.push_back(TriangleSelectorGUI::blockers_color);
+    {
+        size_t max_state = (size_t) EnforcerBlockerType::BLOCKER;
+        for (const auto &t : Slic3r::OrcaExt::support_paint_types())
+            max_state = std::max(max_state, (size_t) t.state);
+        ebt_colors.assign(max_state + 1, GLVolume::NEUTRAL_COLOR);
+        ebt_colors[(size_t) EnforcerBlockerType::ENFORCER] = TriangleSelectorGUI::enforcers_color;
+        ebt_colors[(size_t) EnforcerBlockerType::BLOCKER]  = TriangleSelectorGUI::blockers_color;
+        for (const auto &t : Slic3r::OrcaExt::support_paint_types())
+            ebt_colors[(size_t) t.state] = ColorRGBA(t.color[0], t.color[1], t.color[2], t.color[3]);
+    }
     for (const ModelVolume* mv : mo->volumes) {
         if (! mv->is_model_part())
             continue;

@@ -15,6 +15,7 @@
 #include "Support/SupportMaterial.hpp"
 #include "Support/SupportSpotsGenerator.hpp"
 #include "Support/TreeSupport.hpp"
+#include "OrcaExt/SupportPaintTypes.hpp" // [ORCAPORT:PF-10-paint]
 #include "Surface.hpp"
 #include "Slicing.hpp"
 #include "Tesselate.hpp"
@@ -4546,15 +4547,84 @@ void PrintObject::combine_infill()
 
 void PrintObject::_generate_support_material()
 {
-    if (is_tree(m_config.support_type.value)) {
-        TreeSupport tree_support(*this, m_slicing_params);
-        tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
-        tree_support.generate();
+    // [ORCAPORT:PF-10-paint] Per-style support painting. When facets are painted with a
+    // registered support type, that type's engine and settings are forced for this object's
+    // support pass, and the painted facets are projected as enforcers (see the engines). With
+    // nothing painted the legacy path below runs unchanged.
+    //
+    // Current scope: a single painted style drives the whole pass. Mixing several styles that
+    // use different engines (e.g. Organic + Grid on one object) selects the first tree entry;
+    // true multi-pass composition is recorded as a follow-up in porting/notes/PF-10-paint.md.
+    const OrcaExt::SupportPaintType *paint = nullptr;
+    if (this->has_support()) {
+        for (const OrcaExt::SupportPaintType &t : OrcaExt::support_paint_types()) {
+            if (t.state == OrcaExt::SUPPORT_PAINT_DEFAULT || t.state == OrcaExt::SUPPORT_PAINT_BLOCKER)
+                continue;
+            if (OrcaExt::has_painted_support_style(*this, t.state)) {
+                paint = &t;
+                break;
+            }
+        }
     }
-    else {
-        PrintObjectSupportMaterial support_material(this, m_slicing_params);
-        support_material.generate(*this);
+
+    if (paint == nullptr) {
+        if (is_tree(m_config.support_type.value)) {
+            TreeSupport tree_support(*this, m_slicing_params);
+            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
+            tree_support.generate();
+        }
+        else {
+            PrintObjectSupportMaterial support_material(this, m_slicing_params);
+            support_material.generate(*this);
+        }
+        return;
     }
+
+    // Scoped override of the object config for the painted engine pass.
+    const SupportType                       old_type  = m_config.support_type.value;
+    const SupportMaterialStyle              old_style = m_config.support_style.value;
+    const SupportMaterialPattern            old_base  = m_config.support_base_pattern.value;
+    const SupportMaterialInterfacePattern   old_iface = m_config.support_interface_pattern.value;
+    const SupportMaterialWaveRoofPattern    old_wrp   = m_config.wavesupport_roof_pattern.value;
+    const SupportMaterialWaveRoofOrder      old_wro   = m_config.wavesupport_roof_order.value;
+    const int                               old_wloops = m_config.wavesupport_wall_loops.value;
+
+    auto restore = [&]() {
+        m_config.support_type.value                    = old_type;
+        m_config.support_style.value                   = old_style;
+        m_config.support_base_pattern.value            = old_base;
+        m_config.support_interface_pattern.value       = old_iface;
+        m_config.wavesupport_roof_pattern.value        = old_wrp;
+        m_config.wavesupport_roof_order.value          = old_wro;
+        m_config.wavesupport_wall_loops.value          = old_wloops;
+        this->set_painted_support_state(EnforcerBlockerType::NONE);
+    };
+
+    m_config.support_type.value              = paint->support_type;
+    m_config.support_style.value             = paint->support_style;
+    const OrcaExt::SupportPaintOverrides &ov = paint->overrides;
+    if (ov.force_base_pattern)      m_config.support_base_pattern.value      = ov.base_pattern;
+    if (ov.force_interface_pattern) m_config.support_interface_pattern.value = ov.interface_pattern;
+    if (ov.force_wave_roof_pattern) m_config.wavesupport_roof_pattern.value  = ov.wave_roof_pattern;
+    if (ov.force_wave_roof_order)   m_config.wavesupport_roof_order.value    = ov.wave_roof_order;
+    if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
+    this->set_painted_support_state(paint->state);
+
+    try {
+        if (is_tree(m_config.support_type.value)) {
+            TreeSupport tree_support(*this, m_slicing_params);
+            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
+            tree_support.generate();
+        }
+        else {
+            PrintObjectSupportMaterial support_material(this, m_slicing_params);
+            support_material.generate(*this);
+        }
+    } catch (...) {
+        restore();
+        throw;
+    }
+    restore();
 }
 
 // BBS

@@ -205,6 +205,9 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
     std::vector<Polygons>    blockers_layers{ print_object.slice_support_blockers() };
     print_object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
     print_object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
+    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support.
+    if (const EnforcerBlockerType ps = print_object.painted_support_state(); ps != EnforcerBlockerType::NONE)
+        print_object.project_and_append_custom_facets(false, ps, enforcers_layers);
     const int                support_threshold      = config.support_threshold_angle.value;
     const bool               support_threshold_auto = support_threshold == 0;
     // +1 makes the threshold inclusive

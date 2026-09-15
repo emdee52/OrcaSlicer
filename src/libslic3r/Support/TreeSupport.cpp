@@ -1000,6 +1000,9 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
     m_vertical_enforcer_points.clear();
     m_object->project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers, &m_vertical_enforcer_points);
     m_object->project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers);
+    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support.
+    if (const EnforcerBlockerType ps = m_object->painted_support_state(); ps != EnforcerBlockerType::NONE)
+        m_object->project_and_append_custom_facets(false, ps, enforcers);
 
     if (is_auto(stype) && config_remove_small_overhangs) {
         // remove small overhangs

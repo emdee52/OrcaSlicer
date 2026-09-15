@@ -61,7 +61,14 @@ private:
     // BBS
     int get_selection_support_threshold_angle();
 
+    // [ORCAPORT:PF-10-paint] Selected paintable support type, from the OrcaExt registry.
+    EnforcerBlockerType get_left_button_state_type() const override { return m_enforcer_type; }
+
     int m_support_threshold_angle = -1;
+
+    // [ORCAPORT:PF-10-paint] Which registered support type the left button paints. Legacy
+    // generic enforcer by default, so existing painted projects behave unchanged.
+    EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
 
     //BBS: add support preview logic
     void init_print_instance();

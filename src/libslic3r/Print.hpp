@@ -472,6 +472,10 @@ public:
     bool                        has_support()           const { return m_config.enable_support || m_config.enforce_support_layers > 0; }
     bool                        has_raft()              const { return m_config.raft_layers > 0; }
     bool                        has_support_material()  const { return this->has_support() || this->has_raft(); }
+    // [ORCAPORT:PF-10-paint] Paint state whose facets act as support enforcers for the current
+    // support pass. NONE keeps the legacy generic enforcer only. Set by the support dispatcher.
+    EnforcerBlockerType         painted_support_state() const { return m_painted_support_state; }
+    void                        set_painted_support_state(EnforcerBlockerType s) { m_painted_support_state = s; }
     // Checks if the model object is painted using the multi-material painting gizmo.
     bool                        is_mm_painted()         const { return this->model_object()->is_mm_painted(); }
     // Checks if the model object is painted using the fuzzy skin painting gizmo.
@@ -616,6 +620,8 @@ private:
     Vec3crd									m_size;
     double                                  m_max_z;
     PrintObjectConfig                       m_config;
+    // [ORCAPORT:PF-10-paint] See painted_support_state().
+    EnforcerBlockerType                     m_painted_support_state{EnforcerBlockerType::NONE};
     // Translation in Z + Rotation + Scaling / Mirroring.
     Transform3d                             m_trafo = Transform3d::Identity();
     // Slic3r::Point objects in scaled G-code coordinates
