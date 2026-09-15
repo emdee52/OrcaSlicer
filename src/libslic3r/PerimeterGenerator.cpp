@@ -1372,9 +1372,10 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
 
         const double tier_flow  = (k == 0) ? (m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0) : 2.0;
         const double flow_ratio = 1.0 + (tier_flow - 1.0) * m_interlock_strength;
-        // width follows the flow (round-bead model): sqrt(2)*w for 200%, sqrt(BOUNDARY_FLOW)*w for
-        // the even-layer boundary bead. Matches PF-9's main_w / boundary_w.
-        const float  width      = base_width_mm * float(std::sqrt(flow_ratio));
+        // The bead is over-extruded (up to 200% flow for the inner interlocking shells), so its
+        // visual width grows with the flow; PF-9 applies this as a per-segment flow, we fold it
+        // into both width and mm3_per_mm.
+        const float  width      = base_width_mm * float(flow_ratio);
         const double mm3        = base_mm3 * flow_ratio;
 
         for (const ExPolygon &ex : ring) {
@@ -1393,7 +1394,10 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
                 add_loop(hole, elrHole);
         }
 
-        append(covered, offset_ex(ring, float(scale_(double(width))) / 2.f));
+        // Subtract only the ring band (bead footprint), never the filled interior - offsetting the
+        // filled ring polygon upward would swallow the whole centre and leave no room for infill.
+        const float half = float(scale_(double(width))) * 0.5f;
+        append(covered, diff_ex(offset_ex(ring, half), offset_ex(ring, -half)));
     }
 }
 
