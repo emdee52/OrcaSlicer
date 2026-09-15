@@ -153,6 +153,11 @@ public:
     // Orca: Used for inner/outer/inner mode - classic perimeter generator
     int inset_idx = -1;
 
+    // [ORCAPORT:PQ-3] per-path override for the Auto Lift heuristic: when true, GCode forces
+    // LazyLift instead of SpiralLift. Set by NeoArachne on every path the hybrid region emits, to
+    // stop the spiral-smear blob around dense variable-width paths. Default false = stock.
+    bool force_no_spiral_lift = false;
+
     static std::string role_to_string(ExtrusionRole role);
     static ExtrusionRole string_to_role(const std::string_view role);
 };
@@ -190,7 +195,7 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
     ExtrusionPath(ExtrusionPath &&rhs)
         : polyline(std::move(rhs.polyline))
         , overhang_degree(rhs.overhang_degree)
@@ -203,7 +208,7 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
     ExtrusionPath(const Polyline3 &polyline, const ExtrusionPath &rhs)
         : polyline(polyline)
         , overhang_degree(rhs.overhang_degree)
@@ -216,7 +221,7 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
     ExtrusionPath(Polyline3 &&polyline, const ExtrusionPath &rhs)
         : polyline(std::move(polyline))
         , overhang_degree(rhs.overhang_degree)
@@ -229,7 +234,7 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
-    {}
+    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
 
     ExtrusionPath& operator=(const ExtrusionPath& rhs) {
         m_can_reverse = rhs.m_can_reverse;
@@ -243,6 +248,7 @@ public:
         this->overhang_degree = rhs.overhang_degree;
         this->curve_degree = rhs.curve_degree;
         this->polyline = rhs.polyline;
+        this->force_no_spiral_lift = rhs.force_no_spiral_lift; // [ORCAPORT:PQ-3]
         return *this;
     }
     ExtrusionPath& operator=(ExtrusionPath&& rhs) {
@@ -257,6 +263,7 @@ public:
         this->overhang_degree = rhs.overhang_degree;
         this->curve_degree = rhs.curve_degree;
         this->polyline = std::move(rhs.polyline);
+        this->force_no_spiral_lift = rhs.force_no_spiral_lift; // [ORCAPORT:PQ-3]
         return *this;
     }
 

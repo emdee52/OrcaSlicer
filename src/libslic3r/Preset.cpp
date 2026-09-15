@@ -1337,6 +1337,10 @@ static std::vector<std::string> s_Preset_print_options{
     // [ORCAPORT:SU-5] Support Zones per-volume keys: without these the gesture blob and zone
     // options would not travel to the 3mf.
     "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only", "support_zone_solid", "support_zone_land_only",
+    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator keys.
+    "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill", "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct",
+    "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct", "hybrid_keep_short_tails", "hybrid_pin_outer_width",
+    "hybrid_bead_count_hysteresis_pct", "hybrid_transition_filter_dist_mm",
     "small_area_infill_flow_compensation",
     "small_area_infill_flow_compensation_model",
     "enable_wrapping_detection",

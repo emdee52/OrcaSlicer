@@ -582,9 +582,19 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(InputShaperType)
 
 static t_config_enum_values s_keys_map_PerimeterGeneratorType{
     { "classic", int(PerimeterGeneratorType::Classic) },
-    { "arachne", int(PerimeterGeneratorType::Arachne) }
+    { "arachne", int(PerimeterGeneratorType::Arachne) },
+    { "hybrid",  int(PerimeterGeneratorType::Hybrid) } // [ORCAPORT:PQ-3]
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(PerimeterGeneratorType)
+
+// [ORCAPORT:PQ-3] NeoArachne per-feature wall source.
+static t_config_enum_values s_keys_map_HybridWallSource{
+    { "classic",          int(HybridWallSource::Classic) },
+    { "arachne_stock",    int(HybridWallSource::ArachneStock) },
+    { "arachne_hybrid", int(HybridWallSource::ArachneHybrid) },
+    { "off",              int(HybridWallSource::Off) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(HybridWallSource)
 
 static t_config_enum_values s_keys_map_ToolChangeOrderingType {
     { "default", int(ToolChangeOrderingType::Default) },
@@ -8017,10 +8027,136 @@ void PrintConfigDef::init_fff_params()
     def->enum_keys_map = &ConfigOptionEnum<PerimeterGeneratorType>::get_enum_values();
     def->enum_values.push_back("classic");
     def->enum_values.push_back("arachne");
+    def->enum_values.push_back("hybrid"); // [ORCAPORT:PQ-3]
     def->enum_labels.push_back(L("Classic"));
     def->enum_labels.push_back(L("Arachne"));
+    def->enum_labels.push_back(L("NeoArachne")); // [ORCAPORT:PQ-3]
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Arachne));
+
+    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator: per-feature wall source selectors.
+    auto add_hybrid_wallsource = [this](const char* key, const std::string& label,
+                                        const std::string& tooltip,
+                                        HybridWallSource def_val, bool allow_off) {
+        ConfigOptionDef* d = this->add(key, coEnum);
+        d->label = label;
+        d->category = L("Quality");
+        d->tooltip = tooltip;
+        d->enum_keys_map = &ConfigOptionEnum<HybridWallSource>::get_enum_values();
+        d->enum_values.push_back("classic");
+        d->enum_values.push_back("arachne_stock");
+        d->enum_values.push_back("arachne_hybrid");
+        d->enum_labels.push_back(L("Classic"));
+        d->enum_labels.push_back(L("Arachne (stock)"));
+        d->enum_labels.push_back(L("Arachne (hybrid)"));
+        if (allow_off) {
+            d->enum_values.push_back("off");
+            d->enum_labels.push_back(L("Off"));
+        }
+        d->mode = comAdvanced;
+        d->set_default_value(new ConfigOptionEnum<HybridWallSource>(def_val));
+    };
+    add_hybrid_wallsource("hybrid_outer_wall",
+        L("Outer wall source"),
+        L("Engine that emits the outer perimeter when wall generator = NeoArachne. "
+          "Classic = constant width, clean surface (default). Arachne variants = variable-width "
+          "outer. Off is not allowed for the outer wall."),
+        HybridWallSource::Classic, /*allow_off=*/false);
+    add_hybrid_wallsource("hybrid_inner_walls",
+        L("Inner walls source"),
+        L("Engine that emits all interior perimeters. Arachne (stock) is the default: variable-width "
+          "beading with integrated gap-fill. Classic falls back to constant-width onion shells."),
+        HybridWallSource::ArachneStock, /*allow_off=*/false);
+    add_hybrid_wallsource("hybrid_gap_fill",
+        L("Gap-fill source"),
+        L("Engine for the dedicated gap-fill pass. Default Off because Arachne already integrates "
+          "gap-fill into its inner wall pass."),
+        HybridWallSource::Off, /*allow_off=*/true);
+
+    def = this->add("hybrid_allowed_overlap_pct", coPercent);
+    def->label = L("Allowed perimeter overlap");
+    def->category = L("Quality");
+    def->tooltip = L("Percentage of the outer perimeter spacing by which the Arachne first interior "
+        "bead may overlap the Classic outer perimeter. Default 0%: the seam is already closed by the "
+        "spacing math. Use small positive values (5-15%) only if a visible seam appears.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(0));
+
+    def = this->add("hybrid_min_bead_width_pct", coPercent);
+    def->label = L("Min Line Width");
+    def->category = L("Quality");
+    def->tooltip = L("Minimum variable-width bead emitted by Arachne, as a percentage of nozzle "
+        "diameter. Default 40%. Below ~25% some Bowden extruders skip steps.");
+    def->sidetext = L("% of nozzle");
+    def->min = 5;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(40));
+
+    def = this->add("hybrid_max_bead_width_pct", coPercent);
+    def->label = L("Max Line Width");
+    def->category = L("Quality");
+    def->tooltip = L("Ceiling on variable-width beads: Arachne splits a bead into two once it would "
+        "grow above this percentage of nozzle diameter. Default 200% = effectively auto.");
+    def->sidetext = L("% of nozzle");
+    def->min = 100;
+    def->max = 200;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(200));
+
+    def = this->add("hybrid_min_feature_size_pct", coPercent);
+    def->label = L("Min Feature Threshold");
+    def->category = L("Quality");
+    def->tooltip = L("Geometry thinner than this percentage of nozzle diameter is discarded by "
+        "Arachne. Default 10%. Must be <= minimum bead width.");
+    def->sidetext = L("% of nozzle");
+    def->min = 1;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(10));
+
+    def = this->add("hybrid_keep_short_tails", coBool);
+    def->label = L("Preserve Thin Edges");
+    def->category = L("Quality");
+    def->tooltip = L("Suppresses Arachne's removeSmallLines post-process, keeping the short closure "
+        "tails that approach the outer perimeter. Disable only for speckled artifacts from extremely "
+        "short segments.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("hybrid_pin_outer_width", coBool);
+    def->label = L("Pin Outer Wall Width");
+    def->category = L("Quality");
+    def->tooltip = L("When a wall source is \"Arachne (hybrid)\" and the bead count is 1 or 2, force "
+        "the outer wall width to the nominal nozzle width instead of letting it breathe with local "
+        "thickness. Disable to fall back to stock Arachne behaviour.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("hybrid_bead_count_hysteresis_pct", coPercent);
+    def->label = L("Wall Count Stability");
+    def->category = L("Quality");
+    def->tooltip = L("Spatial hysteresis on Arachne's bead-count transitions (as a % of the outer "
+        "wall width) when a wall source is \"Arachne (hybrid)\". 0 disables. Typical 10-25%.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(20));
+
+    def = this->add("hybrid_transition_filter_dist_mm", coFloat);
+    def->label = L("Wall Blend Distance");
+    def->category = L("Quality");
+    def->tooltip = L("SkeletalTrapezoidation transition smoothing distance in mm. Upstream Arachne "
+        "hardcodes 100 mm; lower values (20-50 mm) produce sharper, more localised transitions.");
+    def->sidetext = L("mm");
+    def->min = 1;
+    def->max = 500;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(100.0));
 
     def = this->add("wall_transition_length", coPercent);
     def->label = L("Wall transition length");

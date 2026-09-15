@@ -500,6 +500,18 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
         // and return the maximum allowed wipe amount to be retracted during the wipe move
         retraction_length_before_wipe += retraction_length_remaining - retraction_length_during_wipe;
 
+        // [ORCAPORT:PQ-3] Hybrid paths end with pre-wipe retract ~0.1mm and during-wipe ~full,
+        // leaving the nozzle pressurized when the wipe starts (ooze smear). Force >= 50% before.
+        if (gcodegen.last_path_force_no_spiral_lift()) {
+            const double total = retraction_length_before_wipe + retraction_length_during_wipe;
+            const double min_before = total * 0.5;
+            if (retraction_length_before_wipe < min_before) {
+                const double shift = min_before - retraction_length_before_wipe;
+                retraction_length_before_wipe += shift;
+                retraction_length_during_wipe -= shift;
+            }
+        }
+
         return { retraction_length_before_wipe, retraction_length_during_wipe, retraction_length_after_wipe };
     }
 
@@ -8360,6 +8372,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     char buf[64];
     assert(is_decimal_separator_point());
 
+    // [ORCAPORT:PQ-3] track this path's spiral-lift opt-out for the next travel and the wipe rebalance.
+    m_last_path_force_no_spiral_lift = path.force_no_spiral_lift;
+
     if (path.role() != m_last_processor_extrusion_role) {
         m_last_processor_extrusion_role = path.role();
         sprintf(buf, ";%s%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role).c_str(), ExtrusionEntity::role_to_string(m_last_processor_extrusion_role).c_str());
@@ -9215,6 +9230,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
         else {
             lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
         }
+        // [ORCAPORT:PQ-3] NeoArachne paths opt out of SpiralLift (anti spiral-smear).
+        if (m_last_path_force_no_spiral_lift && lift_type == LiftType::SpiralLift)
+            lift_type = LiftType::SlopeLift;
         return true;
     }
 
@@ -9249,6 +9267,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
     else {
         lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
     }
+    // [ORCAPORT:PQ-3] NeoArachne paths opt out of SpiralLift (anti spiral-smear).
+    if (m_last_path_force_no_spiral_lift && lift_type == LiftType::SpiralLift)
+        lift_type = LiftType::SlopeLift;
     return true;
 }
 

@@ -32,6 +32,15 @@ public:
     int     wall_distribution_count          = 1;
     bool    is_top_or_bottom_layer           = false;
 
+    // [ORCAPORT:PQ-3] NeoArachne / Edge Closure params. Defaults = stock Arachne.
+    bool    keep_short_tails = false;            // skip removeSmallLines so closure tails survive
+    bool    hybrid_edge_enabled        = false;  // wrap the meta-chain with NeoArachneBeadingStrategy
+    bool    hybrid_edge_pin_outer      = true;
+    bool    hybrid_edge_cap_widening   = false;
+    double  hybrid_edge_hysteresis_pct = 0.0;
+    float   wall_transition_filter_dist_mm = 100.f; // stock Arachne hardcodes 100 mm
+    float   max_bead_width_pct = 0.f;               // 0 = stock auto-derivation
+
     coord_t wall_maximum_resolution = meshfix_maximum_resolution();
     coord_t wall_maximum_deviation  = meshfix_maximum_deviation();
 };
