@@ -13356,14 +13356,14 @@ void Plater::priv::on_right_click(RBtnEvent& evt)
 // [ORCAPORT:PF-6] BEGIN - right-click an object in Preview to clip the preview around it
 void Plater::priv::on_preview_right_click(RBtnEvent& evt)
 {
-    if (!wxGetApp().is_gcode_viewer())
-        return;
-
     GLCanvas3D* canvas = preview->get_canvas3d();
     if (canvas == nullptr)
         return;
 
-    const int object_id = canvas->get_first_hover_object_id();
+    // The Preview canvas has picking disabled, so pick by raycasting the preview shell volumes.
+    Vec2d mouse_position = evt.data.first;
+    canvas->apply_retina_scale(mouse_position);
+    const int object_id = canvas->get_gcode_viewer().get_preview_clip_controller().pick_object(mouse_position);
     if (object_id < 0)
         return;
 
