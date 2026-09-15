@@ -366,6 +366,8 @@ OrcaExt/InstanceContact.cpp
 OrcaExt/InstanceContact.hpp
 OrcaExt/NeoWaveContact.cpp
 OrcaExt/NeoWaveContact.hpp
+OrcaExt/SeamNotch.cpp
+OrcaExt/SeamNotch.hpp
     Orient.cpp
     Orient.hpp
     ParameterUtils.cpp

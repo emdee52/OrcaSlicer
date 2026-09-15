@@ -311,6 +311,22 @@ enum SeamPosition {
     spNearest, spAligned, spAlignedBack, spRear, spRandom
 };
 
+// [ORCAPORT:PF-1] Nip/Tuck seam shaping (preFlight). Appended-only; serialized by string.
+enum SeamNotchType {
+    sntRegular,     // no notch
+    sntNipTuck,     // notch both the start and the end of the external perimeter
+    sntNip,         // notch only the start
+    sntTuck,        // notch only the end
+    sntAlternating  // Nip on even layers, Tuck on odd
+};
+
+// [ORCAPORT:PF-1] Which external perimeters get the notch.
+enum SeamNotchTarget {
+    snbtAllExternal, // outer contours and holes (preFlight behaviour)
+    snbtHolesOnly,   // only holes / internal cavities (default)
+    snbtOuterOnly    // only outer contours
+};
+
 // Orca
 enum class SeamScarfType {
     None,
@@ -709,6 +725,8 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NeoWaveContactTarget) // [ORCAPORT:SU-4b]
 // BBS
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamPosition)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamNotchType)   // [ORCAPORT:PF-1]
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamNotchTarget) // [ORCAPORT:PF-1]
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamScarfType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SLADisplayOrientation)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SLAPillarConnectionMode)
@@ -1163,6 +1181,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 raft_layers))
     ((ConfigOptionEnum<SeamPosition>,  seam_position))
     ((ConfigOptionBool,                staggered_inner_seams))
+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping. Per-object (same scope as seam_position).
+    ((ConfigOptionEnum<SeamNotchType>,   seam_type))
+    ((ConfigOptionEnum<SeamNotchTarget>, seam_notch_target))
+    ((ConfigOptionFloat,                 seam_notch_width))
+    ((ConfigOptionFloat,                 seam_notch_angle))
     ((ConfigOptionFloat,               slice_closing_radius))
     ((ConfigOptionEnum<SlicingMode>,   slicing_mode))
     ((ConfigOptionBool,                enable_support))

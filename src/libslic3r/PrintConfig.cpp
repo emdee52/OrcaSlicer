@@ -418,6 +418,23 @@ static t_config_enum_values s_keys_map_SeamPosition {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SeamPosition)
 
+// [ORCAPORT:PF-1] Nip/Tuck seam shaping (preFlight).
+static t_config_enum_values s_keys_map_SeamNotchType {
+    { "regular",     sntRegular },
+    { "niptuck",     sntNipTuck },
+    { "nip",         sntNip },
+    { "tuck",        sntTuck },
+    { "alternating", sntAlternating }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SeamNotchType)
+
+static t_config_enum_values s_keys_map_SeamNotchTarget {
+    { "all_external", snbtAllExternal },
+    { "holes_only",   snbtHolesOnly },
+    { "outer_only",   snbtOuterOnly }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SeamNotchTarget)
+
 // Orca
 static t_config_enum_values s_keys_map_SeamScarfType{
     { "none",           int(SeamScarfType::None) },
@@ -6232,6 +6249,72 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("This option causes the inner seams to be shifted backwards based on their depth, forming a zigzag pattern.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
+
+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping (preFlight). Default Regular = byte-identical.
+    def = this->add("seam_type", coEnum);
+    def->label = L("Seam type");
+    def->category = L("Quality");
+    def->tooltip = L("Shapes the external perimeter at the seam to hide the start/stop blob by pushing "
+        "the wall inward at the seam.\n\n"
+        "Regular - no seam shaping (default).\n"
+        "Nip/Tuck - a V-shaped notch at both the start and the end of the external perimeter.\n"
+        "Nip - only the start is notched.\n"
+        "Tuck - only the end is notched.\n"
+        "Alt. Nip/Tuck - Nip on even layers, Tuck on odd, spreading the disturbance on both sides.");
+    def->enum_keys_map = &ConfigOptionEnum<SeamNotchType>::get_enum_values();
+    def->enum_values.push_back("regular");
+    def->enum_values.push_back("niptuck");
+    def->enum_values.push_back("nip");
+    def->enum_values.push_back("tuck");
+    def->enum_values.push_back("alternating");
+    def->enum_labels.push_back(L("Regular"));
+    def->enum_labels.push_back(L("Nip/Tuck"));
+    def->enum_labels.push_back(L("Nip"));
+    def->enum_labels.push_back(L("Tuck"));
+    def->enum_labels.push_back(L("Alt. Nip/Tuck"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SeamNotchType>(sntRegular));
+
+    def = this->add("seam_notch_target", coEnum);
+    def->label = L("Seam notch target");
+    def->category = L("Quality");
+    def->tooltip = L("Which external perimeters receive the Nip/Tuck notch.\n\n"
+        "Holes only - notch internal cavities (bores) and leave outer-contour seams alone "
+        "(default).\n"
+        "All external - notch every external perimeter (outer contours and holes).\n"
+        "Outer only - notch only the outer contours.");
+    def->enum_keys_map = &ConfigOptionEnum<SeamNotchTarget>::get_enum_values();
+    def->enum_values.push_back("all_external");
+    def->enum_values.push_back("holes_only");
+    def->enum_values.push_back("outer_only");
+    def->enum_labels.push_back(L("All external"));
+    def->enum_labels.push_back(L("Holes only"));
+    def->enum_labels.push_back(L("Outer only"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SeamNotchTarget>(snbtHolesOnly));
+
+    def = this->add("seam_notch_width", coFloat);
+    def->label = L("Seam notch width");
+    def->category = L("Quality");
+    def->tooltip = L("Width of the V-shaped notch, as a multiple of the external perimeter "
+        "extrusion width. Wider values are more forgiving for blobs but leave a larger surface "
+        "depression. The depth is derived from the perimeter spacing.");
+    def->sidetext = L("x ext. width");
+    def->min = 1;
+    def->max = 3;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("seam_notch_angle", coFloat);
+    def->label = L("Seam notch corner threshold");
+    def->category = L("Quality");
+    def->tooltip = L("Skip the seam notch on corners sharper than this angle - a sharp corner "
+        "already conceals the junction. Set to 0 to notch every seam regardless of corner angle.");
+    def->sidetext = L("\u00B0");
+    def->min = 0;
+    def->max = 90;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(44.0));
     
     def = this->add("seam_gap", coFloatOrPercent);
     def->label = L("Seam gap");

@@ -1064,6 +1064,7 @@ static std::vector<std::string> s_Preset_print_options{
     "wall_direction",
     "seam_position",
     "staggered_inner_seams",
+    "seam_type", "seam_notch_target", "seam_notch_width", "seam_notch_angle", // [ORCAPORT:PF-1]
     "wall_sequence",
     "is_infill_first",
     "sparse_infill_density",

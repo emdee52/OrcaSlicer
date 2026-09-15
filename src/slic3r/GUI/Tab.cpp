@@ -2654,6 +2654,11 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Seam"), L"param_seam");
         optgroup->append_single_option_line("seam_position", "quality_settings_seam#seam-position");
         optgroup->append_single_option_line("staggered_inner_seams", "quality_settings_seam#staggered-inner-seams");
+        // [ORCAPORT:PF-1] Nip/Tuck seam shaping. Visibility handled in toggle_options().
+        optgroup->append_single_option_line("seam_type", "quality_settings_seam");
+        optgroup->append_single_option_line("seam_notch_target", "quality_settings_seam");
+        optgroup->append_single_option_line("seam_notch_width", "quality_settings_seam");
+        optgroup->append_single_option_line("seam_notch_angle", "quality_settings_seam");
         optgroup->append_single_option_line("seam_gap","quality_settings_seam#seam-gap");
         optgroup->append_single_option_line("seam_slope_type", "quality_settings_seam#scarf-joint-seam");
         optgroup->append_single_option_line("seam_slope_conditional", "quality_settings_seam#scarf-joint-seam");

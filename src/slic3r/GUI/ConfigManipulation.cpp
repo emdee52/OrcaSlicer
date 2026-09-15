@@ -1279,6 +1279,17 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("scarf_angle_threshold", has_seam_slope && config->opt_bool("seam_slope_conditional"));
     toggle_line("scarf_overhang_threshold", has_seam_slope && config->opt_bool("seam_slope_conditional"));
 
+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping: the notch controls appear when a non-Regular seam
+    // type is selected. Hidden in spiral vase (the notch is not applied there).
+    {
+        const bool notch_on = !has_spiral_vase && config->has("seam_type")
+            && config->opt_enum<SeamNotchType>("seam_type") != sntRegular;
+        toggle_line("seam_type", !has_spiral_vase);
+        toggle_line("seam_notch_target", notch_on);
+        toggle_line("seam_notch_width", notch_on);
+        toggle_line("seam_notch_angle", notch_on);
+    }
+
     bool use_beam_interlocking = config->opt_bool("interlocking_beam");
     toggle_line("mmu_segmented_region_interlocking_depth", !use_beam_interlocking);
     toggle_line("interlocking_beam_width", use_beam_interlocking);
