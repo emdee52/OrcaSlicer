@@ -1,0 +1,994 @@
+diff --git a/resources/shaders/110/gouraud_light_clip.fs b/resources/shaders/110/gouraud_light_clip.fs
+new file mode 100644
+index 0000000000..1e69b66312
+--- /dev/null
++++ b/resources/shaders/110/gouraud_light_clip.fs
+@@ -0,0 +1,17 @@
++// [ORCAPORT FILE] gouraud_light_clip - clipped variant of gouraud_light used by the PF-6 preview clipping plane for shells
++#version 110
++
++uniform vec4 uniform_color;
++uniform float emission_factor;
++
++// x = tainted, y = specular;
++varying vec2 intensity;
++varying float clipping_planes_dot;
++
++void main()
++{
++    if (clipping_planes_dot < 0.0)
++        discard;
++
++    gl_FragColor = vec4(vec3(intensity.y) + uniform_color.rgb * (intensity.x + emission_factor), uniform_color.a);
++}
+diff --git a/resources/shaders/110/gouraud_light_clip.vs b/resources/shaders/110/gouraud_light_clip.vs
+new file mode 100644
+index 0000000000..e77e51204c
+--- /dev/null
++++ b/resources/shaders/110/gouraud_light_clip.vs
+@@ -0,0 +1,50 @@
++// [ORCAPORT FILE] gouraud_light_clip - clipped variant of gouraud_light used by the PF-6 preview clipping plane for shells
++#version 110
++
++#define INTENSITY_CORRECTION 0.6
++
++// normalized values for (-0.6/1.31, 0.6/1.31, 1./1.31)
++const vec3 LIGHT_TOP_DIR = vec3(-0.4574957, 0.4574957, 0.7624929);
++#define LIGHT_TOP_DIFFUSE    (0.8 * INTENSITY_CORRECTION)
++#define LIGHT_TOP_SPECULAR   (0.125 * INTENSITY_CORRECTION)
++#define LIGHT_TOP_SHININESS  20.0
++
++// normalized values for (1./1.43, 0.2/1.43, 1./1.43)
++const vec3 LIGHT_FRONT_DIR = vec3(0.6985074, 0.1397015, 0.6985074);
++#define LIGHT_FRONT_DIFFUSE  (0.3 * INTENSITY_CORRECTION)
++
++#define INTENSITY_AMBIENT    0.3
++
++uniform mat4 view_model_matrix;
++uniform mat4 projection_matrix;
++uniform mat3 view_normal_matrix;
++uniform mat4 volume_world_matrix;
++uniform vec4 clipping_plane;
++
++attribute vec3 v_position;
++attribute vec3 v_normal;
++
++// x = tainted, y = specular;
++varying vec2 intensity;
++varying float clipping_planes_dot;
++
++void main()
++{
++    // First transform the normal into camera space and normalize the result.
++    vec3 eye_normal = normalize(view_normal_matrix * v_normal);
++
++    float NdotL = max(dot(eye_normal, LIGHT_TOP_DIR), 0.0);
++    intensity.x = INTENSITY_AMBIENT + NdotL * LIGHT_TOP_DIFFUSE;
++
++    vec4 eye_position = view_model_matrix * vec4(v_position, 1.0);
++    intensity.y = LIGHT_TOP_SPECULAR * pow(max(dot(-normalize(eye_position.xyz), reflect(-LIGHT_TOP_DIR, eye_normal)), 0.0), LIGHT_TOP_SHININESS);
++
++    // Perform the same lighting calculation for the 2nd light source (no specular applied).
++    NdotL = max(dot(eye_normal, LIGHT_FRONT_DIR), 0.0);
++    intensity.x += NdotL * LIGHT_FRONT_DIFFUSE;
++
++    gl_Position = projection_matrix * eye_position;
++
++    // Fragments with this value lower than zero are discarded.
++    clipping_planes_dot = dot(volume_world_matrix * vec4(v_position, 1.0), clipping_plane);
++}
+diff --git a/resources/shaders/140/gouraud_light_clip.fs b/resources/shaders/140/gouraud_light_clip.fs
+new file mode 100644
+index 0000000000..b2f7cc7361
+--- /dev/null
++++ b/resources/shaders/140/gouraud_light_clip.fs
+@@ -0,0 +1,19 @@
++// [ORCAPORT FILE] gouraud_light_clip - clipped variant of gouraud_light used by the PF-6 preview clipping plane for shells
++#version 140
++
++uniform vec4 uniform_color;
++uniform float emission_factor;
++
++// x = tainted, y = specular;
++in vec2 intensity;
++in float clipping_planes_dot;
++
++out vec4 out_color;
++
++void main()
++{
++    if (clipping_planes_dot < 0.0)
++        discard;
++
++    out_color = vec4(vec3(intensity.y) + uniform_color.rgb * (intensity.x + emission_factor), uniform_color.a);
++}
+diff --git a/resources/shaders/140/gouraud_light_clip.vs b/resources/shaders/140/gouraud_light_clip.vs
+new file mode 100644
+index 0000000000..d6a512b0f7
+--- /dev/null
++++ b/resources/shaders/140/gouraud_light_clip.vs
+@@ -0,0 +1,50 @@
++// [ORCAPORT FILE] gouraud_light_clip - clipped variant of gouraud_light used by the PF-6 preview clipping plane for shells
++#version 140
++
++#define INTENSITY_CORRECTION 0.6
++
++// normalized values for (-0.6/1.31, 0.6/1.31, 1./1.31)
++const vec3 LIGHT_TOP_DIR = vec3(-0.4574957, 0.4574957, 0.7624929);
++#define LIGHT_TOP_DIFFUSE    (0.8 * INTENSITY_CORRECTION)
++#define LIGHT_TOP_SPECULAR   (0.125 * INTENSITY_CORRECTION)
++#define LIGHT_TOP_SHININESS  20.0
++
++// normalized values for (1./1.43, 0.2/1.43, 1./1.43)
++const vec3 LIGHT_FRONT_DIR = vec3(0.6985074, 0.1397015, 0.6985074);
++#define LIGHT_FRONT_DIFFUSE  (0.3 * INTENSITY_CORRECTION)
++
++#define INTENSITY_AMBIENT    0.3
++
++uniform mat4 view_model_matrix;
++uniform mat4 projection_matrix;
++uniform mat3 view_normal_matrix;
++uniform mat4 volume_world_matrix;
++uniform vec4 clipping_plane;
++
++in vec3 v_position;
++in vec3 v_normal;
++
++// x = tainted, y = specular;
++out vec2 intensity;
++out float clipping_planes_dot;
++
++void main()
++{
++    // First transform the normal into camera space and normalize the result.
++    vec3 eye_normal = normalize(view_normal_matrix * v_normal);
++
++    float NdotL = max(dot(eye_normal, LIGHT_TOP_DIR), 0.0);
++    intensity.x = INTENSITY_AMBIENT + NdotL * LIGHT_TOP_DIFFUSE;
++
++    vec4 eye_position = view_model_matrix * vec4(v_position, 1.0);
++    intensity.y = LIGHT_TOP_SPECULAR * pow(max(dot(-normalize(eye_position.xyz), reflect(-LIGHT_TOP_DIR, eye_normal)), 0.0), LIGHT_TOP_SHININESS);
++
++    // Perform the same lighting calculation for the 2nd light source (no specular applied).
++    NdotL = max(dot(eye_normal, LIGHT_FRONT_DIR), 0.0);
++    intensity.x += NdotL * LIGHT_FRONT_DIFFUSE;
++
++    gl_Position = projection_matrix * eye_position;
++
++    // Fragments with this value lower than zero are discarded.
++    clipping_planes_dot = dot(volume_world_matrix * vec4(v_position, 1.0), clipping_plane);
++}
+diff --git a/src/libvgcode/include/Viewer.hpp b/src/libvgcode/include/Viewer.hpp
+index 5141245d96..5b210701bb 100644
+--- a/src/libvgcode/include/Viewer.hpp
++++ b/src/libvgcode/include/Viewer.hpp
+@@ -406,6 +406,13 @@ public:
+     //
+     size_t get_used_gpu_memory() const;
+ 
++    // [ORCAPORT:PF-6] BEGIN - toolpath clipping plane for the Preview clipping feature.
++    // Fragments with dot(vec4(pos, 1.0), clipping_plane) < 0 are discarded.
++    // Default state clips nothing (offset = FLT_MAX).
++    void set_clipping_plane(float nx, float ny, float nz, float offset);
++    void reset_clipping_plane();
++    // [ORCAPORT:PF-6] END
++
+ #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
+     //
+     // Returns the position of the center of gravity of the toolpaths.
+diff --git a/src/libvgcode/src/SegmentTemplate.cpp b/src/libvgcode/src/SegmentTemplate.cpp
+index 4e692d5b10..c35ef9a8ec 100644
+--- a/src/libvgcode/src/SegmentTemplate.cpp
++++ b/src/libvgcode/src/SegmentTemplate.cpp
+@@ -15,7 +15,10 @@ namespace libvgcode {
+ //|   2--0-------5--7   |
+ //|    \ |       | /    |
+ //|      3-------4      | 
+-static constexpr const std::array<uint8_t, 24> VERTEX_DATA = {
++// [ORCAPORT:PF-6] BEGIN - extra cap triangles (vertex ids 8..15) fill the cross-section
++// when the preview clipping plane cuts a segment. Vertex ids 8..15 reuse the box-corner
++// mapping of ids 0..7 via `cm` in the segments vertex shader.
++static constexpr const std::array<uint8_t, 36> VERTEX_DATA = {
+     0, 1, 2, // front spike
+     0, 2, 3, // front spike
+     0, 3, 4, // right/bottom body 
+@@ -24,7 +27,13 @@ static constexpr const std::array<uint8_t, 24> VERTEX_DATA = {
+     0, 6, 1, // left/top body 
+     5, 4, 7, // back spike
+     5, 7, 6, // back spike
++    // cap triangles: right(8/11), up(9/12), down(10/13), left(14/15)
++    8, 9, 14,   // front cap upper half (right, up, left)
++    8, 14, 10,  // front cap lower half (right, left, down)
++    11, 12, 15, // back cap upper half (right, up, left)
++    11, 15, 13, // back cap lower half (right, left, down)
+ };
++// [ORCAPORT:PF-6] END
+ 
+ void SegmentTemplate::init()
+ {
+diff --git a/src/libvgcode/src/Shaders.hpp b/src/libvgcode/src/Shaders.hpp
+index 1450d1a6df..815d49b006 100644
+--- a/src/libvgcode/src/Shaders.hpp
++++ b/src/libvgcode/src/Shaders.hpp
+@@ -26,12 +26,14 @@ static const char* Segments_Vertex_Shader =
+ "uniform mat4 view_matrix;\n"
+ "uniform mat4 projection_matrix;\n"
+ "uniform vec3 camera_position;\n"
++"uniform vec4 clipping_plane;\n" // [ORCAPORT:PF-6]
+ "uniform samplerBuffer position_tex;\n"
+ "uniform samplerBuffer height_width_angle_tex;\n"
+ "uniform samplerBuffer color_tex;\n"
+ "uniform usamplerBuffer segment_index_tex;\n"
+ "in int vertex_id;\n"
+ "out vec3 color;\n"
++"out float clipping_dist;\n" // [ORCAPORT:PF-6]
+ "vec3 decode_color(float color) {\n"
+ "  int c = int(round(color));\n"
+ "  int r = (c >> 16) & 0xFF;\n"
+@@ -51,6 +53,10 @@ static const char* Segments_Vertex_Shader =
+ "  int id_b = id_a + 1;\n"
+ "  vec3 pos_a = texelFetch(position_tex, id_a).xyz;\n"
+ "  vec3 pos_b = texelFetch(position_tex, id_b).xyz;\n"
++"  // [ORCAPORT:PF-6] cap vertices (ids 8..15) reuse box-corner ids 0..7\n"
++"  bool is_cap = (vertex_id >= 8);\n"
++"  int eff_id = vertex_id;\n"
++"  if (is_cap) { const int cm[8] = int[](0,1,3,5,6,4,0,5); eff_id = cm[vertex_id - 8]; }\n"
+ "  vec3 line = pos_b - pos_a;\n"
+ "  // directions of the line box in world space\n"
+ "  float line_len = length(line);\n"
+@@ -88,8 +94,8 @@ static const char* Segments_Vertex_Shader =
+ "    vec2(-1.0, 0.0),\n"
+ "    vec2(0.0, 0.0)\n"
+ "    );\n"
+-"  int id = vertex_id < 4 ? id_a : id_b;\n"
+-"  vec3 endpoint_pos = vertex_id < 4 ? pos_a : pos_b;\n"
++"  int id = eff_id < 4 ? id_a : id_b;\n"
++"  vec3 endpoint_pos = eff_id < 4 ? pos_a : pos_b;\n"
+ "  vec4 hwa = texelFetch(height_width_angle_tex, id);\n"
+ "  vec3 height_width_angle = hwa.xyz;\n"
+ "  // ORCA: Extract bias from w component\n"
+@@ -106,9 +112,9 @@ static const char* Segments_Vertex_Shader =
+ "#endif\n"
+ "  bool is_vertical_view = abs(dot(camera_view_dir, line_up_dir)) / abs(dot(diagonal_dir_border, line_up_dir)) >\n"
+ "    abs(dot(camera_view_dir, line_right_dir)) / abs(dot(diagonal_dir_border, line_right_dir));\n"
+-"  vec2 signs = horizontal_vertical_view_signs_array[vertex_id + 8 * int(is_vertical_view)];\n"
++"  vec2 signs = horizontal_vertical_view_signs_array[eff_id + 8 * int(is_vertical_view)];\n"
+ "#ifndef POINTY_CAPS\n"
+-"  if (vertex_id == 2 || vertex_id == 7) signs = -horizontal_vertical_view_signs_array[(vertex_id - 2) + 8 * int(is_vertical_view)];\n"
++"  if (eff_id == 2 || eff_id == 7) signs = -horizontal_vertical_view_signs_array[(eff_id - 2) + 8 * int(is_vertical_view)];\n"
+ "#endif\n"
+ "  float view_right_sign = sign(dot(-camera_view_dir, line_right_dir));\n"
+ "  float view_top_sign = sign(dot(-camera_view_dir, line_up_dir));\n"
+@@ -119,8 +125,8 @@ static const char* Segments_Vertex_Shader =
+ "  float horizontal_sign = signs.x * view_right_sign;\n"
+ "  float vertical_sign = signs.y * view_top_sign;\n"
+ "  vec3 pos = endpoint_pos + horizontal_sign * horizontal_dir + vertical_sign * vertical_dir;\n"
+-"  if (vertex_id == 2 || vertex_id == 7) {\n"
+-"    float line_dir_sign = (vertex_id == 2) ? -1.0 : 1.0;\n"
++"  if (eff_id == 2 || eff_id == 7) {\n"
++"    float line_dir_sign = (eff_id == 2) ? -1.0 : 1.0;\n"
+ "    if (height_width_angle.z == 0) {\n"
+ "#ifdef POINTY_CAPS\n"
+ "      // There I add a cap to lines that do not have a following line\n"
+@@ -133,20 +139,61 @@ static const char* Segments_Vertex_Shader =
+ "      pos += sign(height_width_angle.z) * horizontal_dir * cos(abs(height_width_angle.z) * 0.5);\n"
+ "    }\n"
+ "  }\n"
++"  // [ORCAPORT:PF-6] clip plane cap projection\n"
++"  bool cap_projected = false;\n"
++"  if (is_cap) {\n"
++"    // Cap corner properties: x=end(0=front,1=back), y=h_sign, z=v_sign\n"
++"    const vec3 cpr[8] = vec3[](vec3(0,1,0),vec3(0,0,1),vec3(0,0,-1),\n"
++"      vec3(1,1,0),vec3(1,0,1),vec3(1,0,-1),vec3(0,-1,0),vec3(1,-1,0));\n"
++"    vec3 ci = cpr[vertex_id - 8];\n"
++"    bool cap_front = (ci.x == 0.0);\n"
++"    float ch = ci.y;\n"
++"    float cv = ci.z;\n"
++"    vec3 cap_ep = cap_front ? pos_a : pos_b;\n"
++"    float dist_a = dot(vec4(pos_a, 1.0), clipping_plane);\n"
++"    float dist_b = dot(vec4(pos_b, 1.0), clipping_plane);\n"
++"    bool ep_clipped = cap_front ? (dist_a < 0.0) : (dist_b < 0.0);\n"
++"    if (dist_a * dist_b < 0.0 && ep_clipped) {\n"
++"      float t = dist_a / (dist_a - dist_b);\n"
++"      vec3 clip_pt = mix(pos_a, pos_b, t);\n"
++"      vec3 hwa_mix = mix(texelFetch(height_width_angle_tex, id_a).xyz,\n"
++"                         texelFetch(height_width_angle_tex, id_b).xyz, t);\n"
++"      vec3 corner = clip_pt\n"
++"          + ch * view_right_sign * 0.5 * hwa_mix.y * line_right_dir\n"
++"          + cv * view_top_sign * 0.5 * hwa_mix.x * line_up_dir;\n"
++"      float dn = dot(line_dir, clipping_plane.xyz);\n"
++"      if (abs(dn) > 1e-6) {\n"
++"        float dc = dot(vec4(corner, 1.0), clipping_plane);\n"
++"        corner -= (dc / dn) * line_dir;\n"
++"      }\n"
++"      pos = corner + 0.01 * normalize(clipping_plane.xyz);\n"
++"      cap_projected = true;\n"
++"    } else {\n"
++"      pos = cap_ep;\n"
++"    }\n"
++"  }\n"
+ "  vec3 eye_position = (view_matrix * vec4(pos, 1.0)).xyz;\n"
+ "  // ORCA: Apply bias to z-position to avoid z-fighting\n"
+ "  eye_position.z += bias;\n"
+-"  vec3 eye_normal = (view_matrix * vec4(normalize(pos - endpoint_pos), 0.0)).xyz;\n"
+ "  vec3 color_base = decode_color(texelFetch(color_tex, id).r);\n"
+-"  color = color_base * lighting(eye_position, eye_normal);\n"
++"  if (cap_projected) {\n"
++"    vec3 cap_n = normalize((view_matrix * vec4(clipping_plane.xyz, 0.0)).xyz);\n"
++"    color = color_base * lighting(eye_position, cap_n);\n"
++"  } else {\n"
++"    vec3 eye_normal = (view_matrix * vec4(normalize(pos - endpoint_pos), 0.0)).xyz;\n"
++"    color = color_base * lighting(eye_position, eye_normal);\n"
++"  }\n"
++"  clipping_dist = dot(vec4(pos, 1.0), clipping_plane);\n"
+ "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
+ "}\n";
+ 
+ static const char* Segments_Fragment_Shader =
+ "#version 150\n"
+ "in vec3 color;\n"
++"in float clipping_dist;\n" // [ORCAPORT:PF-6]
+ "out vec4 fragment_color;\n"
+ "void main() {\n"
++"  if (clipping_dist < 0.0) discard;\n" // [ORCAPORT:PF-6]
+ "  fragment_color = vec4(color, 1.0);\n"
+ "}\n";
+ 
+@@ -169,6 +216,7 @@ static const char* Options_Vertex_Shader =
+ #endif
+ "uniform mat4 view_matrix;\n"
+ "uniform mat4 projection_matrix;\n"
++"uniform vec4 clipping_plane;\n" // [ORCAPORT:PF-6]
+ "uniform samplerBuffer position_tex;\n"
+ "uniform samplerBuffer height_width_angle_tex;\n"
+ "uniform samplerBuffer color_tex;\n"
+@@ -176,6 +224,7 @@ static const char* Options_Vertex_Shader =
+ "in vec3 in_position;\n"
+ "in vec3 in_normal;\n"
+ "out vec3 color;\n"
++"out float clipping_dist;\n" // [ORCAPORT:PF-6]
+ "vec3 decode_color(float color) {\n"
+ "  int c = int(round(color));\n"
+ "  int r = (c >> 16) & 0xFF;\n"
+@@ -202,20 +251,24 @@ static const char* Options_Vertex_Shader =
+ "    height_width.y, 0.0, 0.0,\n"
+ "    0.0, height_width.y, 0.0,\n"
+ "    0.0, 0.0, height_width.x);\n"
+-"  vec3 eye_position = (view_matrix * vec4(scale_matrix * in_position + offset, 1.0)).xyz;\n"
++"  vec3 world_pos = scale_matrix * in_position + offset;\n" // [ORCAPORT:PF-6]
++"  vec3 eye_position = (view_matrix * vec4(world_pos, 1.0)).xyz;\n"
+ "  // ORCA: Apply bias to z-position to avoid z-fighting\n"
+ "  eye_position.z += bias;\n"
+ "  vec3 eye_normal = (view_matrix * vec4(in_normal, 0.0)).xyz;\n"
+ "  vec3 color_base = decode_color(texelFetch(color_tex, id).r);\n"
+ "  color = color_base * lighting(eye_position, eye_normal);\n"
++"  clipping_dist = dot(vec4(world_pos, 1.0), clipping_plane);\n" // [ORCAPORT:PF-6]
+ "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
+ "}\n";
+ 
+ static const char* Options_Fragment_Shader =
+ "#version 150\n"
+ "in vec3 color;\n"
++"in float clipping_dist;\n" // [ORCAPORT:PF-6]
+ "out vec4 fragment_color;\n"
+ "void main() {\n"
++"  if (clipping_dist < 0.0) discard;\n" // [ORCAPORT:PF-6]
+ "  fragment_color = vec4(color, 1.0);\n"
+ "}\n";
+ 
+diff --git a/src/libvgcode/src/Viewer.cpp b/src/libvgcode/src/Viewer.cpp
+index eb606598e9..660e5f17f5 100644
+--- a/src/libvgcode/src/Viewer.cpp
++++ b/src/libvgcode/src/Viewer.cpp
+@@ -377,6 +377,18 @@ size_t Viewer::get_used_gpu_memory() const
+     return m_impl->get_used_gpu_memory();
+ }
+ 
++// [ORCAPORT:PF-6] BEGIN - forward the clipping plane to the implementation
++void Viewer::set_clipping_plane(float nx, float ny, float nz, float offset)
++{
++    m_impl->set_clipping_plane(nx, ny, nz, offset);
++}
++
++void Viewer::reset_clipping_plane()
++{
++    m_impl->reset_clipping_plane();
++}
++// [ORCAPORT:PF-6] END
++
+ #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
+ Vec3 Viewer::get_cog_position() const
+ {
+diff --git a/src/libvgcode/src/ViewerImpl.cpp b/src/libvgcode/src/ViewerImpl.cpp
+index da1a601149..c44891a29b 100644
+--- a/src/libvgcode/src/ViewerImpl.cpp
++++ b/src/libvgcode/src/ViewerImpl.cpp
+@@ -763,6 +763,7 @@ void ViewerImpl::init(const std::string& opengl_context_version)
+     m_uni_segments_height_width_angle_tex_id = glGetUniformLocation(m_segments_shader_id, "height_width_angle_tex");
+     m_uni_segments_colors_tex_id             = glGetUniformLocation(m_segments_shader_id, "color_tex");
+     m_uni_segments_segment_index_tex_id      = glGetUniformLocation(m_segments_shader_id, "segment_index_tex");
++    m_uni_segments_clipping_plane_id         = glGetUniformLocation(m_segments_shader_id, "clipping_plane"); // [ORCAPORT:PF-6]
+     glcheck();
+     assert(m_uni_segments_view_matrix_id != -1 &&
+            m_uni_segments_projection_matrix_id != -1 &&
+@@ -770,7 +771,8 @@ void ViewerImpl::init(const std::string& opengl_context_version)
+            m_uni_segments_positions_tex_id != -1 &&
+            m_uni_segments_height_width_angle_tex_id != -1 &&
+            m_uni_segments_colors_tex_id != -1 &&
+-           m_uni_segments_segment_index_tex_id != -1);
++           m_uni_segments_segment_index_tex_id != -1 &&
++           m_uni_segments_clipping_plane_id != -1); // [ORCAPORT:PF-6]
+ 
+     m_segment_template.init();
+ 
+@@ -787,13 +789,15 @@ void ViewerImpl::init(const std::string& opengl_context_version)
+     m_uni_options_height_width_angle_tex_id = glGetUniformLocation(m_options_shader_id, "height_width_angle_tex");
+     m_uni_options_colors_tex_id             = glGetUniformLocation(m_options_shader_id, "color_tex");
+     m_uni_options_segment_index_tex_id      = glGetUniformLocation(m_options_shader_id, "segment_index_tex");
++    m_uni_options_clipping_plane_id         = glGetUniformLocation(m_options_shader_id, "clipping_plane"); // [ORCAPORT:PF-6]
+     glcheck();
+     assert(m_uni_options_view_matrix_id != -1 &&
+            m_uni_options_projection_matrix_id != -1 &&
+            m_uni_options_positions_tex_id != -1 &&
+            m_uni_options_height_width_angle_tex_id != -1 &&
+            m_uni_options_colors_tex_id != -1 &&
+-           m_uni_options_segment_index_tex_id != -1);
++           m_uni_options_segment_index_tex_id != -1 &&
++           m_uni_options_clipping_plane_id != -1); // [ORCAPORT:PF-6]
+ 
+     m_option_template.init(16);
+ 
+@@ -1766,6 +1770,18 @@ size_t ViewerImpl::get_used_gpu_memory() const
+     return ret;
+ }
+ 
++// [ORCAPORT:PF-6] BEGIN - clipping plane for the Preview clipping feature
++void ViewerImpl::set_clipping_plane(float nx, float ny, float nz, float offset)
++{
++    m_clipping_plane = { nx, ny, nz, offset };
++}
++
++void ViewerImpl::reset_clipping_plane()
++{
++    m_clipping_plane = { 0.0f, 0.0f, 1.0f, std::numeric_limits<float>::max() };
++}
++// [ORCAPORT:PF-6] END
++
+ static bool is_visible(const PathVertex& v, const Settings& settings)
+ {
+     const EOptionType option_type = move_type_to_option(v.type);
+@@ -1994,6 +2010,7 @@ void ViewerImpl::render_segments(const Mat4x4& view_matrix, const Mat4x4& projec
+     glsafe(glUniformMatrix4fv(m_uni_segments_view_matrix_id, 1, GL_FALSE, view_matrix.data()));
+     glsafe(glUniformMatrix4fv(m_uni_segments_projection_matrix_id, 1, GL_FALSE, projection_matrix.data()));
+     glsafe(glUniform3fv(m_uni_segments_camera_position_id, 1, camera_position.data()));
++    glsafe(glUniform4fv(m_uni_segments_clipping_plane_id, 1, m_clipping_plane.data())); // [ORCAPORT:PF-6]
+ 
+     glsafe(glDisable(GL_CULL_FACE));
+ 
+@@ -2081,6 +2098,7 @@ void ViewerImpl::render_options(const Mat4x4& view_matrix, const Mat4x4& project
+     glsafe(glUniform1i(m_uni_options_segment_index_tex_id, 3));
+     glsafe(glUniformMatrix4fv(m_uni_options_view_matrix_id, 1, GL_FALSE, view_matrix.data()));
+     glsafe(glUniformMatrix4fv(m_uni_options_projection_matrix_id, 1, GL_FALSE, projection_matrix.data()));
++    glsafe(glUniform4fv(m_uni_options_clipping_plane_id, 1, m_clipping_plane.data())); // [ORCAPORT:PF-6]
+ 
+     glsafe(glEnable(GL_CULL_FACE));
+ 
+diff --git a/src/libvgcode/src/ViewerImpl.hpp b/src/libvgcode/src/ViewerImpl.hpp
+index 4da312fc0e..4a642300d5 100644
+--- a/src/libvgcode/src/ViewerImpl.hpp
++++ b/src/libvgcode/src/ViewerImpl.hpp
+@@ -22,6 +22,7 @@
+ 
+ #include <string>
+ #include <optional>
++#include <limits> // [ORCAPORT:PF-6]
+ 
+ namespace libvgcode {
+ 
+@@ -183,6 +184,11 @@ public:
+     size_t get_used_cpu_memory() const;
+     size_t get_used_gpu_memory() const;
+ 
++    // [ORCAPORT:PF-6] BEGIN - clipping plane for the Preview clipping feature
++    void set_clipping_plane(float nx, float ny, float nz, float offset);
++    void reset_clipping_plane();
++    // [ORCAPORT:PF-6] END
++
+ #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
+     Vec3 get_cog_marker_position() const { return m_cog_marker.get_position(); }
+ 
+@@ -330,6 +336,8 @@ private:
+     int m_uni_segments_height_width_angle_tex_id{ -1 };
+     int m_uni_segments_colors_tex_id{ -1 };
+     int m_uni_segments_segment_index_tex_id{ -1 };
++    // [ORCAPORT:PF-6]
++    int m_uni_segments_clipping_plane_id{ -1 };
+     //
+     // Caches for OpenGL uniforms id for options shader 
+     //
+@@ -339,6 +347,11 @@ private:
+     int m_uni_options_height_width_angle_tex_id{ -1 };
+     int m_uni_options_colors_tex_id{ -1 };
+     int m_uni_options_segment_index_tex_id{ -1 };
++    // [ORCAPORT:PF-6]
++    int m_uni_options_clipping_plane_id{ -1 };
++    // [ORCAPORT:PF-6] BEGIN - clipping plane data {nx, ny, nz, offset}, default clips nothing
++    std::array<float, 4> m_clipping_plane{ 0.0f, 0.0f, 1.0f, std::numeric_limits<float>::max() };
++    // [ORCAPORT:PF-6] END
+ #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
+     //
+     // Caches for OpenGL uniforms id for cog marker shader 
+diff --git a/src/slic3r/CMakeLists.txt b/src/slic3r/CMakeLists.txt
+index d97b41f869..5cff76c1f8 100644
+--- a/src/slic3r/CMakeLists.txt
++++ b/src/slic3r/CMakeLists.txt
+@@ -219,6 +219,8 @@ GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+     GUI/GLCanvas3D.hpp
+     GUI/OrcaExt/GravitySnap.cpp
+     GUI/OrcaExt/GravitySnap.hpp
++    GUI/OrcaExt/PreviewClipController.cpp
++    GUI/OrcaExt/PreviewClipController.hpp
+     GUI/GLModel.cpp
+     GUI/GLModel.hpp
+     GUI/GLSelectionRectangle.cpp
+diff --git a/src/slic3r/GUI/GCodeViewer.cpp b/src/slic3r/GUI/GCodeViewer.cpp
+index 49477ac7dd..4ffcc7c2d8 100644
+--- a/src/slic3r/GUI/GCodeViewer.cpp
++++ b/src/slic3r/GUI/GCodeViewer.cpp
+@@ -1589,6 +1589,9 @@ void GCodeViewer::reset_shell()
+ 
+ void GCodeViewer::reset()
+ {
++    // [ORCAPORT:PF-6] drop any active preview clipping plane when the preview is cleared
++    m_preview_clip_controller.deactivate();
++
+     //BBS: should also reset the result id
+     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": current result id %1% ")%m_last_result_id;
+     m_last_result_id = -1;
+@@ -1683,6 +1686,9 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
+ 
+     //BBS render slider
+     render_slider(canvas_width, canvas_height);
++
++    // [ORCAPORT:PF-6] interactive clipping plane overlay
++    m_preview_clip_controller.render_imgui();
+ }
+ 
+ #define ENABLE_CALIBRATION_THUMBNAIL_OUTPUT 0
+@@ -2526,7 +2532,7 @@ void GCodeViewer::render_shells(int canvas_width, int canvas_height)
+         //if (!m_shells.visible || m_shells.volumes.empty())
+         return;
+ 
+-    GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
++    GLShaderProgram* shader = wxGetApp().get_shader(m_preview_clipping_plane.has_value() ? "gouraud_light_clip" : "gouraud_light");
+     if (shader == nullptr)
+         return;
+ 
+@@ -2537,6 +2543,10 @@ void GCodeViewer::render_shells(int canvas_width, int canvas_height)
+     const Camera& camera = wxGetApp().plater()->get_camera();
+     shader->set_uniform("z_far", camera.get_far_z());
+     shader->set_uniform("z_near", camera.get_near_z());
++    // [ORCAPORT:PF-6] clip the preview shells with the active preview clipping plane
++    m_shells.volumes.set_clipping_plane(m_preview_clipping_plane.has_value()
++                                            ? m_preview_clipping_plane.value()
++                                            : std::array<double, 4>{ 0.0, 0.0, 0.0, 0.0 });
+     m_shells.volumes.render(GLVolumeCollection::ERenderType::Transparent, false, camera.get_view_matrix(), camera.get_projection_matrix(), {canvas_width, canvas_height});
+     shader->set_uniform("emission_factor", 0.0f);
+     shader->stop_using();
+diff --git a/src/slic3r/GUI/GCodeViewer.hpp b/src/slic3r/GUI/GCodeViewer.hpp
+index 5ba748775c..57f7b5d19e 100644
+--- a/src/slic3r/GUI/GCodeViewer.hpp
++++ b/src/slic3r/GUI/GCodeViewer.hpp
+@@ -11,12 +11,15 @@
+ #include <boost/iostreams/device/mapped_file.hpp>
+ 
+ #include "LibVGCode/LibVGCodeWrapper.hpp"
++// [ORCAPORT:PF-6]
++#include "OrcaExt/PreviewClipController.hpp"
+ // needed for tech VGCODE_ENABLE_COG_AND_TOOL_MARKERS
+ #include <libvgcode/include/Types.hpp>
+ 
+ #include <array>
+ #include <cstdint>
+ #include <float.h>
++#include <optional>
+ #include <set>
+ #include <unordered_set>
+ 
+@@ -245,6 +248,10 @@ mutable bool m_no_render_path { false };
+     libvgcode::Viewer m_viewer;
+     bool m_loaded_as_preview{ false };
+ 
++    // [ORCAPORT:PF-6] preview clipping plane
++    OrcaExt::Gui::PreviewClipController    m_preview_clip_controller;
++    std::optional<std::array<double, 4>>   m_preview_clipping_plane;
++
+ public:
+     GCodeViewer();
+     ~GCodeViewer();
+@@ -286,6 +293,18 @@ public:
+     const BoundingBoxf3& get_paths_bounding_box() const { return m_paths_bounding_box; }
+     const BoundingBoxf3& get_max_bounding_box() const { return m_max_bounding_box; }
+     const BoundingBoxf3& get_shell_bounding_box() const { return m_shell_bounding_box; }
++    // [ORCAPORT:PF-6] BEGIN - preview clipping plane support
++    OrcaExt::Gui::PreviewClipController&       get_preview_clip_controller() { return m_preview_clip_controller; }
++    const OrcaExt::Gui::PreviewClipController& get_preview_clip_controller() const { return m_preview_clip_controller; }
++
++    GLVolumeCollection& get_shells_volumes() { return m_shells.volumes; }
++    bool                are_shells_visible() const { return m_shells.visible; }
++    void                set_shells_visible(bool visible) { m_shells.visible = visible; }
++    libvgcode::Viewer&  get_libvgcode_viewer() { return m_viewer; }
++
++    void set_preview_clipping_plane(const std::array<double, 4>& plane) { m_preview_clipping_plane = plane; }
++    void reset_preview_clipping_plane() { m_preview_clipping_plane.reset(); }
++    // [ORCAPORT:PF-6] END
+     std::vector<double> get_layers_zs() const {
+         const std::vector<float> zs = m_viewer.get_layers_zs();
+         std::vector<double> ret;
+diff --git a/src/slic3r/GUI/GLCanvas3D.hpp b/src/slic3r/GUI/GLCanvas3D.hpp
+index 2486ca70b0..b81e8cc4c9 100644
+--- a/src/slic3r/GUI/GLCanvas3D.hpp
++++ b/src/slic3r/GUI/GLCanvas3D.hpp
+@@ -1157,6 +1157,14 @@ public:
+ 
+     int get_move_volume_id() const { return m_mouse.drag.move_volume_idx; }
+     int get_first_hover_volume_idx() const { return m_hover_volume_idxs.empty() ? -1 : m_hover_volume_idxs.front(); }
++    // [ORCAPORT:PF-6] model object id of the volume under the cursor, or -1
++    int get_first_hover_object_id() const
++    {
++        const int idx = get_first_hover_volume_idx();
++        if (idx < 0 || idx >= static_cast<int>(m_volumes.volumes.size()) || m_volumes.volumes[idx] == nullptr)
++            return -1;
++        return m_volumes.volumes[idx]->object_idx();
++    }
+     void set_selected_extruder(int extruder) { m_selected_extruder = extruder;}
+ 
+     class WipeTowerInfo {
+diff --git a/src/slic3r/GUI/GLShadersManager.cpp b/src/slic3r/GUI/GLShadersManager.cpp
+index 2b8a0edf0a..924ceffbc5 100644
+--- a/src/slic3r/GUI/GLShadersManager.cpp
++++ b/src/slic3r/GUI/GLShadersManager.cpp
+@@ -64,6 +64,8 @@ std::pair<bool, std::string> GLShadersManager::init()
+ #endif // SLIC3R_OPENGL_ES
+     // used to render bed axes and model, selection hints, gcode sequential view marker model, preview shells, options in gcode preview
+     valid &= append_shader("gouraud_light", { prefix + "gouraud_light.vs", prefix + "gouraud_light.fs" });
++    // [ORCAPORT:PF-6] clipped variant of gouraud_light, used to render preview shells cut by the preview clipping plane
++    valid &= append_shader("gouraud_light_clip", { prefix + "gouraud_light_clip.vs", prefix + "gouraud_light_clip.fs" });
+     //used to render thumbnail
+     valid &= append_shader("thumbnail", { prefix + "thumbnail.vs", prefix + "thumbnail.fs"});
+     // used to render printbed
+diff --git a/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
+new file mode 100644
+index 0000000000..90cac213c4
+--- /dev/null
++++ b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
+@@ -0,0 +1,209 @@
++// [ORCAPORT FILE] OrcaExtGuiPreviewClipController - interactive clipping plane for the G-code preview
++// Source: preFlight v1.3.0 (preFlight.PreviewClipController.*); re-implemented on OrcaSlicer 2.5 APIs
++#include "PreviewClipController.hpp"
++
++#include "slic3r/GUI/GCodeViewer.hpp"
++#include "slic3r/GUI/GLCanvas3D.hpp"
++#include "slic3r/GUI/Camera.hpp"
++#include "slic3r/GUI/GUI_App.hpp"
++#include "slic3r/GUI/Plater.hpp"
++#include "slic3r/GUI/3DScene.hpp"
++#include "slic3r/GUI/ImGuiWrapper.hpp"
++
++#include <imgui/imgui.h>
++
++#include <algorithm>
++#include <float.h>
++
++using Slic3r::GLVolume;
++using Slic3r::GLVolumeCollection;
++using Slic3r::GUI::Camera;
++using Slic3r::GUI::GCodeViewer;
++using Slic3r::GUI::GLCanvas3D;
++using Slic3r::GUI::ImGuiWrapper;
++using Slic3r::GUI::Plater;
++using Slic3r::GUI::wxGetApp;
++
++namespace Slic3r {
++namespace OrcaExt {
++namespace Gui {
++
++// [ORCAPORT:PF-6] helper to get the GCodeViewer of the active preview canvas
++static GCodeViewer* get_current_gcode_viewer()
++{
++    Plater* plater = wxGetApp().plater();
++    if (plater == nullptr)
++        return nullptr;
++    GLCanvas3D* canvas = plater->get_current_canvas3D();
++    if (canvas == nullptr)
++        return nullptr;
++    return &canvas->get_gcode_viewer();
++}
++
++void PreviewClipController::activate(int object_id)
++{
++    if (m_active)
++        deactivate();
++
++    GCodeViewer* viewer = get_current_gcode_viewer();
++    if (viewer == nullptr)
++        return;
++
++    GLVolumeCollection& shells = viewer->get_shells_volumes();
++    if (shells.volumes.empty())
++        return;
++
++    m_object_id = object_id;
++    m_active    = true;
++
++    // Save current shell visibility state
++    SavedState state;
++    state.shells_visible = viewer->are_shells_visible();
++    for (const GLVolume* v : shells.volumes)
++        state.shell_visibility.push_back(v->is_active);
++    m_saved_state = state;
++
++    // Bounding box of the selected object's shell volumes in world space
++    m_object_bbox = BoundingBoxf3();
++    for (GLVolume* v : shells.volumes)
++    {
++        if (v->composite_id.object_id == object_id)
++            m_object_bbox.merge(v->transformed_bounding_box());
++    }
++
++    // Capture the camera forward direction as the initial clip normal and start at 50%
++    reset_direction();
++    m_clip_ratio = 0.5;
++    apply_clipping_plane();
++}
++
++void PreviewClipController::deactivate()
++{
++    if (!m_active)
++        return;
++
++    GCodeViewer* viewer = get_current_gcode_viewer();
++    if (viewer != nullptr)
++    {
++        GLVolumeCollection& shells = viewer->get_shells_volumes();
++
++        if (m_saved_state.has_value())
++        {
++            viewer->set_shells_visible(m_saved_state->shells_visible);
++            for (size_t i = 0; i < shells.volumes.size() && i < m_saved_state->shell_visibility.size(); ++i)
++                shells.volumes[i]->is_active = m_saved_state->shell_visibility[i];
++        }
++
++        viewer->reset_preview_clipping_plane();
++        viewer->get_libvgcode_viewer().reset_clipping_plane();
++    }
++
++    m_active    = false;
++    m_object_id = -1;
++    m_saved_state.reset();
++}
++
++void PreviewClipController::set_position(double ratio)
++{
++    m_clip_ratio = std::clamp(ratio, 0.0, 1.0);
++    apply_clipping_plane();
++}
++
++void PreviewClipController::reset_direction()
++{
++    const Camera& camera = wxGetApp().plater()->get_camera();
++    m_clip_normal        = camera.get_dir_forward();
++
++    const double len = m_clip_normal.norm();
++    if (len > 1e-6)
++        m_clip_normal /= len;
++    else
++        m_clip_normal = Vec3d(0.0, 0.0, 1.0);
++
++    apply_clipping_plane();
++}
++
++void PreviewClipController::apply_clipping_plane()
++{
++    if (!m_active || !m_object_bbox.defined)
++        return;
++
++    GCodeViewer* viewer = get_current_gcode_viewer();
++    if (viewer == nullptr)
++        return;
++
++    // Project the object bounding box corners onto the clip normal to find the range
++    double min_proj = DBL_MAX;
++    double max_proj = -DBL_MAX;
++    for (int i = 0; i < 8; ++i)
++    {
++        Vec3d corner;
++        corner.x() = (i & 1) ? m_object_bbox.max.x() : m_object_bbox.min.x();
++        corner.y() = (i & 2) ? m_object_bbox.max.y() : m_object_bbox.min.y();
++        corner.z() = (i & 4) ? m_object_bbox.max.z() : m_object_bbox.min.z();
++        const double proj = m_clip_normal.dot(corner);
++        min_proj = std::min(min_proj, proj);
++        max_proj = std::max(max_proj, proj);
++    }
++
++    // ratio 0.0 = min_proj (nothing clipped), ratio 1.0 = max_proj (everything clipped)
++    const double offset = min_proj + m_clip_ratio * (max_proj - min_proj);
++
++    // plane = (n, -offset): fragments with dot(pos, n) - offset < 0 are discarded
++    const std::array<double, 4> clip_plane = { m_clip_normal.x(), m_clip_normal.y(), m_clip_normal.z(), -offset };
++    viewer->set_preview_clipping_plane(clip_plane);
++
++    viewer->get_libvgcode_viewer().set_clipping_plane(static_cast<float>(m_clip_normal.x()),
++                                                      static_cast<float>(m_clip_normal.y()),
++                                                      static_cast<float>(m_clip_normal.z()),
++                                                      static_cast<float>(-offset));
++}
++
++std::string PreviewClipController::get_object_name() const
++{
++    if (m_object_id < 0)
++        return "Object";
++
++    const Model& model = wxGetApp().plater()->model();
++    const ModelObjectPtrs& objects = model.objects;
++    if (m_object_id < static_cast<int>(objects.size()))
++        return objects[m_object_id]->name;
++
++    return "Object";
++}
++
++void PreviewClipController::render_imgui()
++{
++    if (!m_active)
++        return;
++
++    ImGuiWrapper& imgui = *wxGetApp().imgui();
++
++    const auto cnv_size = wxGetApp().plater()->get_current_canvas3D()->get_canvas_size();
++    imgui.set_next_window_pos(static_cast<float>(cnv_size.get_width()) * 0.5f, 10.0f, ImGuiCond_Once, 0.5f, 0.0f);
++
++    const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
++
++    const std::string title = "Clipping Plane - " + get_object_name() + "###PreviewClipController";
++    ImGui::Begin(title.c_str(), nullptr, flags);
++
++    float ratio_f = static_cast<float>(m_clip_ratio);
++    ImGui::TextUnformatted("Position");
++    ImGui::SameLine();
++    if (imgui.slider_float("##clip_pos", &ratio_f, 0.0f, 1.0f, "%.2f"))
++        set_position(static_cast<double>(ratio_f));
++
++    if (ImGui::Button("Reset Direction"))
++        reset_direction();
++
++    ImGui::SameLine();
++
++    if (ImGui::Button("Close"))
++        deactivate();
++
++    ImGui::End();
++}
++
++} // namespace Gui
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp b/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp
+new file mode 100644
+index 0000000000..e8343827ba
+--- /dev/null
++++ b/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp
+@@ -0,0 +1,60 @@
++// [ORCAPORT FILE] OrcaExtGuiPreviewClipController - interactive clipping plane for the G-code preview
++// Source: preFlight v1.3.0 (preFlight.PreviewClipController.*); re-implemented on OrcaSlicer 2.5 APIs
++#ifndef slic3r_OrcaExt_PreviewClipController_hpp_
++#define slic3r_OrcaExt_PreviewClipController_hpp_
++
++#include "libslic3r/BoundingBox.hpp"
++
++#include <array>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace Slic3r {
++namespace GUI {
++class GCodeViewer;
++class GLCanvas3D;
++class Camera;
++} // namespace GUI
++
++namespace OrcaExt {
++namespace Gui {
++
++// Interactive clipping plane for the G-code preview: right-click an object in Preview and
++// activate it to cut both the toolpaths and the shell with a movable plane.
++class PreviewClipController
++{
++public:
++    void activate(int object_id);
++    void deactivate();
++    void set_position(double ratio);
++    void reset_direction();
++    void render_imgui();
++
++    bool is_active() const { return m_active; }
++    int  get_object_id() const { return m_object_id; }
++
++private:
++    void        apply_clipping_plane();
++    std::string get_object_name() const;
++
++    bool m_active    = false;
++    int  m_object_id = -1;
++
++    Vec3d        m_clip_normal{ 0.0, 0.0, 1.0 };
++    double       m_clip_ratio = 0.5;
++    BoundingBoxf3 m_object_bbox;
++
++    struct SavedState
++    {
++        std::vector<bool> shell_visibility;
++        bool              shells_visible{ false };
++    };
++    std::optional<SavedState> m_saved_state;
++};
++
++} // namespace Gui
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif // slic3r_OrcaExt_PreviewClipController_hpp_
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index 839b12dd03..32ff21e038 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -7121,6 +7121,8 @@ struct Plater::priv
+     void on_object_select(SimpleEvent&);
+     void show_right_click_menu(Vec2d mouse_position, wxMenu *menu);
+     void on_right_click(RBtnEvent&);
++    // [ORCAPORT:PF-6] preview clipping plane right-click entry
++    void on_preview_right_click(RBtnEvent&);
+     //BBS: add model repair
+     void on_repair_model(wxCommandEvent &event);
+     void on_filament_color_changed(wxCommandEvent &event);
+@@ -7657,6 +7659,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
+     if (wxGetApp().is_editor()) {
+         preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_TAB, [this](SimpleEvent&) { select_next_view_3D(); });
+         preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_COLLAPSE_SIDEBAR, [this](SimpleEvent&) { this->q->collapse_sidebar(!this->q->is_sidebar_collapsed());  });
++        // [ORCAPORT:PF-6] preview right-click shows the clipping plane entry
++        preview->get_wxglcanvas()->Bind(EVT_GLCANVAS_RIGHT_CLICK, &priv::on_preview_right_click, this);
+         preview->get_wxglcanvas()->Bind(EVT_CUSTOMEVT_TICKSCHANGED, [this](wxCommandEvent& event) {
+             Type tick_event_type = (Type)event.GetInt();
+             Model& model = wxGetApp().plater()->model();
+@@ -13349,6 +13353,31 @@ void Plater::priv::on_right_click(RBtnEvent& evt)
+     }
+ }
+ 
++// [ORCAPORT:PF-6] BEGIN - right-click an object in Preview to clip the preview around it
++void Plater::priv::on_preview_right_click(RBtnEvent& evt)
++{
++    if (!wxGetApp().is_gcode_viewer())
++        return;
++
++    GLCanvas3D* canvas = preview->get_canvas3d();
++    if (canvas == nullptr)
++        return;
++
++    const int object_id = canvas->get_first_hover_object_id();
++    if (object_id < 0)
++        return;
++
++    wxMenu menu;
++    const int clip_id = wxWindow::NewControlId();
++    menu.Append(clip_id, _L("Clipping Plane"));
++    menu.Bind(wxEVT_MENU, [canvas, object_id](wxCommandEvent&) {
++        canvas->get_gcode_viewer().get_preview_clip_controller().activate(object_id);
++    }, clip_id);
++
++    show_right_click_menu(evt.data.first, &menu);
++}
++// [ORCAPORT:PF-6] END
++
+ //BBS: add part plate related logic
+ void Plater::priv::on_plate_right_click(RBtnPlateEvent& evt)
+ {

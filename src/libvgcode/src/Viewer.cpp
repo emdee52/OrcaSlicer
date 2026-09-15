@@ -377,6 +377,18 @@ size_t Viewer::get_used_gpu_memory() const
     return m_impl->get_used_gpu_memory();
 }
 
+// [ORCAPORT:PF-6] BEGIN - forward the clipping plane to the implementation
+void Viewer::set_clipping_plane(float nx, float ny, float nz, float offset)
+{
+    m_impl->set_clipping_plane(nx, ny, nz, offset);
+}
+
+void Viewer::reset_clipping_plane()
+{
+    m_impl->reset_clipping_plane();
+}
+// [ORCAPORT:PF-6] END
+
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
 Vec3 Viewer::get_cog_position() const
 {

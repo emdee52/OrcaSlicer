@@ -219,6 +219,8 @@ GUI/Gizmos/GLGizmoCounterboreBridge.hpp
     GUI/GLCanvas3D.hpp
     GUI/OrcaExt/GravitySnap.cpp
     GUI/OrcaExt/GravitySnap.hpp
+    GUI/OrcaExt/PreviewClipController.cpp
+    GUI/OrcaExt/PreviewClipController.hpp
     GUI/GLModel.cpp
     GUI/GLModel.hpp
     GUI/GLSelectionRectangle.cpp
