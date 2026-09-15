@@ -25,6 +25,8 @@ static const double narrow_loop_length_threshold = 10;
 //ext_perimeter_width + ext_perimeter_spacing  * (1 - SMALLER_EXT_INSET_OVERLAP_TOLERANCE),
 //we think it's small detail area and will generate smaller line width for it
 static constexpr double SMALLER_EXT_INSET_OVERLAP_TOLERANCE = 0.22;
+// [ORCAPORT:PF-9] flow of the interlocking boundary bead (the (3 + 2*sqrt2)/4 constant from PF-9)
+static constexpr double INTERLOCK_BOUNDARY_FLOW = (3.0 + 2.0 * 1.4142135623730951) / 4.0;
 
 namespace Slic3r {
     
@@ -145,6 +147,20 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             lower_polygons_series = &perimeter_generator.m_lower_polygons_series;
             extrusion_mm3_per_mm = perimeter_generator.mm3_per_mm();
             extrusion_width = perimeter_generator.perimeter_flow.width();
+
+            // [ORCAPORT:PF-9] interlocking shells: vary bead width/flow by tier so alternating
+            // layers nest into each other. Shell 0 adjacent to the regular walls is the boundary
+            // bead (wider on even layers, nominal on odd); deeper shells are over-extruded (200%).
+            if (perimeter_generator.m_interlock_active &&
+                (int) loop.depth > perimeter_generator.m_interlock_base_depth) {
+                const int    k          = (int) loop.depth - perimeter_generator.m_interlock_base_depth - 1;
+                const double tier_flow  = (k == 0)
+                                              ? (perimeter_generator.m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0)
+                                              : 2.0;
+                const double flow_ratio = tier_flow * perimeter_generator.m_interlock_strength;
+                extrusion_mm3_per_mm    = perimeter_generator.mm3_per_mm() * flow_ratio;
+                extrusion_width         = perimeter_generator.perimeter_flow.width() * std::sqrt(flow_ratio);
+            }
         }
 
         // Apply fuzzy skin if it is enabled for at least some part of the polygon.
@@ -1404,10 +1420,31 @@ void PerimeterGenerator::process_classic()
     for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
         const Surface &surface = all_surfaces[surface_order[order_idx]];
         // detect how many perimeters must be generated for this island
-        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1;  // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
-        if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+        // [ORCAPORT:PF-9] interlocking perimeters: add interlocking shells inside the regular
+        // walls on every layer with alternating tier widths/flows; optionally reduce the regular
+        // wall count on those layers. Classic wall generator only.
+        const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
+                               !m_spiral_vase && sparse_infill_density > 0 &&
+                               this->object_config->wall_generator.value == PerimeterGeneratorType::Classic;
+        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
+        int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
+        if (interlock && this->config->interlock_regular_perimeters.value > 0)
+            base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
+        int loop_number = base_loop_number;  // 0-indexed loops
+        if (interlock)
+            loop_number += interlock_count;
+        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
             loop_number++;
+        // [ORCAPORT:PF-9] interlock state consumed by traverse_loops
+        m_interlock_active = interlock;
+        if (interlock) {
+            m_interlock_even          = (this->layer_id % 2 == 0);
+            m_interlock_base_depth    = base_loop_number;
+            m_interlock_strength      = this->config->interlock_perimeter_strength.value / 100.0;
+            const double ov           = this->config->interlock_perimeter_overlap.get_abs_value(this->layer_height);
+            m_interlock_overlap_extra = (ov > 0.0) ? coord_t(scale_(ov)) : coord_t(0);
+        }
         if (this->layer_id == object_config->raft_layers && only_one_wall_first_layer)
             loop_number = 0;
         // Set the topmost layer to be one wall
@@ -1490,6 +1527,10 @@ void PerimeterGenerator::process_classic()
                     //FIXME Is this offset correct if the line width of the inner perimeters differs
                     // from the line width of the infill?
                     coord_t distance = (i == 1) ? ext_perimeter_spacing2 : perimeter_spacing;
+                    // [ORCAPORT:PF-9] interlocking shells are spaced more tightly (overlap) so the
+                    // over-extruded beads compress into the previous layer's gaps.
+                    if (m_interlock_active && (int) i > m_interlock_base_depth && m_interlock_overlap_extra > 0)
+                        distance = std::max<coord_t>(1, distance - m_interlock_overlap_extra);
                     //BBS
                     //offsets = this->config->thin_walls ?
                         // This path will ensure, that the perimeters do not overfill, as in
@@ -2389,10 +2430,21 @@ void PerimeterGenerator::process_arachne()
     for (const Surface& surface : all_surfaces) {
         coord_t bead_width_0 = ext_perimeter_spacing;
         // detect how many perimeters must be generated for this island
-        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1; // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
-        if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+        // [ORCAPORT:PF-9] interlocking perimeters (Arachne: extra shells; the tier width/flow
+        // alternation is applied on the Classic generator only).
+        const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
+                               !m_spiral_vase && sparse_infill_density > 0;
+        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
+        int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
+        if (interlock && this->config->interlock_regular_perimeters.value > 0)
+            base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
+        int loop_number = base_loop_number; // 0-indexed loops
+        if (interlock)
+            loop_number += interlock_count;
+        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
             loop_number++;
+        m_interlock_active = false; // Arachne output does not consume the Classic tier overrides
 
         // Set the bottommost layer to be one wall
         const bool is_bottom_layer = (this->layer_id == object_config->raft_layers) ? true : false;

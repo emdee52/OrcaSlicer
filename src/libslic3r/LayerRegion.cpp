@@ -136,6 +136,28 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
     g.overhang_flow         = this->bridging_flow(frPerimeter, object_config.thick_bridges);
     g.solid_infill_flow     = this->flow(frSolidInfill);
 
+    // [ORCAPORT:PF-9] solid top/bottom margin: only interlock when at least interlock_solid_layers_*
+    // layers away from a top/bottom surface. A layer has a top surface where it extends beyond the
+    // layer above (bottom: beyond the layer below).
+    if (region_config.interlock_perimeters_enabled.value) {
+        auto has_top_surface = [](const Layer* l) -> bool {
+            return l != nullptr && (l->upper_layer == nullptr || !diff_ex(l->lslices, l->upper_layer->lslices).empty());
+        };
+        auto has_bottom_surface = [](const Layer* l) -> bool {
+            return l != nullptr && (l->lower_layer == nullptr || !diff_ex(l->lslices, l->lower_layer->lslices).empty());
+        };
+        const int top_margin    = std::max(0, region_config.interlock_solid_layers_top.value);
+        const int bottom_margin = std::max(0, region_config.interlock_solid_layers_bottom.value);
+        bool near_top = false, near_bottom = false;
+        const Layer* l = this->layer();
+        for (int i = 0; l != nullptr && i <= top_margin; ++i, l = l->upper_layer)
+            if (has_top_surface(l)) { near_top = true; break; }
+        l = this->layer();
+        for (int i = 0; l != nullptr && i <= bottom_margin; ++i, l = l->lower_layer)
+            if (has_bottom_surface(l)) { near_bottom = true; break; }
+        g.interlock_solid_margin_ok = !near_top && !near_bottom;
+    }
+
     if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Arachne && !spiral_mode)
         g.process_arachne();
     // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator (ungated; spiral mode falls back to Classic).

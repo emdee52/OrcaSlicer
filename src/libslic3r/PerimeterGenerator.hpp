@@ -103,6 +103,14 @@ public:
 
     bool                                            has_fuzzy_skin = false;
     bool                                            has_fuzzy_hole = false;
+    // [ORCAPORT:PF-9] solid top/bottom margin gate, set by LayerRegion before processing
+    bool                                            interlock_solid_margin_ok = true;
+    // [ORCAPORT:PF-9] interlocking perimeter state (read by traverse_loops)
+    bool    m_interlock_active{false};
+    bool    m_interlock_even{true};
+    int     m_interlock_base_depth{-1};
+    double  m_interlock_strength{1.0};
+    coord_t m_interlock_overlap_extra{0};
     // Preserve construction order so overlap precedence remains deterministic.
     std::vector<std::pair<FuzzySkinConfig, ExPolygons>> regions_by_fuzzify;
     
