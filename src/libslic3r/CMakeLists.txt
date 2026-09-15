@@ -362,8 +362,10 @@ set(lisbslic3r_sources
     OrcaExt/FreeZ.hpp
     OrcaExt/IdleToolPowerDown.cpp
     OrcaExt/IdleToolPowerDown.hpp
-    OrcaExt/InstanceContact.cpp
-    OrcaExt/InstanceContact.hpp
+OrcaExt/InstanceContact.cpp
+OrcaExt/InstanceContact.hpp
+OrcaExt/NeoWaveContact.cpp
+OrcaExt/NeoWaveContact.hpp
     Orient.cpp
     Orient.hpp
     ParameterUtils.cpp

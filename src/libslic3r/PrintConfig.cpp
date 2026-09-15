@@ -393,6 +393,13 @@ static t_config_enum_values s_keys_map_SupportMaterialWaveRoofOrder {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
 
+// [ORCAPORT:SU-4b] NeoWave contact layer target.
+static t_config_enum_values s_keys_map_NeoWaveContactTarget {
+    { "part_bottom", nwctPartBottom },
+    { "support_top", nwctSupportTop }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(NeoWaveContactTarget)
+
 static t_config_enum_values s_keys_map_SupportType{
     { "normal(auto)",   stNormalAuto },
     { "tree(auto)", stTreeAuto },
@@ -7130,6 +7137,68 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->max = 10;
     def->set_default_value(new ConfigOptionInt(0));
+
+    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2). Independent of painting: it only
+    // modulates Z on whichever side of the part/support interface is selected, so the printed
+    // colour/pattern is untouched.
+    def = this->add("support_neoweave_enabled", coBool);
+    def->label = L("NeoWave contact layer");
+    def->category = L("Support");
+    def->tooltip = L("Create intermittent contact between the part and its support roof by waving "
+        "the selected interface up and down in Z. Only the wave peaks touch, leaving microscopic "
+        "gaps that make the support easier to remove. The printed colour and pattern are untouched. "
+        "Turning this on does not require any painting.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_neoweave_target", coEnum);
+    def->label = L("NeoWave contact side");
+    def->category = L("Support");
+    def->tooltip = L("Which side of the part/support interface carries the wave. \"Part bottom\" waves "
+        "the object's own bridge fill resting on the support (upward only). \"Support top\" keeps the "
+        "part flat and waves the support's top interface instead (downward only). Compare both.");
+    def->enum_keys_map = &ConfigOptionEnum<NeoWaveContactTarget>::get_enum_values();
+    def->enum_values.push_back("part_bottom");
+    def->enum_values.push_back("support_top");
+    def->enum_labels.push_back(L("Part bottom (bridge fill)"));
+    def->enum_labels.push_back(L("Support top (interface)"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<NeoWaveContactTarget>(nwctPartBottom));
+
+    def = this->add("support_neoweave_amplitude", coFloat);
+    def->label = L("NeoWave contact amplitude");
+    def->category = L("Support");
+    def->tooltip = L("Peak Z deviation of the contact wave, in mm. One-sided by construction, so it "
+        "never digs into the surface it rests on. Typical 0.05-0.2 mm; keep at or below half the "
+        "layer height.");
+    def->sidetext = "mm";
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 2.0;
+    def->set_default_value(new ConfigOptionFloat(0.1));
+
+    def = this->add("support_neoweave_period", coFloat);
+    def->label = L("NeoWave contact period");
+    def->category = L("Support");
+    def->tooltip = L("Distance between successive wave peaks along each printed line, in mm. Smaller "
+        "= finer wave. Floored internally to about one line width (a finer wave is unprintable). "
+        "0 = auto (line width).");
+    def->sidetext = "mm";
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 10.0;
+    def->set_default_value(new ConfigOptionFloat(0.6));
+
+    def = this->add("support_neoweave_max_z_speed", coFloat);
+    def->label = L("NeoWave contact max Z speed");
+    def->category = L("Support");
+    def->tooltip = L("Upper limit on the implied vertical speed of the wave, in mm/s. The slicer caps "
+        "the XY speed so the Z motion stays within this. Lower = gentler wave, slower print.");
+    def->sidetext = "mm/s";
+    def->mode = comAdvanced;
+    def->min = 1;
+    def->max = 100;
+    def->set_default_value(new ConfigOptionFloat(20.0));
 
     // [ORCAPORT:SU-5] Support Zones per-volume keys. Hidden (comDevelop); written by the gizmo,
     // read by the support engine.

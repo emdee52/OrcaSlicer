@@ -36,6 +36,7 @@ untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git
 | AS-2 | Align & Stack + face-mate (AS-2F) | ported | notes/AS-2.md | 07_AS-2.patch |
 | AS-3 | Snap & Drag | ported (full pass) | notes/AS-3.md | 08_AS-3.patch |
 | PQ-3 | NeoArachne (a+b together) | ported | notes/PQ-3a.md, PQ-3b.md | 12_PQ-3.patch |
+| SU-4b | NeoWave contact layer (part-bottom + support-top) | ported | notes/SU-4b.md | 13_SU-4b.patch |
 
 SU-2 (True Objects) and SU-3 (real floating detection) are **excluded** by user decision.
 AS-2F extra decisions: picked-instance only; extras = depth/rotate/flip/mirror; feature-center
