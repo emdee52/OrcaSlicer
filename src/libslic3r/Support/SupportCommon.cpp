@@ -1368,9 +1368,11 @@ SupportGeneratorLayersPtr generate_support_layers(
 
     // Sort the layers lexicographically by a raising print_z and a decreasing height.
     std::sort(layers_sorted.begin(), layers_sorted.end(), [](auto *l1, auto *l2) { return *l1 < *l2; });
-    int layer_id = 0;
-    int layer_id_interface = 0;
-    assert(object.support_layers().empty());
+    // [ORCAPORT:PF-10-paint] When a second support pass appends, continue the id sequence instead
+    // of restarting at 0 (duplicate ids break the toolpath stage).
+    assert(object.support_layers().empty() || object.support_pass_appends());
+    int layer_id = int(object.support_layers().size());
+    int layer_id_interface = layer_id;
     for (size_t i = 0; i < layers_sorted.size();) {
         // Find the last layer with roughly the same print_z, find the minimum layer height of all.
         // Due to the floating point inaccuracies, the print_z may not be the same even if in theory they should.

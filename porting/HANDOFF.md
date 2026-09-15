@@ -68,13 +68,19 @@ port intent onto Orca's pipelines.
 | PF-7 | Manual fan controls | excluded (user) | - | - |
 | PF-8 | Serpentine | excluded (user) | - | - |
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
+| PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
+| PF-10-auto | Automatic support painting (support-preview-driven, respects blockers, auto-classifies) | planned | notes/PF-10-auto.md | - |
 | PF-10 | Baobab supports (recon first) | planned | notes/PF-10.md | - |
 
 ## What to do next
 
-Only **PF-10 Baobab supports** remains from the selected preFlight list; it is recon-first and XL
-(see the preFlight inventory). PF-3/4/5/7/8 were excluded by user decision; PF-6 and PF-9 are ported
-(PF-9 verified at runtime/visual level).
+**PF-10-paint** (per-style support painting + multi-pass dispatch) is ported on `port/PF-10-paint`
+and merged into `port/integration` (build clean, runtime pending). It adds an extensible
+`OrcaExt/SupportPaintTypes` registry (a new support = one row), extends the support gizmo with
+Default/Snug/Grid/Organic/NeoWave, and runs one classic pass + one enforcer-only tree pass then
+merges them, so different support engines coexist on one object. Next: **PF-10-auto** (automatic
+painting; support-preview-driven, respects blockers, auto-classifies) then **PF-10 Baobab** (XL,
+recon-first). PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported (PF-9 runtime-verified).
 
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.

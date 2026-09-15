@@ -205,6 +205,13 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
     std::vector<Polygons>    blockers_layers{ print_object.slice_support_blockers() };
     print_object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
     print_object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
+    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support;
+    // facets of other passes' styles are blocked so this pass does not build under them.
+    if (const EnforcerBlockerType ps = print_object.painted_support_state(); ps != EnforcerBlockerType::NONE)
+        print_object.project_and_append_custom_facets(false, ps, enforcers_layers);
+    for (const EnforcerBlockerType bs : print_object.painted_support_blockers())
+        if (bs != EnforcerBlockerType::NONE && bs != EnforcerBlockerType::BLOCKER)
+            print_object.project_and_append_custom_facets(false, bs, blockers_layers);
     const int                support_threshold      = config.support_threshold_angle.value;
     const bool               support_threshold_auto = support_threshold == 0;
     // +1 makes the threshold inclusive
@@ -3590,6 +3597,9 @@ static void generate_support_areas(Print &print, TreeSupport* tree_support, cons
             continue;
 
         // Produce the support G-code.
+        // [ORCAPORT:PF-10-paint] When this pass appends to layers a previous pass produced, only
+        // toolpath this pass's own new layers; otherwise the classic layers would be re-toolpathed.
+        const size_t support_layer_base = print_object.support_layers().size();
         SupportGeneratorLayersPtr raft_layers = generate_raft_base(print_object, support_params, print_object.slicing_parameters(), top_contacts, interface_layers, base_interface_layers, intermediate_layers, layer_storage);
         SupportGeneratorLayersPtr layers_sorted = generate_support_layers(print_object, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
 
@@ -3599,7 +3609,9 @@ static void generate_support_areas(Print &print, TreeSupport* tree_support, cons
         });
 
         print.set_status(69, _L("Generating support"));
-        generate_support_toolpaths(print_object.support_layers(), print_object.config(), support_params, print_object.slicing_parameters(),
+        SupportLayerPtrs new_support_layers(print_object.support_layers().begin() + support_layer_base,
+                                            print_object.support_layers().end());
+        generate_support_toolpaths(new_support_layers, print_object.config(), support_params, print_object.slicing_parameters(),
             raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
 
         auto t_end = std::chrono::high_resolution_clock::now();

@@ -1449,6 +1449,13 @@ struct SupportAnnotations
         // Append custom supports.
         object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
         object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
+        // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support;
+        // facets of other passes' styles are blocked so this pass does not build under them.
+        if (const EnforcerBlockerType ps = object.painted_support_state(); ps != EnforcerBlockerType::NONE)
+            object.project_and_append_custom_facets(false, ps, enforcers_layers);
+        for (const EnforcerBlockerType bs : object.painted_support_blockers())
+            if (bs != EnforcerBlockerType::NONE && bs != EnforcerBlockerType::BLOCKER)
+                object.project_and_append_custom_facets(false, bs, blockers_layers);
 
         // Expand the blocker a bit. Custom blockers produce strips
         // spanning just the projection between the two slices.
