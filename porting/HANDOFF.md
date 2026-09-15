@@ -21,8 +21,8 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`9686ca0b09`** "Merge port/PF-2b: counterbore bridge
-  painting gizmo + painted routing".
+- Latest integration commit at handoff: **`b1a23c6e19`** "Merge port/PF-9: print-friendly interlocking
+  bead width". PF-6 and PF-9 are ported and PF-9 is runtime/visual-verified; PF-3/4/5/7/8 excluded.
 - Two sources: `OrcaFS-NeotkoCM/` (Snapmaker/Neotko Orca) and `preFlight/` (PrusaSlicer fork).
   Both are outside `OrcaSlicer/`; only selected features are ported.
 
@@ -61,18 +61,21 @@ port intent onto Orca's pipelines.
 | PF-1 | Nip & Tuck seams (Holes-only default) | ported | notes/PF-1.md | 14_PF-1.patch |
 | PF-2a | Counterbore smart bridging (global option) | ported | notes/PF-2.md | 15_PF-2a.patch |
 | PF-2b | Counterbore bridge painting gizmo | ported | notes/PF-2.md | 16_PF-2b.patch |
-| PF-3 | Auto Speed | planned | notes/PF-3.md | - |
-| PF-4 | Width Control (max width + warning) | planned | notes/PF-4.md | - |
-| PF-5 | Max Commands Per Second (diagnostic) | planned | notes/PF-5.md | - |
-| PF-6 | Preview Clipping Plane | planned | notes/PF-6.md | - |
-| PF-7 | Manual fan controls | planned | notes/PF-7.md | - |
-| PF-8 | Serpentine | planned | notes/PF-8.md | - |
-| PF-9 | Interlocking perimeters | planned | notes/PF-9.md | - |
+| PF-3 | Auto Speed | excluded (user) | - | - |
+| PF-4 | Width Control | excluded (user) | - | - |
+| PF-5 | Max Commands Per Second | excluded (user) | - | - |
+| PF-6 | Preview Clipping Plane | ported | notes/PF-6.md | 17_PF-6.patch |
+| PF-7 | Manual fan controls | excluded (user) | - | - |
+| PF-8 | Serpentine | excluded (user) | - | - |
+| PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
 | PF-10 | Baobab supports (recon first) | planned | notes/PF-10.md | - |
 
 ## What to do next
 
-Order agreed with the user: **PF-3 -> PF-4 -> PF-5 -> PF-6 -> PF-7 -> (Baobab recon) -> PF-8 -> PF-9 -> PF-10.**
+Only **PF-10 Baobab supports** remains from the selected preFlight list; it is recon-first and XL
+(see the preFlight inventory). PF-3/4/5/7/8 were excluded by user decision; PF-6 and PF-9 are ported
+(PF-9 verified at runtime/visual level).
+
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
 
@@ -199,10 +202,10 @@ Kill a running slicer before rebuilding (it holds the DLL -> `LNK1104`):
 
 ## Built but not runtime/print-verified (user should test)
 
-Every ported feature compiles and links. PQ-1 and PF-1 are the only ones the user has
-runtime-tested so far. Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1, AS-2, AS-3, SU-1/SU-4/SU-5/
-SU-6, PQ-3, SU-4b (both sides), PF-2a (Smart bridging) and PF-2b (paint smart/partial). Protocols
-are in each `notes/<ID>.md`.
+Every ported feature compiles and links. Runtime/visual-verified by the user so far: PQ-1, PF-1,
+PF-6 and PF-9 (PF-9 after several geometry fixes). Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1,
+AS-2, AS-3, SU-1/SU-4/SU-5/SU-6, PQ-3, SU-4b (both sides), PF-2a (Smart bridging) and PF-2b (paint
+smart/partial). Protocols are in each `notes/<ID>.md`.
 
 ## Cheat-sheet
 

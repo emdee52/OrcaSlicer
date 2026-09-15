@@ -104,6 +104,10 @@ over-extruded bead is also physically taller, which Orca's constant-layer-height
 
 ## Verification
 
+**Status: runtime/visual-verified by the user** after the fix history below (alternating spacing
+confirmed, sparse infill correct, bead widths printable). Off-by-default equivalence is by
+construction (new keys default off; no existing path reads them).
+
 Build clean (`build_win.bat -s --no-configure`). Manual protocol:
 1. Off by default -> byte-identical slicing.
 2. Enable with `count=5, strength=0` -> extra walls only (no over-extrusion).
