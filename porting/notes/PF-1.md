@@ -95,8 +95,25 @@ regardless of the loop being reversed for wall direction.
 ## Known gaps
 
 - v1 trims only the inner perimeter emitted **after** the external (default OuterInner wall
-  order) and only the one nearest the seam (within 3 mm). InnerOuter order would miss it.
+  order) and only the one nearest the seam (within 2 external widths). InnerOuter order would miss it.
 - The inner relief is an offset, not preFlight's gap cut; no inner split/seam is introduced.
+
+## Second amendment (user testing)
+
+The debug log (`data_dir()/log/seam_notch_debug.log`, written whenever the notch runs) showed
+339 APPLY / 1 SKIP over 94 layers and revealed:
+
+- **One skipped layer** = a degenerate 2-point loop whose only segment was under the 0.1 mm
+  direction baseline. Fixed: `seam_dir` falls back to the longest available direction.
+- **"One layer printed opposite"** = Orca's own SeamPlacer relocating the seam (outer-wall seam
+  x jumped from ~-6 to ~+27 between layers 49 and 51) - confirmed by reproducing it with
+  `seam_type = Regular`. The notch simply follows the seam; not a PF-1 bug.
+- **Round outer walls skipping in runs** = the 44 deg corner test on polygonized circles.
+  `seam_notch_angle` default lowered to **0** (never skip). Holes never used it.
+- **First layer defect** = the notch on the solid bottom edge, visible for Nip/Nip-Tuck but
+  hidden for Tuck (end notch sits near the seam gap). The notch is now **skipped on layer 0**.
+- Diagnostics moved from a `BOOST_LOG` env gate to an always-on file log.
+- `apply_external` gains a `width_fallback_mm` so a loop with `width <= 0` is not skipped.
 
 ## Files
 
