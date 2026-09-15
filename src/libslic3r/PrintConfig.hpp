@@ -540,7 +540,8 @@ enum class GCodeThumbnailsFormat {
 };
 
 enum CounterboreHoleBridgingOption {
-    chbNone, chbBridges, chbFilled
+    chbNone, chbBridges, chbFilled,
+    chbSmart // [ORCAPORT:PF-2] preFlight stepped/smart counterbore bridging. Appended last.
 };
 
  enum WipeTowerWallType {
@@ -1489,6 +1490,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                 overhang_reverse_internal_only))
     ((ConfigOptionFloatOrPercent,       overhang_reverse_threshold))
     ((ConfigOptionEnum<CounterboreHoleBridgingOption>, counterbore_hole_bridging))
+    ((ConfigOptionInt, counterbore_bridge_layers)) // [ORCAPORT:PF-2] smart bridging step count
     ((ConfigOptionEnum<WallSequence>,  wall_sequence))
     ((ConfigOptionBool,                is_infill_first))
     ((ConfigOptionBool,                small_area_infill_flow_compensation))

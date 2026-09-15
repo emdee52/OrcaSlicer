@@ -157,6 +157,9 @@ public:
     ExPolygons 				 lslices;
     ExPolygons 				 lslices_extrudable;  // BBS: the extrudable part of lslices used for tree support
     std::vector<BoundingBox> lslices_bboxes;
+    // [ORCAPORT:PF-2] Smart counterbore bridging: per-layer (bridge material, fill angle) pairs
+    // added by apply_counterbore_bridge_geometry(). Empty when the feature is off.
+    std::vector<std::pair<ExPolygons, double>> counterbore_bridge_regions;
     // Orca: for separated infills / per-model centering. Aligned with lslices: for each island, the
     // full bounding box of the 3D connected body (across all layers) it belongs to. Populated by
     // PrintObject::infill() only when the feature is used; empty otherwise.

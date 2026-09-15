@@ -655,6 +655,7 @@ static const t_config_enum_values s_keys_map_CounterboreHoleBridgingOption{
     { "none", chbNone },
     { "partiallybridge", chbBridges },
     { "sacrificiallayer", chbFilled },
+    { "smartbridge", chbSmart }, // [ORCAPORT:PF-2]
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(CounterboreHoleBridgingOption)
 
@@ -1779,16 +1780,32 @@ void PrintConfigDef::init_fff_params()
         "This option creates bridges for counterbore holes, allowing them to be printed without support. Available modes include:\n"
          "1. None: No bridge is created\n"
          "2. Partially Bridged: Only a part of the unsupported area will be bridged\n"
-         "3. Sacrificial Layer: A full sacrificial bridge layer is created");
+         "3. Sacrificial Layer: A full sacrificial bridge layer is created\n"
+         "4. Smart Bridging: Detects counterbores automatically and closes the unsupported ring over "
+         "several layers, rotating the bridge direction each layer (preFlight).");
     def->mode = comAdvanced;
     def->enum_keys_map = &ConfigOptionEnum<CounterboreHoleBridgingOption>::get_enum_values();
     def->enum_values.emplace_back("none");
     def->enum_values.emplace_back("partiallybridge");
     def->enum_values.emplace_back("sacrificiallayer");
+    def->enum_values.emplace_back("smartbridge");
     def->enum_labels.emplace_back(L("None"));
     def->enum_labels.emplace_back(L("Partially bridged"));
     def->enum_labels.emplace_back(L("Sacrificial layer"));
+    def->enum_labels.emplace_back(L("Smart bridging"));
     def->set_default_value(new ConfigOptionEnum<CounterboreHoleBridgingOption>(chbNone));
+
+    // [ORCAPORT:PF-2] Number of stepped layers used by "Smart bridging".
+    def = this->add("counterbore_bridge_layers", coInt);
+    def->label = L("Counterbore bridge layers");
+    def->category = L("Quality");
+    def->tooltip = L("Number of transition layers for smart counterbore bridging. Each layer bridges "
+        "from a rotated direction, progressively closing the hole. More layers produce a gentler "
+        "overhang angle. 2 = the most aggressive, 9 = the gentlest.");
+    def->mode = comAdvanced;
+    def->min = 2;
+    def->max = 9;
+    def->set_default_value(new ConfigOptionInt(2));
 
     def = this->add("overhang_reverse_threshold", coFloatOrPercent);
     def->label = L("Reverse threshold");

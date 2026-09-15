@@ -303,7 +303,10 @@ std::pair<float, Point> Fill::_infill_direction(const Surface *surface) const
     }
 #endif
 
-    if (surface->bridge_angle >= 0) {
+    if (this->counterbore_fill_angle >= 0) {
+        // [ORCAPORT:PF-2] smart counterbore bridge: fixed corridor angle from the slicing pass
+        out_angle = this->counterbore_fill_angle;
+    } else if (surface->bridge_angle >= 0) {
 	    // use bridge angle
 		//FIXME Vojtech: Add a debugf?
         // Slic3r::debugf "Filling bridge with angle %d\n", rad2deg($surface->bridge_angle);

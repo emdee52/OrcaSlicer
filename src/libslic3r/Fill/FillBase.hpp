@@ -130,6 +130,9 @@ public:
     coordf_t    overlap;
     // in radians, ccw, 0 = East
     float       angle;
+    // [ORCAPORT:PF-2] Smart counterbore bridging: absolute fill angle for a bridge surface,
+    // < 0 when not a counterbore bridge. Takes priority over bridge_angle.
+    float       counterbore_fill_angle{-1.f};
 
     // Orca: Fill direction is fixed absolute angle if SurfaceFillParams.fixed_angle or config.ironing_angle_fixed
     bool        fixed_angle{false};
