@@ -8,6 +8,9 @@
 #include "Feature/SupportZones/SupportZoneProbe.hpp" // [ORCAPORT:SU-5] zone constants
 #include "I18N.hpp"
 #include "Layer.hpp"
+#include "Geometry/ConvexHull.hpp" // [ORCAPORT:PF-2]
+#include <algorithm>              // [ORCAPORT:PF-2] std::clamp
+#include <cmath>                  // [ORCAPORT:PF-2]
 #include "MultiMaterialSegmentation.hpp"
 #include "Print.hpp"
 //BBS
@@ -814,6 +817,128 @@ void groupingVolumesForBrim(PrintObject* object, LayerPtrs& layers, int firstLay
     reGroupingLayerPolygons(object->firstLayerObjGroupsMod(), layers.front()->lslices, scaled_resolution);
 }
 
+// [ORCAPORT:PF-2] Smart counterbore bridging (global mode), ported from preFlight
+// apply_counterbore_bridge_geometry() (PrintObjectSlice.cpp:622). preFlight's bore convention is
+// followed: bore = the larger hole on layer L, shaft = the smaller nested hole on layer L+1, and
+// the ring (bore - shaft) is closed over N layers by rotating corridor hulls. Detection is ours
+// (preFlight was paint-only). Off unless counterbore_hole_bridging == chbSmart.
+static void apply_counterbore_bridge_geometry(PrintObject &po)
+{
+    const int n_layers = int(po.layer_count());
+    if (n_layers < 3)
+        return;
+    const Layer *l0 = po.get_layer(0);
+    if (l0 == nullptr || l0->region_count() == 0)
+        return;
+    const PrintRegionConfig &cfg = l0->get_region(0)->region().config();
+    if (cfg.counterbore_hole_bridging.value != chbSmart)
+        return;
+    const int    num_transition_layers = std::clamp(cfg.counterbore_bridge_layers.value, 2, 9);
+    const double min_ring_scaled        = scale_(0.6); // ignore chamfers / thin rings
+
+    for (int L = 1; L + 1 < n_layers; ++L) {
+        Layer       *layer = po.get_layer(L);
+        const Layer *next  = po.get_layer(L + 1);
+        if (layer == nullptr || next == nullptr || layer->region_count() == 0)
+            continue;
+
+        for (const ExPolygon &ep : layer->lslices) {
+            for (const Polygon &hole : ep.holes) {
+                ExPolygon bore(hole);
+                bore.contour.make_counter_clockwise();
+                if (bore.area() <= 0.0)
+                    continue;
+                const ExPolygons bore_poly{bore};
+
+                // Find smaller holes in the next layer nested inside the bore (the shaft).
+                ExPolygons shaft;
+                for (const ExPolygon &nep : next->lslices)
+                    for (const Polygon &nh : nep.holes) {
+                        ExPolygon she(nh);
+                        she.contour.make_counter_clockwise();
+                        if (she.area() <= 0.0 || she.area() >= bore.area() * 0.9)
+                            continue;
+                        if (!bore.contains(she.contour.points.front()) && !bore.contains(get_extents(she).center()))
+                            continue;
+                        shaft.push_back(she);
+                    }
+                if (shaft.empty())
+                    continue;
+                shaft = union_ex(shaft);
+
+                // Ring width guard: equivalent-diameter difference must exceed min_ring_scaled.
+                const double d_bore  = 2.0 * std::sqrt(bore.area() / M_PI);
+                double       shaft_area = 0.0;
+                for (const ExPolygon &s : shaft)
+                    shaft_area += s.area();
+                const double d_shaft = 2.0 * std::sqrt(shaft_area / M_PI);
+                if (d_bore - d_shaft < min_ring_scaled)
+                    continue;
+
+                ExPolygons ring = diff_ex(bore_poly, shaft, ApplySafetyOffset::Yes);
+                if (ring.empty())
+                    continue;
+
+                const int layers_available = std::min(num_transition_layers, n_layers - 1 - L);
+                if (layers_available <= 0)
+                    continue;
+
+                const BoundingBox shaft_bb = get_extents(shaft);
+                const double      smear    = double(std::max(shaft_bb.size().x(), shaft_bb.size().y())) * 2.0;
+
+                std::vector<ExPolygons> corridors(num_transition_layers);
+                for (int step = 0; step < num_transition_layers; ++step) {
+                    const double  angle  = step * M_PI / double(num_transition_layers);
+                    const double  perp   = angle + M_PI / 2.0;
+                    const coord_t dx     = coord_t(std::cos(perp) * smear);
+                    const coord_t dy     = coord_t(std::sin(perp) * smear);
+                    Points        all_pts;
+                    for (const ExPolygon &e : shaft)
+                        for (const Point &p : e.contour.points) {
+                            all_pts.emplace_back(p.x() + dx, p.y() + dy);
+                            all_pts.emplace_back(p.x() - dx, p.y() - dy);
+                            all_pts.emplace_back(p);
+                        }
+                    Polygon hull = Geometry::convex_hull(all_pts);
+                    hull.make_counter_clockwise();
+                    corridors[step] = ExPolygons{ExPolygon(std::move(hull))};
+                }
+
+                for (int step = 0; step < layers_available; ++step) {
+                    Layer *tl = po.get_layer(L + step);
+                    if (tl == nullptr)
+                        continue;
+                    ExPolygons remaining = corridors[0];
+                    for (int s = 1; s <= step; ++s)
+                        remaining = intersection_ex(remaining, corridors[s]);
+                    ExPolygons bm = diff_ex(ring, remaining);
+                    if (bm.empty())
+                        continue;
+
+                    // Carve the bore and add the stepped bridge material.
+                    ExPolygons merged = diff_ex(tl->lslices, bore_poly);
+                    merged.insert(merged.end(), bm.begin(), bm.end());
+                    tl->lslices = union_ex(merged);
+
+                    const double bridge_angle = step * M_PI / double(num_transition_layers) + M_PI / 2.0;
+                    tl->counterbore_bridge_regions.emplace_back(bm, bridge_angle);
+
+                    if (tl->region_count() > 0) {
+                        LayerRegion *layerm = tl->get_region(0);
+                        ExPolygons   carved;
+                        carved.reserve(layerm->slices.surfaces.size());
+                        for (const Surface &s : layerm->slices.surfaces)
+                            carved.push_back(s.expolygon);
+                        carved = diff_ex(carved, bore_poly);
+                        carved.insert(carved.end(), bm.begin(), bm.end());
+                        layerm->slices.set(union_ex(carved), stInternal);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Called by make_perimeters()
 // 1) Decides Z positions of the layers,
 // 2) Initializes layers and their regions
@@ -856,6 +981,10 @@ void PrintObject::slice()
 
     // BBS: the actual first layer slices stored in layers are re-sorted by volume group and will be used to generate brim
     groupingVolumesForBrim(this, m_layers, firstLayerReplacedBy);
+
+    // [ORCAPORT:PF-2] Smart counterbore bridging (global): auto-detect counterbores and add the
+    // stepped bridge material before bounding boxes / backups are taken.
+    apply_counterbore_bridge_geometry(*this);
 
     // Update bounding boxes, back up raw slices of complex models.
     tbb::parallel_for(

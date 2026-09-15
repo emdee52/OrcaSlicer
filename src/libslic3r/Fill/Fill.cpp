@@ -1434,6 +1434,16 @@ void Layer::make_fills(FillAdaptive::Octree* adaptive_fill_octree, FillAdaptive:
                 if (f->layer_id > 0 && f->layer_id <= elefant_layers)
                     params.density = 1.0f - (1.0f - elefant_density) * (elefant_layers - (f->layer_id - 1)) / elefant_layers; // Reverse calculation - The higher layer number means the higher density. Counting starts from the second layer.
             }
+            // [ORCAPORT:PF-2] Smart counterbore bridging: give each bridge surface its corridor
+            // angle. `f` is reused across surfaces, so reset first.
+            f->counterbore_fill_angle = -1.f;
+            if (!this->counterbore_bridge_regions.empty()) {
+                for (const auto &[cb_region, cb_angle] : this->counterbore_bridge_regions)
+                    if (!intersection_ex(surface_fill.surface.expolygon, cb_region).empty()) {
+                        f->counterbore_fill_angle = float(cb_angle);
+                        break;
+                    }
+            }
             // make fill
 			f->fill_surface_extrusion(&surface_fill.surface,
 				params,
