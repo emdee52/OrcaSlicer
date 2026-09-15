@@ -69,7 +69,11 @@ Behaviour (Classic wall generator only):
 
 **Fix history.** The first implementation reused the onion loop's standard spacing and only varied
 bead widths, so the rings stacked directly and did not interlock (confirmed by cross-section
-comparison). The dedicated ring pass above was added to reproduce the alternating spacing.
+comparison). The dedicated ring pass above was added to reproduce the alternating spacing. A
+follow-up fixed a units error: the scaled bead width was written into `path.width` (which is mm) and
+the coverage offset used the unscaled width, producing ~2 mm beads; `path.width` now uses the
+unscaled width and geometry width follows `sqrt(flow_ratio)` (`main_w`/`boundary_w`), with `mm3_per_mm`
+carrying the over-extrusion.
 
 ## Approximation vs PF-9 (known limitations)
 

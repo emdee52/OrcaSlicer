@@ -1343,6 +1343,9 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
     const coord_t spacing_0         = odd ? il_adjacent : std::max<coord_t>(1, il_gapped - bnd_shift);
     const coord_t spacing_x         = il_gapped;
     const coord_t spacing_innermost = odd ? std::max<coord_t>(1, il_gapped - bnd_shift) : il_adjacent;
+    // [ORCAPORT:PF-9] path.width is in mm, so keep the unscaled bead width separately from the
+    // scaled spacing values above.
+    const float   base_width_mm = this->perimeter_flow.width();
 
     int actual_shells = std::max(0, this->config->interlock_perimeter_count.value);
     const BoundingBox bbox    = get_extents(zone);
@@ -1369,7 +1372,9 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
 
         const double tier_flow  = (k == 0) ? (m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0) : 2.0;
         const double flow_ratio = 1.0 + (tier_flow - 1.0) * m_interlock_strength;
-        const float  width      = float((k == 0 && m_interlock_even) ? bnd_w : w);
+        // width follows the flow (round-bead model): sqrt(2)*w for 200%, sqrt(BOUNDARY_FLOW)*w for
+        // the even-layer boundary bead. Matches PF-9's main_w / boundary_w.
+        const float  width      = base_width_mm * float(std::sqrt(flow_ratio));
         const double mm3        = base_mm3 * flow_ratio;
 
         for (const ExPolygon &ex : ring) {
@@ -1388,7 +1393,7 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
                 add_loop(hole, elrHole);
         }
 
-        append(covered, offset_ex(ring, float(width) / 2.f));
+        append(covered, offset_ex(ring, float(scale_(double(width))) / 2.f));
     }
 }
 
