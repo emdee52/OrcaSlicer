@@ -290,6 +290,10 @@ public:
     ExPolygons                  support_islands;
     // Extrusion paths for the support base and for the support interface and contacts.
     ExtrusionEntityCollection   support_fills;
+    // [ORCAPORT:SU-5] Family of each FIRST-LEVEL entity of `support_fills`, same order. Empty = a
+    // single family (the normal case, which keeps the G-code identical). Lets two zones with
+    // different materials be emitted with different tools without regenerating the support.
+    std::vector<int>            support_fills_family;
     SupportInnerType            support_type = stInnerNormal;
 
     // for tree supports

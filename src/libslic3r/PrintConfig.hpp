@@ -1469,6 +1469,12 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool, zaa_dont_alternate_fill_direction))
     ((ConfigOptionFloat, zaa_min_z))
     ((ConfigOptionFloat, zaa_minimize_perimeter_height))
+    // [ORCAPORT:SU-5] Support Zones per-volume keys (written by the gizmo, read by the engine).
+    ((ConfigOptionString,  support_zone_gesture))
+    ((ConfigOptionFloat,   support_zone_lean_deg))
+    ((ConfigOptionBool,    support_zone_roof_only))
+    ((ConfigOptionBool,    support_zone_solid))
+    ((ConfigOptionBool,    support_zone_land_only))
     )
 
 PRINT_CONFIG_CLASS_DEFINE(
