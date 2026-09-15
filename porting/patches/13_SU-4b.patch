@@ -1,0 +1,575 @@
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 0aa6a2f9fb..3f45de8fd1 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -362,8 +362,10 @@ set(lisbslic3r_sources
+     OrcaExt/FreeZ.hpp
+     OrcaExt/IdleToolPowerDown.cpp
+     OrcaExt/IdleToolPowerDown.hpp
+-    OrcaExt/InstanceContact.cpp
+-    OrcaExt/InstanceContact.hpp
++OrcaExt/InstanceContact.cpp
++OrcaExt/InstanceContact.hpp
++OrcaExt/NeoWaveContact.cpp
++OrcaExt/NeoWaveContact.hpp
+     Orient.cpp
+     Orient.hpp
+     ParameterUtils.cpp
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index c985312c43..8be11c3da3 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -17,6 +17,7 @@
+ #include "ShortestPath.hpp"
+ #include "GCode/OrderingStrategies.hpp"
+ #include "Print.hpp"
++#include "OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b]
+ #include "Utils.hpp"
+ #include "ClipperUtils.hpp"
+ #include "libslic3r.h"
+@@ -8316,6 +8317,18 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+             }
+     }
+ 
++    // [ORCAPORT:SU-4b] Support-side NeoWave contact: apply_support_wave() marked the top-contact
++    // support paths z_contoured. Cap the XY speed so the implied wave Z speed stays within
++    // support_neoweave_max_z_speed.
++    if (path.z_contoured && is_support(path.role())
++        && m_config.support_neoweave_enabled.value
++        && m_config.support_neoweave_target.value == nwctSupportTop) {
++        const double cap = OrcaExt::NeoWaveContact::xy_feedrate_cap(
++            m_config.support_neoweave_period.value, m_config.support_neoweave_amplitude.value,
++            m_config.support_neoweave_max_z_speed.value, coord_t(path.width));
++        speed = std::min(speed, cap / 60.0); // cap is mm/min, speed is mm/s
++    }
++
+     double F = speed * 60;  // convert mm/sec to mm/min
+     
+     // Orca: Dynamic PA
+@@ -8619,9 +8632,26 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+ 
+                 apply_role_based_fan_speed();
+             }
++            // [ORCAPORT:SU-4b] Part-bottom NeoWave contact: wave the object's own bridge fill
++            // (the first layer resting on a support roof). Upward-only by construction, so it never
++            // digs into the roof. Arc fitting cannot carry the per-segment Z, so this replaces the
++            // normal emission below.
++            const bool neoweave_part = sloped == nullptr && !path.z_contoured
++                && m_config.support_neoweave_enabled.value
++                && m_config.support_neoweave_target.value == nwctPartBottom
++                && path.role() == erBridgeInfill && m_layer_index > 0
++                && m_config.support_neoweave_amplitude.value > 1e-9;
++            if (neoweave_part) {
++                gcode += OrcaExt::NeoWaveContact::emit_part_wave(
++                    path, m_writer, m_nominal_z, F, e_per_mm, path.is_force_no_extrusion(),
++                    [this](const Point &p) { return this->point_to_gcode(p); },
++                    m_config.support_neoweave_amplitude.value, m_config.support_neoweave_period.value,
++                    m_config.support_neoweave_max_z_speed.value);
++                gcode += OrcaExt::NeoWaveContact::restore_z(m_writer, m_nominal_z);
++            }
+             // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped extrusion
+             // Attention: G2 and G3 is not supported in spiral_mode mode
+-            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
++            else if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
+                 double path_length = 0.;
+                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
+                 double saved_z      = m_writer.get_position().z();
+diff --git a/src/libslic3r/OrcaExt/NeoWaveContact.cpp b/src/libslic3r/OrcaExt/NeoWaveContact.cpp
+new file mode 100644
+index 0000000000..7e37309bf5
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/NeoWaveContact.cpp
+@@ -0,0 +1,188 @@
++// [ORCAPORT FILE] NeoWaveContact - NeoWave support contact layer (Z-wave to reduce bonding)
++// Source: NEOTKOCM_RELEASE_2_37.md; fork sha c3508e5a92
++#include "NeoWaveContact.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <limits>
++
++#include "../ExtrusionEntity.hpp"
++#include "../ExtrusionEntityCollection.hpp"
++#include "../GCodeWriter.hpp"
++#include "../Line.hpp"
++#include "../Polyline.hpp"
++
++namespace Slic3r {
++namespace OrcaExt {
++namespace NeoWaveContact {
++
++namespace {
++
++constexpr double kPi = 3.14159265358979323846;
++// Micro-segments per wave period; 8 gives a smooth-enough sinusoid.
++constexpr int kSegmentsPerPeriod = 8;
++// Hard cap on micro-segments per input line (backstop for a mis-set near-zero period).
++constexpr int kMaxSegmentsPerLine = 4096;
++
++double path_line_width_mm(coord_t width_scaled) {
++    const double w = unscale<double>(width_scaled);
++    return w > 1e-9 ? w : 0.4;
++}
++
++double effective_period(double period_mm, coord_t width_scaled) {
++    const double min_period = std::max(0.2, path_line_width_mm(width_scaled));
++    double       p          = period_mm;
++    if (p < 1e-9)
++        p = path_line_width_mm(width_scaled);
++    return std::max(p, min_period);
++}
++
++int segments_for_line(double line_length_mm, double period_mm) {
++    const double seg_target = period_mm / double(kSegmentsPerPeriod);
++    if (seg_target < 1e-9)
++        return 1;
++    return std::min(kMaxSegmentsPerLine,
++                    std::max(1, int(std::ceil(line_length_mm / seg_target))));
++}
++
++} // namespace
++
++double resolve_period_mm(double period_mm, coord_t width_scaled) {
++    return effective_period(period_mm, width_scaled);
++}
++
++double xy_feedrate_cap(double period_mm, double amplitude_mm, double max_z_speed_mm_s,
++                       coord_t width_scaled) {
++    if (amplitude_mm < 1e-9)
++        return std::numeric_limits<double>::max();
++    const double period = effective_period(period_mm, width_scaled);
++    // Z(t) = A*sin(2*pi*f*t), f = v_xy / period -> max |dZ/dt| = 2*pi*A*v_xy/period.
++    const double xy_speed_max = max_z_speed_mm_s * period / (2.0 * kPi * amplitude_mm);
++    return xy_speed_max * 60.0; // mm/min
++}
++
++std::string emit_part_wave(const ExtrusionPath                         &path,
++                           GCodeWriter                                  &writer,
++                           double                                        nominal_z,
++                           double                                        F,
++                           double                                        e_per_mm,
++                           bool                                          force_no_extrusion,
++                           const std::function<Vec2d(const Point &)>    &point_to_gcode,
++                           double                                        amplitude_mm,
++                           double                                        period_mm,
++                           double                                        max_z_speed_mm_s) {
++    std::string gcode;
++    if (amplitude_mm < 1e-9)
++        return gcode;
++
++    const double period = effective_period(period_mm, coord_t(path.width));
++
++    // Cap the XY feedrate so the implied Z feedrate stays within the limit.
++    double                      F_wave = F;
++    const double                cap    = xy_feedrate_cap(period, amplitude_mm, max_z_speed_mm_s,
++                                                          coord_t(path.width));
++    F_wave = std::min(F, cap);
++    if (std::abs(F_wave - F) > 1e-9)
++        gcode += writer.set_speed(F_wave, "", "");
++
++    double weave_dist = 0.0;
++    for (const Line3 &line : path.polyline.lines()) {
++        const double line_length = line.length() * SCALING_FACTOR;
++        if (line_length < 1e-9)
++            continue;
++        const double dE      = e_per_mm * line_length;
++        const int    n_segs  = segments_for_line(line_length, period);
++        const double seg_len = line_length / double(n_segs);
++        const double dE_seg  = dE / double(n_segs);
++
++        const Vec2d pt_a = point_to_gcode(line.a.to_point());
++        const Vec2d pt_b = point_to_gcode(line.b.to_point());
++        for (int si = 0; si < n_segs; ++si) {
++            const double t     = double(si + 1) / double(n_segs);
++            const Vec2d  pt    = pt_a + t * (pt_b - pt_a);
++            const double d     = weave_dist + seg_len * double(si + 1);
++            const double phase = (d / period) * 2.0 * kPi;
++            // Upward-only: valleys sit at nominal_z (touch the interface), crests lift away.
++            const double z = nominal_z + amplitude_mm * std::abs(std::sin(phase));
++            gcode += writer.extrude_to_xyz(Vec3d(pt(0), pt(1), z), dE_seg, "", force_no_extrusion);
++        }
++        weave_dist += line_length;
++    }
++    return gcode;
++}
++
++std::string restore_z(GCodeWriter &writer, double nominal_z) {
++    return writer.travel_to_z(nominal_z, "NeoWave contact: restore layer Z");
++}
++
++bool apply_support_wave(ExtrusionPath &path, double amplitude_mm, double period_mm) {
++    if (amplitude_mm < 1e-9 || path.polyline.points.size() < 2)
++        return false;
++
++    const double  period     = effective_period(period_mm, coord_t(path.width));
++    const coord_t amp_scaled = coord_t(amplitude_mm / SCALING_FACTOR);
++
++    Points3 pts;
++    pts.reserve(path.polyline.points.size() * 2);
++
++    double weave_dist = 0.0;
++    for (const Line3 &line : path.polyline.lines()) {
++        const double line_length = line.length() * SCALING_FACTOR;
++        if (line_length < 1e-9)
++            continue;
++        const int    n_segs  = segments_for_line(line_length, period);
++        const double seg_len = line_length / double(n_segs);
++
++        if (pts.empty())
++            pts.emplace_back(line.a);
++
++        const coord_t dx = line.b.x() - line.a.x();
++        const coord_t dy = line.b.y() - line.a.y();
++        for (int si = 0; si < n_segs; ++si) {
++            const double t  = double(si + 1) / double(n_segs);
++            const coord_t x = line.a.x() + coord_t(std::llround(double(dx) * t));
++            const coord_t y = line.a.y() + coord_t(std::llround(double(dy) * t));
++            const double  d = weave_dist + seg_len * double(si + 1);
++            const double  phase = (d / period) * 2.0 * kPi;
++            // Downward-only: peaks sit at the nominal support Z (touch the part), valleys drop
++            // away from it. The Z here is a scaled offset relative to the layer's nominal Z.
++            const coord_t z = coord_t(-double(amp_scaled) * std::abs(std::sin(phase)));
++            pts.emplace_back(Point3(x, y, z));
++        }
++        weave_dist += line_length;
++    }
++
++    if (pts.size() < 2)
++        return false;
++
++    path.polyline.points = std::move(pts);
++    path.z_contoured     = true;
++    return true;
++}
++
++int apply_support_wave(std::vector<ExtrusionEntity *> &entities, double amplitude_mm, double period_mm) {
++    int n = 0;
++    for (ExtrusionEntity *ee : entities) {
++        if (ee == nullptr)
++            continue;
++        if (auto *path = dynamic_cast<ExtrusionPath *>(ee)) {
++            if (apply_support_wave(*path, amplitude_mm, period_mm))
++                ++n;
++        } else if (auto *mp = dynamic_cast<ExtrusionMultiPath *>(ee)) {
++            for (ExtrusionPath &p : mp->paths)
++                if (apply_support_wave(p, amplitude_mm, period_mm))
++                    ++n;
++        } else if (auto *loop = dynamic_cast<ExtrusionLoop *>(ee)) {
++            for (ExtrusionPath &p : loop->paths)
++                if (apply_support_wave(p, amplitude_mm, period_mm))
++                    ++n;
++        } else if (auto *coll = dynamic_cast<ExtrusionEntityCollection *>(ee)) {
++            n += apply_support_wave(coll->entities, amplitude_mm, period_mm);
++        }
++    }
++    return n;
++}
++
++} // namespace NeoWaveContact
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/NeoWaveContact.hpp b/src/libslic3r/OrcaExt/NeoWaveContact.hpp
+new file mode 100644
+index 0000000000..7b0ba9ddba
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/NeoWaveContact.hpp
+@@ -0,0 +1,72 @@
++// [ORCAPORT FILE] NeoWaveContact - NeoWave support contact layer (Z-wave to reduce bonding)
++// Source: NEOTKOCM_RELEASE_2_37.md; fork sha c3508e5a92
++#ifndef slic3r_OrcaExt_NeoWaveContact_hpp_
++#define slic3r_OrcaExt_NeoWaveContact_hpp_
++
++#include <functional>
++#include <string>
++#include <vector>
++
++#include "../Point.hpp"
++#include "../libslic3r.h"
++
++namespace Slic3r {
++
++class ExtrusionEntity;
++class ExtrusionPath;
++class GCodeWriter;
++
++namespace OrcaExt {
++namespace NeoWaveContact {
++
++// Wave geometry shared by both targets.
++//
++// The wave is one-sided (rectified sine), so it only ever moves material away from the
++// interface it rests on: the object's bridge fill waves upward (target PartBottom), the
++// support's top-contact interface waves downward (target SupportTop). Neither can dig into
++// the other side by construction.
++//
++// `period_mm` of 0 means "auto" and resolves to the path line width. It is floored at
++// ~0.2 mm / one line width so the micro-segment count stays bounded (a Z wave finer than a
++// line width is unprintable anyway).
++
++// Resolve the effective wave period in mm for a path of the given (scaled) width.
++double resolve_period_mm(double period_mm, coord_t width_scaled);
++
++// Maximum XY feedrate (mm/min) whose implied Z feedrate stays within `max_z_speed_mm_s`
++// (mm/s) for the given period/amplitude. Callers cap the normal print feedrate with this.
++double xy_feedrate_cap(double period_mm, double amplitude_mm, double max_z_speed_mm_s,
++                       coord_t width_scaled);
++
++// PartBottom target: emit `path` as G-code with an upward-only Z wave. Returns the emitted
++// G-code (empty when the wave is degenerate). `point_to_gcode` maps a scaled XY point to
++// G-code coordinates; `nominal_z` is the layer's nominal Z (valleys sit there).
++std::string emit_part_wave(const ExtrusionPath      &path,
++                           GCodeWriter               &writer,
++                           double                     nominal_z,
++                           double                     F,
++                           double                     e_per_mm,
++                           bool                       force_no_extrusion,
++                           const std::function<Vec2d(const Point &)> &point_to_gcode,
++                           double                     amplitude_mm,
++                           double                     period_mm,
++                           double                     max_z_speed_mm_s);
++
++// Restore the nozzle to the nominal layer Z after `emit_part_wave`.
++std::string restore_z(GCodeWriter &writer, double nominal_z);
++
++// SupportTop target: rewrite a top-contact support path in place into a downward-only Z
++// wave and set `z_contoured` so the existing variable-Z GCode emitter is used. Returns
++// false when the path is left untouched (degenerate amplitude or too few points).
++bool apply_support_wave(ExtrusionPath &path, double amplitude_mm, double period_mm);
++
++// SupportTop target: recurse over a support toolpath tree (paths / multipaths / loops /
++// collections) and wave every leaf path. Returns the number of paths modified.
++int apply_support_wave(std::vector<ExtrusionEntity *> &entities, double amplitude_mm,
++                       double period_mm);
++
++} // namespace NeoWaveContact
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index 0b8fde5d18..2c92ae3e0f 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1136,6 +1136,7 @@ static std::vector<std::string> s_Preset_print_options{
+     "support_interface_bottom_layers",
+     "support_interface_pattern",
+     "wavesupport_roof_pattern", "wavesupport_roof_order", "wavesupport_roof_reverse", "wavesupport_wall_loops", // [ORCAPORT:SU-4]
++    "support_neoweave_enabled", "support_neoweave_target", "support_neoweave_amplitude", "support_neoweave_period", "support_neoweave_max_z_speed", // [ORCAPORT:SU-4b]
+     "support_interface_spacing",
+     "support_interface_loop_pattern",
+     "support_top_z_distance",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 24b332252b..b2f62554ca 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -393,6 +393,13 @@ static t_config_enum_values s_keys_map_SupportMaterialWaveRoofOrder {
+ };
+ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
+ 
++// [ORCAPORT:SU-4b] NeoWave contact layer target.
++static t_config_enum_values s_keys_map_NeoWaveContactTarget {
++    { "part_bottom", nwctPartBottom },
++    { "support_top", nwctSupportTop }
++};
++CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(NeoWaveContactTarget)
++
+ static t_config_enum_values s_keys_map_SupportType{
+     { "normal(auto)",   stNormalAuto },
+     { "tree(auto)", stTreeAuto },
+@@ -7131,6 +7138,68 @@ void PrintConfigDef::init_fff_params()
+     def->max = 10;
+     def->set_default_value(new ConfigOptionInt(0));
+ 
++    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2). Independent of painting: it only
++    // modulates Z on whichever side of the part/support interface is selected, so the printed
++    // colour/pattern is untouched.
++    def = this->add("support_neoweave_enabled", coBool);
++    def->label = L("NeoWave contact layer");
++    def->category = L("Support");
++    def->tooltip = L("Create intermittent contact between the part and its support roof by waving "
++        "the selected interface up and down in Z. Only the wave peaks touch, leaving microscopic "
++        "gaps that make the support easier to remove. The printed colour and pattern are untouched. "
++        "Turning this on does not require any painting.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(false));
++
++    def = this->add("support_neoweave_target", coEnum);
++    def->label = L("NeoWave contact side");
++    def->category = L("Support");
++    def->tooltip = L("Which side of the part/support interface carries the wave. \"Part bottom\" waves "
++        "the object's own bridge fill resting on the support (upward only). \"Support top\" keeps the "
++        "part flat and waves the support's top interface instead (downward only). Compare both.");
++    def->enum_keys_map = &ConfigOptionEnum<NeoWaveContactTarget>::get_enum_values();
++    def->enum_values.push_back("part_bottom");
++    def->enum_values.push_back("support_top");
++    def->enum_labels.push_back(L("Part bottom (bridge fill)"));
++    def->enum_labels.push_back(L("Support top (interface)"));
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionEnum<NeoWaveContactTarget>(nwctPartBottom));
++
++    def = this->add("support_neoweave_amplitude", coFloat);
++    def->label = L("NeoWave contact amplitude");
++    def->category = L("Support");
++    def->tooltip = L("Peak Z deviation of the contact wave, in mm. One-sided by construction, so it "
++        "never digs into the surface it rests on. Typical 0.05-0.2 mm; keep at or below half the "
++        "layer height.");
++    def->sidetext = "mm";
++    def->mode = comAdvanced;
++    def->min = 0;
++    def->max = 2.0;
++    def->set_default_value(new ConfigOptionFloat(0.1));
++
++    def = this->add("support_neoweave_period", coFloat);
++    def->label = L("NeoWave contact period");
++    def->category = L("Support");
++    def->tooltip = L("Distance between successive wave peaks along each printed line, in mm. Smaller "
++        "= finer wave. Floored internally to about one line width (a finer wave is unprintable). "
++        "0 = auto (line width).");
++    def->sidetext = "mm";
++    def->mode = comAdvanced;
++    def->min = 0;
++    def->max = 10.0;
++    def->set_default_value(new ConfigOptionFloat(0.6));
++
++    def = this->add("support_neoweave_max_z_speed", coFloat);
++    def->label = L("NeoWave contact max Z speed");
++    def->category = L("Support");
++    def->tooltip = L("Upper limit on the implied vertical speed of the wave, in mm/s. The slicer caps "
++        "the XY speed so the Z motion stays within this. Lower = gentler wave, slower print.");
++    def->sidetext = "mm/s";
++    def->mode = comAdvanced;
++    def->min = 1;
++    def->max = 100;
++    def->set_default_value(new ConfigOptionFloat(20.0));
++
+     // [ORCAPORT:SU-5] Support Zones per-volume keys. Hidden (comDevelop); written by the gizmo,
+     // read by the support engine.
+     def = this->add("support_zone_gesture", coString);
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index 9a169c8991..45b4b6c549 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -283,6 +283,12 @@ enum SupportMaterialWaveRoofOrder {
+     smwroSmart, smwroZigZag, smwroMonotonic
+ };
+ 
++// [ORCAPORT:SU-4b] Which side of the part/support interface carries the contact Z-wave.
++enum NeoWaveContactTarget {
++    nwctPartBottom, // wave the object's bridge fill (upward-only) - fork behaviour
++    nwctSupportTop  // wave the support's top-contact interface (downward-only)
++};
++
+ // BBS
+ enum SupportType {
+     stNormalAuto, stTreeAuto, stNormal, stTree,
+@@ -699,6 +705,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialInterfacePattern)
+ // [ORCAPORT:SU-4]
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofPattern)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
++CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NeoWaveContactTarget) // [ORCAPORT:SU-4b]
+ // BBS
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportType)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamPosition)
+@@ -1186,6 +1193,14 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionEnum<SupportMaterialWaveRoofOrder>,   wavesupport_roof_order))
+     ((ConfigOptionBool,                wavesupport_roof_reverse))
+     ((ConfigOptionInt,                 wavesupport_wall_loops))
++    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2): Z-wave the interface between the
++    // part and its support roof so only the wave peaks touch, reducing bonding. Independent of
++    // painting; the printed colour/pattern is untouched, only Z moves.
++    ((ConfigOptionBool,                support_neoweave_enabled))
++    ((ConfigOptionEnum<NeoWaveContactTarget>, support_neoweave_target))
++    ((ConfigOptionFloat,               support_neoweave_amplitude))
++    ((ConfigOptionFloat,               support_neoweave_period))
++    ((ConfigOptionFloat,               support_neoweave_max_z_speed))
+     // Spacing between support material lines (the hatching distance).
+     ((ConfigOptionFloat,               support_base_pattern_spacing))
+     ((ConfigOptionFloat,               support_expansion))
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index 958970a702..6037b4aabf 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -7,6 +7,7 @@
+ #include "../Fill/FillWaveRoof.hpp" // [ORCAPORT:SU-4] NeoWave roof pattern
+ #include "../MutablePolygon.hpp"
+ #include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object clamp
++#include "../OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b] support-side contact wave
+ #include "../Geometry.hpp"
+ #include "../Point.hpp"
+ #include "clipper/clipper_z.hpp"
+@@ -1866,6 +1867,18 @@ void generate_support_toolpaths(
+                 }
+             };
+             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
++            // [ORCAPORT:SU-4b] NeoWave contact (support side): wave the top-contact interface so
++            // only the wave peaks touch the part above, reducing bonding. Downward-only, so it can
++            // never grow into the part. The part's own bridge fill is left flat.
++            if (config.support_neoweave_enabled.value
++                && config.support_neoweave_target.value == nwctSupportTop
++                && config.support_neoweave_amplitude.value > 1e-9
++                && top_contact_layer.layer != nullptr
++                && top_contact_layer.layer->layer_type == SupporLayerType::TopContact) {
++                OrcaExt::NeoWaveContact::apply_support_wave(
++                    top_contact_layer.extrusions, config.support_neoweave_amplitude.value,
++                    config.support_neoweave_period.value);
++            }
+             if (!organic_tree)
+                 extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
+             const bool interface_layer_enabled = !interface_layer.empty() &&
+diff --git a/src/slic3r/GUI/ConfigManipulation.cpp b/src/slic3r/GUI/ConfigManipulation.cpp
+index 3f9fbd1edf..c1a185d65c 100644
+--- a/src/slic3r/GUI/ConfigManipulation.cpp
++++ b/src/slic3r/GUI/ConfigManipulation.cpp
+@@ -1067,6 +1067,15 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
+     // Orca: Force solid support interface when using support ironing
+     toggle_field("support_interface_spacing", have_support_material && have_support_interface && !has_support_ironing);
+ 
++    // [ORCAPORT:SU-4b] NeoWave contact layer: the master toggle follows "enable support"; the
++    // target and wave parameters appear only once it is on.
++    {
++        const bool neoweave_on = config->has("support_neoweave_enabled") && config->opt_bool("support_neoweave_enabled");
++        toggle_line("support_neoweave_enabled", have_support_material);
++        for (auto el : { "support_neoweave_target", "support_neoweave_amplitude", "support_neoweave_period", "support_neoweave_max_z_speed" })
++            toggle_line(el, have_support_material && neoweave_on);
++    }
++
+ //    see issue #10915
+ //    bool have_skirt_height = have_skirt &&
+ //    (config->opt_int("skirt_height") > 1 || config->opt_enum<DraftShield>("draft_shield") != dsEnabled);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+index 309bb741c3..68e175867d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+@@ -4514,10 +4514,10 @@ bool GLGizmoSupportZones::seed_support_defaults(ModelObject &mo)
+     seed("support_interface_spacing",    new ConfigOptionFloat(0.));   // techo macizo
+     seed("support_interface_pattern",
+          new ConfigOptionEnum<SupportMaterialInterfacePattern>(smipRectilinear));
+-    // [ORCAPORT:SU-5] The fork also seeded "support_neoweave_enabled" here, but that key belongs to
+-    // the unported ColorStitch/Neoweave feature and is registered in no config class. Storing an
+-    // unknown key into the object config makes UndoRedo's cereal snapshot null-deref
+-    // (DynamicPrintConfig::save -> print_config_def.get(key) == nullptr). Dropped.
++    // [ORCAPORT:SU-4b] The fork seeded this here (SU-4 contact layer); the key is registered again
++    // now that the contact layer is ported, so restore the seed: a zone-created object starts with
++    // the contact wave off (matches the fork). See the earlier crash note in notes/SU-5.md.
++    seed("support_neoweave_enabled",     new ConfigOptionBool(false));
+ 
+     // 🚨 s287-bis — EL TIPO, y sólo cuando es ÁRBOL.
+     //
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 5f381bda92..0efc157f6d 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2977,6 +2977,13 @@ void TabPrint::build()
+         optgroup->append_single_option_line("wavesupport_roof_order", "support_settings_advanced#interface-pattern");
+         optgroup->append_single_option_line("wavesupport_roof_reverse", "support_settings_advanced#interface-pattern");
+         optgroup->append_single_option_line("wavesupport_wall_loops", "support_settings_advanced#support-wall-loops");
++        // [ORCAPORT:SU-4b] NeoWave contact layer (toggle + target + wave params). Visibility is
++        // handled in toggle_options(): master when support is on, the rest when it is enabled.
++        optgroup->append_single_option_line("support_neoweave_enabled", "support_settings_advanced");
++        optgroup->append_single_option_line("support_neoweave_target", "support_settings_advanced");
++        optgroup->append_single_option_line("support_neoweave_amplitude", "support_settings_advanced");
++        optgroup->append_single_option_line("support_neoweave_period", "support_settings_advanced");
++        optgroup->append_single_option_line("support_neoweave_max_z_speed", "support_settings_advanced");
+         optgroup->append_single_option_line("support_interface_spacing", "support_settings_advanced#interface-spacing");
+         optgroup->append_single_option_line("support_bottom_interface_spacing", "support_settings_advanced#interface-spacing");
+         optgroup->append_single_option_line("support_expansion", "support_settings_advanced#normal-support-expansion");

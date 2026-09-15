@@ -323,6 +323,13 @@ before slicing) the slice-time floating warning is never exercised.
   contact-layer Z oscillation appears on bridge fill above the roof; G-code preview will
   look flat (known limitation, document).
 - Risk: high. Notes: core wave roof is print-validated, contact layer print-pending.
+- **SU-4b DONE** (patch `13_SU-4b.patch`): the contact layer is ported after all. The earlier
+  "needs ColorStitch" verdict was wrong - the shipped mechanism only reuses a small Z-wave loop,
+  not the Sandwich/color pack. Ported as `support_neoweave_*` under Support > Advanced, with a
+  `support_neoweave_target` selector for A/B testing: `part_bottom` (fork behaviour, upward wave on
+  the object's bridge fill) and `support_top` (new, downward wave on the support's top-contact
+  interface). Module `OrcaExt/NeoWaveContact`. Off by default byte-identical. Build clean; runtime
+  pending. See `notes/SU-4b.md`.
 
 **SU-5 Support Zones - aimed pillars -> SU-6 block trees**
 - Intent (SU-5): two-click or brush-painted zone; pillar built from overhang patch to a
