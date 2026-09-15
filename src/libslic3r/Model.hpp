@@ -1778,6 +1778,10 @@ bool model_custom_supports_data_changed(const ModelObject& mo, const ModelObject
 // The function assumes that volumes list is synchronized.
 bool model_custom_seam_data_changed(const ModelObject& mo, const ModelObject& mo_new);
 
+// [ORCAPORT:SU-5] Test whether a support-enforcer volume's config (a zone recipe) changed.
+// The function assumes that volumes list is synchronized.
+bool model_support_volume_config_changed(const ModelObject& mo, const ModelObject& mo_new);
+
 // Test whether the now ModelObject has newer MMU segmentation data than the old one.
 // The function assumes that volumes list is synchronized.
 extern bool model_mmu_segmentation_data_changed(const ModelObject& mo, const ModelObject& mo_new);

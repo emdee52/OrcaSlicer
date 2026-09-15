@@ -3821,6 +3821,16 @@ bool model_custom_seam_data_changed(const ModelObject& mo, const ModelObject& mo
         [](const ModelVolume &mv_old, const ModelVolume &mv_new){ return mv_old.seam_facets.timestamp_matches(mv_new.seam_facets); });
 }
 
+// [ORCAPORT:SU-5] A SUPPORT_ENFORCER volume's config (a zone recipe) changing must invalidate
+// posSupportMaterial; supports_differ does not check configuration. Enforcers only (a blocker has
+// no recipe).
+bool model_support_volume_config_changed(const ModelObject& mo, const ModelObject& mo_new)
+{
+    return model_property_changed(mo, mo_new,
+        [](const ModelVolumeType t) { return t == ModelVolumeType::SUPPORT_ENFORCER; },
+        [](const ModelVolume &mv_old, const ModelVolume &mv_new){ return mv_old.config.timestamp_matches(mv_new.config); });
+}
+
 bool model_mmu_segmentation_data_changed(const ModelObject& mo, const ModelObject& mo_new)
 {
     return model_property_changed(mo, mo_new,

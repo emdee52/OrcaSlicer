@@ -9,8 +9,17 @@
 #include "Point.hpp"
 #include "MutablePolygon.hpp"
 #include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object occupancy
+#include "../Feature/SupportZones/SupportZoneProbe.hpp" // [ORCAPORT:SU-5] zone constants
+#include "../Model.hpp"   // [ORCAPORT:SU-5] ModelVolume
+#include "../I18N.hpp"    // [ORCAPORT:SU-5] translated style warning
 
 #include <cmath>
+#include <limits>
+#include <iomanip>
+#include <sstream>
+#include <numeric>
+#include <set>
+#include <string>
 #include <memory>
 #include <boost/log/trivial.hpp>
 #include <boost/container/static_vector.hpp>
@@ -18,6 +27,9 @@
 #include <tbb/parallel_for.h>
 #include <tbb/spin_mutex.h>
 #include <tbb/task_group.h>
+
+// [ORCAPORT:SU-5] the fork's CORRIDOR_LOG (NeoDebug WAVESUPPORT channel) is dropped: no NeoDebug port.
+#define CORRIDOR_LOG(body) do { } while (0)
 
 #define SUPPORT_USE_AGG_RASTERIZER
 
@@ -379,6 +391,21 @@ void PrintObjectSupportMaterial::generate(PrintObject &object)
     // consumed by trim_support_layers_by_object.
     m_neighbor_occupancy = OrcaExt::neighbor_occupancy(object);
 
+    // [ORCAPORT:SU-5] warn (do not veto) when painted support zones are combined with a style
+    // other than Snug: the column is then quantised to the base-pattern grid and can be wasteful.
+    if (m_object_config->support_style.value != smsSnug) {
+        size_t n_enforcers = 0;
+        if (const ModelObject *mo = object.model_object())
+            for (const ModelVolume *v : mo->volumes)
+                if (v->type() == ModelVolumeType::SUPPORT_ENFORCER)
+                    ++n_enforcers;
+        if (n_enforcers > 0)
+            object.push_support_zone_style_warning(
+                _u8L("Support zones: Grid and Default support styles are NOT recommended, they will "
+                     "create print issues. Check the G-code before printing. Snug is the recommended "
+                     "style for painted support zones."));
+    }
+
     coordf_t max_object_layer_height = 0.;
     for (size_t i = 0; i < object.layer_count(); ++ i)
         max_object_layer_height = std::max(max_object_layer_height, object.layers()[i]->height);
@@ -556,7 +583,9 @@ void PrintObjectSupportMaterial::generate(PrintObject &object)
 #endif /* SLIC3R_DEBUG */
 
     // Generate the actual toolpaths and save them into each layer.
-    generate_support_toolpaths(object.support_layers(), *m_object_config, m_support_params, m_slicing_params, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
+    // s286c F4: el objeto se pasa SÓLO aquí, en el generador clásico, y sólo para que el reparto por
+    // familia pueda preguntar por sus áreas. Con una familia (el caso normal) no cambia nada.
+    generate_support_toolpaths(object.support_layers(), *m_object_config, m_support_params, m_slicing_params, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers, &object);
 
 #ifdef SLIC3R_DEBUG
     {
@@ -1329,11 +1358,94 @@ std::vector<Polygons> PrintObjectSupportMaterial::buildplate_covered(const Print
 
 struct SupportAnnotations
 {
-    SupportAnnotations(const PrintObject &object, const std::vector<Polygons> &buildplate_covered) :
+    // 🚨 s300e — `roof_expand` entra por parámetro y no se lee de `m_support_params`: esto es un
+    // struct libre, no un método del generador, así que no tiene acceso a él. Es media anchura de
+    // extrusión del soporte, y quien la conoce es el llamante.
+    SupportAnnotations(const PrintObject &object, const std::vector<Polygons> &buildplate_covered,
+                       float roof_expand) :
         enforcers_layers(object.slice_support_enforcers()),
         blockers_layers(object.slice_support_blockers()),
         buildplate_covered(buildplate_covered)
     {
+        // NEOTKO_SUPPORTZONES_TAG s300e — EL ENFORCER AGARRA DONDE EL BLOQUE EMPIEZA, NO POR DONDE PASA.
+        //
+        // 🔑 El problema, dicho por el dueño con el pincel ya arreglado: "me ha generado techos
+        // dentro del objeto pasado el muro". Y tiene toda la razón, pero la causa no es el pincel ni
+        // el corredor: es el contrato del enforcer clásico, que dice "aquí dentro, soporta todo como
+        // si fuera un voladizo de 90°, en TODAS las capas que el bloque cruza".
+        //
+        // Un pilar que sube desde la cama cruza la pieza. En cada capa donde la atraviesa hay
+        // superficie de la pieza dentro del bloque que no se apoya en la de abajo —la cara interior
+        // de una pared, el borde de una cavidad— y el enforcer siembra su contacto ahí. Eso es el
+        // techo dentro del muro.
+        //
+        // 🔑 La distinción que faltaba es geométrica y no necesita heurísticas: el contacto legítimo
+        // está donde el bloque EMPIEZA, o sea en su techo, que es lo que se apoyó contra la
+        // superficie que el usuario eligió. Por donde el bloque sólo PASA no hay nada que agarrar.
+        //
+        // Y "donde empieza" se calcula capa a capa con un diff: lo que hay del bloque en esta capa y
+        // no había en la de arriba. En el tramo que atraviesa la pared el bloque ya estaba arriba,
+        // así que ahí no queda nada y no se siembra. Exacto, barato, y sin mirar la pieza.
+        {
+            const std::vector<SupportZoneSlices> zones = object.slice_support_enforcers_per_zone();
+            for (const SupportZoneSlices &z : zones) {
+                // 🚨 `ModelConfig` no tiene `opt_bool()` (sí `opt_int`/`opt_float`), así que la
+                // opción se lee por su tipo. Con `opt_int` compilaría y devolvería basura.
+                if (z.model_volume == nullptr)
+                    continue;
+                const auto *ro = dynamic_cast<const ConfigOptionBool *>(
+                    z.model_volume->config.option("support_zone_roof_only"));
+                if (ro == nullptr || ! ro->value)
+                    continue;
+                roof_only_layers.resize(std::max(roof_only_layers.size(), z.slices.size()), Polygons());
+                for (size_t i = 0; i < z.slices.size(); ++ i) {
+                    if (z.slices[i].empty())
+                        continue;
+                    // NEOTKO_SUPPORTZONES_TAG s300g — el techo lo dice `roof_layer`, calculado al
+                    // rebanar (`PrintObjectSlice.cpp`) compensando la inclinación del bloque.
+                    //
+                    // 🚨 Aquí había un `diff(slices[i], slices[i+1])` a secas, y por eso este bloque
+                    // sembraba en 31 capas seguidas: en un bloque inclinado ese diff NUNCA sale
+                    // vacío. El comentario de más abajo ("si sale una línea por capa, ESO es el
+                    // hallazgo") estaba describiendo este fallo sin que nadie lo leyera como tal.
+                    if (i >= z.roof_layer.size() || z.roof_layer[i] == 0)
+                        continue;
+                    // La banda de techo en esta capa. La de más arriba no tiene nada encima, así
+                    // que es techo entera.
+                    Polygons top = (i + 1 < z.slices.size() && ! z.slices[i + 1].empty())
+                        ? diff(z.slices[i], z.slices[i + 1])
+                        : z.slices[i];
+                    if (top.empty())
+                        continue;
+                    // ⚠️ Se ensancha media anchura de extrusión. Un techo de bloque perfectamente
+                    // vertical daría una banda de área cero al restar la capa de arriba, y el
+                    // contacto se quedaría en nada justo donde más falta hace. Con el ensanche, un
+                    // techo inclinado siembra su franja y uno vertical no siembra: que es lo
+                    // correcto, porque un lado vertical no sujeta nada.
+                    top = expand(top, roof_expand, SUPPORT_SURFACES_OFFSET_PARAMETERS);
+                    polygons_append(roof_only_layers[i], std::move(top));
+                }
+            }
+            // 🚨 Y se RESTAN del montón clásico, porque `slice_support_enforcers()` las metió ahí
+            // como a cualquier otro enforcer. Sin esta resta la zona haría las dos cosas a la vez y
+            // el modo nuevo no cambiaría nada, que es la forma más silenciosa de que una opción
+            // parezca no funcionar.
+            //
+            // ⚠️ Se resta la SLICE ENTERA de la zona, no sólo su techo: lo que se quiere es que esta
+            // zona deje de sembrar por el camino clásico en toda su altura.
+            for (const SupportZoneSlices &z : zones) {
+                if (z.model_volume == nullptr)
+                    continue;
+                const auto *ro = dynamic_cast<const ConfigOptionBool *>(
+                    z.model_volume->config.option("support_zone_roof_only"));
+                if (ro == nullptr || ! ro->value)
+                    continue;
+                for (size_t i = 0; i < enforcers_layers.size() && i < z.slices.size(); ++ i)
+                    if (! enforcers_layers[i].empty() && ! z.slices[i].empty())
+                        enforcers_layers[i] = diff(enforcers_layers[i], z.slices[i]);
+            }
+        }
+
         // Append custom supports.
         object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
         object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
@@ -1349,6 +1461,8 @@ struct SupportAnnotations
     }
 
     std::vector<Polygons>         enforcers_layers;
+    // NEOTKO_SUPPORTZONES_TAG s299c — las zonas que sólo siembran bajo superficie sin apoyo.
+    std::vector<Polygons>         roof_only_layers;
     std::vector<Polygons>         blockers_layers;
     const std::vector<Polygons>&  buildplate_covered;
 };
@@ -1673,6 +1787,42 @@ static inline std::tuple<Polygons, Polygons, double> detect_contacts(
                     polygons_append(contact_polygons, diff(enforcer_polygons, slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons));
                 }
             }
+
+        // NEOTKO_SUPPORTZONES_TAG s300e — LA ZONA SIEMBRA EN EL TECHO DE SU BLOQUE.
+        //
+        // Lo que llega en `roof_only_layers` ya NO es la sección del bloque: es sólo su techo en esta
+        // capa (lo que aparece aquí y no estaba en la de arriba), calculado en `SupportAnnotations`.
+        // Así que aquí se hace lo MISMO que con un enforcer normal — cruzar con la pieza y quitar lo
+        // que se apoya — pero sobre una franja que, por construcción, sólo existe donde el bloque
+        // termina por arriba.
+        //
+        // 🚨 Ahí está la diferencia con la versión anterior, que miraba "superficie sin apoyo" en
+        // toda la sección del bloque: dentro de una pieza hueca la cara interior de la pared TAMBIÉN
+        // es superficie sin apoyo, así que aquel criterio seguía sembrando techos pasado el muro.
+        // Éste no puede: por donde el bloque sólo pasa, no hay techo.
+        if (! annotations.roof_only_layers.empty() && layer_id < annotations.roof_only_layers.size()
+            && ! annotations.roof_only_layers[layer_id].empty()) {
+            Polygons roof = diff(intersection(layer.lslices, annotations.roof_only_layers[layer_id]),
+                                 expand(lower_layer_polygons, 0.05f * no_interface_offset,
+                                        SUPPORT_SURFACES_OFFSET_PARAMETERS));
+            if (! roof.empty() && ! annotations.blockers_layers.empty()
+                && ! annotations.blockers_layers[layer_id].empty())
+                roof = diff(roof, annotations.blockers_layers[layer_id]);
+            if (! roof.empty()) {
+                polygons_append(enforcer_polygons, roof);
+                polygons_append(overhang_polygons, roof);
+                slices_margin_update(std::min(lower_layer_offset, float(scale_(gap_xy))), no_interface_offset);
+                const Polygons contact_here = diff(roof, slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons);
+                // 🔎 Sólo escribe cuando esta capa siembra algo. Con el techo del bloque bien
+                // calculado son unas pocas capas por zona; si sale una línea por capa, ESO es el
+                // hallazgo — quiere decir que el bloque termina por arriba en todas, o sea que algo
+                // no cuadra con su geometría.
+                CORRIDOR_LOG("[CORRIDOR] s300e techo layer=" << layer_id << " z=" << layer.print_z
+                    << " techo_bloque=" << unscale<double>(unscale<double>(area(roof))) << "mm2"
+                    << " contacto=" << unscale<double>(unscale<double>(area(contact_here))) << "mm2");
+                polygons_append(contact_polygons, contact_here);
+            }
+        }
     }
 
     return std::make_tuple(std::move(contact_polygons), std::move(enforcer_polygons), no_interface_offset);
@@ -2112,7 +2262,8 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::top_contact_layers(
     }
 
     // Slice support enforcers / support blockers.
-    SupportAnnotations annotations(object, buildplate_covered);
+    SupportAnnotations annotations(object, buildplate_covered,
+                                   scaled<float>(0.5 * m_support_params.support_material_flow.width()));
 
     // Output layers, sorted by top Z.
     SupportGeneratorLayersPtr contact_out;
@@ -2593,6 +2744,154 @@ static inline std::pair<Polygons, Polygons> project_support_to_grid(const Layer 
 // Generate bottom contact layers supporting the top contact layers.
 // For a soluble interface material synchronize the layer heights with the object, 
 // otherwise set the layer height to a bridging flow of a support interface nozzle.
+
+// NEOTKO_SUPPORTZONES_TAG s284 — F0, the corridor gate.
+// docs/FUTURE/SUPPORT_ZONES_PLAN.md §3 (the physics), §4.2 (how the column descends), §6 F0.
+//
+// Today the shape of an enforcer block BELOW the object is thrown away: the block only acts as a
+// roof ("what to support") and the column falls straight down. Here it also acts as a CORRIDOR
+// ("where the column may descend"), translating the accumulated projection layer by layer along
+// the axis the block itself describes.
+//
+// §4.3: with no zones drawn there is no corridor and nothing is touched, so the result stays
+// byte-identical to today. That is the first regression test of every phase.
+
+// NEOTKO_SUPPORTZONES_TAG s286 — the k of §3 moved to Feature/SupportZones/SupportZoneProbe.hpp.
+// It left this file the moment a SECOND caller needed it: the gizmo paints the strip you are
+// allowed to land in from the same number the loop below clamps with, so the editor cannot promise
+// a lean the engine will not follow. Aliased rather than re-typed so the name still reads locally
+// and there is exactly one place to change when the comDevelop key finally exists.
+static constexpr double SUPPORT_CORRIDOR_K = SupportZones::SUPPORT_CORRIDOR_K;
+
+// NEOTKO_SUPPORTZONES_TAG s299d — cuántas capas por encima del fondo de una zona siguen contando
+// como "el aterrizaje". Tres es lo que hace falta para que una repisa a la que el usuario apuntó de
+// verdad se agarre aunque el bloque acabe un pelo por encima de ella; más que eso empieza a coger
+// repisas que nadie pidió.
+static constexpr int ZONE_LANDING_LAYERS = 3;
+
+// Area-weighted centroid of a polygon set, in scaled coordinates.
+// ⚠️ §4.2: a single global centroid lies as soon as the corridor forks. For F0 (one block, one
+// corridor) it is enough; from F2 on, connected components have to be paired up first.
+static Vec2d support_corridor_centroid(const Polygons &polys)
+{
+    double  area_total = 0.;
+    Vec2d   acc        = Vec2d::Zero();
+    for (const Polygon &poly : polys) {
+        if (poly.size() < 3)
+            continue;
+        const double a = std::abs(poly.area());
+        if (a <= 0.)
+            continue;
+        const Point c = poly.centroid();
+        acc        += Vec2d(double(c.x()), double(c.y())) * a;
+        area_total += a;
+    }
+    return (area_total > 0.) ? Vec2d(acc / area_total) : Vec2d::Zero();
+}
+
+// NEOTKO_SUPPORTZONES_TAG s286 F2 — §4.2, the connected-component pairing.
+//
+// The global centroid above is exact while the corridor is a single blob, which is the case for
+// every corridor built as a loft from one polygon to another (§4-bis.1) and was the case F0 was
+// verified on. It starts lying the moment a zone slices into two islands on one layer — a forked
+// block, a block that grazes a hole in the object — because a single centroid then reports the
+// motion of the pair's balance point instead of the motion of either island.
+//
+// So: pair the islands, one delta each. Partner = the island below with the largest overlap; with
+// no overlap at all, the nearest centroid, which is what a corridor that steps sideways faster
+// than it is wide looks like. Ties break by index, and the index comes from union_ex, so the
+// answer does not depend on how the polygons happened to be ordered upstream (lesson s236→s243:
+// an order-dependent result is a business rule, not a detail).
+struct CorridorShift {
+    ExPolygon above;   // the corridor island at layer i+1
+    Vec2d     v;       // centroid(partner at layer i) - centroid(above)
+};
+
+// NEOTKO_SUPPORTZONES_TAG s301 — EL REPARTO ENTRE TOCONES SE HACE POR ÁREA, NO POR ISLA.
+//
+// 🚨 Ésta es la corrección que salvó el caso del donut, y la trampa no se ve hasta que se dibuja.
+// El §8 del estudio dice «con dos tocones las islas se reparten solas», y eso es cierto para el
+// emparejamiento del corredor —que trabaja sobre islas ya separadas— pero NO para el tramo guiado:
+// al pintar el interior del centro de un toro, la proyección es un ANILLO, o sea UNA sola isla con
+// un agujero. Mandar la isla entera al tocón más cercano se llevaría el anillo completo hacia un
+// lado y el lado contrario no llegaría nunca — justo el fallo que los dos tocones existen para
+// evitar.
+//
+// 🔑 Así que se parte el PLANO, no la lista de islas: cada tocón se queda con los puntos que le
+// caen más cerca que a cualquier otro, que es su celda de Voronoi. Con dos tocones eso es la
+// mediatriz, y el anillo se corta solo en dos medias lunas que se van cada una a la suya. Con uno
+// la celda es todo, así que el caso simple no cambia ni una línea.
+//
+// Se construye como intersección de semiplanos contra una caja que cubre lo que hay: N es 1 ó 2 en
+// la práctica y como mucho un puñado, así que no hay nada que optimizar.
+static Polygons support_stump_cell(const std::vector<Vec2d> &centres, size_t i, const BoundingBox &bb)
+{
+    Polygons cell { bb.polygon() };
+    if (centres.size() < 2)
+        return cell;
+    // Una cuerda más larga que la diagonal de la caja: el semiplano tiene que salirse de ella por
+    // los cuatro lados para que el recorte no invente un borde que no existe.
+    const double R = 2. * (Vec2d(double(bb.max.x() - bb.min.x()), double(bb.max.y() - bb.min.y())).norm() + 1.);
+    for (size_t j = 0; j < centres.size() && ! cell.empty(); ++ j) {
+        if (j == i)
+            continue;
+        Vec2d d = centres[i] - centres[j];
+        const double dl = d.norm();
+        if (dl < 1e-9)
+            continue;   // dos tocones en el mismo sitio: no hay mediatriz que trazar
+        d /= dl;
+        const Vec2d m = 0.5 * (centres[i] + centres[j]);   // el punto medio, o sea la mediatriz
+        const Vec2d v(- d.y(), d.x());                     // a lo largo de la mediatriz
+        auto P = [](const Vec2d &p) { return Point(coord_t(std::lround(p.x())), coord_t(std::lround(p.y()))); };
+        Polygon half({ P(m - R * v), P(m + R * v), P(m + R * v + 2. * R * d), P(m - R * v + 2. * R * d) });
+        if (! half.is_counter_clockwise())
+            half.reverse();
+        cell = intersection(cell, Polygons{ half });
+    }
+    return cell;
+}
+
+static std::vector<CorridorShift> support_corridor_pair_components(const Polygons &corridor_above, const Polygons &corridor_here)
+{
+    std::vector<CorridorShift> out;
+    const ExPolygons comps_above = union_ex(corridor_above);
+    const ExPolygons comps_here  = union_ex(corridor_here);
+    if (comps_above.empty() || comps_here.empty())
+        return out;
+
+    std::vector<Vec2d> centroid_here(comps_here.size());
+    for (size_t j = 0; j < comps_here.size(); ++ j)
+        centroid_here[j] = support_corridor_centroid(to_polygons(comps_here[j]));
+
+    out.reserve(comps_above.size());
+    for (const ExPolygon &above : comps_above) {
+        const Polygons above_polys = to_polygons(above);
+        const Vec2d    c_above     = support_corridor_centroid(above_polys);
+        size_t         best        = size_t(-1);
+        double         best_score  = 0.;
+        for (size_t j = 0; j < comps_here.size(); ++ j) {
+            const double a = area(intersection(above_polys, to_polygons(comps_here[j])));
+            if (a > best_score) {
+                best_score = a;
+                best       = j;
+            }
+        }
+        if (best == size_t(-1)) {
+            // Nothing below overlaps this island: fall back to the closest one.
+            double best_dist = std::numeric_limits<double>::max();
+            for (size_t j = 0; j < comps_here.size(); ++ j) {
+                const double d = (centroid_here[j] - c_above).squaredNorm();
+                if (d < best_dist) {
+                    best_dist = d;
+                    best      = j;
+                }
+            }
+        }
+        out.push_back({ above, centroid_here[best] - c_above });
+    }
+    return out;
+}
+
 SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_layer_support_areas(
     const PrintObject &object, const SupportGeneratorLayersPtr &top_contacts, std::vector<Polygons> &buildplate_covered, 
     SupportGeneratorLayerStorage &layer_storage, std::vector<Polygons> &layer_support_areas) const
@@ -2620,14 +2919,672 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
     // There is some support to be built, if there are non-empty top surfaces detected.
     // Sum of unsupported contact areas above the current layer.print_z.
     Polygons  overhangs_projection;
-    // Sum of unsupported enforcer contact areas above the current layer.print_z.
-    // Only used if "supports on build plate only" is enabled and both automatic and support enforcers are enabled.
+    // Sum of unsupported enforcer contact areas above the current layer.print_z that belong to no
+    // zone: the painted brush (project_and_append_custom_facets, SupportAnnotations) has no
+    // ModelVolume behind it, so it has no corridor either and keeps descending vertically exactly
+    // as it does today. That is the F5 path and F2 must not disturb it.
     Polygons  enforcers_projection;
+
+    // NEOTKO_SUPPORTZONES_TAG s286 F2 — identity of zone (§6 F2).
+    // The enforcer slices are requested ONCE and cached outside the loop: this re-slices, it is
+    // not a getter.
+    // ✅ They come indexed BY OBJECT LAYER (zs_from_layers(this->layers()), PrintObjectSlice.cpp),
+    // which is exactly the index this loop walks: nothing to remap.
+    // With no enforcers the function takes its early out and returns empty, so with zero zones
+    // none of the blocks below run and the result stays byte-identical to today (§4.3).
+    const std::vector<SupportZoneSlices> zones = object.slice_support_enforcers_per_zone();
+    // One accumulator per zone (§6 F2). Two streams became N, which is what the plan called
+    // "generalising a pattern that is already written".
+    // NEOTKO_SUPPORTZONES_TAG s286b — LAS ZONAS QUE SE TOCAN Y SON IGUALES SE FUNDEN.
+    //
+    // 🚨 Medido en gcode por él, comparando el MISMO pilar contra sí mismo: con un vecino al lado
+    // salía un −3% constante durante noventa capas y hasta −23% arriba, donde los dos bloques se
+    // solapan de verdad. En el donut grande eran −33% al llegar a la cama. La causa no es el
+    // corredor: es el reparto por prioridad de más abajo, que le quita a la zona de menos prioridad
+    // la banda compartida — y como la proyección sólo se recorta y nunca se recupera, el mordisco
+    // de arriba se arrastra hasta el suelo.
+    //
+    // 🔑 Ese reparto existe por una razón buena: que dos RECETAS distintas no se peleen por el
+    // mismo material. Cuando las dos zonas llevan la misma receta no hay nada que repartir, y
+    // repartir sólo produce una costura y una columna desnutrida. Su propia regla, dicha al revés:
+    // si se tocan y son iguales, son la misma cosa.
+    //
+    // Criterio objetivo, no heurístico: misma config ⇒ misma familia. Las familias distintas se
+    // siguen apartando entre sí exactamente como hasta ahora, que es para lo que se hizo.
+    // 🚨 s299c — ESTA COMPARACIÓN SE ROMPIÓ SOLA EN s288, Y NADIE SE ENTERÓ.
+    //
+    // Era `a->config.get() == b->config.get()`: la config ENTERA. Funcionaba cuando una zona no
+    // llevaba nada propio encima. Desde s288 cada zona guarda su gesto —un JSON distinto por zona
+    // por construcción, porque lleva sus puntos dentro— así que dos zonas ya NO podían salir
+    // iguales nunca. Resultado: todas las zonas caían en familias distintas, el reparto por
+    // prioridad volvía a aplicarse siempre, y con él la costura y la columna desnutrida que s286b
+    // había medido y arreglado. Es exactamente el hueco que el dueño ve entre dos soportes que se
+    // tocan, y el "a veces" es simplemente si se tocan o no.
+    //
+    // 🔑 La familia es una pregunta sobre la RECETA — "¿se van a pelear por el material?" — así que
+    // se compara la config ignorando lo que es del editor. El gesto es descriptivo; el ángulo y el
+    // modo de siembra cambian por dónde baja cada columna, no con qué se imprime, y el corredor
+    // sigue siendo de cada zona porque el reparto sólo toca el área IMPRESA, nunca el acumulador.
+    static const std::set<std::string> zone_editor_keys {
+        "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only",
+        "support_zone_solid", "support_zone_land_only" };
+    auto same_recipe = [](const ModelVolume *a, const ModelVolume *b) {
+        if (a == nullptr || b == nullptr)
+            return false;
+        for (const t_config_option_key &k : a->config.get().diff(b->config.get()))
+            if (zone_editor_keys.find(k) == zone_editor_keys.end())
+                return false;
+        return true;
+    };
+    std::vector<size_t> zone_family(zones.size(), 0);
+    size_t              n_families = 0;
+    for (size_t i = 0; i < zones.size(); ++ i) {
+        bool found = false;
+        for (size_t j = 0; j < i; ++ j) {
+            if (same_recipe(zones[i].model_volume, zones[j].model_volume)) {
+                zone_family[i] = zone_family[j];
+                found = true;
+                break;
+            }
+        }
+        if (! found)
+            zone_family[i] = n_families ++;
+    }
+    // NEOTKO_SUPPORTZONES_TAG s286c F4 — la tabla familia → materiales, y el almacén de áreas que
+    // hace que la identidad sobreviva hasta el toolpath (Print.hpp, SupportFamilyAreas). Sin esto
+    // el reparto de más abajo se pierde en el union_ y no hay forma de decidir quién extruye qué.
+    PrintObject::SupportFamilyAreas family_areas;
+    family_areas.families.resize(n_families);
+    for (size_t i = 0; i < zones.size(); ++ i) {
+        const ModelVolume *v = zones[i].model_volume;
+        if (v == nullptr)
+            continue;
+        PrintObject::SupportFamily &f = family_areas.families[zone_family[i]];
+        // 0 = "como el objeto", que es lo que Orca ya entiende por 0 en estas dos claves. Las zonas
+        // de una misma familia comparten config por definición, así que leer la primera basta.
+        if (v->config.has("support_filament"))
+            f.body_filament = v->config.opt_int("support_filament");
+        if (v->config.has("support_interface_filament"))
+            f.interface_filament = v->config.opt_int("support_interface_filament");
+    }
+    family_areas.areas.assign(object.total_layer_count(), std::vector<Polygons>(n_families, Polygons()));
+    family_areas.layer_print_z.reserve(object.layers().size());
+    for (const Layer *l : object.layers())
+        family_areas.layer_print_z.push_back(float(l->print_z));
+    family_areas.layer_print_z.resize(family_areas.areas.size(), family_areas.layer_print_z.empty() ? 0.f : family_areas.layer_print_z.back());
+
+    if (! zones.empty())
+        CORRIDOR_LOG("[CORRIDOR] s286b familias de zona=" << n_families << " de " << zones.size()
+            << " zonas (misma config = se funden en vez de repartirse)");
+
+    std::vector<Polygons> zones_projection(zones.size(), Polygons());
+    // 🔎 s299c-bis — contadores de la zona maciza, resumidos por zona al final del descenso.
+    // NEOTKO_SUPPORTZONES_TAG s299d — la capa donde ACABA cada zona.
+    //
+    // 🔑 Hace falta para distinguir el aterrizaje que el usuario eligió de los apoyos que la
+    // columna se encuentra por el camino. Ver `zone_lands_here` más abajo.
+    std::vector<int>      zone_bottom_layer(zones.size(), -1);
+    for (size_t zi = 0; zi < zones.size(); ++ zi)
+        for (size_t i = 0; i < zones[zi].slices.size(); ++ i)
+            if (! zones[zi].slices[i].empty()) {
+                zone_bottom_layer[zi] = int(i);
+                break;
+            }
+    // NEOTKO_SUPPORTZONES_TAG s301 — EL TOCÓN, Y CÓMO SE RECONOCE UN ÁRBOL DE BLOQUES.
+    //
+    // 🔑 El gesto acordado en s300 es «pintamos área, plantamos tocón, el resto crece solo»: la zona
+    // deja de ser un pilar lofteado y pasa a ser una CABEZA arriba, unos TOCONES abajo, y NADA en
+    // medio. Al rebanar eso sale como capas con bloque arriba, capas con bloque abajo, y un hueco.
+    //
+    // 🔑 Y por eso aquí no hace falta ninguna clave de config nueva: el modo se reconoce por la
+    // GEOMETRÍA. Un bloque lofteado es contiguo por construcción —es un loft de cuatro anillos, no
+    // puede tener una capa vacía en medio— así que jamás entra por esta puerta y su descenso sale
+    // byte-idéntico al de hoy. Preguntarle al volumen por una clave sería inventar una segunda
+    // verdad sobre algo que la propia malla ya contesta.
+    //
+    // ⚠️ El centroide del tocón se calcula con `support_corridor_centroid()`, el MISMO que usa el
+    // descenso. La lección de s300 dicha en corto: dos consumidores calculando por su cuenta el
+    // mismo dato geométrico se equivocan los dos.
+    //
+    // 🔑 `zone_stump_top` es la capa donde el corredor REAPARECE al bajar, o sea la tapa del tocón,
+    // y no es un dato de adorno: es donde se mide el aviso de «esta raíz no da para todo». Medirlo
+    // en la capa de abajo llegaría tarde — para entonces el recorte contra el tocón ya se habría
+    // comido la isla que no llegaba, y el aviso no se dispararía nunca.
+    struct ZoneStump { Polygons poly; Vec2d c { Vec2d::Zero() }; };
+    std::vector<std::vector<ZoneStump>> zone_stumps(zones.size());
+    std::vector<char>                   zone_guided(zones.size(), char(0));
+    std::vector<int>                    zone_top_layer(zones.size(), -1);
+    std::vector<int>                    zone_stump_top(zones.size(), -1);
+    for (size_t zi = 0; zi < zones.size(); ++ zi) {
+        const std::vector<Polygons> &zs = zones[zi].slices;
+        for (int i = int(zs.size()) - 1; i >= 0; -- i)
+            if (! zs[i].empty()) {
+                zone_top_layer[zi] = i;
+                break;
+            }
+        if (zone_bottom_layer[zi] < 0 || zone_top_layer[zi] <= zone_bottom_layer[zi])
+            continue;
+        // La banda de abajo, de una pieza: desde la capa más baja con bloque hasta la primera vacía.
+        int t = zone_bottom_layer[zi];
+        while (t + 1 < int(zs.size()) && ! zs[t + 1].empty())
+            ++ t;
+        zone_stump_top[zi] = t;
+        // Si esa banda llega hasta arriba no hay hueco, y sin hueco esto es el pilar lofteado de
+        // siempre: no se toca nada.
+        if (t >= zone_top_layer[zi])
+            continue;
+        zone_guided[zi] = char(1);
+        for (const ExPolygon &isl : union_ex(zs[zone_bottom_layer[zi]])) {
+            ZoneStump st;
+            st.poly = to_polygons(isl);
+            st.c    = support_corridor_centroid(st.poly);
+            zone_stumps[zi].emplace_back(std::move(st));
+        }
+    }
+    // NEOTKO_SUPPORTZONES_TAG s304 — EL LISTÓN CONTRA EL QUE SE MIDE UNA COLUMNA DESBOCADA.
+    //
+    // 🔑 En s303 el descenso guiado llegó a 723.092 mm2 —un cuadrado de 850 mm de lado— y el
+    // log no dijo ni una palabra: los tres detectores de esta función miran hacia abajo (columna
+    // que adelgaza, columna vaciada, zona comida por otra) y ninguno mira hacia arriba. Un cero
+    // que no puede subir no es una verificación.
+    //
+    // El listón honrado es la propia zona: una columna guiada no tiene por qué ser más ancha que
+    // la sección más gorda que el usuario dibujó. El factor deja sitio a la dilatación legítima
+    // (la celda de la rejilla, el halo del regularizador) y no deja sitio a una plancha.
+    std::vector<double> zone_max_slice_area(zones.size(), 0.);
+    for (size_t zi = 0; zi < zones.size(); ++ zi)
+        for (const Polygons &p : zones[zi].slices)
+            zone_max_slice_area[zi] = std::max(zone_max_slice_area[zi], area(p));
+    std::vector<char>   zone_blown(zones.size(), char(0));
+    // NEOTKO_SUPPORTZONES_TAG s304 — cuanto le quita el techo de abajo a la rejilla, por zona.
+    // Resumido al final del descenso y no por capa: 300 lineas iguales son el ruido que hace
+    // inutil un log, y lo que se quiere saber es si el mordisco es constante (rejilla, sano) o
+    // creciente (algo sigue desbocado).
+    std::vector<double> grid_bite_total(zones.size(), 0.);
+    std::vector<double> grid_bite_max(zones.size(), 0.);
+    std::vector<size_t> grid_bite_layers(zones.size(), 0);
+    std::vector<double>   solid_asked(zones.size(), 0.);
+    std::vector<double>   solid_added(zones.size(), 0.);
+    std::vector<size_t>   solid_layers(zones.size(), 0);
+    // NEOTKO_SUPPORTZONES_TAG s300g — LA SECCIÓN SE APORTA EN EL TECHO, NI EN TODAS LAS CAPAS NI EN NINGUNA.
+    //
+    // 🔑 Medido en s300f con `print the whole block` APAGADO: la suma de TODOS los contactos de
+    // techo de la zona daba 105.11 mm2 y la columna en la cama daba 115.21 mm2. Los dos números son
+    // el mismo número. O sea que a la columna no la alimentaba nada más que el borde del techo, y
+    // ese borde es una BANDA — `diff(slices[i], slices[i+1])` ensanchado media extrusión en
+    // `SupportAnnotations`. Treinta y una bandas apiladas son un cascarón, y en las 273 líneas del
+    // descenso `crece=0` sin una sola excepción: una banda que nace banda llega banda a la cama.
+    //
+    // 🔑 La distinción que faltaba: la banda es el CONTACTO correcto (por eso al apagar «maciza»
+    // desaparecieron los techos dentro del muro) y la SEMILLA DE COLUMNA equivocada. Una columna
+    // necesita la sección, no el perímetro. Eran dos consumidores comiendo del mismo polígono.
+    //
+    // Así que la sección del bloque entra donde el bloque TIENE techo, que son unas pocas capas, y
+    // de ahí para abajo la columna desciende llena por el camino de siempre. Por las capas en las
+    // que el bloque sólo atraviesa la pieza no aporta nada — que es justo lo que se ganó al apagar
+    // «maciza» y no se quiere perder.
+    //
+    // ⚠️ Sólo para zonas con `support_zone_roof_only`. Con la opción apagada el enforcer clásico se
+    // queda exactamente como estaba, y `solid` también: esto no reemplaza a ninguno de los dos, es
+    // el punto medio que no existía.
+    //
+    // 🚨 `ModelConfig` no tiene `opt_bool()`. La opción se lee por su tipo, como en
+    // `SupportAnnotations`; con `opt_int` compilaría y devolvería basura.
+    //
+    // 🚨 s300g — Y EL TECHO NO SE RECALCULA AQUÍ. En s300f lo calculé en este punto con
+    // `diff(slices[i], slices[i+1])` y salieron las 300 capas: en un bloque inclinado ese diff
+    // nunca es vacío. Ahora se lee `roof_layer`, que viene del rebanado y sí compensa la
+    // inclinación. Es el MISMO vector que usa el contacto, que era el problema de fondo: dos
+    // consumidores calculando por su cuenta lo mismo, y los dos mal.
+    std::vector<char> zone_roof_only(zones.size(), char(0));
+    for (size_t zi = 0; zi < zones.size(); ++ zi) {
+        if (zones[zi].model_volume == nullptr)
+            continue;
+        const auto *ro = dynamic_cast<const ConfigOptionBool *>(
+            zones[zi].model_volume->config.option("support_zone_roof_only"));
+        if (ro != nullptr && ro->value)
+            zone_roof_only[zi] = char(1);
+    }
+    auto zone_seeds_section = [&zones, &zone_roof_only](size_t zi, size_t layer_id) -> bool {
+        if (layer_id >= zones[zi].slices.size() || zones[zi].slices[layer_id].empty())
+            return false;
+        return zones[zi].solid
+            || (zone_roof_only[zi] != 0 && layer_id < zones[zi].roof_layer.size()
+                && zones[zi].roof_layer[layer_id] != 0);
+    };
+    // NEOTKO_SUPPORTZONES_TAG s299 — EL FRENO SE INVIERTE, y con él se cae el §3 del plan.
+    //
+    // Aquí había un escalar: `d_max = k · ancho`, uno para todas las capas y todas las zonas. El
+    // ángulo era entonces la CONSECUENCIA (`atan(d_max / dz)`), y por eso con altura de capa
+    // variable la misma zona se inclinaba distinto en cada tramo sin que nadie lo pidiera: 42° en
+    // las capas gordas y casi 58° en las finas. Medido por el dueño con capa 0.32.
+    //
+    // 🔑 Ahora el ángulo es el DATO DE ENTRADA, uno por zona (`SupportZoneSlices::lean_deg`), y lo
+    // que se recalcula por capa es cuánto puede desplazarse: `dz · tan(θ)`. La pared del pilar sale
+    // recta a los grados pedidos, que es lo único que el usuario puede juzgar mirándola.
+    //
+    // 🚨 `dz` es la diferencia REAL de `print_z` con la capa de arriba, nunca `layer_height` (§8).
+    // Se calcula dentro del bucle, que es donde las dos capas están a mano.
+    //
+    // `k` no desaparece: sigue siendo el tope físico de cordura que el editor dibuja como
+    // recomendación (SupportZoneProbe.hpp). Aquí ya no impone nada.
+    const double          corridor_k_advice = SUPPORT_CORRIDOR_K * m_support_params.support_material_flow.width();
+    // 🚨 s286b — el guard de abajo sólo saltaba con la columna vaciada DE GOLPE en una capa, y una
+    // columna no muere así: muere de hambre, un poco más estrecha en cada capa, hasta que
+    // remove_sticks() se come lo que queda (T7) y lo de arriba se queda flotando. Ése fue
+    // literalmente el "el soporte nace en el aire", y los logs decían `← ERROR = 0` mientras
+    // pasaba. Un cero que no puede subir no es una verificación.
+    //
+    // Dos extrusiones de lado: por debajo de eso no hay columna que imprimir, la haya o no en el
+    // papel. Es el mismo número con el que el editor avisa de "too narrow to print".
+    const double          corridor_min_area = std::pow(scaled<double>(2. * m_support_params.support_material_flow.width()), 2.);
+    // s301b — el MISMO número dicho como radio, que es lo que necesita el cono del tramo guiado:
+    // erosionar media anchura por lado deja exactamente dos extrusiones.
+    const double          corridor_min_half_w = scaled<double>(m_support_params.support_material_flow.width());
+    if (! zones.empty()) {
+        CORRIDOR_LOG("[CORRIDOR] s286 F2 | capas_objeto=" << int(object.total_layer_count())
+            << " zonas=" << zones.size()
+            << " k=" << SUPPORT_CORRIDOR_K
+            << " line_width=" << m_support_params.support_material_flow.width() << "mm"
+            << " paso_recomendado_por_k=" << corridor_k_advice << "mm"
+            << " buildplate_only=" << int(buildplate_only));
+        for (size_t zi = 0; zi < zones.size(); ++ zi) {
+            const SupportZoneSlices &z = zones[zi];
+            size_t n_layers = 0;
+            for (const Polygons &p : z.slices)
+                if (! p.empty())
+                    ++ n_layers;
+            CORRIDOR_LOG("[CORRIDOR]   zona prioridad=" << z.priority
+                << " nombre=\"" << (z.model_volume ? z.model_volume->name : std::string("?")) << "\""
+                << " angulo=" << z.lean_deg << "°"
+                << " capas_con_bloque=" << n_layers
+                << " capas=[" << zone_bottom_layer[zi] << ".." << zone_top_layer[zi] << "]"
+                << (zone_guided[zi] != 0
+                        ? std::string("  ← ÁRBOL DE BLOQUES: tocón hasta la capa ")
+                          + std::to_string(zone_stump_top[zi]) + ", cabeza desde arriba, el medio crece"
+                        : std::string()));
+            // s301 — los tocones de esta zona, uno por línea. Es lo primero que se mira cuando la
+            // columna no llega: si aquí sale un tocón donde no lo plantaste, el fallo está en el
+            // editor y no en el descenso.
+            for (size_t si = 0; si < zone_stumps[zi].size(); ++ si)
+                CORRIDOR_LOG("[CORRIDOR]     tocón " << si
+                    << " centro=(" << unscaled<double>(zone_stumps[zi][si].c.x())
+                    << "," << unscaled<double>(zone_stumps[zi][si].c.y()) << ")mm"
+                    << " area=" << unscale<double>(unscale<double>(area(zone_stumps[zi][si].poly))) << "mm2");
+        }
+        // T6: with smsGrid the support grid re-aligns itself to the bbox of each layer, so a
+        // sliding column comes out in cell-sized jumps instead of sliding. Not gated in code —
+        // gating a feature behind a flag is how you end up with a loop nobody enters — but said
+        // out loud, because a jumpy corridor read as a corridor bug would cost a session.
+        if (grid_params.style != smsSnug)
+            CORRIDOR_LOG("[CORRIDOR] ⚠️ support_style no es Snug (T6): la rejilla se re-alinea por capa"
+                " y el corredor saldra a saltos de celda, no deslizando.");
+    }
+
     // Last top contact layer visited when collecting the projection of contact areas.
     int       contact_idx = int(top_contacts.size()) - 1;
     for (int layer_id = int(object.total_layer_count()) - 2; layer_id >= 0; -- layer_id) {
         BOOST_LOG_TRIVIAL(trace) << "Support generator - bottom_contact_layers - layer " << layer_id;
         const Layer &layer = *object.get_layer(layer_id);
+        // NEOTKO_SUPPORTZONES_TAG s284 F0 — §4.2: descending from layer_id+1 to layer_id, shift the
+        // accumulated projection along the corridor's local axis.
+        //
+        // 🚨 This runs BEFORE merging this layer's new contacts: what gets translated is what came
+        // from above, not what joins here, which is already at this level.
+        //
+        // ⚠️ The final intersection is the SAFETY NET, not the engine (§4.2). Clipping without
+        // translating would empty the column as soon as the block leans; dilating and clipping
+        // would instead fatten it until it fills the whole corridor.
+        // NEOTKO_SUPPORTZONES_TAG s286 F2 — one corridor per zone, each guiding only its own
+        // accumulator. What F0 did to the two global streams now happens N times, and the general
+        // stream is NOT touched at all: after T1 (below) it carries automatic overhangs only, and
+        // those keep falling straight down, which is §4.3's promise.
+        for (size_t zi = 0; zi < zones.size(); ++ zi) {
+            Polygons &projection = zones_projection[zi];
+            if (projection.empty())
+                continue;
+            // NEOTKO_SUPPORTZONES_TAG s304 — EL DETECTOR QUE MIRA HACIA ARRIBA.
+            //
+            // 🚨 Va AQUÍ y no dentro de una rama a propósito: éste es el único punto por el que
+            // pasan las tres (islas, bifurcada y guiada por tocón), y además ve el acumulador tal
+            // como lo devolvió `project_support_to_grid()`, o sea con la cuantización de la rejilla
+            // ya aplicada. Puesto dentro de una rama sólo vigilaría el camino que hoy sabemos roto.
+            //
+            // Una línea por zona y por slice, no por capa: la primera vez que se dispara ya lo ha
+            // dicho todo, y 300 líneas iguales son exactamente el ruido que hace inútil un log.
+            if (zone_blown[zi] == 0 && zone_max_slice_area[zi] > 0.
+                && area(projection) > 4. * zone_max_slice_area[zi]) {
+                zone_blown[zi] = char(1);
+                CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                    << " zona=" << zones[zi].priority
+                    << " acumulador=" << unscale<double>(unscale<double>(area(projection)))
+                    << " mm2 contra seccion_max_dibujada="
+                    << unscale<double>(unscale<double>(zone_max_slice_area[zi])) << " mm2"
+                    << "  ← ERROR the column is wider than anything the user drew"
+                       " (runaway descent: check support_style and the d_max cap)");
+            }
+            const std::vector<Polygons> &zslices = zones[zi].slices;
+            if (size_t(layer_id) + 1 >= zslices.size())
+                continue;
+            const Polygons &corridor_here  = zslices[layer_id];
+            const Polygons &corridor_above = zslices[layer_id + 1];
+            // NEOTKO_SUPPORTZONES_TAG s299 — el tope de ESTA capa y de ESTA zona.
+            //
+            // 🚨 El `dz` real del paso que se está dando, no `layer_height` (§8). Bajo ALH cambia en
+            // cada capa y es justo lo que hace que un tope constante mienta.
+            const double dz_mm = double(object.get_layer(layer_id + 1)->print_z) - double(layer.print_z);
+            const double corridor_d_max = scaled<double>(
+                SupportZones::corridor_d_max_mm(dz_mm, zones[zi].lean_deg));
+            if (corridor_here.empty()) {
+                // NEOTKO_SUPPORTZONES_TAG s301 — AQUÍ ES DONDE EL TOCÓN TOMA EL MANDO.
+                //
+                // 🔑 Éste es el tramo intermedio del gesto de s300: el usuario pintó el área arriba
+                // y plantó el tocón abajo, y en medio no dibujó nada. Hasta hoy esta rama bajaba a
+                // plomo («Straighten»), que era lo correcto cuando lo único que podía acabarse era
+                // un pilar lofteado. Con la cabeza y el tocón separados, bajar recto es
+                // precisamente no ir a ninguna parte.
+                //
+                // 🔑 Y el cambio es de UNA LÍNEA de concepto: la dirección deja de salir de la forma
+                // del bloque y sale del tocón. Todo lo demás —el tope `d_max` recalculado con el
+                // `dz` real, el recorte contra el objeto, el emparejamiento— ya estaba escrito y no
+                // se toca. Ahí está lo barato de esta feature.
+                //
+                // ⚠️ Las tres guardas de abajo importan las tres:
+                //   · sin hueco no es un árbol de bloques, es un pilar que se acabó ⇒ Straighten;
+                //   · sin tocones no hay imán al que ir;
+                //   · y POR DEBAJO del tocón el imán ya quedó atrás. Sin esa tercera, una columna
+                //     que sigue bajando tras pasar el tocón se pondría a perseguir hacia arriba un
+                //     centroide que ya dejó, o sea a desviarse sin motivo hasta la cama.
+                if (zone_guided[zi] == 0 || zone_stumps[zi].empty() || layer_id <= zone_bottom_layer[zi]) {
+                    // §4.2-bis, `Straighten` (the proposed default): the block ended, the column stops
+                    // being guided and keeps descending vertically from wherever it was.
+                    CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                        << " zona=" << zones[zi].priority
+                        << " corridor EXHAUSTED -> Straighten (keeps descending vertically)");
+                    continue;
+                }
+
+                // El reparto: cada tocón se lleva los puntos que le caen más cerca (su celda de
+                // Voronoi), y ESE trozo es el que se mueve hacia él. El porqué de repartir el plano
+                // en vez de la lista de islas está con `support_stump_cell()`: el interior del
+                // centro de un toro es UN anillo, y por islas se iría entero hacia un lado.
+                const double area_before_g = area(projection);
+                std::vector<Vec2d> centres;
+                centres.reserve(zone_stumps[zi].size());
+                for (const ZoneStump &st : zone_stumps[zi])
+                    centres.push_back(st.c);
+                BoundingBox bb = get_extents(projection);
+                for (const Vec2d &c : centres)
+                    bb.merge(Point(coord_t(std::lround(c.x())), coord_t(std::lround(c.y()))));
+                bb.offset(scaled<coord_t>(10.));
+
+                Polygons moved;
+                double   v_max      = 0.;
+                double   shrink_max = 0.;
+                size_t   n_clamped  = 0;
+                size_t   n_parts    = 0;
+                for (size_t si = 0; si < centres.size(); ++ si) {
+                    Polygons part = (centres.size() == 1)
+                        ? projection
+                        : intersection(projection, support_stump_cell(centres, si, bb));
+                    if (part.empty())
+                        continue;
+                    ++ n_parts;
+                    // 🚨 El desplazamiento se mide desde el centroide del TROZO, no del acumulador
+                    // entero: es la mitad que va a este tocón, y preguntarle al conjunto sería el
+                    // mismo error que el §4.2 documenta para el corredor bifurcado.
+                    const Vec2d  c     = support_corridor_centroid(part);
+                    Vec2d        v     = centres[si] - c;
+                    const double v_raw = v.norm();
+                    v_max = std::max(v_max, v_raw);
+                    if (v_raw > corridor_d_max) {
+                        v *= corridor_d_max / v_raw;
+                        ++ n_clamped;
+                    }
+                    const Point t(coord_t(std::lround(v.x())), coord_t(std::lround(v.y())));
+                    if (t != Point(0, 0))
+                        for (Polygon &poly : part)
+                            poly.translate(t);
+
+                    // NEOTKO_SUPPORTZONES_TAG s301b — Y AQUÍ SE CONTRAE, QUE ES LA MITAD QUE FALTABA.
+                    //
+                    // 🚨 Medido en el primer build: la columna llegaba encima del tocón en la capa
+                    // 114 y seguía bajando 114 capas más con sus 385.5 mm2 intactos, hasta que el
+                    // tocón la recortaba de golpe en la capa 5. En pantalla eso es una PLANCHA con
+                    // un pie debajo, no un tronco. El §8 pedía las dos cosas —«se contrae Y se
+                    // dirige hacia el tocón»— y sólo estaba la segunda: el tocón era un imán para
+                    // la POSICIÓN y no para el TAMAÑO.
+                    //
+                    // 🔑 El presupuesto es el MISMO `d_max`, y se reparte, no se duplica. Un punto
+                    // del contorno que se traslada `|v|` y además se mete `s` recorre `|v| + s`, así
+                    // que dejar los dos a `d_max` permitiría el doble de inclinación de la pedida
+                    // por un lado. Primero se gasta en llegar y lo que sobre en cerrar: mientras la
+                    // columna viaja apenas se estrecha, y en cuanto está encima del tocón dedica el
+                    // presupuesto entero a bajar en cono al ángulo que el usuario eligió.
+                    //
+                    // Y se para en dos sitios, los dos justificados abajo: en el propio tocón
+                    // cuando lo alcanza, y en dos extrusiones de ancho cuando no puede alcanzarlo.
+                    const double d_shrink = corridor_d_max - std::min(v_raw, corridor_d_max);
+                    if (d_shrink > SCALED_EPSILON) {
+                        const Polygons &stump = zone_stumps[zi][si].poly;
+                        Polygons        s     = offset(part, - float(d_shrink));
+                        // 🔑 EL FRENO ES EL PROPIO TOCÓN, y es lo que hace que el cono se pare
+                        // exactamente donde tiene que pararse. En cuanto la columna pisa su pie se
+                        // le devuelve el pie entero en cada capa: erosiona todo menos eso, así que
+                        // converge a la forma del tocón y ahí se queda. Sin esta línea el cono no
+                        // sabría cuándo ha llegado.
+                        //
+                        // ⛔ Y sólo cuando YA lo pisa. Unir el tocón antes sería hacer aparecer un
+                        // trozo de columna en el aire, a un lado y sin nada encima.
+                        if (! intersection(part, stump).empty())
+                            s = union_(s, stump);
+                        // Y nunca por debajo de dos extrusiones de ancho: un área que no puede
+                        // converger en un tocón —un anillo alrededor de un agujero, por ejemplo—
+                        // se estrecharía si no hasta desaparecer, que es la muerte por hambre de
+                        // T7. Cuando esto frena, el aviso de «esta raíz no da para todo» de más
+                        // abajo es el que dice qué hacer: plantar otro tocón.
+                        if (! s.empty() && ! offset(s, - float(corridor_min_half_w)).empty()) {
+                            part = std::move(s);
+                            shrink_max = std::max(shrink_max, d_shrink);
+                        }
+                    }
+                    polygons_append(moved, std::move(part));
+                }
+                // ⚠️ NO hay `intersection` en este tramo, a diferencia de las dos ramas de abajo:
+                // aqui no existe corredor contra el que recortar.
+                //
+                // 🚨 s304, PRIMER BUILD FALLIDO, y la leccion vale mas que el codigo que no puso:
+                // aqui puse un techo `intersection(moved, expand(projection, d_max))` creyendo que
+                // acotaba el descenso desbocado. Salio `techo_corto=0.0000` en las 601 lineas del
+                // log, y tenia que salir: `moved` es `projection` trasladado como mucho `d_max`, o
+                // sea que ya estaba dentro de ese `expand` POR CONSTRUCCION. Un clamp sobre el lado
+                // que no crece. El dato que lo decia estaba delante desde el principio:
+                // `area_post` de la capa 308 es 255,73 y `area_pre` de la 307 es 341,37, asi que
+                // los +86 mm2 aparecen ENTRE capas, no dentro de la rama. Donde muerde de verdad
+                // esta en `project_support_to_grid()`, al pie de este mismo bucle.
+                projection = moved.empty() ? Polygons() : union_(moved);
+                const double area_after_g = area(projection);
+                CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                    << " zona=" << zones[zi].priority << " GUIADO POR TOCÓN"
+                    << " trozos=" << n_parts << " tocones=" << zone_stumps[zi].size()
+                    << " |v|_pedido_max=" << unscaled<double>(v_max) << "mm"
+                    << " contraido=" << unscaled<double>(shrink_max) << "mm"
+                    << " clamped=" << n_clamped
+                    << " angulo=" << zones[zi].lean_deg << "° dz=" << dz_mm
+                    << "mm d_max=" << unscaled<double>(corridor_d_max) << "mm"
+                    << " area_pre=" << unscale<double>(unscale<double>(area_before_g))
+                    << " area_post=" << unscale<double>(unscale<double>(area_after_g)) << " mm2"
+                    // Misma escalera de desnutrición que las otras dos ramas: una columna se muere
+                    // igual de callada aquí que allí, y un tramo guiado sin este detector sería el
+                    // único sitio del descenso donde no se vería.
+                    << ((area_before_g > 0. && area_after_g <= 0.) ? "  ← ERROR column emptied on the guided run"
+                        : (area_before_g > corridor_min_area && area_after_g <= corridor_min_area)
+                            ? "  ← ERROR column starved below two extrusions (it will be removed and leave the support above floating)"
+                        : (area_before_g > 0. && area_after_g < 0.75 * area_before_g)
+                            ? "  ← WARN column lost more than a quarter in one layer"
+                            : ""));
+                continue;
+            }
+            // NEOTKO_SUPPORTZONES_TAG s301 — EL AVISO HONESTO: «esta raíz no da para todo».
+            //
+            // 🔑 Se mide EN LA TAPA DEL TOCÓN —la capa donde el corredor reaparece— y no antes ni
+            // después, y las dos cosas importan:
+            //   · antes no se sabe: una isla que parece lejísimos a media altura llega de sobra si
+            //     le quedan doscientas capas de presupuesto;
+            //   · después es tarde: una capa más abajo el `intersection` contra el tocón ya se
+            //     habrá comido la isla que no llegaba, y el aviso no se dispararía nunca. Éste es
+            //     el mismo error que costó s300f — medir un dato después de que otro lo pise.
+            //
+            // Y es la mitad honrada del gesto: con un solo tocón bajo un área grande el usuario
+            // tiene que enterarse de que el otro lado no llega, con su capa y su isla, en vez de
+            // descubrirlo en la cama impresa.
+            if (zone_guided[zi] != 0 && layer_id == zone_stump_top[zi] && ! zone_stumps[zi].empty()) {
+                Polygons all_stumps;
+                for (const ZoneStump &st : zone_stumps[zi])
+                    polygons_append(all_stumps, st.poly);
+                size_t n_unreached = 0;
+                for (const ExPolygon &isl : union_ex(projection)) {
+                    const Polygons part = to_polygons(isl);
+                    if (! intersection(part, all_stumps).empty())
+                        continue;
+                    ++ n_unreached;
+                    const Vec2d c = support_corridor_centroid(part);
+                    double d_min = std::numeric_limits<double>::max();
+                    for (const ZoneStump &st : zone_stumps[zi])
+                        d_min = std::min(d_min, (st.c - c).norm());
+                    CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                        << " zona=" << zones[zi].priority
+                        << " isla en (" << unscaled<double>(c.x()) << "," << unscaled<double>(c.y()) << ")mm"
+                        << " area=" << unscale<double>(unscale<double>(area(part))) << "mm2"
+                        << " se queda a " << unscaled<double>(d_min) << "mm del tocón más cercano");
+                }
+                if (n_unreached > 0)
+                    CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " zona=" << zones[zi].priority
+                        << "  🚨 esta raíz no da para todo: " << n_unreached
+                        << " isla(s) no alcanzan ningún tocón con " << zone_stumps[zi].size()
+                        << " plantado(s) — planta otro tocón bajo esa zona, o sube el ángulo");
+            }
+            if (corridor_above.empty())
+                continue;
+
+            const double area_before = area(projection);
+            const ExPolygons comps_above = union_ex(corridor_above);
+            const ExPolygons comps_here  = union_ex(corridor_here);
+
+            if (comps_above.size() == 1 && comps_here.size() == 1) {
+                // The single-island case, which is every lofted corridor (§4-bis.1) and the one F0
+                // was verified on. Kept as the literal F0 path so that a one-zone plate produces
+                // exactly what s284 measured — the component pairing below is strictly the
+                // generalisation, never a replacement.
+                Vec2d        v       = support_corridor_centroid(corridor_here) - support_corridor_centroid(corridor_above);
+                const double v_raw   = v.norm();
+                const bool   clamped = v_raw > corridor_d_max;
+                if (clamped)
+                    // 🔑 s299 — el freno sigue existiendo, pero ahora mide OTRA cosa. Ya no dice
+                    // "no te inclines tanto": el ángulo lo eligió el autor de la zona y este tope
+                    // se deriva de él. Lo que caza ahora es un corredor cuyo centroide se mueve más
+                    // de lo que su propio ángulo permite, que es un bloque dibujado más inclinado
+                    // que su ajuste. Con una zona hecha por el gizmo esto debería salir a 0.
+                    v *= corridor_d_max / v_raw;
+                // 🔎 s286b — LA SONDA QUE DECIDE SI ESTE `v` ES REAL O INVENTADO.
+                //
+                // Él vio columnas que "nacen en el aire" con huella pequeña e inclinación: la
+                // columna muere hacia abajo y lo de arriba queda flotando. La sospecha es que en
+                // el tramo VERTICAL que envuelve un parche curvo la sección CRECE al bajar, y un
+                // centroide que se mueve porque la forma engorda es indistinguible, con esta
+                // medida, de uno que se mueve porque el bloque se inclina. El corredor aplicaría
+                // entonces una traslación que nadie pidió y el recorte se comería la columna.
+                //
+                // Dos números lo zanjan y ninguno cambia el comportamiento:
+                //   crece      : la isla de arriba está CONTENIDA en la de aquí (la sección sólo
+                //                ha engordado, nada se ha movido de sitio);
+                //   fuera_sin_v: cuánta área de la columna se saldría del corredor si NO la
+                //                moviéramos. Si es ~0, la traslación era innecesaria — y ése es
+                //                el caso a cazar.
+                const bool   grows        = diff(corridor_above, corridor_here).empty();
+                const double area_out_nov = area(diff(projection, corridor_here));
+
+                const Point t(coord_t(std::lround(v.x())), coord_t(std::lround(v.y())));
+                if (t != Point(0, 0))
+                    for (Polygon &poly : projection)
+                        poly.translate(t);
+                // ⚠️ The intersection is the SAFETY NET, not the engine (§4.2). Clipping without
+                // translating would empty the column as soon as the block leans; dilating and
+                // clipping would instead fatten it until it fills the whole corridor.
+                projection = intersection(projection, corridor_here);
+                const double area_after = area(projection);
+                CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                    << " zona=" << zones[zi].priority << " islas=1"
+                    << " v_aplicado=(" << unscaled<double>(v.x()) << "," << unscaled<double>(v.y()) << ")mm"
+                    << " |v|_pedido=" << unscaled<double>(v_raw) << "mm"
+                    << " angulo=" << zones[zi].lean_deg << "° dz=" << dz_mm
+                    << "mm d_max=" << unscaled<double>(corridor_d_max) << "mm"
+                    << (clamped ? " CLAMPED (el bloque se inclina mas que su propio angulo)" : "")
+                    << " crece=" << int(grows)
+                    << " fuera_sin_v=" << unscale<double>(unscale<double>(area_out_nov)) << "mm2"
+                    << " area_pre=" << unscale<double>(unscale<double>(area_before))
+                    << " area_post=" << unscale<double>(unscale<double>(area_after)) << " mm2"
+                    << ((area_before > 0. && area_after <= 0.) ? "  ← ERROR column emptied by the corridor"
+                        : (area_before > corridor_min_area && area_after <= corridor_min_area)
+                            ? "  ← ERROR column starved below two extrusions (it will be removed and leave the support above floating)"
+                        : (area_before > 0. && area_after < 0.75 * area_before)
+                            ? "  ← WARN column lost more than a quarter in one layer"
+                            : ""));
+            } else {
+                // §4.2, the forked corridor: one delta per island, applied to the piece of the
+                // column that sits inside that island.
+                const std::vector<CorridorShift> shifts = support_corridor_pair_components(corridor_above, corridor_here);
+                Polygons rest    = std::move(projection);
+                Polygons shifted;
+                size_t   n_clamped = 0;
+                double   v_max     = 0.;
+                for (const CorridorShift &sh : shifts) {
+                    if (rest.empty())
+                        break;
+                    const Polygons island = to_polygons(sh.above);
+                    Polygons       part   = intersection(rest, island);
+                    if (part.empty())
+                        continue;
+                    rest = diff(rest, island);
+                    Vec2d        v       = sh.v;
+                    const double v_raw   = v.norm();
+                    if (v_raw > corridor_d_max) {
+                        v *= corridor_d_max / v_raw;
+                        ++ n_clamped;
+                    }
+                    v_max = std::max(v_max, v_raw);
+                    const Point t(coord_t(std::lround(v.x())), coord_t(std::lround(v.y())));
+                    if (t != Point(0, 0))
+                        for (Polygon &poly : part)
+                            poly.translate(t);
+                    polygons_append(shifted, std::move(part));
+                }
+                // `rest` is whatever sat outside every island of the corridor above. The safety net
+                // would have clipped it away anyway; dropping it here just does it one step
+                // earlier, and the log says how much so it never disappears quietly.
+                const double area_dropped = area(rest);
+                projection = shifted.empty() ? Polygons() : intersection(union_(shifted), corridor_here);
+                const double area_after = area(projection);
+                CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                    << " zona=" << zones[zi].priority
+                    << " islas_arriba=" << comps_above.size() << " islas_abajo=" << comps_here.size()
+                    << " emparejadas=" << shifts.size() << " clamped=" << n_clamped
+                    << " |v|_max=" << unscaled<double>(v_max) << "mm"
+                    << " angulo=" << zones[zi].lean_deg << "° dz=" << dz_mm
+                    << "mm d_max=" << unscaled<double>(corridor_d_max) << "mm"
+                    << " area_pre=" << unscale<double>(unscale<double>(area_before))
+                    << " area_post=" << unscale<double>(unscale<double>(area_after))
+                    << " area_fuera=" << unscale<double>(unscale<double>(area_dropped)) << " mm2"
+                    // Mismo detector de desnutrición que en la rama de una isla: una columna
+                    // bifurcada muere igual de callada.
+                    << ((area_before > 0. && area_after <= 0.) ? "  ← ERROR column emptied by the corridor"
+                        : (area_before > corridor_min_area && area_after <= corridor_min_area)
+                            ? "  ← ERROR column starved below two extrusions (it will be removed and leave the support above floating)"
+                        : (area_before > 0. && area_after < 0.75 * area_before)
+                            ? "  ← WARN column lost more than a quarter in one layer"
+                            : ""));
+            }
+        }
         // Collect projections of all contact areas above or at the same level as this top surface.
 #ifdef SLIC3R_DEBUG
         Polygons polygons_new;
@@ -2656,18 +3613,302 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
             // These are the overhang surfaces. They are touching the object and they are not expanded away from the object.
             // Use a slight positive offset to overlap the touching regions.
             polygons_append(polygons_new, expand(*top_contact.overhang_polygons, float(SCALED_EPSILON)));
+
+            // NEOTKO_SUPPORTZONES_TAG s286 F2 — T1 and the routing of contacts to their zone.
+            // docs/FUTURE/SUPPORT_ZONES_PLAN.md §5 T1.
+            //
+            // 🚨 top_contact_layers() appends what an enforcer marks to the GENERAL overhang and
+            // contact polygons too (:1675-1677). Give the enforcer stream a corridor and leave that
+            // alone and you get TWO columns: the guided one and a vertical ghost. So the pieces
+            // that belong to a zone are carved out of the general stream here and travel only
+            // inside their own accumulator.
+            //
+            // Identity comes from idx_object_layer_above, the object layer whose lslices were
+            // intersected with the enforcer slice to make these polygons (:1828). That is exact,
+            // not a guess by proximity.
+            if (! enforcers_new.empty() && ! zones.empty() && top_contact.idx_object_layer_above != size_t(-1)) {
+                const size_t idx_src = top_contact.idx_object_layer_above;
+                Polygons     rest    = std::move(enforcers_new);
+                enforcers_new.clear();
+                size_t       best_zone = size_t(-1);
+                double       best_area = 0.;
+                const double area_general_pre = area(polygons_new);
+                double       area_ghost_total = 0.;
+
+                // 🚨 s286, found in the first build: the general stream does NOT hold the same
+                // polygons as the enforcer stream, it holds their REGULARISED copy.
+                // fill_contact_layer() runs contact_polygons through
+                // extract_support() -> smsSnug -> smooth_outward(closing(p, support_closing_radius))
+                // (:857-868, radius hardcoded to 2 mm in SupportGridParams), while
+                // new_layer.enforcer_polygons keeps the RAW patch (:1982). Subtract raw from
+                // regularised and what survives is a rim up to the closing radius wide, broken by
+                // the outward smoothing into a handful of slivers — which then fall straight down
+                // as thin ghost columns next to the ramp. F0 never showed them because it
+                // translated BOTH streams by the same v, so the rim rode glued to the corridor.
+                //
+                // So the bite is the halo, not the patch, and the rim is not dropped: it is handed
+                // to the zone, where the safety net of §4.2 clips it back to the corridor on the
+                // very next layer.
+                const float zone_halo = float(scaled<double>(grid_params.support_closing_radius) +
+                                              m_support_params.support_material_flow.scaled_width());
+
+                // Priority order = creation order (§6 F2). Progressive subtraction on BOTH streams,
+                // so two blocks that overlap in XY produce a partition and not a double count, and
+                // the block created first wins the shared piece.
+                //
+                // 🚨 s286, second build: the ghost has to be split per zone as well. Handing the
+                // whole of it to the zone that claimed the most made zone 0 carry zone 1's contact
+                // for one layer, so at the seed layer zone 0 printed a blob covering both and the
+                // priority trim reported zone 1 as fully swallowed. One layer, but wrong, and it is
+                // what fired the ← ERROR in the two-block logs.
+                //
+                // 🚨 s286b — Y AQUÍ ESTABA EL SEGUNDO REPARTO, que es el que sobrevivió al primero.
+                // Arreglar el reparto del área impresa dejó `cedida` a cero y la zona SEGUÍA
+                // saliendo un 8% más pequeña con un vecino al lado. La razón: el CONTACTO se
+                // repartía igual de exclusivo un nivel más arriba — la primera zona por índice se
+                // llevaba la banda compartida y la borraba de `rest`, así que la segunda ya no la
+                // veía y arrancaba con menos semilla. Misma regla, otra fase.
+                //
+                // Ahora la exclusividad es SÓLO entre familias distintas: se recorre por familias,
+                // dentro de una familia todas miran el mismo `rest` sin quitárselo unas a otras, y
+                // al cerrar la familia se descuenta de golpe lo que ha reclamado. Que dos zonas
+                // hermanas se lleven la misma banda es correcto y no duplica nada: sus columnas se
+                // funden en el `union_` de más abajo, que es justo lo que se quiere de dos bloques
+                // iguales que se tocan.
+                std::vector<size_t> zone_order(zones.size());
+                std::iota(zone_order.begin(), zone_order.end(), size_t(0));
+                std::stable_sort(zone_order.begin(), zone_order.end(),
+                                 [&zone_family](size_t a, size_t b) { return zone_family[a] < zone_family[b]; });
+
+                size_t   cur_family = size_t(-1);
+                Polygons rest_family;      // lo que la familia actual vio al empezar
+                Polygons claimed_family;   // lo que la familia actual ha reclamado
+                for (size_t oi = 0; oi <= zone_order.size(); ++ oi) {
+                    // Cierre de familia: se descuenta de `rest` todo lo suyo, de una vez.
+                    if (oi == zone_order.size() || (cur_family != size_t(-1) && zone_family[zone_order[oi]] != cur_family)) {
+                        if (! claimed_family.empty())
+                            rest = diff(rest, claimed_family);
+                        claimed_family.clear();
+                        if (oi == zone_order.size())
+                            break;
+                    }
+                    const size_t zi = zone_order[oi];
+                    if (zone_family[zi] != cur_family) {
+                        cur_family  = zone_family[zi];
+                        rest_family = rest;
+                    }
+                    const std::vector<Polygons> &zslices = zones[zi].slices;
+                    if (idx_src >= zslices.size() || zslices[idx_src].empty())
+                        continue;
+                    Polygons part;
+                    if (! rest_family.empty()) {
+                        part = intersection(rest_family, zslices[idx_src]);
+                        if (! part.empty())
+                            polygons_append(claimed_family, part);
+                    }
+                    if (! part.empty()) {
+                        const double a = area(part);
+                        if (a > best_area) {
+                            best_area = a;
+                            best_zone = zi;
+                        }
+                    }
+                    if (! polygons_new.empty()) {
+                        // The halo is what this zone's contact grew into on its way through the
+                        // regulariser. It stops at a neighbour's wall: a zone may reclaim its own
+                        // coat, never reach into the footprint of another zone.
+                        //
+                        // 🚨 s286, third build: the wall is the neighbour's EXCLUSIVE footprint,
+                        // never the piece the two blocks share. Cutting each halo with the
+                        // neighbour's whole slice removed the overlap from BOTH halos at once, so
+                        // with two blocks touching nobody claimed the seam and 5.79 mm2 of general
+                        // stream survived to fall vertically (general_post != 0 in the touching
+                        // log, 0 in the separated one, which is exactly the shape of the bug).
+                        // The shared piece already belongs to the higher-priority zone by the rule
+                        // above, so leaving it claimable is what makes the two rules agree.
+                        Polygons halo = expand(part.empty() ? zslices[idx_src] : part, zone_halo);
+                        for (size_t oj = 0; oj < zones.size() && ! halo.empty(); ++ oj) {
+                            // 🚨 s286b: una hermana de familia NO es una pared. Tratarla como tal
+                            // dejaba la costura entre dos bloques iguales sin dueño, que es el mismo
+                            // fallo que este bloque ya documenta más abajo, ahora entre iguales.
+                            if (oj == zi || zone_family[oj] == zone_family[zi])
+                                continue;
+                            const std::vector<Polygons> &oslices = zones[oj].slices;
+                            if (idx_src < oslices.size() && ! oslices[idx_src].empty())
+                                halo = diff(halo, diff(oslices[idx_src], zslices[idx_src]));
+                        }
+                        if (! halo.empty()) {
+                            Polygons ghost = intersection(polygons_new, halo);
+                            if (! ghost.empty()) {
+                                polygons_new      = diff(polygons_new, halo);
+                                area_ghost_total += area(ghost);
+                                polygons_append(part, std::move(ghost));
+                            }
+                        }
+                    }
+                    // 🔑 Unconditional: the zone's own contact must land in its accumulator whether
+                    // or not there was any ghost to reclaim.
+                    if (! part.empty())
+                        polygons_append(zones_projection[zi], std::move(part));
+                }
+                if (! rest.empty()) {
+                    if (best_zone != size_t(-1))
+                        // A fringe that landed outside every block. It belongs to whoever it bled
+                        // from, which is the zone that claimed the most of this contact.
+                        polygons_append(zones_projection[best_zone], std::move(rest));
+                    else
+                        // No zone claimed anything: this is the painted brush, which has no
+                        // ModelVolume and therefore no corridor. Unchanged behaviour.
+                        polygons_append(enforcers_new, std::move(rest));
+                }
+                // The number that settles it: with support_type = normal(manual) there is no
+                // automatic overhang at all, so "general_post" MUST be 0. Anything left over is a
+                // ghost column waiting to be printed. ⚠️ general_pre double-counts, because
+                // polygons_new still holds the contact and the overhang copies unmerged; only
+                // general_post is a clean figure.
+                CORRIDOR_LOG("[CORRIDOR] T1 layer_contacto=" << idx_src
+                    << " general_pre=" << unscale<double>(unscale<double>(area_general_pre))
+                    << " fantasma_reencaminado=" << unscale<double>(unscale<double>(area_ghost_total))
+                    << " general_post=" << unscale<double>(unscale<double>(area(polygons_new))) << " mm2");
+            }
+
             polygons_append(overhangs_projection, union_(polygons_new));
             polygons_append(enforcers_projection, enforcers_new);
         }
-        if (overhangs_projection.empty() && enforcers_projection.empty())
-            continue;
+        {
+            bool any_zone = false;
+            for (const Polygons &p : zones_projection)
+                if (! p.empty()) {
+                    any_zone = true;
+                    break;
+                }
+            // 🚨 s299c — una zona maciza cuenta aunque su acumulador esté vacío, y esto no es un
+            // detalle: la columna de una zona maciza NACE de su propia sección, así que la primera
+            // capa siempre llega aquí sin nada acumulado. Sin esta línea, el `continue` de abajo se
+            // saltaba la capa y la zona no arrancaba nunca.
+            //
+            // NEOTKO_SUPPORTZONES_TAG s300f — y lo mismo vale para la capa de techo de una zona
+            // `roof_only`: es la que arranca la columna llena, así que saltársela es quedarse otra
+            // vez con el cascarón.
+            if (! any_zone)
+                for (size_t zi = 0; zi < zones.size() && ! any_zone; ++ zi)
+                    any_zone = zone_seeds_section(zi, size_t(layer_id));
+            if (overhangs_projection.empty() && enforcers_projection.empty() && ! any_zone)
+                continue;
+        }
 
         // Overhangs_projection will be filled in asynchronously, move it away.
         Polygons overhangs_projection_raw = union_(std::move(overhangs_projection));
         Polygons enforcers_projection_raw = union_(std::move(enforcers_projection));
+        // NEOTKO_SUPPORTZONES_TAG s286 F2 — same move-away dance, once per zone.
+        std::vector<Polygons> zones_projection_raw(zones.size(), Polygons());
+        for (size_t zi = 0; zi < zones.size(); ++ zi) {
+            zones_projection_raw[zi] = union_(std::move(zones_projection[zi]));
+            // NEOTKO_SUPPORTZONES_TAG s299c — LA ZONA MACIZA: el bloque ES la columna.
+            //
+            // 🔑 Dicho por el dueño mirando el gcode: "falta medio objeto en el slice". Y la razón
+            // es que la columna no salía del bloque, salía del CONTACTO: se sembraba lo que tocaba
+            // superficie y ESO era lo que descendía, así que la sección de abajo era la del techo y
+            // no la de la forma que él había dibujado.
+            //
+            // Su propio razonamiento, que es el correcto: lo que está antes del codo es la parte
+            // BÁSICA —la que aguanta— y lo que está después es la NECESARIA. La parte básica no
+            // tiene por qué justificar su existencia tocando un voladizo; existe porque hace falta
+            // algo debajo. Con esto encendido, en cada capa la zona aporta su propia sección, así
+            // que el pilar sale como se dibujó: entero.
+            //
+            // 🚨 Entra por la misma puerta que todo lo demás (`project_support_to_grid` más abajo),
+            // así que se recorta contra el objeto y se regulariza igual. No es una vía paralela.
+            //
+            // NEOTKO_SUPPORTZONES_TAG s300f — la guarda deja de ser «¿es maciza?» y pasa a ser
+            // «¿siembra sección esta capa?». Con `solid` encendido son todas, como antes; con
+            // `roof_only` son las de techo. Lo de abajo no cambia ni una línea: la resta contra el
+            // objeto con `gap_xy` sigue siendo la que impide que la sección entre pegada a la pared.
+            if (! zone_seeds_section(zi, size_t(layer_id)))
+                continue;
+            // 🚨 s299c-bis — Y SE LE RESTA EL OBJETO CON SU HUECO, aquí y no más abajo.
+            //
+            // Éste fue el fallo de la primera versión de «maciza», y se veía en el gcode como dos
+            // cosas que parecían distintas: soportes que el usuario no había dibujado pegados a la
+            // pared, y techos de soporte DENTRO de la pieza.
+            //
+            // La causa era una sola: `project_support_to_grid()` sí recorta contra el objeto, pero
+            // con `SCALED_EPSILON` — le vale porque todo lo que le llega por el camino normal ya
+            // viene recortado con `gap_xy` desde el contacto (`slices_margin`). La sección de un
+            // bloque llega CRUDA, así que entraba pegada al objeto sin hueco ninguno, y la
+            // expansión de Snug (`extract_support`) la terminaba de meter dentro.
+            //
+            // 🔑 El hueco es el mismo `gap_xy` que usa todo el soporte: pedirle a esta feature un
+            // número propio sería tener dos separaciones que se separan.
+            Polygons sect = diff(zones[zi].slices[layer_id],
+                                 offset(layer.lslices, float(scale_(m_support_params.gap_xy))));
+            // 🔎 s299c-bis — LA MEDIDA QUE EVITA ABRIR EL GCODE.
+            //
+            // Dicho por el dueño: "no sé cómo podríamos depurar esto sin tener que procesar un
+            // gcode de 60 megas". Estos tres números contestan la pregunta que se hace mirándolo —
+            // "¿de dónde sale ese soporte que yo no he dibujado?" — sin salir del log:
+            //   pedido   : lo que el bloque ocupa en esta capa;
+            //   dentro   : cuánto de eso caía sobre el objeto y se ha tirado. Si es casi todo, el
+            //              bloque está metido en la pieza y ahí es donde hay que mirar, no en el
+            //              motor;
+            //   aportado : lo que de verdad entra a la columna.
+            // Se acumulan y se resumen POR ZONA al final del descenso: una línea por capa en una
+            // pieza de 600 sería exactamente el ruido que hace inútil un log.
+            solid_asked[zi]   += area(zones[zi].slices[layer_id]);
+            solid_added[zi]   += area(sect);
+            if (! sect.empty())
+                ++ solid_layers[zi];
+            if (sect.empty())
+                continue;
+            polygons_append(zones_projection_raw[zi], std::move(sect));
+            zones_projection_raw[zi] = union_(zones_projection_raw[zi]);
+        }
 
         tbb::task_group task_group;
-        const Polygons &overhangs_for_bottom_contacts = buildplate_only ? enforcers_projection_raw : overhangs_projection_raw;
+        // NEOTKO_SUPPORTZONES_TAG s286 F2 — T1's other half.
+        // Bottom contacts used to be detected from the general stream (or, under "on build plate
+        // only", from the enforcer one). Now that the zone contacts have LEFT the general stream,
+        // detecting from it alone would lose every landing of every zone — a column that never
+        // notices it has reached a top surface of the object. So the detector sees the union: the
+        // split is about where the column DESCENDS, not about what it is allowed to land on.
+        Polygons overhangs_for_bottom_contacts_storage;
+        {
+            const Polygons &base = buildplate_only ? enforcers_projection_raw : overhangs_projection_raw;
+            bool any_zone = false;
+            for (const Polygons &p : zones_projection_raw)
+                if (! p.empty()) { any_zone = true; break; }
+            if (any_zone) {
+                overhangs_for_bottom_contacts_storage = base;
+                for (size_t zi = 0; zi < zones_projection_raw.size(); ++ zi) {
+                    if (zones_projection_raw[zi].empty())
+                        continue;
+                    // NEOTKO_SUPPORTZONES_TAG s299d — SE POSA DONDE TÚ DIJISTE, NO DONDE PILLE.
+                    //
+                    // 🔑 Esto es el "¿por qué genera techos dentro de la pieza?" del dueño, y la
+                    // respuesta es que no son techos: son SUELOS. `detect_bottom_contacts()` cruza
+                    // lo que desciende con las TOP SURFACES del objeto, así que cada vez que la
+                    // columna pasa por encima de una repisa —y en una pieza hueca de 2 mm de pared
+                    // hay repisas por dentro— se posa en ella y se genera su interfaz de apoyo.
+                    // En el visor eso es un parche macizo sobre una superficie del objeto, que es
+                    // exactamente lo que él fotografió.
+                    //
+                    // No es un fallo del motor: un soporte que se topa con la pieza se apoya. Lo
+                    // que pasa es que nadie se lo pidió. El gesto dice dos cosas —de dónde cuelga
+                    // y DÓNDE ATERRIZA— y sólo la segunda es un apoyo querido.
+                    //
+                    // Con `land_only` la zona sólo puede posarse en su tramo final; por encima
+                    // atraviesa lo que haya sin agarrarse. ⚠️ El resto de la maquinaria no cambia:
+                    // la columna sigue descendiendo igual, sólo deja de sembrar contactos de fondo.
+                    if (zones[zi].land_only && zone_bottom_layer[zi] >= 0
+                        && layer_id > zone_bottom_layer[zi] + ZONE_LANDING_LAYERS)
+                        continue;
+                    polygons_append(overhangs_for_bottom_contacts_storage, zones_projection_raw[zi]);
+                }
+                overhangs_for_bottom_contacts_storage = union_(overhangs_for_bottom_contacts_storage);
+            } else
+                overhangs_for_bottom_contacts_storage = base;
+        }
+        const Polygons &overhangs_for_bottom_contacts = overhangs_for_bottom_contacts_storage;
         if (! overhangs_for_bottom_contacts.empty())
             // Find the bottom contact layers above the top surfaces of this layer.
             task_group.run([this, &object, &layer, &top_contacts, contact_idx, &layer_storage, &layer_support_areas, &bottom_contacts, &overhangs_for_bottom_contacts
@@ -2706,7 +3947,7 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
             });
 
         Polygons layer_support_area_enforcers;
-        if (! enforcers_projection.empty())
+        if (! enforcers_projection_raw.empty())
             // Project the enforcers polygons downwards, don't trim them with the "buildplate only" polygons.
             task_group.run([&grid_params, &enforcers_projection, &enforcers_projection_raw, &layer, &layer_support_area_enforcers
 #ifdef SLIC3R_DEBUG 
@@ -2720,7 +3961,68 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
                 );
             });
 
+        // NEOTKO_SUPPORTZONES_TAG s286 F2 — one grid projection per zone, and it has to be one per
+        // zone: union them first and the columns of two neighbouring zones merge into a single
+        // blob, so on the next layer down there is no longer anything for either corridor to
+        // steer. The identity has to survive the propagation, not just the collection.
+        std::vector<Polygons> zones_layer_area(zones.size(), Polygons());
+        for (size_t zi = 0; zi < zones.size(); ++ zi) {
+            if (zones_projection_raw[zi].empty())
+                continue;
+            task_group.run([&grid_params, &zones_projection, &zones_projection_raw, &layer, &zones_layer_area, zi
+#ifdef SLIC3R_DEBUG 
+                , iRun, layer_id
+#endif /* SLIC3R_DEBUG */
+            ]{
+                std::tie(zones_layer_area[zi], zones_projection[zi]) = project_support_to_grid(layer, grid_params, zones_projection_raw[zi], nullptr
+#ifdef SLIC3R_DEBUG 
+                    , iRun, layer_id, "zone"
+#endif /* SLIC3R_DEBUG */
+                );
+            });
+        }
+
         task_group.wait();
+
+        // NEOTKO_SUPPORTZONES_TAG s304 — EL TECHO, ESTA VEZ DONDE MUERDE.
+        //
+        // 🔑 `project_support_to_grid()` devuelve DOS cosas: lo que se imprime en esta capa
+        // (`out.first`) y el acarreo que sigue bajando (`out.second`). Con `support_style` distinto
+        // de Snug las dos salen CUANTIZADAS A CELDAS por `EdgeGrid::contours_simplified()`: toda
+        // celda que el poligono roza se rellena entera. Para lo que se imprime eso es la gracia de
+        // Grid (el zig-zag corre por las lineas de la rejilla) y no se toca. Para el ACARREO es una
+        // bomba, porque el corredor lo traslada una fraccion de celda en cada capa, el poligono
+        // deja de estar alineado y la siguiente cuantizacion redondea hacia fuera otra vez. Medido
+        // con la misma pieza cambiando solo `support_base_pattern_spacing`:
+        //     2,5 mm ⇒ celda 2,83 mm ⇒ `sqrt(area)` crece 2,810 mm/capa
+        //     5,0 mm ⇒ celda 5,33 mm ⇒ `sqrt(area)` crece 5,318 mm/capa
+        // Un 0,7% de error contra la celda. 303 capas asi son 723.092 mm2, un cuadrado de 850 mm
+        // de lado: el «Cthulhu-Support» del dueño. Con Snug (`closing` + `smooth_outward`, que
+        // conservan el area) el mismo codigo se portaba bien, y por eso el fallo parecia del estilo.
+        //
+        // 🔑 La invariante: EL ACARREO NO PUEDE SER MAS ANCHO QUE LO QUE LO ALIMENTO. `out.second`
+        // ya pretende eso —se pide con `expansion_to_propagate = -3` justo «to keep the interface
+        // and base layers from growing»— y la cuantizacion se lo come. Recortarlo contra su propio
+        // `raw` es decirle esa intencion con geometria en vez de con un epsilon.
+        //
+        // ⚠️ Solo el stream de ZONAS. El general y el de enforcers se quedan tal cual: ahi no hay
+        // corredor que traslade nada, asi que no hay ratchet, y tocarlos seria arriesgar el soporte
+        // automatico de todo el mundo por un bug que no es suyo.
+        //
+        // ⚠️ Y solo el ACARREO, nunca `zones_layer_area` (lo que se imprime). Con Grid la columna
+        // tiene que seguir saliendo a bloques de celda: es lo que el dueño quiere ver.
+        for (size_t zi = 0; zi < zones.size(); ++ zi) {
+            if (zones_projection_raw[zi].empty() || zones_projection[zi].empty())
+                continue;
+            const double before = area(zones_projection[zi]);
+            zones_projection[zi] = intersection(zones_projection[zi], zones_projection_raw[zi]);
+            const double bite = before - area(zones_projection[zi]);
+            if (bite > 0.) {
+                grid_bite_total[zi] += bite;
+                grid_bite_max[zi]    = std::max(grid_bite_max[zi], bite);
+                ++ grid_bite_layers[zi];
+            }
+        }
 
         if (! layer_support_area_enforcers.empty()) {
             if (layer_support_area.empty())
@@ -2728,7 +4030,101 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
             else
                 layer_support_area = union_(layer_support_area, layer_support_area_enforcers);
         }
+
+        // NEOTKO_SUPPORTZONES_TAG s286 F2 — the zones get out of each other's way (§6 F2).
+        // Same idea as neighbor_occupancy() + trim_support_layers_by_object() from s225, one level
+        // down: zone k is clipped against everything zones 0..k-1 already claimed on this layer.
+        //
+        // 🔑 Only the AREA THAT GETS PRINTED is clipped, never the accumulator that keeps
+        // descending. Clipping the carry would let a zone erode its neighbour's column layer after
+        // layer until it vanished, and a column that disappears halfway down is exactly the
+        // failure mode T7 warns about. Clipped here, the rule stays a rule about who prints what.
+        if (! zones.empty()) {
+            // Lo reclamado, PARTIDO POR FAMILIA: una zona sólo se aparta de las familias ajenas.
+            // Dentro de su familia no se recorta nada, así que dos bloques iguales que se tocan
+            // aportan los dos su área y el union_ de abajo los funde en una sola columna.
+            std::vector<Polygons> claimed_by_family(n_families, Polygons());
+            for (size_t zi = 0; zi < zones.size(); ++ zi) {
+                Polygons &za = zones_layer_area[zi];
+                if (za.empty())
+                    continue;
+                Polygons claimed_so_far;
+                for (size_t f = 0; f < n_families; ++ f)
+                    if (f != zone_family[zi] && ! claimed_by_family[f].empty())
+                        polygons_append(claimed_so_far, claimed_by_family[f]);
+                if (! claimed_so_far.empty()) {
+                    claimed_so_far = union_(claimed_so_far);
+                    const double before = area(za);
+                    za = diff(za, claimed_so_far);
+                    const double after = area(za);
+                    if (after < before - EPSILON)
+                        CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " z=" << layer.print_z
+                            << " zona=" << zones[zi].priority << " cedida a zonas de mas prioridad: "
+                            << unscale<double>(unscale<double>(before - after)) << " mm2 de "
+                            << unscale<double>(unscale<double>(before)) << " mm2"
+                            << ((after <= 0.) ? "  ← ERROR zone fully swallowed by a higher priority one" : ""));
+                    if (za.empty())
+                        continue;
+                }
+                polygons_append(claimed_by_family[zone_family[zi]], za);
+                claimed_by_family[zone_family[zi]] = union_(claimed_by_family[zone_family[zi]]);
+                // s286c: lo que esta familia imprime en esta capa, guardado para el toolpath.
+                if (layer_id < family_areas.areas.size())
+                    polygons_append(family_areas.areas[layer_id][zone_family[zi]], za);
+                if (layer_support_area.empty())
+                    layer_support_area = za;
+                else
+                    layer_support_area = union_(layer_support_area, za);
+            }
+        }
     } // over all layers downwards
+
+    // 🔎 s304 — el resumen del mordisco de la rejilla. Una linea por zona.
+    //
+    // Como se lee: `medio` casi igual a `max` y `capas` casi todas ⇒ es la cuantizacion de Grid
+    // haciendo su trabajo y el techo devolviendola a su sitio, o sea sano. Un `max` que se dispara
+    // muy por encima del medio ⇒ algo aporta area por otra puerta y hay que buscarla. Con Snug
+    // esta linea tiene que salir a cero o no salir: alli no hay rejilla que redondear.
+    for (size_t zi = 0; zi < zones.size(); ++ zi) {
+        if (grid_bite_layers[zi] == 0)
+            continue;
+        CORRIDOR_LOG("[CORRIDOR] s304 zona=" << zones[zi].priority
+            << " techo de la rejilla: capas=" << grid_bite_layers[zi]
+            << " medio=" << unscale<double>(unscale<double>(grid_bite_total[zi] / double(grid_bite_layers[zi])))
+            << "mm2 max=" << unscale<double>(unscale<double>(grid_bite_max[zi]))
+            << "mm2 total=" << unscale<double>(unscale<double>(grid_bite_total[zi])) << "mm2");
+    }
+
+    // 🔎 s299c-bis — el resumen de las zonas macizas. Una línea por zona, no por capa.
+    // NEOTKO_SUPPORTZONES_TAG s300f — y de las que siembran sólo en su techo, que si no se quedaban
+    // sin línea justo en el modo nuevo: la pregunta «¿por qué me sale hueco?» se contesta aquí.
+    for (size_t zi = 0; zi < zones.size(); ++ zi) {
+        const bool solid_zone = zones[zi].solid;
+        if (! solid_zone && solid_layers[zi] == 0)
+            continue;
+        const double asked = unscale<double>(unscale<double>(solid_asked[zi]));
+        const double added = unscale<double>(unscale<double>(solid_added[zi]));
+        const double inside = asked - added;
+        CORRIDOR_LOG("[CORRIDOR] s299c zona=" << zones[zi].priority
+            << " nombre=\"" << (zones[zi].model_volume ? zones[zi].model_volume->name : std::string("?")) << "\""
+            << (solid_zone ? " MACIZA capas=" : " TECHO capas=") << solid_layers[zi]
+            << " pedido=" << asked << "mm2"
+            << " dentro_del_objeto=" << inside << "mm2"
+            << " aportado=" << added << "mm2"
+            << ((asked > 0. && added < 0.05 * asked)
+                    ? "  ← ERROR el bloque esta practicamente entero dentro de la pieza: no va a salir columna"
+                : (asked > 0. && inside > 0.5 * asked)
+                    ? "  ← WARN mas de la mitad del bloque cae dentro de la pieza"
+                    : ""));
+    }
+
+    // s286c: se publica SIEMPRE, también con una sola familia — así el consumidor no tiene que
+    // distinguir "no calculado" de "trivial", y `trivial()` es la única pregunta que hace.
+    for (auto &per_layer : family_areas.areas)
+        for (Polygons &p : per_layer)
+            if (! p.empty())
+                p = union_(p);
+    object.set_support_family_areas(std::move(family_areas));
 
     std::reverse(bottom_contacts.begin(), bottom_contacts.end());
     trim_support_layers_by_object(object, bottom_contacts, m_slicing_params.gap_support_object, m_slicing_params.gap_object_support, m_support_params.gap_xy);

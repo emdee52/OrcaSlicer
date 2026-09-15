@@ -511,6 +511,14 @@ public:
     const std::vector<Polygons>* support_family_areas_at(float print_z) const;
     void set_support_family_areas(SupportFamilyAreas &&a) const { m_support_family_areas = std::move(a); }
 
+    // [ORCAPORT:SU-5] passthrough for the support generator to warn about a non-Snug style with
+    // painted support zones (active_step_add_warning() is protected).
+    void push_support_zone_style_warning(const std::string &message)
+    {
+        this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL, message,
+                                      PrintStateBase::SlicingDefaultNotification);
+    }
+
     //BBS
     BoundingBox get_first_layer_bbox(float& area, float& layer_height, std::string& name);
     void         get_certain_layers(float start, float end, std::vector<LayerPtrs> &out, std::vector<BoundingBox> &boundingbox_objects);
