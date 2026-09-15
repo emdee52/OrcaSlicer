@@ -497,6 +497,20 @@ branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
    after PF-8/PF-9, not now.
 5. The quick wins PF-3..PF-7 were added at the user's request; each is independent.
 
+### Later decisions (2026-09 sessions)
+
+6. **PF-3 Auto Speed - EXCLUDED.** User decision: not worth porting; speeds are tuned manually.
+7. **PF-4 Width Control - EXCLUDED.** User decision. The max-width ceiling and widened-bead
+   slowdown are category D (no clean Arachne / flow_ratio mapping) and the width warning was
+   skipped with them.
+8. **PF-5 Max Commands Per Second - EXCLUDED.** User decision: preview diagnostic, not worth porting.
+9. **PF-6 Preview Clipping Plane - DONE** (`port/PF-6`, patch `17_PF-6.patch`). GUI-only, no config
+   keys. Required patching the vendored `src/libvgcode` (Viewer clipping API, shaders, cap geometry)
+   so the plane cuts toolpaths **and** shells. Preview canvas had no right-click menu, so the entry
+   is a small local menu (`Plater::priv::on_preview_right_click`). ES shaders intentionally unpatched
+   (matches preFlight). See `notes/PF-6.md`.
+10. **PF-7..PF-10 - recon pending.** Next after PF-6; PF-7 is category D and medium-large.
+
 ### Risks
 
 - Everything is category D: preFlight's perimeter/seam/support/fill/GCode code does not map
