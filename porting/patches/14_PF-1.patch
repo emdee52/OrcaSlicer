@@ -12,7 +12,7 @@ index 3f45de8fd1..c2c07f36f2 100644
      Orient.hpp
      ParameterUtils.cpp
 diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
-index 8be11c3da3..4d63c81276 100644
+index 8be11c3da3..5c8cbd47a2 100644
 --- a/src/libslic3r/GCode.cpp
 +++ b/src/libslic3r/GCode.cpp
 @@ -18,6 +18,7 @@
@@ -23,34 +23,69 @@ index 8be11c3da3..4d63c81276 100644
  #include "Utils.hpp"
  #include "ClipperUtils.hpp"
  #include "libslic3r.h"
-@@ -7336,6 +7337,15 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
+@@ -7336,6 +7337,23 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
      loop.clip_end(clip_length, &paths);
      if (paths.empty()) return "";
  
-+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping: reshape the external perimeter at the seam. Off by
-+    // default (seam_type == Regular); never runs in spiral vase mode.
-+    if (loop.role() == erExternalPerimeter && !m_config.spiral_mode
-+        && m_config.seam_type.value != sntRegular) {
-+        OrcaExt::SeamNotch::apply(paths, loop.polygon().is_counter_clockwise(), is_hole,
-+            m_config.seam_type.value, m_config.seam_notch_target.value,
-+            m_config.seam_notch_width.value, m_config.seam_notch_angle.value, layer_id());
++    // [ORCAPORT:PF-1] Nip/Tuck seam shaping. Reshapes the external perimeter at the seam and
++    // relieves the first inner perimeter afterwards. Off by default (seam_type == Regular);
++    // never runs in spiral vase mode.
++    if (!m_config.spiral_mode && m_config.seam_type.value != sntRegular) {
++        if (loop.role() == erExternalPerimeter) {
++            m_seam_notch = OrcaExt::SeamNotch::apply_external(
++                paths, loop.polygon().is_counter_clockwise(), is_hole, m_config.seam_type.value,
++                m_config.seam_notch_target.value, m_config.seam_notch_width.value,
++                m_config.seam_notch_angle.value, layer_id());
++            m_seam_notch_trimmed = !m_seam_notch.applied;
++        } else if (loop.role() == erPerimeter && m_seam_notch.applied && !m_seam_notch_trimmed) {
++            const double inner_width = paths.front().width;
++            if (inner_width > 0.0 && OrcaExt::SeamNotch::trim_inner(paths, m_seam_notch, inner_width))
++                m_seam_notch_trimmed = true;
++        }
 +    }
 +
      // SoftFever: check loop lenght for small perimeter. 
      double small_peri_speed = -1;
      if (speed == -1 && loop.length() <= SMALL_PERIMETER_LENGTH(NOZZLE_CONFIG(small_perimeter_threshold))) {
+diff --git a/src/libslic3r/GCode.hpp b/src/libslic3r/GCode.hpp
+index 57dd3f2373..fdb5e2233d 100644
+--- a/src/libslic3r/GCode.hpp
++++ b/src/libslic3r/GCode.hpp
+@@ -8,6 +8,7 @@
+ #include "Point.hpp"
+ #include "PlaceholderParser.hpp"
+ #include "PrintConfig.hpp"
++#include "OrcaExt/SeamNotch.hpp" // [ORCAPORT:PF-1]
+ #include "GCode/AvoidCrossingPerimeters.hpp"
+ #include "GCode/CoolingBuffer.hpp"
+ #include "GCode/FanMover.hpp"
+@@ -682,6 +683,10 @@ private:
+     // [ORCAPORT:PQ-3] ExtrusionPath::force_no_spiral_lift of the last emitted path. Read by the
+     // lift decision and the wipe retraction rebalance.
+     bool                                m_last_path_force_no_spiral_lift{ false };
++    // [ORCAPORT:PF-1] Nip/Tuck notch state: set when an external perimeter is notched, consumed
++    // by the first inner perimeter emitted afterwards (relief pocket).
++    OrcaExt::SeamNotch::ExternalNotch   m_seam_notch;
++    bool                                m_seam_notch_trimmed{ true };
+     // How many times will change_layer() be called?
+     // change_layer() will update the progress bar.
+     unsigned int                        m_layer_count;
 diff --git a/src/libslic3r/OrcaExt/SeamNotch.cpp b/src/libslic3r/OrcaExt/SeamNotch.cpp
 new file mode 100644
-index 0000000000..475d6b6421
+index 0000000000..dd5b81284a
 --- /dev/null
 +++ b/src/libslic3r/OrcaExt/SeamNotch.cpp
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,235 @@
 +// [ORCAPORT FILE] SeamNotch - Nip/Tuck seam shaping for external perimeters
 +// Source: preFlight v1.3.0 (github.com/oozebot/preFlight), GCode.cpp:3979-4830; AGPLv3
 +#include "SeamNotch.hpp"
 +
 +#include <algorithm>
 +#include <cmath>
++#include <cstdlib>
++#include <limits>
++
++#include <boost/log/trivial.hpp>
 +
 +#include "../libslic3r.h"
 +
@@ -61,6 +96,11 @@ index 0000000000..475d6b6421
 +namespace {
 +
 +constexpr double kPi = 3.14159265358979323846;
++
++bool debug_enabled() {
++    static const bool enabled = std::getenv("ORCA_SEAM_NOTCH_DEBUG") != nullptr;
++    return enabled;
++}
 +
 +Vec2d first_dir(const Polyline3 &pl) {
 +    if (pl.points.size() < 2)
@@ -78,9 +118,9 @@ index 0000000000..475d6b6421
 +    return Vec2d(double(b.x() - a.x()), double(b.y() - a.y()));
 +}
 +
-+// Insert vertices within `taper` of one end and push them inward by depth*(1 - d/taper),
-+// maximum at the seam and tapering to zero at `taper`. `push` is the inward unit direction.
-+void resample_notch(Polyline3 &pl, bool at_start, double taper, double depth, const Vec2d &push) {
++// Push the interior points within `taper` of one end inward by depth * sin(pi*d/taper). The
++// seam endpoint itself is left at nominal, so the loop stays closed (approach A).
++void push_zone(Polyline3 &pl, bool at_start, double taper, double depth, const Vec2d &push) {
 +    Points3 &pts = pl.points;
 +    if (pts.size() < 2 || taper <= 0.0)
 +        return;
@@ -88,10 +128,10 @@ index 0000000000..475d6b6421
 +        std::reverse(pts.begin(), pts.end());
 +
 +    const double max_seg = std::max(taper * 0.15, 1.0);
-+    auto offset_at = [&](const Point3 &p, double d) -> Point3 {
-+        if (d >= taper)
++    auto         offset_at = [&](const Point3 &p, double d) -> Point3 {
++        if (d <= 0.0 || d >= taper)
 +            return p;
-+        const double f = depth * (1.0 - d / taper);
++        const double f = depth * std::sin(kPi * d / taper);
 +        Point3       q = p;
 +        q.x() += coord_t(std::lround(push.x() * f));
 +        q.y() += coord_t(std::lround(push.y() * f));
@@ -100,7 +140,7 @@ index 0000000000..475d6b6421
 +
 +    Points3 out;
 +    out.reserve(pts.size() + 16);
-+    out.push_back(offset_at(pts[0], 0.0));
++    out.push_back(pts[0]); // seam endpoint: nominal
 +
 +    double dist = 0.0;
 +    for (size_t i = 1; i < pts.size(); ++i) {
@@ -112,17 +152,16 @@ index 0000000000..475d6b6421
 +            dist += seg;
 +            continue;
 +        }
-+        // Only the portion of this segment inside the taper zone needs subdivision.
-+        const double split_len = std::min(seg, taper - dist);
-+        const int    nsub      = std::max(1, int(std::ceil(split_len / max_seg)));
++        const double split = std::min(seg, taper - dist);
++        const int    nsub  = std::max(1, int(std::ceil(split / max_seg)));
 +        for (int s = 1; s <= nsub; ++s) {
-+            const double along = split_len * double(s) / double(nsub);
++            const double along = split * double(s) / double(nsub);
 +            const double t     = along / seg;
 +            Point3       q(coord_t(std::lround(a.x() + double(b.x() - a.x()) * t)),
 +                           coord_t(std::lround(a.y() + double(b.y() - a.y()) * t)), a.z());
 +            out.push_back(offset_at(q, dist + along));
 +        }
-+        if (split_len < seg)
++        if (split < seg)
 +            out.push_back(b);
 +        dist += seg;
 +    }
@@ -132,39 +171,18 @@ index 0000000000..475d6b6421
 +    pts = std::move(out);
 +}
 +
-+// Shorten a polyline from its end by `len` (scaled). Never drops below two points.
-+void clip_from_end(Polyline3 &pl, double len) {
-+    Points3 &pts = pl.points;
-+    if (len <= 0.0 || pts.size() < 3)
-+        return;
-+    double remaining = len;
-+    while (pts.size() > 2 && remaining > 1e-9) {
-+        Point3      &b   = pts.back();
-+        const Point3 &a  = pts[pts.size() - 2];
-+        const double seg = Vec2d(double(b.x() - a.x()), double(b.y() - a.y())).norm();
-+        if (seg <= remaining) {
-+            remaining -= seg;
-+            pts.pop_back();
-+        } else {
-+            const double t = (seg - remaining) / seg;
-+            b.x() = coord_t(std::lround(a.x() + double(b.x() - a.x()) * t));
-+            b.y() = coord_t(std::lround(a.y() + double(b.y() - a.y()) * t));
-+            remaining = 0.0;
-+        }
-+    }
-+}
-+
 +} // namespace
 +
-+bool apply(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
-+           SeamNotchTarget target, double notch_width_factor, double corner_threshold_deg,
-+           int layer_index) {
++ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
++                             SeamNotchTarget target, double notch_width_factor,
++                             double corner_threshold_deg, int layer_index) {
++    ExternalNotch result;
 +    if (type == sntRegular || paths.empty())
-+        return false;
++        return result;
 +    if (target == snbtHolesOnly && !is_hole)
-+        return false;
++        return result;
 +    if (target == snbtOuterOnly && is_hole)
-+        return false;
++        return result;
 +
 +    SeamNotchType notch = type;
 +    if (notch == sntAlternating)
@@ -172,56 +190,122 @@ index 0000000000..475d6b6421
 +
 +    const double ext_width = paths.front().width;
 +    if (!(ext_width > 0.0))
-+        return false;
++        return result;
 +
 +    Vec2d d0 = first_dir(paths.front().polyline);
 +    Vec2d d1 = last_dir(paths.back().polyline);
 +    if (d0.squaredNorm() < 1e-12 || d1.squaredNorm() < 1e-12)
-+        return false;
++        return result;
 +    d0.normalize();
 +    d1.normalize();
 +
-+    // A corner sharper than the threshold already hides the seam: skip.
-+    if (corner_threshold_deg > 0.0 && d0.dot(d1) < std::cos(corner_threshold_deg * kPi / 180.0))
-+        return false;
++    // A real outer corner already hides the seam. A hole is a polygonized circle, so its
++    // "corners" are artifacts - never skip a hole on this test.
++    if (!is_hole && corner_threshold_deg > 0.0
++        && d0.dot(d1) < std::cos(corner_threshold_deg * kPi / 180.0)) {
++        if (debug_enabled())
++            BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] notch skip: sharp corner";
++        return result;
++    }
 +
-+    const double taper = scale_(notch_width_factor * ext_width);
++    // Loop-length guard (preFlight) + taper clamp: never wrap a small loop.
++    double loop_len = 0.0;
++    for (const ExtrusionPath &p : paths)
++        loop_len += p.polyline.length();
++    const double notch_width_mm = notch_width_factor * ext_width;
++    if (loop_len < scale_(notch_width_mm * 3.0)) {
++        if (debug_enabled())
++            BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] notch skip: loop too short " << unscale_(loop_len)
++                                       << "mm < " << (notch_width_mm * 3.0) << "mm";
++        return result;
++    }
++    const double taper = std::min(scale_(notch_width_mm), 0.25 * loop_len);
 +    const double depth = scale_(ext_width * 0.9);
 +
 +    // Inward (into the solid) direction: left of travel for a CCW loop, flipped for CW, and
-+    // flipped again for a hole (whose enclosed region is the void).
-+    Vec2d left(-d0.y(), d0.x());
-+    Vec2d inward = loop_ccw ? left : -left;
++    // flipped again for a hole. This is the radial direction on a bore - robust, unlike the
++    // preFlight bisector which degenerates on a polygonized seam.
++    const Vec2d left(-d0.y(), d0.x());
++    Vec2d       inward = loop_ccw ? left : -left;
 +    if (is_hole)
 +        inward = -inward;
 +
-+    // Both preFlight and this port push along the seam bisector, oriented to the solid side.
-+    Vec2d push = d0 - d1;
-+    if (push.squaredNorm() < 1e-12)
-+        push = left;
-+    else
-+        push.normalize();
-+    if (push.dot(inward) < 0.0)
-+        push = -push;
-+
 +    if (notch != sntTuck)
-+        resample_notch(paths.front().polyline, /*at_start=*/true, taper, depth, push);
++        push_zone(paths.front().polyline, /*at_start=*/true, taper, depth, inward);
 +    if (notch != sntNip)
-+        resample_notch(paths.back().polyline, /*at_start=*/false, taper, depth, push);
++        push_zone(paths.back().polyline, /*at_start=*/false, taper, depth, inward);
 +
-+    // Asymmetric modes clip the non-notched endpoint so the wall does not double up.
-+    const double ext_adjust = scale_(ext_width * (1.0 - 0.5 * notch_width_factor));
-+    if (ext_adjust > 0.0) {
-+        if (notch == sntNip) {
-+            clip_from_end(paths.back().polyline, ext_adjust);
-+        } else if (notch == sntTuck) {
-+            Points3 &p = paths.front().polyline.points;
-+            std::reverse(p.begin(), p.end());
-+            clip_from_end(paths.front().polyline, ext_adjust);
-+            std::reverse(p.begin(), p.end());
++    result.applied = true;
++    result.seam    = paths.front().polyline.points.front().to_point();
++    result.push    = inward;
++    result.depth   = depth;
++    result.taper   = taper;
++    result.width   = scale_(ext_width);
++
++    if (debug_enabled())
++        BOOST_LOG_TRIVIAL(warning)
++            << "[ORCAPORT:PF-1] notch APPLY layer=" << layer_index << " hole=" << (is_hole ? 1 : 0)
++            << " ccw=" << (loop_ccw ? 1 : 0) << " type=" << int(notch) << " width=" << ext_width
++            << " loop_len=" << unscale_(loop_len) << " taper=" << unscale_(taper)
++            << " depth=" << unscale_(depth) << " push=(" << inward.x() << "," << inward.y() << ")";
++    return result;
++}
++
++bool trim_inner(ExtrusionPaths &paths, const ExternalNotch &notch, double inner_width) {
++    if (!notch.applied || paths.empty())
++        return false;
++
++    // Project the V-leg onto the inner centreline (~one bead in from the outer).
++    const Vec2d target = notch.seam.cast<double>() + notch.push * (double(notch.width) + scale_(inner_width) * 0.5);
++
++    double best_d2  = std::numeric_limits<double>::max();
++    size_t best_pi  = 0;
++    double best_arc = 0.0;
++    for (size_t pi = 0; pi < paths.size(); ++pi) {
++        const Points3 &p   = paths[pi].polyline.points;
++        double         arc = 0.0;
++        for (size_t i = 1; i < p.size(); ++i) {
++            const Vec2d a(double(p[i - 1].x()), double(p[i - 1].y()));
++            const Vec2d b(double(p[i].x()), double(p[i].y()));
++            const Vec2d ab = b - a;
++            const double l2 = ab.squaredNorm();
++            const double t  = l2 > 1e-12 ? std::clamp((target - a).dot(ab) / l2, 0.0, 1.0) : 0.0;
++            const double d2 = (target - (a + ab * t)).squaredNorm();
++            if (d2 < best_d2) {
++                best_d2  = d2;
++                best_pi  = pi;
++                best_arc = arc + ab.norm() * t;
++            }
++            arc += ab.norm();
 +        }
 +    }
-+    return true;
++    if (best_d2 == std::numeric_limits<double>::max())
++        return false;
++    // Only relieve an inner wall that belongs to the same seam (avoids cross-island trims).
++    const double guard = double(scale_(3.0));
++    if (best_d2 > guard * guard)
++        return false;
++
++    // Nudge the inner points near the crossing deeper into the solid (the relief pocket). The
++    // inner loop stays closed, which the cut-a-gap approach would not.
++    Points3      &p      = paths[best_pi].polyline.points;
++    const double  relief = 0.5 * notch.depth;
++    double        arc    = 0.0;
++    bool          moved  = false;
++    for (size_t i = 0; i < p.size(); ++i) {
++        if (i > 0)
++            arc += Vec2d(double(p[i].x() - p[i - 1].x()), double(p[i].y() - p[i - 1].y())).norm();
++        const double d = std::abs(arc - best_arc);
++        if (d < notch.taper) {
++            const double f = relief * std::sin(kPi * d / notch.taper);
++            p[i].x() += coord_t(std::lround(notch.push.x() * f));
++            p[i].y() += coord_t(std::lround(notch.push.y() * f));
++            moved = true;
++        }
++    }
++    if (debug_enabled())
++        BOOST_LOG_TRIVIAL(warning) << "[ORCAPORT:PF-1] inner relief " << (moved ? "APPLY" : "skip");
++    return moved;
 +}
 +
 +} // namespace SeamNotch
@@ -229,12 +313,21 @@ index 0000000000..475d6b6421
 +} // namespace Slic3r
 diff --git a/src/libslic3r/OrcaExt/SeamNotch.hpp b/src/libslic3r/OrcaExt/SeamNotch.hpp
 new file mode 100644
-index 0000000000..7a99d7f163
+index 0000000000..eb965430e3
 --- /dev/null
 +++ b/src/libslic3r/OrcaExt/SeamNotch.hpp
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,48 @@
 +// [ORCAPORT FILE] SeamNotch - Nip/Tuck seam shaping for external perimeters
 +// Source: preFlight v1.3.0 (github.com/oozebot/preFlight), GCode.cpp:3979-4830; AGPLv3
++//
++// Orca-native re-implementation. Deviations from preFlight, both deliberate:
++//  - Approach A: the loop's seam endpoints stay at nominal and only the interior points
++//    inside the taper are pushed in, so the external loop stays closed. This keeps Orca's
++//    seam detector happy (it records a seam only when the loop end returns within 0.25 mm of
++//    its start, GCodeProcessor.cpp:5416) and avoids the open-wall "gap + hook" defect.
++//  - Inner trim: instead of cutting a gap out of the inner perimeter (preFlight splits its
++//    smooth_path), the inner wall is nudged away from the notch, so the inner loop also stays
++//    continuous.
 +#ifndef slic3r_OrcaExt_SeamNotch_hpp_
 +#define slic3r_OrcaExt_SeamNotch_hpp_
 +
@@ -245,20 +338,27 @@ index 0000000000..7a99d7f163
 +namespace OrcaExt {
 +namespace SeamNotch {
 +
-+// Re-implementation of preFlight's Nip/Tuck seam notch against Orca's extrusion paths.
-+//
-+// Nip/Tuck reshapes the external perimeter AT the seam (it does not move the seam):
-+//   - Nip/Tuck   : V-notch at the start and the end of the loop
-+//   - Nip        : notch only the start (the end is clipped instead)
-+//   - Tuck       : notch only the end (the start is clipped instead)
-+//   - Alternating: Nip on even layers, Tuck on odd
-+//
-+// `paths` must be the loop's extrusion paths with the seam at the first point of the front
-+// path and the loop end at the last point of the back path (i.e. after GCode::extrude_loop's
-+// clip_end). `loop_ccw` is loop.polygon().is_counter_clockwise(). Returns true if modified.
-+bool apply(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
-+           SeamNotchTarget target, double notch_width_factor, double corner_threshold_deg,
-+           int layer_index);
++// Result of notching one external perimeter; fed to trim_inner for its first inner wall.
++struct ExternalNotch {
++    bool   applied = false;
++    Point  seam;         // scaled, the loop start (seam)
++    Vec2d  push;         // unit inward direction (into the solid)
++    double depth  = 0.;  // scaled
++    double taper  = 0.;  // scaled
++    double width  = 0.;  // scaled external bead width
++};
++
++// Notch the external perimeter at its seam. `paths` must be the loop's extrusion paths with
++// the seam at paths.front().first_point() and the loop end at paths.back().last_point()
++// (after GCode::extrude_loop's clip_end). `loop_ccw` = loop.polygon().is_counter_clockwise().
++ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
++                             SeamNotchTarget target, double notch_width_factor,
++                             double corner_threshold_deg, int layer_index);
++
++// Relieve the first inner perimeter near the notch so the pushed-in outer bead has room.
++// Only the points within the notch taper of the projected V-leg are nudged along the notch
++// direction, so the inner loop stays closed. Returns true if modified.
++bool trim_inner(ExtrusionPaths &paths, const ExternalNotch &notch, double inner_width);
 +
 +} // namespace SeamNotch
 +} // namespace OrcaExt
