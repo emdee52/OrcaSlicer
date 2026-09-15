@@ -40,3 +40,36 @@
 ## Open questions
 - Alias mismatch: gizmo gates on `neotko_libre_enabled` while the UI elsewhere uses `neotko_libre_mode`; reconcile.
 - Confirm the gesture JSON schema/versioning before committing to the data model.
+
+## Port progress
+
+### Status: in-progress (branch `port/SU-5`). Foundation landed; engine + gizmo remain.
+
+Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's base (`snapmaker` tag
+`v2.3.5`) by only 18 hunks, so the engine ports cleanly.
+
+**Done (build clean):**
+- New `src/libslic3r/Feature/SupportZones/SupportZoneProbe.{hpp,cpp}` (probe/render helper; NeoDebug
+  dropped; target's `igl::Hit<float>` API adapted). Registered in `src/libslic3r/CMakeLists.txt`.
+- Per-volume keys (neutral names): `support_zone_gesture`, `support_zone_lean_deg`,
+  `support_zone_roof_only`, `support_zone_solid`, `support_zone_land_only` in `PrintRegionConfig`
+  (`PrintConfig.{hpp,cpp}`, hidden `comDevelop`) + `Preset.cpp` key list.
+- Data model in `Print.hpp`: `SupportZoneSlices` (priority, volume, lean, solid, land_only, slices,
+  roof_layer), `PrintObject::SupportFamily`/`SupportFamilyAreas`, `support_family_areas()` /
+  `support_family_areas_at()` / `set_support_family_areas()`, `mutable m_support_family_areas`.
+- `PrintObjectSlice.cpp`: `slice_support_enforcers_per_zone()` (one stream per enforcer volume, no
+  union) and `PrintObject::support_family_areas_at()` (roof-layer computation included).
+- `Layer.hpp`: `SupportLayer::support_fills_family`.
+- The copied `GLGizmoSupportZones.{hpp,cpp}` are staged in the tree but **not** registered yet
+  (Phase 2 UI); they are not in CMake, so they do not affect the build.
+
+**Remaining (Phase 1b):**
+- `Model.{hpp,cpp}` config hash so a zone's config identity is part of region identity.
+- The ~1,400-line zone engine in `Support/SupportMaterial.cpp` (42 sites: enforcer seeding,
+  `SupportAnnotations`, corridor descent, family/area build, `support_family_areas` population,
+  wall loops, zone merging) + `SupportMaterial.hpp`/`SupportCommon.{hpp,cpp}` helpers
+  (`support_family_areas_at` consumption, `split_support_fills_by_family`).
+- `PrintObject.cpp` / `PrintApply.cpp` zone propagation + invalidation.
+- `GCode.cpp` / `ToolOrdering.cpp` family -> tool routing.
+- Then Phase 2: the gizmo UI + `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
+
