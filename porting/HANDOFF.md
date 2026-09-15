@@ -52,7 +52,8 @@ Classic/Arachne/NeoArachne, no Athena work.
 | ID | Feature | Status | Notes file | Patch |
 |----|---------|--------|-----------|-------|
 | PF-1 | Nip & Tuck seams (Holes-only default) | in-progress | notes/PF-1.md | - |
-| PF-2 | Counterbore Bridge gizmo | planned | notes/PF-2.md | - |
+| PF-2a | Counterbore smart bridging (global) | planned | notes/PF-2.md | - |
+| PF-2b | Counterbore bridge painting gizmo | planned | notes/PF-2.md | - |
 | PF-3 | Auto Speed | planned | notes/PF-3.md | - |
 | PF-4 | Width Control | planned | notes/PF-4.md | - |
 | PF-5 | Max Commands Per Second | planned | notes/PF-5.md | - |
