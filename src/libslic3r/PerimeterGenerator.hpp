@@ -105,12 +105,6 @@ public:
     bool                                            has_fuzzy_hole = false;
     // [ORCAPORT:PF-9] solid top/bottom margin gate, set by LayerRegion before processing
     bool                                            interlock_solid_margin_ok = true;
-    // [ORCAPORT:PF-9] interlocking perimeter state (read by traverse_loops)
-    bool    m_interlock_active{false};
-    bool    m_interlock_even{true};
-    int     m_interlock_base_depth{-1};
-    double  m_interlock_strength{1.0};
-    coord_t m_interlock_overlap_extra{0};
     // Preserve construction order so overlap precedence remains deterministic.
     std::vector<std::pair<FuzzySkinConfig, ExPolygons>> regions_by_fuzzify;
     
@@ -163,6 +157,9 @@ private:
     void split_top_surfaces(const ExPolygons &orig_polygons, ExPolygons &top_fills, ExPolygons &non_top_polygons, ExPolygons &fill_clip) const;
     void apply_extra_perimeters(ExPolygons& infill_area);
     void process_no_bridge(Surfaces& all_surfaces, coord_t perimeter_spacing, coord_t ext_perimeter_width);
+    // [ORCAPORT:PF-9] generate the alternating interlocking rings inside `zone`; `covered` gets the
+    // area the rings occupy so infill can fill the gaps between them.
+    void generate_interlocking_perimeters(const ExPolygons &zone, ExtrusionEntityCollection &out, ExPolygons &covered);
 
 private:
     bool        m_spiral_vase;
@@ -174,6 +171,12 @@ private:
     //BBS
     double      m_ext_mm3_per_mm_smaller_width;
     Polygons    m_lower_slices_polygons;
+
+    // [ORCAPORT:PF-9] interlocking perimeter state
+    bool    m_interlock_active{false};
+    bool    m_interlock_even{true};
+    double  m_interlock_strength{1.0};
+    coord_t m_interlock_overlap_extra{0};
 };
 
 }

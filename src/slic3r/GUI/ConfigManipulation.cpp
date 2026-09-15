@@ -840,10 +840,14 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     for (auto el : { "inner_wall_speed", "outer_wall_speed", "small_perimeter_speed", "small_perimeter_threshold" })
         toggle_field(el, have_perimeters, variant_index);
 
-    // [ORCAPORT:PF-9] interlocking sub-options follow the master switch
+    // [ORCAPORT:PF-9] interlocking perimeters are Classic-only; hide/disable on Arachne
+    const bool interlock_classic = !config->has("wall_generator") ||
+                                   config->opt_enum<PerimeterGeneratorType>("wall_generator") == PerimeterGeneratorType::Classic;
+    toggle_field("interlock_perimeters_enabled", interlock_classic);
+    const bool interlock_on = config->opt_bool("interlock_perimeters_enabled") && interlock_classic;
     for (auto el : { "interlock_perimeter_count", "interlock_regular_perimeters", "interlock_solid_layers_top",
                      "interlock_solid_layers_bottom", "interlock_perimeter_strength", "interlock_perimeter_overlap" })
-        toggle_field(el, config->opt_bool("interlock_perimeters_enabled"));
+        toggle_field(el, interlock_on);
 
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament_id uses the same logic as in Print::extruders()
