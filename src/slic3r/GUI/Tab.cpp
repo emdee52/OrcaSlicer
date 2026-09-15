@@ -2718,6 +2718,19 @@ void TabPrint::build()
         optgroup->append_single_option_line("wall_maximum_resolution", "quality_settings_wall_generator#maximum-wall-resolution");
         optgroup->append_single_option_line("wall_maximum_deviation", "quality_settings_wall_generator#maximum-wall-deviation");
 
+        // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator options (visible when the generator is NeoArachne).
+        optgroup->append_single_option_line("hybrid_outer_wall", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_inner_walls", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_gap_fill", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_allowed_overlap_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_min_bead_width_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_max_bead_width_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_min_feature_size_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_keep_short_tails", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_pin_outer_width", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_bead_count_hysteresis_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_transition_filter_dist_mm", "quality_settings_wall_generator");
+
         optgroup = page->new_optgroup(L("Walls and surfaces"), L"param_wall_surface");
         optgroup->append_single_option_line("wall_sequence", "quality_settings_wall_and_surfaces#walls-printing-order");
         optgroup->append_single_option_line("is_infill_first", "quality_settings_wall_and_surfaces#print-infill-first");

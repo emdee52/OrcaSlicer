@@ -355,6 +355,12 @@ before slicing) the slice-time floating warning is never exercised.
 - Verification: Classic and Arachne unchanged; hybrid routing correct; invalid combos
   auto-align; the notes' print tests.
 - Risk: very high. Do last.
+- **DONE** (`port/PQ-3`, patch `12_PQ-3.patch`): `Slic3r::NeoArachne` module (12 files),
+  `wall_generator` value `"hybrid"` (label NeoArachne), `HybridWallSource` enum
+  (`ArachneHybrid`; fork `NeotkoEdge` neutralized), 11 `hybrid_*` region keys, the Arachne
+  `BeadingStrategyFactory`/`WallToolPaths` hookup, spiral-lift plumbing, and the Quality >
+  Wall generator UI + validator. Preview panel excluded (user decision). Build clean; runtime
+  pending. See `notes/PQ-3b.md`.
 
 ### Phase 7 - Hardening
 

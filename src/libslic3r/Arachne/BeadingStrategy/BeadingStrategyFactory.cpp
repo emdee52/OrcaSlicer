@@ -13,6 +13,7 @@
 #include "RedistributeBeadingStrategy.hpp"
 #include "OuterWallInsetBeadingStrategy.hpp"
 #include "libslic3r/Arachne/BeadingStrategy/BeadingStrategy.hpp"
+#include "libslic3r/NeoArachne/NeoArachneBeadingStrategy.hpp" // [ORCAPORT:PQ-3]
 
 namespace Slic3r::Arachne {
 
@@ -28,7 +29,11 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(const coord_t preferred_
                                                         const coord_t max_bead_count,
                                                         const coord_t outer_wall_offset,
                                                         const int     inward_distributed_center_wall_count,
-                                                        const double  minimum_variable_line_ratio)
+                                                        const double  minimum_variable_line_ratio,
+                                                        const bool    hybrid_edge_enabled,
+                                                        const bool    hybrid_edge_pin_outer,
+                                                        const bool    hybrid_edge_cap_widening,
+                                                        const double  hybrid_edge_hysteresis_pct)
 {
     // Handle a special case when there is just one external perimeter.
     // Because big differences in bead width for inner and other perimeters cause issues with current beading strategies.
@@ -48,6 +53,18 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(const coord_t preferred_
     if (outer_wall_offset != 0) {
         BOOST_LOG_TRIVIAL(trace) << "Applying the OuterWallOffset meta-strategy with offset = " << outer_wall_offset << ".";
         ret = std::make_unique<OuterWallInsetBeadingStrategy>(outer_wall_offset, std::move(ret));
+    }
+
+    // [ORCAPORT:PQ-3] wrap with NeoArachneBeadingStrategy BEFORE Limited (Limited injects 0-width
+    // marker walls other strategies must not touch). Pins outer width for bead_count 1/2, caps inner
+    // widening, adds spatial hysteresis. No-op when hybrid_edge_enabled=false.
+    if (hybrid_edge_enabled) {
+        BOOST_LOG_TRIVIAL(trace) << "Applying the NeoArachne meta-strategy (pin outer + hysteresis " << hybrid_edge_hysteresis_pct << "%).";
+        ret = std::make_unique<NeoArachne::NeoArachneBeadingStrategy>(preferred_bead_width_outer,
+                                                                      hybrid_edge_hysteresis_pct,
+                                                                      hybrid_edge_pin_outer,
+                                                                      hybrid_edge_cap_widening,
+                                                                      std::move(ret));
     }
 
     // Apply the LimitedBeadingStrategy last, since that adds a 0-width marker wall which other beading strategies shouldn't touch.

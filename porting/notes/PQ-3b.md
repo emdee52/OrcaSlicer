@@ -42,3 +42,68 @@
 ## Open questions
 - Whether to port PQ-3a and PQ-3b together (PQ-3a cannot stand alone).
 - The `ExtrusionEntity`/`GCode` spiral-lift plumbing may or may not be required for basic routing.
+
+## Port progress
+
+### Status: ported (branch `port/PQ-3`, base `port/integration` @ `df0800a0a9`).
+
+Decisions taken during the port (all in `PORTING_PLAN.md` decisions 4/7):
+- **PQ-3a + PQ-3b are one port.** The two "low-risk" knobs are reachable only on the hybrid
+  path, so they ship with the routing.
+- **Preview panel excluded.** `NeoArachnePreviewPanel.{hpp,cpp}` and the `Preview/` subdir are
+  not ported; the routing works without them. (User decision.)
+- **Naming neutralised.** The fork's `NeoArachneWallSource::NeotkoEdge` becomes
+  `HybridWallSource::ArachneHybrid` (serialised `"arachne_hybrid"`, label "Arachne (hybrid)").
+  The `neoarachne_*` keys are `hybrid_*` (mapping below). The fork's `NEOTKO_NEOARACHNE_TAG`
+  comment tags are neutralised to `[ORCAPORT:PQ-3]` / `NEOARACHNE`; new files carry the
+  `[ORCAPORT FILE]` stamp.
+- `wall_generator` gains the value string `"hybrid"` (label "NeoArachne"), appended last so
+  serialised indices do not shift.
+
+### New files
+`src/libslic3r/NeoArachne/` (12 files, namespace `Slic3r::NeoArachne`):
+`NeoArachneConfig.hpp`, `NeoArachneRuntime.hpp`, `NeoArachneDebug.{hpp,cpp}`,
+`NeoArachneEngine.{hpp,cpp}`, `NeoArachnePlan.{hpp,cpp}`, `NeoArachneInterior.{hpp,cpp}`,
+`NeoArachneBeadingStrategy.{hpp,cpp}`. Registered in `src/libslic3r/CMakeLists.txt`.
+
+### Upstream anchors (target files)
+- `src/libslic3r/PrintConfig.hpp` :: enum `HybridWallSource` after `PerimeterGeneratorType`;
+  `Hybrid` appended to `PerimeterGeneratorType`; 11 `hybrid_*` region keys; static-map declares.
+- `src/libslic3r/PrintConfig.cpp` :: `"hybrid"` in the wall-generator map/label; the
+  `HybridWallSource` key map + DEFINE; the 11 field definitions.
+- `src/libslic3r/LayerRegion.cpp` :: `process_ex` :: `wall_generator == Hybrid && !spiral_mode`
+  -> `NeoArachne::run(g)` (ungated; the fork's `neotko_libre_mode` check is gone).
+- `src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.{hpp,cpp}` :: `makeBeadingStrategy`
+  :: 4 edge params, wrap the meta-chain with `NeoArachne::NeoArachneBeadingStrategy` before
+  `LimitedBeadingStrategy`.
+- `src/libslic3r/Arachne/WallToolPaths.{hpp,cpp}` :: `WallToolPathsParams` gains
+  `keep_short_tails`, the 4 edge params, `wall_transition_filter_dist_mm`,
+  `max_bead_width_pct`; ctor applies the ceiling / filter distance / short-tail gate.
+- `src/libslic3r/ExtrusionEntity.hpp` :: `ExtrusionPath` base `force_no_spiral_lift`.
+- `src/libslic3r/GCode.{hpp,cpp}` :: `_extrude` records `force_no_spiral_lift`; lift sites
+  downgrade `SpiralLift` -> `SlopeLift`; wipe rebalance (>=50% pre-wipe).
+- `src/libslic3r/Preset.cpp` :: the 11 `hybrid_*` region keys.
+- `src/slic3r/GUI/ConfigManipulation.cpp` :: `update_print_fff_config` validator
+  (coerce invalid combos) + `toggle_print_fff_options` visibility.
+- `src/slic3r/GUI/Tab.cpp` :: Quality > Wall generator, 11 option lines.
+
+### Keys (region config) - fork mapping
+`hybrid_outer_wall` [fork `neoarachne_outer_wall`; enum; Classic];
+`hybrid_inner_walls` [enum; ArachneStock]; `hybrid_gap_fill` [enum; Off];
+`hybrid_allowed_overlap_pct` [0]; `hybrid_min_bead_width_pct` [40];
+`hybrid_max_bead_width_pct` [200]; `hybrid_min_feature_size_pct` [10];
+`hybrid_keep_short_tails` [true]; `hybrid_pin_outer_width` [fork
+`neoarachne_pin_outer_width`; true]; `hybrid_bead_count_hysteresis_pct` [20];
+`hybrid_transition_filter_dist_mm` [fork `neoarachne_transition_filter_dist_mm`; 100].
+`wall_generator` += `"hybrid"`.
+
+### Build evidence
+`.\OrcaSlicer\build_win.bat -s --no-configure -j 8` -> clean; `OrcaSlicer.dll` relinked with
+all `NeoArachne/*`, `WallToolPaths.cpp`, `BeadingStrategyFactory.cpp`, `GCode.cpp`,
+`ConfigManipulation.cpp`, `Tab.cpp`. OrcaSlicer.dll rebuilt 2026-09-15 00:51.
+
+### Verification
+`wall_generator` default stays `Arachne`, so the hybrid path is off by default and stock
+Classic/Arachne output is unchanged (no edits on those paths). Runtime verification of the
+hybrid path is pending (manual: slice with `wall_generator = NeoArachne`, sweep the
+per-feature selectors and the pin/hysteresis/transition knobs).

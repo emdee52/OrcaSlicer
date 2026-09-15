@@ -702,6 +702,66 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
         apply(config, &new_conf);
         is_msg_dlg_already_exist = false;
     }
+
+    // [ORCAPORT:PQ-3] validate the NeoArachne hybrid wall-source combo and Edge Closure invariants.
+    // Runs on a possibly-sparse per-object config, so guard every read with has().
+    if (config->has("wall_generator")
+        && config->opt_enum<PerimeterGeneratorType>("wall_generator") == PerimeterGeneratorType::Hybrid
+        && config->has("hybrid_outer_wall")
+        && config->has("hybrid_inner_walls")
+        && config->has("hybrid_min_bead_width_pct")
+        && config->has("hybrid_min_feature_size_pct")
+        && !is_msg_dlg_already_exist)
+    {
+        const auto outer = config->opt_enum<HybridWallSource>("hybrid_outer_wall");
+        const auto inner = config->opt_enum<HybridWallSource>("hybrid_inner_walls");
+
+        // (1) outer = Off is meaningless - every part needs at least one outer.
+        if (outer == HybridWallSource::Off) {
+            MessageDialog dialog(m_msg_dlg_parent,
+                _L("NeoArachne - outer wall set to Off is not allowed. Reset to Classic?"),
+                _L("NeoArachne - invalid combo"), wxICON_WARNING | wxYES | wxNO);
+            is_msg_dlg_already_exist = true;
+            const auto ans = dialog.ShowModal();
+            is_msg_dlg_already_exist = false;
+            if (ans == wxID_YES) {
+                DynamicPrintConfig nc = *config;
+                nc.set_key_value("hybrid_outer_wall", new ConfigOptionEnum<HybridWallSource>(HybridWallSource::Classic));
+                apply(config, &nc);
+            }
+        }
+        // (2) outer = Arachne* + inner = Classic breaks Arachne's whole-slab beading.
+        else if ((outer == HybridWallSource::ArachneStock || outer == HybridWallSource::ArachneHybrid)
+                 && inner == HybridWallSource::Classic)
+        {
+            MessageDialog dialog(m_msg_dlg_parent,
+                _L("NeoArachne - outer = Arachne with inner = Classic is unsupported "
+                   "(Arachne's beading needs the whole slab). Switch inner to match outer?"),
+                _L("NeoArachne - invalid combo"), wxICON_WARNING | wxYES | wxNO);
+            is_msg_dlg_already_exist = true;
+            const auto ans = dialog.ShowModal();
+            is_msg_dlg_already_exist = false;
+            if (ans == wxID_YES) {
+                DynamicPrintConfig nc = *config;
+                nc.set_key_value("hybrid_inner_walls", new ConfigOptionEnum<HybridWallSource>(outer));
+                apply(config, &nc);
+            }
+        }
+
+        // (3) Edge Closure invariant: min_feature_size_pct <= min_bead_width_pct (silent swap).
+        const ConfigOption* min_bead_opt = config->option("hybrid_min_bead_width_pct");
+        const ConfigOption* min_feat_opt = config->option("hybrid_min_feature_size_pct");
+        if (min_bead_opt && min_feat_opt) {
+            const double min_bead = min_bead_opt->getFloat();
+            const double min_feat = min_feat_opt->getFloat();
+            if (min_feat > min_bead) {
+                DynamicPrintConfig nc = *config;
+                nc.set_key_value("hybrid_min_feature_size_pct", new ConfigOptionPercent(min_bead));
+                nc.set_key_value("hybrid_min_bead_width_pct",   new ConfigOptionPercent(min_feat));
+                apply(config, &nc);
+            }
+        }
+    }
 }
 
 void ConfigManipulation::apply_null_fff_config(DynamicPrintConfig *config, std::vector<std::string> const &keys, std::map<ObjectBase *, ModelConfig *> const &configs)
@@ -1138,6 +1198,22 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         "min_bead_width", "wall_distribution_count", "initial_layer_min_bead_width", "wall_maximum_resolution", "wall_maximum_deviation"})
         toggle_line(el, have_arachne);
     toggle_field("detect_thin_wall", !have_arachne);
+
+    // [ORCAPORT:PQ-3] show the NeoArachne hybrid controls only when wall_generator = NeoArachne.
+    const bool have_hybrid = config->opt_enum<PerimeterGeneratorType>("wall_generator") == PerimeterGeneratorType::Hybrid;
+    for (auto el : { "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill" })
+        toggle_line(el, have_hybrid);
+    const bool inner_readable = have_hybrid && config->has("hybrid_inner_walls");
+    const auto inner_src = inner_readable ? config->opt_enum<HybridWallSource>("hybrid_inner_walls") : HybridWallSource::ArachneStock;
+    const bool inner_is_arachne = inner_src == HybridWallSource::ArachneStock || inner_src == HybridWallSource::ArachneHybrid;
+    for (auto el : { "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct", "hybrid_max_bead_width_pct",
+                     "hybrid_min_feature_size_pct", "hybrid_keep_short_tails" })
+        toggle_line(el, have_hybrid && inner_is_arachne);
+    const auto outer_src = (have_hybrid && config->has("hybrid_outer_wall")) ? config->opt_enum<HybridWallSource>("hybrid_outer_wall") : HybridWallSource::Classic;
+    const bool hybrid_edge_active = have_hybrid && (inner_src == HybridWallSource::ArachneHybrid || outer_src == HybridWallSource::ArachneHybrid);
+    toggle_line("hybrid_pin_outer_width", hybrid_edge_active);
+    toggle_line("hybrid_bead_count_hysteresis_pct", hybrid_edge_active);
+    toggle_line("hybrid_transition_filter_dist_mm", have_hybrid && inner_is_arachne);
 
     // Orca
     auto is_role_based_wipe_speed = config->opt_bool("role_based_wipe_speed");

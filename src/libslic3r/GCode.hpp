@@ -237,6 +237,8 @@ public:
     Vec3d                    point_to_gcode_quantized(const Point3& point) const;
     const FullPrintConfig &config() const { return m_config; }
     const Layer*    layer() const { return m_layer; }
+    // [ORCAPORT:PQ-3] true when the last emitted path opted out of SpiralLift (NeoArachne paths).
+    bool last_path_force_no_spiral_lift() const { return m_last_path_force_no_spiral_lift; }
     GCodeWriter&    writer() { return m_writer; }
     const GCodeWriter& writer() const { return m_writer; }
     PlaceholderParser& placeholder_parser() { return m_placeholder_parser_integration.parser; }
@@ -677,6 +679,9 @@ private:
     bool                                m_enable_extrusion_role_markers;
     // Keeps track of the last extrusion role passed to the processor
     ExtrusionRole                       m_last_processor_extrusion_role;
+    // [ORCAPORT:PQ-3] ExtrusionPath::force_no_spiral_lift of the last emitted path. Read by the
+    // lift decision and the wipe retraction rebalance.
+    bool                                m_last_path_force_no_spiral_lift{ false };
     // How many times will change_layer() be called?
     // change_layer() will update the progress bar.
     unsigned int                        m_layer_count;

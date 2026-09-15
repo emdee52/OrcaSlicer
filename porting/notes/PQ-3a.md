@@ -28,3 +28,10 @@
 
 ## Verification
 - Pin off = stock Arachne for thin regions; blend distance changes only transition smoothing; Classic/Arachne unchanged.
+
+## Resolution
+- Shipped together with PQ-3b on `port/PQ-3` (decision 7). The two knobs are reachable as
+  `hybrid_pin_outer_width` and `hybrid_transition_filter_dist_mm` (fork keys
+  `neoarachne_pin_outer_width`, `neoarachne_transition_filter_dist_mm`). The blocker above is
+  resolved by the enum/routing, exactly as recommended. See `notes/PQ-3b.md` for the anchors,
+  build evidence, and verification.

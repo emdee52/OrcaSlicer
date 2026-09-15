@@ -70,6 +70,18 @@ set(lisbslic3r_sources
     Arachne/utils/SquareGrid.hpp
     Arachne/WallToolPaths.cpp
     Arachne/WallToolPaths.hpp
+    NeoArachne/NeoArachneBeadingStrategy.cpp
+    NeoArachne/NeoArachneBeadingStrategy.hpp
+    NeoArachne/NeoArachneConfig.hpp
+    NeoArachne/NeoArachneDebug.cpp
+    NeoArachne/NeoArachneDebug.hpp
+    NeoArachne/NeoArachneEngine.cpp
+    NeoArachne/NeoArachneEngine.hpp
+    NeoArachne/NeoArachneInterior.cpp
+    NeoArachne/NeoArachneInterior.hpp
+    NeoArachne/NeoArachnePlan.cpp
+    NeoArachne/NeoArachnePlan.hpp
+    NeoArachne/NeoArachneRuntime.hpp
     ArcFitter.cpp
     ArcFitter.hpp
     Arrange.cpp

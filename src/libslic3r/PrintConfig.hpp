@@ -390,7 +390,20 @@ enum class PerimeterGeneratorType
     Classic,
     // Perimeter generator with variable extrusion width based on the paper
     // "A framework for adaptive width control of dense contour-parallel toolpaths in fused deposition modeling" ported from Cura.
-    Arachne
+    Arachne,
+    // [ORCAPORT:PQ-3] NeoArachne hybrid: a per-feature mix of Classic and Arachne (Classic outer +
+    // Arachne interior by default). Label kept as "NeoArachne"; the serialized key is neutral.
+    Hybrid
+};
+
+// [ORCAPORT:PQ-3] Per-feature wall source for the hybrid generator. Top-level namespace because
+// CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS cannot expand a nested-namespace name; NeoArachne aliases it.
+enum class HybridWallSource
+{
+    Classic,
+    ArachneStock,
+    ArachneHybrid,
+    Off
 };
 
 enum class ToolChangeOrderingType
@@ -705,6 +718,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PrintHostType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(AuthorizationType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerWallType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PerimeterGeneratorType)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(HybridWallSource) // [ORCAPORT:PQ-3]
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ToolChangeOrderingType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PowerLossRecoveryMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SurfaceFillOrder)
@@ -1475,6 +1489,18 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,    support_zone_roof_only))
     ((ConfigOptionBool,    support_zone_solid))
     ((ConfigOptionBool,    support_zone_land_only))
+    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator per-region keys.
+    ((ConfigOptionEnum<HybridWallSource>, hybrid_outer_wall))
+    ((ConfigOptionEnum<HybridWallSource>, hybrid_inner_walls))
+    ((ConfigOptionEnum<HybridWallSource>, hybrid_gap_fill))
+    ((ConfigOptionPercent, hybrid_allowed_overlap_pct))
+    ((ConfigOptionPercent, hybrid_min_bead_width_pct))
+    ((ConfigOptionPercent, hybrid_max_bead_width_pct))
+    ((ConfigOptionPercent, hybrid_min_feature_size_pct))
+    ((ConfigOptionBool,    hybrid_keep_short_tails))
+    ((ConfigOptionBool,    hybrid_pin_outer_width))
+    ((ConfigOptionPercent, hybrid_bead_count_hysteresis_pct))
+    ((ConfigOptionFloat,   hybrid_transition_filter_dist_mm))
     )
 
 PRINT_CONFIG_CLASS_DEFINE(

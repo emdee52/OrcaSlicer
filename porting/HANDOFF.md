@@ -35,7 +35,7 @@ untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git
 | AS-1 | Free-Z placement | ported | notes/AS-1.md | 06_AS-1.patch |
 | AS-2 | Align & Stack + face-mate (AS-2F) | ported | notes/AS-2.md | 07_AS-2.patch |
 | AS-3 | Snap & Drag | ported (full pass) | notes/AS-3.md | 08_AS-3.patch |
-| PQ-3 | NeoArachne (a+b together) | **planned** | notes/PQ-3a.md, PQ-3b.md | - |
+| PQ-3 | NeoArachne (a+b together) | ported | notes/PQ-3a.md, PQ-3b.md | 12_PQ-3.patch |
 
 SU-2 (True Objects) and SU-3 (real floating detection) are **excluded** by user decision.
 AS-2F extra decisions: picked-instance only; extras = depth/rotate/flip/mirror; feature-center
@@ -108,7 +108,7 @@ in `OrcaSlicer/build/src/Release/OrcaSlicer.dll`). A full clean build is ~20 min
 - `manifest.tsv` is the source of truth; keep it and the notes in sync with the code.
 - Do not push unless the user asks. (The user has been asking; commits here are already pushed.)
 
-## Next task: PQ-3 NeoArachne (a+b together)
+## All selected features ported - PQ-3 was the last
 
 SU-6 is **ported** - it came in with SU-5 (same three files at the fork's HEAD), verified by
 line-level parity, and has no separate patch. See `notes/SU-6.md`.
@@ -118,6 +118,13 @@ engine, per-zone filament routing, PrintObject invalidation, and the full `GLGiz
 (including the block-tree / stump mode). Build clean; runtime pending. See `notes/SU-5.md`.
 
 The next task is PQ-3 NeoArachne (a+b together) - the largest and riskiest port; do it last.
+
+PQ-3 NeoArachne is **ported** on `port/PQ-3` (a+b together): the `Slic3r::NeoArachne` module
+(12 files), `wall_generator = "hybrid"` (label NeoArachne), the `HybridWallSource` enum, the
+11 `hybrid_*` region keys, the Arachne `BeadingStrategyFactory`/`WallToolPaths` hookup, the
+spiral-lift plumbing, and the Quality > Wall generator UI/validator. The preview panel is
+excluded (user decision). Build clean; runtime pending. See `notes/PQ-3b.md`. This was the
+last selected feature: the port is feature-complete pending runtime verification.
 
 SU-4 is **ported** on `port/SU-4` (wave-roof half): `SupportType::NeoWave` handled by the existing
 Normal engine, `FillWaveRoof`, and the `wavesupport_*` keys. The contact layer is dropped (needs the
@@ -184,7 +191,9 @@ need the global; just rename the keys and read `OrcaExt::free_z()` for the free-
 Every ported feature compiles and links; only PQ-1 was runtime-confirmed by the user. Pending
 manual checks: MT-1/MT-2 (multi-tool G-code with Ooze prevention on), PQ-2 (overhang inner-wall
 slowdown), MT-4 F1/F2/F3 (paint gizmo), AS-1 (free-Z placement), AS-2/AS-2F (align/stack, face
-mate, extras, snapping). Test protocols are in each `notes/<ID>.md`.
+mate, extras, snapping), SU-1/SU-4/SU-5/SU-6 (supports), PQ-3 (slice with `wall_generator =
+NeoArachne` and sweep the per-feature selectors + pin/hysteresis/transition knobs). Test
+protocols are in each `notes/<ID>.md`.
 
 ## Cheat-sheet
 

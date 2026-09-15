@@ -3,6 +3,7 @@
 #include "ClipperUtils.hpp"
 #include "Geometry.hpp"
 #include "PerimeterGenerator.hpp"
+#include "NeoArachne/NeoArachneEngine.hpp" // [ORCAPORT:PQ-3]
 #include "Point.hpp"
 #include "Print.hpp"
 #include "Surface.hpp"
@@ -137,6 +138,9 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
 
     if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Arachne && !spiral_mode)
         g.process_arachne();
+    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator (ungated; spiral mode falls back to Classic).
+    else if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Hybrid && !spiral_mode)
+        Slic3r::NeoArachne::run(g);
     else
         g.process_classic();
 }
