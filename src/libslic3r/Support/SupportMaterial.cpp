@@ -548,6 +548,9 @@ void PrintObjectSupportMaterial::generate(PrintObject &object)
 //    intermediate_layers.clear();
 //    interface_layers.clear();
 
+    // [ORCAPORT:PF-10-paint] When this pass appends to layers a previous pass produced, only
+    // toolpath this pass's own new layers.
+    const size_t support_layer_base = object.support_layers().size();
 #ifdef SLIC3R_DEBUG
     SupportGeneratorLayersPtr layers_sorted =
 #endif // SLIC3R_DEBUG
@@ -585,7 +588,9 @@ void PrintObjectSupportMaterial::generate(PrintObject &object)
     // Generate the actual toolpaths and save them into each layer.
     // s286c F4: el objeto se pasa SÓLO aquí, en el generador clásico, y sólo para que el reparto por
     // familia pueda preguntar por sus áreas. Con una familia (el caso normal) no cambia nada.
-    generate_support_toolpaths(object.support_layers(), *m_object_config, m_support_params, m_slicing_params, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers, &object);
+    SupportLayerPtrs new_support_layers(object.support_layers().begin() + support_layer_base,
+                                        object.support_layers().end());
+    generate_support_toolpaths(new_support_layers, *m_object_config, m_support_params, m_slicing_params, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers, &object);
 
 #ifdef SLIC3R_DEBUG
     {

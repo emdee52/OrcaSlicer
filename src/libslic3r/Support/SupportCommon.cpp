@@ -1833,7 +1833,9 @@ void generate_support_toolpaths(
                     // generic fill. If the wave engine returns nothing, fall through to the normal
                     // fill so a roof is never left empty.
                     bool wave_filled = false;
-                    if (config.support_type.value == stWaveSupport && config.support_interface_pattern.value == smipWave &&
+                    // [ORCAPORT:PF-10-paint] Keyed on the wave interface pattern, not the support type,
+                    // so a per-region NeoWave pass (manual Normal + Wave) also gets the wave roof.
+                    if (config.support_interface_pattern.value == smipWave &&
                         (interface_layer_type == InterfaceLayerType::TopContact || interface_layer_type == InterfaceLayerType::Interface)) {
                         FillWaveRoofParams wave_params;
                         wave_params.flow = interface_flow;
@@ -1925,7 +1927,8 @@ void generate_support_toolpaths(
                 // [ORCAPORT:SU-4] NeoWave hollow body: print the support body as N concentric
                 // perimeters with no infill so the wave roof caps a lightweight pillar. The
                 // 1st-layer flange stays solid for bed adhesion.
-                if (config.support_type.value == stWaveSupport && config.wavesupport_wall_loops.value > 0 &&
+                // [ORCAPORT:PF-10-paint] Same decoupling for the hollow body.
+                if (config.wavesupport_wall_loops.value > 0 &&
                     base_layer.layer->bottom_z >= EPSILON) {
                     const int    walls        = config.wavesupport_wall_loops.value;
                     auto         wall_flow    = support_params.support_material_flow.with_height(float(base_layer.layer->height));

@@ -4660,36 +4660,21 @@ void PrintObject::merge_duplicate_support_layers()
 
 void PrintObject::_generate_support_material()
 {
-    // [ORCAPORT:PF-10-paint] Multi-pass support composition. Painted explicit styles define
-    // which engine wires which region; the object's own engine handles the rest. Classic
-    // (Snug/Grid/NeoWave) regions share the single classic pass; tree (Organic/Baobab) regions
-    // run as a second, enforcer-only tree pass that appends and is then merged in. With nothing
-    // painted the legacy single-pass path below runs unchanged.
-    const OrcaExt::SupportPaintType *classic_paint = nullptr; // single classic style, if exactly one
-    const OrcaExt::SupportPaintType *tree_paint    = nullptr; // first painted tree style
-    size_t                           classic_count = 0;
-    std::vector<EnforcerBlockerType> classic_states, tree_states;
-
+    // [ORCAPORT:PF-10-paint] Region-limited support painting. Each painted support type runs its
+    // own enforcer-only engine pass over just its facets, and one default pass (the object's own
+    // type/style, auto) handles the unpainted overhangs; the passes append and are merged. With
+    // nothing painted the legacy single-pass path below runs unchanged.
+    std::vector<const OrcaExt::SupportPaintType *> painted;
     if (this->has_support()) {
         for (const OrcaExt::SupportPaintType &t : OrcaExt::support_paint_types()) {
             if (t.state == OrcaExt::SUPPORT_PAINT_DEFAULT || t.state == OrcaExt::SUPPORT_PAINT_BLOCKER)
                 continue;
-            if (!OrcaExt::has_painted_support_style(*this, t.state))
-                continue;
-            if (t.is_tree) {
-                tree_states.push_back(t.state);
-                if (tree_paint == nullptr)
-                    tree_paint = &t;
-            } else {
-                classic_states.push_back(t.state);
-                ++classic_count;
-                if (classic_paint == nullptr)
-                    classic_paint = &t;
-            }
+            if (OrcaExt::has_painted_support_style(*this, t.state))
+                painted.push_back(&t);
         }
     }
 
-    if (classic_states.empty() && tree_states.empty()) {
+    if (painted.empty()) {
         if (is_tree(m_config.support_type.value)) {
             TreeSupport tree_support(*this, m_slicing_params);
             tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
@@ -4732,60 +4717,70 @@ void PrintObject::_generate_support_material()
         if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
     };
 
-    const bool object_tree = is_tree(m_config.support_type.value);
-    const bool run_classic = !classic_states.empty() || !object_tree;
-    const bool run_tree    = !tree_states.empty();
-    const bool compose     = run_classic && run_tree;
+    // Every explicitly painted state, used to keep passes from building under each other.
+    std::vector<EnforcerBlockerType> all_states;
+    all_states.reserve(painted.size());
+    for (const OrcaExt::SupportPaintType *t : painted)
+        all_states.push_back(t->state);
 
-    // The whole multi-pass owns the support layers; neither engine clears them now.
+    // The whole multi-pass owns the support layers; the engines now append instead of clearing.
     this->clear_support_layers();
 
-    try {
-        if (run_classic) {
-            const OrcaExt::SupportPaintType *cp = (classic_count == 1) ? classic_paint : nullptr;
-            if (cp != nullptr) {
-                m_config.support_type.value  = cp->support_type;
-                m_config.support_style.value = cp->support_style;
-                apply_overrides(cp->overrides);
-                this->set_painted_support_state(cp->state);
-            } else {
-                // Several classic styles painted: Orca's classic style is object level, so fall
-                // back to the object's own; the painted facets still enforce support.
-                this->set_painted_support_state(EnforcerBlockerType::NONE);
-            }
-            this->set_painted_support_blockers(tree_states);
-            this->set_support_pass_appends(false);
-
-            PrintObjectSupportMaterial support_material(this, m_slicing_params);
-            support_material.generate(*this);
-        }
-
-        if (run_tree) {
-            if (tree_paint != nullptr) {
-                // Compose with the classic pass: manual (enforcer-only) tree so auto overhangs
-                // are not built twice.
-                m_config.support_type.value  = compose ? stTree : tree_paint->support_type;
-                m_config.support_style.value = tree_paint->support_style;
-                apply_overrides(tree_paint->overrides);
-                this->set_painted_support_state(tree_paint->state);
-            } else {
-                this->set_painted_support_state(EnforcerBlockerType::NONE);
-            }
-            this->set_painted_support_blockers(classic_states);
-            this->set_support_pass_appends(run_classic);
-
+    // Run one support pass, appending to whatever is already there.
+    auto run_pass = [&](bool is_tree_pass, SupportType type, SupportMaterialStyle style,
+                        const OrcaExt::SupportPaintOverrides *ov, EnforcerBlockerType enforcer,
+                        std::vector<EnforcerBlockerType> blockers) {
+        m_config.support_type.value  = type;
+        m_config.support_style.value = style;
+        // Reset any override a previous pass left, then apply this pass's.
+        m_config.support_base_pattern.value      = old_base;
+        m_config.support_interface_pattern.value = old_iface;
+        m_config.wavesupport_roof_pattern.value  = old_wrp;
+        m_config.wavesupport_roof_order.value    = old_wro;
+        m_config.wavesupport_wall_loops.value    = old_wloops;
+        if (ov != nullptr)
+            apply_overrides(*ov);
+        this->set_painted_support_state(enforcer);
+        this->set_painted_support_blockers(std::move(blockers));
+        this->set_support_pass_appends(!this->support_layers().empty());
+        if (is_tree_pass) {
             TreeSupport tree_support(*this, m_slicing_params);
             tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
             tree_support.generate();
+        } else {
+            PrintObjectSupportMaterial support_material(this, m_slicing_params);
+            support_material.generate(*this);
+        }
+    };
+
+    try {
+        // 1) Default pass: the object's own type/style over the unpainted overhangs and the legacy
+        //    generic enforcer, excluding every explicitly painted region.
+        run_pass(is_tree(old_type), old_type, old_style, nullptr, EnforcerBlockerType::NONE, all_states);
+
+        // 2) One enforcer-only pass per painted type. Classic styles first, tree styles last.
+        for (int tree_round = 0; tree_round < 2; ++tree_round) {
+            for (const OrcaExt::SupportPaintType *t : painted) {
+                if (t->is_tree != (tree_round == 1))
+                    continue;
+                std::vector<EnforcerBlockerType> blockers;
+                for (const OrcaExt::SupportPaintType *other : painted)
+                    if (other != t)
+                        blockers.push_back(other->state);
+                // The default pass owns the legacy generic-enforcer facets; do not also build
+                // this style under them.
+                blockers.push_back(EnforcerBlockerType::ENFORCER);
+
+                const SupportType type = t->is_tree ? stTree : stNormal;
+                run_pass(t->is_tree, type, t->support_style, &t->overrides, t->state, std::move(blockers));
+            }
         }
     } catch (...) {
         restore();
         throw;
     }
 
-    if (compose)
-        this->merge_duplicate_support_layers();
-
+    this->merge_duplicate_support_layers();
     restore();
 }
 
