@@ -92,6 +92,7 @@ public:
         BrimEars,
         AlignStack, // [ORCAPORT:AS-2]
         SupportZones, // [ORCAPORT:SU-5]
+        CounterboreBridge, // [ORCAPORT:PF-2b]
         //SlaSupports,
         // BBS
         //FaceRecognition,

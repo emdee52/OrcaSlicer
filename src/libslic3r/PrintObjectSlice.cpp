@@ -831,10 +831,55 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
     if (l0 == nullptr || l0->region_count() == 0)
         return;
     const PrintRegionConfig &cfg = l0->get_region(0)->region().config();
-    if (cfg.counterbore_hole_bridging.value != chbSmart)
+    const bool auto_mode = cfg.counterbore_hole_bridging.value == chbSmart;
+    const bool painted   = po.model_object() != nullptr && po.model_object()->is_counterbore_bridge_painted();
+    if (!auto_mode && !painted)
         return;
     const int    num_transition_layers = std::clamp(cfg.counterbore_bridge_layers.value, 2, 9);
     const double min_ring_scaled        = scale_(0.6); // ignore chamfers / thin rings
+
+    // [ORCAPORT:PF-2b] Painted counterbore areas per layer: smart = ENFORCER state, partial =
+    // BLOCKER state (the counterbore annotation has its own TriangleSelector, so the state
+    // values are internal to this feature).
+    std::vector<ExPolygons> painted_smart(n_layers), painted_partial(n_layers);
+    if (painted) {
+        const Transform3d vol_root = po.trafo_centered();
+        for (const ModelVolume *mv : po.model_object()->volumes) {
+            if (!mv->is_model_part() || !mv->is_counterbore_bridge_painted())
+                continue;
+            const Transform3d vol_trafo = vol_root * mv->get_matrix();
+            for (int mode = 0; mode < 2; ++mode) {
+                const EnforcerBlockerType state = mode == 0 ? EnforcerBlockerType::ENFORCER : EnforcerBlockerType::BLOCKER;
+                const indexed_triangle_set pits = mv->counterbore_bridge_facets.get_facets(*mv, state);
+                for (const auto &tri : pits.indices) {
+                    const Vec3d v0 = vol_trafo * pits.vertices[tri[0]].cast<double>();
+                    const Vec3d v1 = vol_trafo * pits.vertices[tri[1]].cast<double>();
+                    const Vec3d v2 = vol_trafo * pits.vertices[tri[2]].cast<double>();
+                    const double zmin = std::min({v0.z(), v1.z(), v2.z()});
+                    const double zmax = std::max({v0.z(), v1.z(), v2.z()});
+                    Polygon tri_poly;
+                    tri_poly.points = {Point(scale_(v0.x()), scale_(v0.y())), Point(scale_(v1.x()), scale_(v1.y())),
+                                       Point(scale_(v2.x()), scale_(v2.y()))};
+                    tri_poly.make_counter_clockwise();
+                    if (tri_poly.area() <= 0.0)
+                        continue;
+                    for (int L = 0; L < n_layers; ++L) {
+                        const double lz = po.get_layer(L)->print_z;
+                        const double hh = po.get_layer(L)->height * 0.5;
+                        if (zmin <= lz + hh && zmax >= lz - hh)
+                            (mode == 0 ? painted_smart : painted_partial)[L].emplace_back(ExPolygon(tri_poly));
+                    }
+                }
+            }
+        }
+        for (int L = 0; L < n_layers; ++L) {
+            if (!painted_smart[L].empty())
+                painted_smart[L] = offset2_ex(union_ex(painted_smart[L]), scale_(0.2), scale_(-0.2));
+            if (!painted_partial[L].empty())
+                painted_partial[L] = offset2_ex(union_ex(painted_partial[L]), scale_(0.2), scale_(-0.2));
+        }
+    }
+    auto overlaps_any = [](const ExPolygons &a, const ExPolygons &b) { return !a.empty() && !b.empty() && !intersection_ex(a, b).empty(); };
 
     for (int L = 1; L + 1 < n_layers; ++L) {
         Layer       *layer = po.get_layer(L);
@@ -849,6 +894,13 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
                 if (bore.area() <= 0.0)
                     continue;
                 const ExPolygons bore_poly{bore};
+
+                // [ORCAPORT:PF-2b] gate by painted / auto mode; partial uses a single bridge layer.
+                const bool hole_smart   = auto_mode || overlaps_any(bore_poly, painted_smart[L]);
+                const bool hole_partial = painted && overlaps_any(bore_poly, painted_partial[L]);
+                if (!hole_smart && !hole_partial)
+                    continue;
+                const int N = (hole_partial && !hole_smart) ? 1 : num_transition_layers;
 
                 // Find smaller holes in the next layer nested inside the bore (the shaft).
                 ExPolygons shaft;
@@ -879,16 +931,16 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
                 if (ring.empty())
                     continue;
 
-                const int layers_available = std::min(num_transition_layers, n_layers - 1 - L);
+                const int layers_available = std::min(N, n_layers - 1 - L);
                 if (layers_available <= 0)
                     continue;
 
                 const BoundingBox shaft_bb = get_extents(shaft);
                 const double      smear    = double(std::max(shaft_bb.size().x(), shaft_bb.size().y())) * 2.0;
 
-                std::vector<ExPolygons> corridors(num_transition_layers);
-                for (int step = 0; step < num_transition_layers; ++step) {
-                    const double  angle  = step * M_PI / double(num_transition_layers);
+                std::vector<ExPolygons> corridors(N);
+                for (int step = 0; step < N; ++step) {
+                    const double  angle  = step * M_PI / double(N);
                     const double  perp   = angle + M_PI / 2.0;
                     const coord_t dx     = coord_t(std::cos(perp) * smear);
                     const coord_t dy     = coord_t(std::sin(perp) * smear);
@@ -920,7 +972,7 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
                     merged.insert(merged.end(), bm.begin(), bm.end());
                     tl->lslices = union_ex(merged);
 
-                    const double bridge_angle = step * M_PI / double(num_transition_layers) + M_PI / 2.0;
+                    const double bridge_angle = step * M_PI / double(N) + M_PI / 2.0;
                     tl->counterbore_bridge_regions.emplace_back(bm, bridge_angle);
 
                     if (tl->region_count() > 0) {
