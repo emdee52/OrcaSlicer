@@ -1,0 +1,346 @@
+diff --git a/src/libslic3r/LayerRegion.cpp b/src/libslic3r/LayerRegion.cpp
+index 4a845fbd1d..8270bcd346 100644
+--- a/src/libslic3r/LayerRegion.cpp
++++ b/src/libslic3r/LayerRegion.cpp
+@@ -136,6 +136,28 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
+     g.overhang_flow         = this->bridging_flow(frPerimeter, object_config.thick_bridges);
+     g.solid_infill_flow     = this->flow(frSolidInfill);
+ 
++    // [ORCAPORT:PF-9] solid top/bottom margin: only interlock when at least interlock_solid_layers_*
++    // layers away from a top/bottom surface. A layer has a top surface where it extends beyond the
++    // layer above (bottom: beyond the layer below).
++    if (region_config.interlock_perimeters_enabled.value) {
++        auto has_top_surface = [](const Layer* l) -> bool {
++            return l != nullptr && (l->upper_layer == nullptr || !diff_ex(l->lslices, l->upper_layer->lslices).empty());
++        };
++        auto has_bottom_surface = [](const Layer* l) -> bool {
++            return l != nullptr && (l->lower_layer == nullptr || !diff_ex(l->lslices, l->lower_layer->lslices).empty());
++        };
++        const int top_margin    = std::max(0, region_config.interlock_solid_layers_top.value);
++        const int bottom_margin = std::max(0, region_config.interlock_solid_layers_bottom.value);
++        bool near_top = false, near_bottom = false;
++        const Layer* l = this->layer();
++        for (int i = 0; l != nullptr && i <= top_margin; ++i, l = l->upper_layer)
++            if (has_top_surface(l)) { near_top = true; break; }
++        l = this->layer();
++        for (int i = 0; l != nullptr && i <= bottom_margin; ++i, l = l->lower_layer)
++            if (has_bottom_surface(l)) { near_bottom = true; break; }
++        g.interlock_solid_margin_ok = !near_top && !near_bottom;
++    }
++
+     if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Arachne && !spiral_mode)
+         g.process_arachne();
+     // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator (ungated; spiral mode falls back to Classic).
+diff --git a/src/libslic3r/PerimeterGenerator.cpp b/src/libslic3r/PerimeterGenerator.cpp
+index a6b38889a5..79d77a0ca8 100644
+--- a/src/libslic3r/PerimeterGenerator.cpp
++++ b/src/libslic3r/PerimeterGenerator.cpp
+@@ -25,6 +25,8 @@ static const double narrow_loop_length_threshold = 10;
+ //ext_perimeter_width + ext_perimeter_spacing  * (1 - SMALLER_EXT_INSET_OVERLAP_TOLERANCE),
+ //we think it's small detail area and will generate smaller line width for it
+ static constexpr double SMALLER_EXT_INSET_OVERLAP_TOLERANCE = 0.22;
++// [ORCAPORT:PF-9] flow of the interlocking boundary bead (the (3 + 2*sqrt2)/4 constant from PF-9)
++static constexpr double INTERLOCK_BOUNDARY_FLOW = (3.0 + 2.0 * 1.4142135623730951) / 4.0;
+ 
+ namespace Slic3r {
+     
+@@ -145,6 +147,20 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
+             lower_polygons_series = &perimeter_generator.m_lower_polygons_series;
+             extrusion_mm3_per_mm = perimeter_generator.mm3_per_mm();
+             extrusion_width = perimeter_generator.perimeter_flow.width();
++
++            // [ORCAPORT:PF-9] interlocking shells: vary bead width/flow by tier so alternating
++            // layers nest into each other. Shell 0 adjacent to the regular walls is the boundary
++            // bead (wider on even layers, nominal on odd); deeper shells are over-extruded (200%).
++            if (perimeter_generator.m_interlock_active &&
++                (int) loop.depth > perimeter_generator.m_interlock_base_depth) {
++                const int    k          = (int) loop.depth - perimeter_generator.m_interlock_base_depth - 1;
++                const double tier_flow  = (k == 0)
++                                              ? (perimeter_generator.m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0)
++                                              : 2.0;
++                const double flow_ratio = tier_flow * perimeter_generator.m_interlock_strength;
++                extrusion_mm3_per_mm    = perimeter_generator.mm3_per_mm() * flow_ratio;
++                extrusion_width         = perimeter_generator.perimeter_flow.width() * std::sqrt(flow_ratio);
++            }
+         }
+ 
+         // Apply fuzzy skin if it is enabled for at least some part of the polygon.
+@@ -1404,10 +1420,31 @@ void PerimeterGenerator::process_classic()
+     for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
+         const Surface &surface = all_surfaces[surface_order[order_idx]];
+         // detect how many perimeters must be generated for this island
+-        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1;  // 0-indexed loops
+         int sparse_infill_density = this->config->sparse_infill_density.value;
+-        if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
++        // [ORCAPORT:PF-9] interlocking perimeters: add interlocking shells inside the regular
++        // walls on every layer with alternating tier widths/flows; optionally reduce the regular
++        // wall count on those layers. Classic wall generator only.
++        const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
++                               !m_spiral_vase && sparse_infill_density > 0 &&
++                               this->object_config->wall_generator.value == PerimeterGeneratorType::Classic;
++        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
++        int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
++        if (interlock && this->config->interlock_regular_perimeters.value > 0)
++            base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
++        int loop_number = base_loop_number;  // 0-indexed loops
++        if (interlock)
++            loop_number += interlock_count;
++        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+             loop_number++;
++        // [ORCAPORT:PF-9] interlock state consumed by traverse_loops
++        m_interlock_active = interlock;
++        if (interlock) {
++            m_interlock_even          = (this->layer_id % 2 == 0);
++            m_interlock_base_depth    = base_loop_number;
++            m_interlock_strength      = this->config->interlock_perimeter_strength.value / 100.0;
++            const double ov           = this->config->interlock_perimeter_overlap.get_abs_value(this->layer_height);
++            m_interlock_overlap_extra = (ov > 0.0) ? coord_t(scale_(ov)) : coord_t(0);
++        }
+         if (this->layer_id == object_config->raft_layers && only_one_wall_first_layer)
+             loop_number = 0;
+         // Set the topmost layer to be one wall
+@@ -1490,6 +1527,10 @@ void PerimeterGenerator::process_classic()
+                     //FIXME Is this offset correct if the line width of the inner perimeters differs
+                     // from the line width of the infill?
+                     coord_t distance = (i == 1) ? ext_perimeter_spacing2 : perimeter_spacing;
++                    // [ORCAPORT:PF-9] interlocking shells are spaced more tightly (overlap) so the
++                    // over-extruded beads compress into the previous layer's gaps.
++                    if (m_interlock_active && (int) i > m_interlock_base_depth && m_interlock_overlap_extra > 0)
++                        distance = std::max<coord_t>(1, distance - m_interlock_overlap_extra);
+                     //BBS
+                     //offsets = this->config->thin_walls ?
+                         // This path will ensure, that the perimeters do not overfill, as in
+@@ -2389,10 +2430,21 @@ void PerimeterGenerator::process_arachne()
+     for (const Surface& surface : all_surfaces) {
+         coord_t bead_width_0 = ext_perimeter_spacing;
+         // detect how many perimeters must be generated for this island
+-        int loop_number = this->config->wall_loops + surface.extra_perimeters - 1; // 0-indexed loops
+         int sparse_infill_density = this->config->sparse_infill_density.value;
+-        if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
++        // [ORCAPORT:PF-9] interlocking perimeters (Arachne: extra shells; the tier width/flow
++        // alternation is applied on the Classic generator only).
++        const bool interlock = this->config->interlock_perimeters_enabled && this->interlock_solid_margin_ok &&
++                               !m_spiral_vase && sparse_infill_density > 0;
++        const int interlock_count = std::max(0, this->config->interlock_perimeter_count.value);
++        int base_loop_number = this->config->wall_loops + surface.extra_perimeters - 1;
++        if (interlock && this->config->interlock_regular_perimeters.value > 0)
++            base_loop_number = this->config->interlock_regular_perimeters.value + surface.extra_perimeters - 1;
++        int loop_number = base_loop_number; // 0-indexed loops
++        if (interlock)
++            loop_number += interlock_count;
++        else if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
+             loop_number++;
++        m_interlock_active = false; // Arachne output does not consume the Classic tier overrides
+ 
+         // Set the bottommost layer to be one wall
+         const bool is_bottom_layer = (this->layer_id == object_config->raft_layers) ? true : false;
+diff --git a/src/libslic3r/PerimeterGenerator.hpp b/src/libslic3r/PerimeterGenerator.hpp
+index e4f918d8bd..340415a3f9 100644
+--- a/src/libslic3r/PerimeterGenerator.hpp
++++ b/src/libslic3r/PerimeterGenerator.hpp
+@@ -103,6 +103,14 @@ public:
+ 
+     bool                                            has_fuzzy_skin = false;
+     bool                                            has_fuzzy_hole = false;
++    // [ORCAPORT:PF-9] solid top/bottom margin gate, set by LayerRegion before processing
++    bool                                            interlock_solid_margin_ok = true;
++    // [ORCAPORT:PF-9] interlocking perimeter state (read by traverse_loops)
++    bool    m_interlock_active{false};
++    bool    m_interlock_even{true};
++    int     m_interlock_base_depth{-1};
++    double  m_interlock_strength{1.0};
++    coord_t m_interlock_overlap_extra{0};
+     // Preserve construction order so overlap precedence remains deterministic.
+     std::vector<std::pair<FuzzySkinConfig, ExPolygons>> regions_by_fuzzify;
+     
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index b2d3c8e0a3..61d060d412 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1040,6 +1040,14 @@ static std::vector<std::string> s_Preset_print_options{
+     "initial_layer_print_height",
+     "wall_loops",
+     "alternate_extra_wall",
++    // [ORCAPORT:PF-9]
++    "interlock_perimeters_enabled",
++    "interlock_perimeter_count",
++    "interlock_regular_perimeters",
++    "interlock_solid_layers_top",
++    "interlock_solid_layers_bottom",
++    "interlock_perimeter_strength",
++    "interlock_perimeter_overlap",
+     "slice_closing_radius",
+     "spiral_mode",
+     "spiral_mode_smooth",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 65e80cd9f0..871c4a2599 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -5729,7 +5729,82 @@ void PrintConfigDef::init_fff_params()
+                      "Using lightning infill together with this option is not recommended as there is limited infill to anchor the extra perimeters to.");
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionBool(false));
+-    
++
++    // [ORCAPORT:PF-9] BEGIN - interlocking perimeters (native re-implementation of preFlight PF-9)
++    def = this->add("interlock_perimeters_enabled", coBool);
++    def->label = L("Enable interlocking perimeters");
++    def->category = L("Strength");
++    def->tooltip = L("Creates interlocking layers by varying the width and flow of the innermost perimeters across layers. "
++                     "On alternating layers the interlocking shells are over-extruded so the next layer compresses into the "
++                     "gaps, improving layer bonding. Expected strength increase: 10-15% with no additional material or time cost.\n\n"
++                     "Requires 'Ensure vertical shell thickness' to be disabled. Classic wall generator only.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(false));
++
++    def = this->add("interlock_perimeter_count", coInt);
++    def->label = L("Interlocking perimeter count");
++    def->category = L("Strength");
++    def->tooltip = L("Number of interlocking perimeter shells added inside the regular walls on alternating layers.");
++    def->sidetext = L("perimeters");
++    def->min = 3;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionInt(5));
++
++    def = this->add("interlock_regular_perimeters", coInt);
++    def->label = L("Perimeters while interlocking");
++    def->category = L("Strength");
++    def->tooltip = L("Overrides the number of regular perimeters on layers where interlocking is active. "
++                     "0 = use the normal Perimeters setting (no override).");
++    def->sidetext = L("(0 = off)");
++    def->min = 0;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionInt(0));
++
++    def = this->add("interlock_solid_layers_top", coInt);
++    def->label = L("Above");
++    def->full_label = L("Solid layers above interlocking");
++    def->category = L("Strength");
++    def->tooltip = L("Number of solid layers between interlocking perimeters and a top surface, "
++                     "so the interlocking pattern stays hidden inside the object.");
++    def->min = 0;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionInt(3));
++
++    def = this->add("interlock_solid_layers_bottom", coInt);
++    def->label = L("Below");
++    def->full_label = L("Solid layers below interlocking");
++    def->category = L("Strength");
++    def->tooltip = L("Number of solid layers between interlocking perimeters and a bottom surface, "
++                     "so the interlocking pattern stays hidden inside the object.");
++    def->min = 0;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionInt(3));
++
++    def = this->add("interlock_perimeter_strength", coPercent);
++    def->label = L("Interlocking strength");
++    def->category = L("Strength");
++    def->tooltip = L("Controls the interlocking extrusion amount. At 100% the inner interlocking shells extrude at 200% flow "
++                     "to compress material into the gaps of the layer below. 0% disables the over-extrusion.");
++    def->sidetext = L("%");
++    def->min = 0;
++    def->max = 200;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(100));
++
++    def = this->add("interlock_perimeter_overlap", coFloatOrPercent);
++    def->label = L("Interlocking overlap");
++    def->category = L("Strength");
++    def->tooltip = L("Controls the gap width between interlocking shells. Higher values narrow the channels and compress "
++                     "more material into the interlocking pattern. Default: 10.73% of layer height.");
++    def->sidetext = L("mm or %");
++    def->ratio_over = "layer_height";
++    def->min = -50;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionFloatOrPercent(10.73, true));
++    // [ORCAPORT:PF-9] END
++
+     def = this->add("post_process", coStrings);
+     def->label = L("Post-processing Scripts");
+     def->tooltip = L("If you want to process the output G-code through custom scripts, "
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index ff5d8eaf79..a65978e77a 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1429,6 +1429,14 @@ PRINT_CONFIG_CLASS_DEFINE(
+     // Total number of perimeters.
+     ((ConfigOptionInt, wall_loops))
+     ((ConfigOptionBool, alternate_extra_wall))
++    // [ORCAPORT:PF-9] interlocking perimeters (native re-implementation on the shell generator)
++    ((ConfigOptionBool, interlock_perimeters_enabled))
++    ((ConfigOptionInt, interlock_perimeter_count))
++    ((ConfigOptionInt, interlock_regular_perimeters))
++    ((ConfigOptionInt, interlock_solid_layers_top))
++    ((ConfigOptionInt, interlock_solid_layers_bottom))
++    ((ConfigOptionPercent, interlock_perimeter_strength))
++    ((ConfigOptionFloatOrPercent, interlock_perimeter_overlap))
+     ((ConfigOptionFloat, minimum_sparse_infill_area))
+     ((ConfigOptionInt, internal_solid_filament_id))
+     ((ConfigOptionInt, top_surface_filament_id))
+diff --git a/src/slic3r/GUI/ConfigManipulation.cpp b/src/slic3r/GUI/ConfigManipulation.cpp
+index 66507a46e7..e17bbf4110 100644
+--- a/src/slic3r/GUI/ConfigManipulation.cpp
++++ b/src/slic3r/GUI/ConfigManipulation.cpp
+@@ -476,6 +476,29 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
+         apply(config, &new_conf);
+     }
+ 
++    // [ORCAPORT:PF-9] interlocking perimeters need ensure vertical shell thickness off
++    if (config->opt_bool("interlock_perimeters_enabled") &&
++        (config->opt_enum<EnsureVerticalShellThickness>("ensure_vertical_shell_thickness") == evstAll)) {
++        wxString msg_text = _(L("Interlocking perimeters don't work well when ensure vertical shell thickness is set to All."));
++
++        if (is_global_config)
++            msg_text += "\n\n" + _(L("Change these settings automatically?\n"
++                                     "Yes - Change ensure vertical shell thickness to Moderate\n"
++                                     "No  - Don't use interlocking perimeters"));
++
++        MessageDialog dialog(m_msg_dlg_parent, msg_text, "",
++                               wxICON_WARNING | (is_global_config ? wxYES | wxNO : wxOK));
++        DynamicPrintConfig new_conf = *config;
++        auto answer = dialog.ShowModal();
++        if (!is_global_config || answer == wxID_YES) {
++            new_conf.set_key_value("ensure_vertical_shell_thickness", new ConfigOptionEnum<EnsureVerticalShellThickness>(evstModerate));
++        }
++        else {
++            new_conf.set_key_value("interlock_perimeters_enabled", new ConfigOptionBool(false));
++        }
++        apply(config, &new_conf);
++    }
++
+     // BBS
+     int filament_cnt = wxGetApp().preset_bundle->filament_presets.size();
+ #if 0
+@@ -817,6 +840,11 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
+     for (auto el : { "inner_wall_speed", "outer_wall_speed", "small_perimeter_speed", "small_perimeter_threshold" })
+         toggle_field(el, have_perimeters, variant_index);
+ 
++    // [ORCAPORT:PF-9] interlocking sub-options follow the master switch
++    for (auto el : { "interlock_perimeter_count", "interlock_regular_perimeters", "interlock_solid_layers_top",
++                     "interlock_solid_layers_bottom", "interlock_perimeter_strength", "interlock_perimeter_overlap" })
++        toggle_field(el, config->opt_bool("interlock_perimeters_enabled"));
++
+     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
+     // sparse_infill_filament_id uses the same logic as in Print::extruders()
+     for (auto el : { "sparse_infill_pattern", "infill_combination", "fill_multiline","infill_direction",
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 415378b595..14dc998db0 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2792,6 +2792,14 @@ void TabPrint::build()
+         optgroup = page->new_optgroup(L("Walls"), L"param_wall");
+         optgroup->append_single_option_line("wall_loops", "strength_settings_walls#wall-loops");
+         optgroup->append_single_option_line("alternate_extra_wall", "strength_settings_walls#alternate-extra-wall");
++        // [ORCAPORT:PF-9] interlocking perimeters
++        optgroup->append_single_option_line("interlock_perimeters_enabled", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_perimeter_count", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_regular_perimeters", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_perimeter_strength", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_perimeter_overlap", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_solid_layers_top", "strength_settings_walls#wall-loops");
++        optgroup->append_single_option_line("interlock_solid_layers_bottom", "strength_settings_walls#wall-loops");
+         optgroup->append_single_option_line("detect_thin_wall", "strength_settings_walls#detect-thin-wall");
+ 
+         optgroup = page->new_optgroup(L("Top/bottom shells"), L"param_shell");
