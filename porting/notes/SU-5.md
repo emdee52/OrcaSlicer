@@ -71,11 +71,13 @@ Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's bas
   keys renamed to `support_zone_*`, NeoDebug/Gravity/wave-bugfix stripped.
 - `Support/SupportCommon.{hpp,cpp}`: `split_support_fills_by_family()` + the `generate_support_toolpaths`
   `object_for_families` argument and split call; `PrintObject::push_support_zone_style_warning()`.
+- Per-zone filament routing: `ToolOrdering::collect_extruders` schedules each family's body/interface
+  filament (roles actually present, 1-based, clamped to physical extruders); `GCode::process_layer`
+  routes each family to its own `ObjectByExtruder` cube; `GCode::extrude_support` filters the
+  family-tagged entities. All gated on non-empty `support_fills_family`.
 
 **Remaining:**
-- `GCode.cpp` / `ToolOrdering.cpp` family -> tool routing (only needed for zones that use a different
-  filament; single-filament aimed pillars already work).
-- Other `PrintObject.cpp` zone propagation hooks.
+- Other `PrintObject.cpp` zone propagation hooks (invalidation/first-layer; verify against the fork).
 - Phase 2: the `GLGizmoSupportZones` UI (copied into the tree but not registered) +
   `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
 
