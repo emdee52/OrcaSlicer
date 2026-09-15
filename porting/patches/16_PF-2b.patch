@@ -1,0 +1,859 @@
+diff --git a/resources/images/toolbar_counterbore_bridge.svg b/resources/images/toolbar_counterbore_bridge.svg
+new file mode 100644
+index 0000000000..3bf4f83ab7
+--- /dev/null
++++ b/resources/images/toolbar_counterbore_bridge.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M34.87,23.38c.4-.64.14-1.31-.32-1.65-.47-.33-1.19-.36-1.66.22l-5.27,6.49c-.1,0-.19-.03-.29-.03-1.79,0-3.25,1.46-3.25,3.25,0,1.46-.84,1.97-1.2,2.19-.14.09-.47.29-.36.67.11.39.45.39.96.39h4.4v-.05c1.53-.26,2.7-1.6,2.7-3.21,0-.59-.17-1.14-.45-1.62l.37.23,4.36-6.91ZM27.33,33.93h-2.99c.39-.48.74-1.19.74-2.25,0-1.24,1.01-2.25,2.25-2.25s2.25,1.01,2.25,2.25-1.01,2.25-2.25,2.25ZM28.68,28.72l4.98-6.13c.11-.14.22-.1.3-.04.08.06.15.15.06.3l-4.24,6.71c-.3-.35-.67-.64-1.1-.84Z" style="fill:#009688;"/><path d="M33.5,35h-1c-.28,0-.5-.22-.5-.5s.22-.5.5-.5h1c.28,0,.5-.22.5-.5v-5c0-.28.22-.5.5-.5s.5.22.5.5v5c0,.83-.67,1.5-1.5,1.5ZM35,18.5V5.5c0-.83-.67-1.5-1.5-1.5H5.5c-.83,0-1.5.67-1.5,1.5v2c0,.28.22.5.5.5s.5-.22.5-.5v-2c0-.28.22-.5.5-.5h28c.28,0,.5.22.5.5v13c0,.28.22.5.5.5s.5-.22.5-.5ZM20,34.5c0-.28-.22-.5-.5-.5H5.5c-.28,0-.5-.22-.5-.5v-2c0-.28-.22-.5-.5-.5s-.5.22-.5.5v2c0,.83.67,1.5,1.5,1.5h14c.28,0,.5-.22.5-.5ZM5,13h-1v1h1v-1ZM5,19h-1v1h1v-1ZM5,25h-1v1h1v-1Z" style="fill:#2b3436;"/><path d="M9,14h-2v-1h2v1ZM15,13h-4v1h4v-1ZM13,10h-4v1h4v-1ZM19,10h-4v1h4v-1ZM24,10h-3v1h3v-1ZM11,7h-4v1h4v-1ZM17,7h-4v1h4v-1ZM21,7h-2v1h2v-1ZM7,10h-2v1h2v-1ZM22,13h-5v1h5v-1ZM28,13h-4v1h4v-1ZM11,19h-4v1h4v-1ZM17,19h-4v1h4v-1ZM14,16h-4v1h4v-1ZM20,16h-4v1h4v-1ZM26,16h-4v1h4v-1ZM8,16h-3v1h3v-1ZM23,19h-4v1h4v-1ZM9,25h-2v1h2v-1ZM20,25h-3v1h3v-1ZM15,25h-4v1h4v-1ZM13,22h-4v1h4v-1ZM22,22h-1v1h1v-1ZM19,22h-4v1h4v-1ZM7,22h-2v1h2v-1ZM13,28h-4v1h4v-1ZM11,31h-4v1h4v-1ZM14,31h-1v1h1v-1ZM7,28h-2v1h2v-1ZM17,28h-2v1h2v-1Z" style="fill:#009688;"/></svg>
+\ No newline at end of file
+diff --git a/resources/images/toolbar_counterbore_bridge_dark.svg b/resources/images/toolbar_counterbore_bridge_dark.svg
+new file mode 100644
+index 0000000000..da06932f64
+--- /dev/null
++++ b/resources/images/toolbar_counterbore_bridge_dark.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M34.87,23.38c.4-.64.14-1.31-.32-1.65-.47-.33-1.19-.36-1.66.22l-5.27,6.49c-.1,0-.19-.03-.29-.03-1.79,0-3.25,1.46-3.25,3.25,0,1.46-.84,1.97-1.2,2.19-.14.09-.47.29-.36.67.11.39.45.39.96.39h4.4v-.05c1.53-.26,2.7-1.6,2.7-3.21,0-.59-.17-1.14-.45-1.62l.37.23,4.36-6.91ZM27.33,33.93h-2.99c.39-.48.74-1.19.74-2.25,0-1.24,1.01-2.25,2.25-2.25s2.25,1.01,2.25,2.25-1.01,2.25-2.25,2.25ZM28.68,28.72l4.98-6.13c.11-.14.22-.1.3-.04.08.06.15.15.06.3l-4.24,6.71c-.3-.35-.67-.64-1.1-.84Z" style="fill:#009688;"/><path d="M19.5,35H5.5c-.83,0-1.5-.67-1.5-1.5v-2c0-.28.22-.5.5-.5s.5.22.5.5v2c0,.28.22.5.5.5h14c.28,0,.5.22.5.5s-.22.5-.5.5Z" style="fill:#b6b6b6;"/><path d="M9,14h-2v-1h2v1ZM15,13h-4v1h4v-1ZM13,10h-4v1h4v-1ZM19,10h-4v1h4v-1ZM24,10h-3v1h3v-1ZM11,7h-4v1h4v-1ZM17,7h-4v1h4v-1ZM21,7h-2v1h2v-1ZM7,10h-2v1h2v-1ZM22,13h-5v1h5v-1ZM28,13h-4v1h4v-1ZM11,19h-4v1h4v-1ZM17,19h-4v1h4v-1ZM14,16h-4v1h4v-1ZM20,16h-4v1h4v-1ZM26,16h-4v1h4v-1ZM8,16h-3v1h3v-1ZM23,19h-4v1h4v-1ZM9,25h-2v1h2v-1ZM20,25h-3v1h3v-1ZM15,25h-4v1h4v-1ZM13,22h-4v1h4v-1ZM22,22h-1v1h1v-1ZM19,22h-4v1h4v-1ZM7,22h-2v1h2v-1ZM13,28h-4v1h4v-1ZM11,31h-4v1h4v-1ZM14,31h-1v1h1v-1ZM7,28h-2v1h2v-1ZM17,28h-2v1h2v-1Z" style="fill:#009688;"/><path d="M33.5,35h-1c-.28,0-.5-.22-.5-.5s.22-.5.5-.5h1c.28,0,.5-.22.5-.5v-5c0-.28.22-.5.5-.5s.5.22.5.5v5c0,.83-.67,1.5-1.5,1.5ZM35,18.5V5.5c0-.83-.67-1.5-1.5-1.5H5.5c-.83,0-1.5.67-1.5,1.5v2c0,.28.22.5.5.5s.5-.22.5-.5v-2c0-.28.22-.5.5-.5h28c.28,0,.5.22.5.5v13c0,.28.22.5.5.5s.5-.22.5-.5ZM5,13h-1v1h1v-1ZM5,19h-1v1h1v-1ZM5,25h-1v1h1v-1Z" style="fill:#b6b6b6;"/></svg>
+\ No newline at end of file
+diff --git a/src/libslic3r/Format/3mf.cpp b/src/libslic3r/Format/3mf.cpp
+index 812e9f0154..c9398a8fc6 100644
+--- a/src/libslic3r/Format/3mf.cpp
++++ b/src/libslic3r/Format/3mf.cpp
+@@ -113,6 +113,7 @@ static constexpr const char* CUSTOM_SUPPORTS_ATTR = "slic3rpe:custom_supports";
+ static constexpr const char* CUSTOM_SEAM_ATTR = "slic3rpe:custom_seam";
+ static constexpr const char* MMU_SEGMENTATION_ATTR = "slic3rpe:mmu_segmentation";
+ static constexpr const char* FUZZY_SKIN_ATTR = "slic3rpe:fuzzy_skin";
++static constexpr const char* COUNTERBORE_BRIDGE_ATTR = "slic3rpe:counterbore_bridge"; // [ORCAPORT:PF-2]
+ 
+ static constexpr const char* KEY_ATTR = "key";
+ static constexpr const char* VALUE_ATTR = "value";
+@@ -419,6 +420,7 @@ ModelVolumeType type_from_string(const std::string &s)
+             std::vector<std::string> custom_seam;
+             std::vector<std::string> mmu_segmentation;
+             std::vector<std::string> fuzzy_skin;
++            std::vector<std::string> counterbore_bridge; // [ORCAPORT:PF-2]
+ 
+             bool empty() { return vertices.empty() || triangles.empty(); }
+ 
+@@ -429,6 +431,7 @@ ModelVolumeType type_from_string(const std::string &s)
+                 custom_seam.clear();
+                 mmu_segmentation.clear();
+                 fuzzy_skin.clear();
++                counterbore_bridge.clear(); // [ORCAPORT:PF-2]
+             }
+         };
+ 
+@@ -1743,6 +1746,7 @@ ModelVolumeType type_from_string(const std::string &s)
+         m_curr_object.geometry.custom_supports.push_back(get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
+         m_curr_object.geometry.custom_seam.push_back(get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
+         m_curr_object.geometry.fuzzy_skin.push_back(get_attribute_value_string(attributes, num_attributes, FUZZY_SKIN_ATTR));
++        m_curr_object.geometry.counterbore_bridge.push_back(get_attribute_value_string(attributes, num_attributes, COUNTERBORE_BRIDGE_ATTR)); // [ORCAPORT:PF-2]
+         m_curr_object.geometry.mmu_segmentation.push_back(get_attribute_value_string(attributes, num_attributes, MMU_SEGMENTATION_ATTR));
+         return true;
+     }
+@@ -2161,6 +2165,7 @@ ModelVolumeType type_from_string(const std::string &s)
+             volume->seam_facets.reserve(triangles_count);
+             volume->mmu_segmentation_facets.reserve(triangles_count);
+             volume->fuzzy_skin_facets.reserve(triangles_count);
++            volume->counterbore_bridge_facets.reserve(triangles_count); // [ORCAPORT:PF-2]
+             for (size_t i=0; i<triangles_count; ++i) {
+                 size_t index = volume_data.first_triangle_id + i;
+                 assert(index < geometry.custom_supports.size());
+@@ -2174,11 +2179,15 @@ ModelVolumeType type_from_string(const std::string &s)
+                     volume->mmu_segmentation_facets.set_triangle_from_string(i, geometry.mmu_segmentation[index]);
+                 if (! geometry.fuzzy_skin[index].empty())
+                 	volume->fuzzy_skin_facets.set_triangle_from_string(i, geometry.fuzzy_skin[index]);
++                // [ORCAPORT:PF-2]
++                if (index < geometry.counterbore_bridge.size() && ! geometry.counterbore_bridge[index].empty())
++                    volume->counterbore_bridge_facets.set_triangle_from_string(i, geometry.counterbore_bridge[index]);
+             }
+             volume->supported_facets.shrink_to_fit();
+             volume->seam_facets.shrink_to_fit();
+             volume->mmu_segmentation_facets.shrink_to_fit();
+             volume->fuzzy_skin_facets.shrink_to_fit();
++            volume->counterbore_bridge_facets.shrink_to_fit(); // [ORCAPORT:PF-2]
+ 
+             // apply the remaining volume's metadata
+             for (const Metadata& metadata : volume_data.metadata) {
+@@ -2841,6 +2850,16 @@ ModelVolumeType type_from_string(const std::string &s)
+                     output_buffer += "\"";
+                 }
+ 
++                // [ORCAPORT:PF-2]
++                std::string counterbore_bridge_data_string = volume->counterbore_bridge_facets.get_triangle_as_string(i);
++                if (!counterbore_bridge_data_string.empty()) {
++                    output_buffer += " ";
++                    output_buffer += COUNTERBORE_BRIDGE_ATTR;
++                    output_buffer += "=\"";
++                    output_buffer += counterbore_bridge_data_string;
++                    output_buffer += "\"";
++                }
++
+                 output_buffer += "/>\n";
+ 
+                 if (! flush())
+diff --git a/src/libslic3r/Model.cpp b/src/libslic3r/Model.cpp
+index 3db46fea0e..60c13534b8 100644
+--- a/src/libslic3r/Model.cpp
++++ b/src/libslic3r/Model.cpp
+@@ -1171,6 +1171,12 @@ bool Model::is_fuzzy_skin_painted() const
+     return std::any_of(this->objects.cbegin(), this->objects.cend(), [](const ModelObject *mo) { return mo->is_fuzzy_skin_painted(); });
+ }
+ 
++// [ORCAPORT:PF-2]
++bool Model::is_counterbore_bridge_painted() const
++{
++    return std::any_of(this->objects.cbegin(), this->objects.cend(), [](const ModelObject *mo) { return mo->is_counterbore_bridge_painted(); });
++}
++
+ static void add_cut_volume(TriangleMesh& mesh, ModelObject* object, const ModelVolume* src_volume, const Transform3d& cut_matrix, const std::string& suffix = {}, ModelVolumeType type = ModelVolumeType::MODEL_PART)
+ {
+     if (mesh.empty())
+@@ -1441,6 +1447,12 @@ bool ModelObject::is_fuzzy_skin_painted() const
+     return std::any_of(this->volumes.cbegin(), this->volumes.cend(), [](const ModelVolume *mv) { return mv->is_fuzzy_skin_painted(); });
+ }
+ 
++// [ORCAPORT:PF-2]
++bool ModelObject::is_counterbore_bridge_painted() const
++{
++    return std::any_of(this->volumes.cbegin(), this->volumes.cend(), [](const ModelVolume *mv) { return mv->is_counterbore_bridge_painted(); });
++}
++
+ void ModelObject::sort_volumes(bool full_sort)
+ {
+     // sort volumes inside the object to order "Model Part, Negative Volume, Modifier, Support Blocker and Support Enforcer. "
+@@ -1944,6 +1956,7 @@ void ModelObject::convert_units(ModelObjectPtrs& new_objects, ConversionType con
+             vol->seam_facets.assign(volume->seam_facets);
+             vol->mmu_segmentation_facets.assign(volume->mmu_segmentation_facets);
+             vol->fuzzy_skin_facets.assign(volume->fuzzy_skin_facets);
++            vol->counterbore_bridge_facets.assign(volume->counterbore_bridge_facets);
+ 
+             // Perform conversion only if the target "imperial" state is different from the current one.
+             // This check supports conversion of "mixed" set of volumes, each with different "imperial" state.
+@@ -2056,6 +2069,7 @@ void ModelVolume::reset_extra_facets()
+     this->seam_facets.reset();
+     this->mmu_segmentation_facets.reset();
+     this->fuzzy_skin_facets.reset();
++    this->counterbore_bridge_facets.reset();
+ }
+ 
+ std::optional<TriangleSelector::SavedPainting> ModelVolume::save_painting() const
+@@ -2211,6 +2225,7 @@ void ModelObject::split(ModelObjectPtrs* new_objects, const bool remap_paint)
+                 COPY_FACETS(seam_facets);
+                 COPY_FACETS(mmu_segmentation_facets);
+                 COPY_FACETS(fuzzy_skin_facets);
++                COPY_FACETS(counterbore_bridge_facets);
+             } else if (saved_painting) {
+                 // Geometry changed, attempt to remap them to the new mesh
+                 new_vol->restore_painting(saved_painting);
+@@ -2938,6 +2953,7 @@ void ModelVolume::assign_new_unique_ids_recursive()
+     seam_facets.set_new_unique_id();
+     mmu_segmentation_facets.set_new_unique_id();
+     fuzzy_skin_facets.set_new_unique_id();
++    counterbore_bridge_facets.set_new_unique_id();
+ }
+ 
+ void ModelVolume::rotate(double angle, Axis axis)
+@@ -3845,6 +3861,15 @@ bool model_fuzzy_skin_data_changed(const ModelObject &mo, const ModelObject &mo_
+         [](const ModelVolume &mv_old, const ModelVolume &mv_new){ return mv_old.fuzzy_skin_facets.timestamp_matches(mv_new.fuzzy_skin_facets); });
+ }
+ 
++// [ORCAPORT:PF-2]
++bool model_counterbore_bridge_data_changed(const ModelObject &mo, const ModelObject &mo_new)
++{
++    return model_property_changed(mo, mo_new,
++        [](const ModelVolumeType t) { return t == ModelVolumeType::MODEL_PART; },
++        [](const ModelVolume &mv_old, const ModelVolume &mv_new){ return mv_old.counterbore_bridge_facets.timestamp_matches(mv_new.counterbore_bridge_facets); });
++}
++
++
+ bool model_brim_points_data_changed(const ModelObject& mo, const ModelObject& mo_new)
+ {
+     if (mo.brim_points.size() != mo_new.brim_points.size())
+diff --git a/src/libslic3r/Model.hpp b/src/libslic3r/Model.hpp
+index a639771fe9..b8dcf1097f 100644
+--- a/src/libslic3r/Model.hpp
++++ b/src/libslic3r/Model.hpp
+@@ -430,6 +430,7 @@ public:
+     bool                    is_mm_painted() const;
+     // Checks if any of object volume is painted using the fuzzy skin painting gizmo.
+     bool                    is_fuzzy_skin_painted() const;
++    bool                    is_counterbore_bridge_painted() const; // [ORCAPORT:PF-2]
+     // This object may have a varying layer height by painting or by a table.
+     // Even if true is returned, the layer height profile may be "flat" with no difference to default layering.
+     bool                    has_custom_layering() const
+@@ -886,6 +887,8 @@ public:
+ 
+     // List of mesh facets painted for fuzzy skin.
+     FacetsAnnotation    fuzzy_skin_facets;
++    // [ORCAPORT:PF-2] List of mesh facets painted for counterbore smart bridging.
++    FacetsAnnotation    counterbore_bridge_facets;
+ 
+     // Save painting data before reset_extra_facets() discards it.
+     // Used for replacing mesh without losing painting data.
+@@ -1024,13 +1027,16 @@ public:
+         this->seam_facets.set_new_unique_id();
+         this->mmu_segmentation_facets.set_new_unique_id();
+         this->fuzzy_skin_facets.set_new_unique_id();
++        this->counterbore_bridge_facets.set_new_unique_id();
+     }
+ 
+     bool is_fdm_support_painted() const { return !this->supported_facets.empty(); }
+     bool is_seam_painted() const { return !this->seam_facets.empty(); }
+     bool is_mm_painted() const { return !this->mmu_segmentation_facets.empty(); }
+     bool is_fuzzy_skin_painted() const { return !this->fuzzy_skin_facets.empty(); }
+-    bool is_any_painted() const { return is_fdm_support_painted() || is_seam_painted() || is_mm_painted() || is_fuzzy_skin_painted(); }
++    // [ORCAPORT:PF-2]
++    bool is_counterbore_bridge_painted() const { return !this->counterbore_bridge_facets.empty(); }
++    bool is_any_painted() const { return is_fdm_support_painted() || is_seam_painted() || is_mm_painted() || is_fuzzy_skin_painted() || is_counterbore_bridge_painted(); }
+     
+     // Orca: Implement prusa's filament shrink compensation approach
+     // Returns 0-based indices of extruders painted by multi-material painting gizmo.
+@@ -1083,11 +1089,13 @@ private:
+         assert(this->seam_facets.id().valid());
+         assert(this->mmu_segmentation_facets.id().valid());
+         assert(this->fuzzy_skin_facets.id().valid());
++        assert(this->counterbore_bridge_facets.id().valid());
+         assert(this->id() != this->config.id());
+         assert(this->id() != this->supported_facets.id());
+         assert(this->id() != this->seam_facets.id());
+         assert(this->id() != this->mmu_segmentation_facets.id());
+         assert(this->id() != this->fuzzy_skin_facets.id());
++        assert(this->id() != this->counterbore_bridge_facets.id());
+         if (mesh.facets_count() > 1)
+             calculate_convex_hull();
+     }
+@@ -1099,11 +1107,13 @@ private:
+         assert(this->seam_facets.id().valid());
+         assert(this->mmu_segmentation_facets.id().valid());
+         assert(this->fuzzy_skin_facets.id().valid());
++        assert(this->counterbore_bridge_facets.id().valid());
+         assert(this->id() != this->config.id());
+         assert(this->id() != this->supported_facets.id());
+         assert(this->id() != this->seam_facets.id());
+         assert(this->id() != this->mmu_segmentation_facets.id());
+         assert(this->id() != this->fuzzy_skin_facets.id());
++        assert(this->id() != this->counterbore_bridge_facets.id());
+     }
+     ModelVolume(ModelObject *object, TriangleMesh &&mesh, TriangleMesh &&convex_hull, ModelVolumeType type = ModelVolumeType::MODEL_PART) :
+ 		m_mesh(new TriangleMesh(std::move(mesh))), m_convex_hull(new TriangleMesh(std::move(convex_hull))), m_type(type), object(object) {
+@@ -1113,11 +1123,13 @@ private:
+         assert(this->seam_facets.id().valid());
+         assert(this->mmu_segmentation_facets.id().valid());
+         assert(this->fuzzy_skin_facets.id().valid());
++        assert(this->counterbore_bridge_facets.id().valid());
+         assert(this->id() != this->config.id());
+         assert(this->id() != this->supported_facets.id());
+         assert(this->id() != this->seam_facets.id());
+         assert(this->id() != this->mmu_segmentation_facets.id());
+         assert(this->id() != this->fuzzy_skin_facets.id());
++        assert(this->id() != this->counterbore_bridge_facets.id());
+ 	}
+ 
+     // Copying an existing volume, therefore this volume will get a copy of the ID assigned.
+@@ -1126,7 +1138,7 @@ private:
+         name(other.name), source(other.source), m_mesh(other.m_mesh), m_convex_hull(other.m_convex_hull),
+         config(other.config), m_type(other.m_type), object(object), m_transformation(other.m_transformation),
+         supported_facets(other.supported_facets), seam_facets(other.seam_facets), mmu_segmentation_facets(other.mmu_segmentation_facets),
+-        fuzzy_skin_facets(other.fuzzy_skin_facets), cut_info(other.cut_info), text_configuration(other.text_configuration), emboss_shape(other.emboss_shape)
++        fuzzy_skin_facets(other.fuzzy_skin_facets), counterbore_bridge_facets(other.counterbore_bridge_facets), cut_info(other.cut_info), text_configuration(other.text_configuration), emboss_shape(other.emboss_shape)
+     {
+ 		assert(this->id().valid()); 
+         assert(this->config.id().valid()); 
+@@ -1134,6 +1146,7 @@ private:
+         assert(this->seam_facets.id().valid());
+         assert(this->mmu_segmentation_facets.id().valid());
+         assert(this->fuzzy_skin_facets.id().valid());
++        assert(this->counterbore_bridge_facets.id().valid());
+         assert(this->id() != this->config.id());
+         assert(this->id() != this->supported_facets.id());
+         assert(this->id() != this->seam_facets.id());
+@@ -1144,6 +1157,7 @@ private:
+         assert(this->seam_facets.id() == other.seam_facets.id());
+         assert(this->mmu_segmentation_facets.id() == other.mmu_segmentation_facets.id());
+         assert(this->fuzzy_skin_facets.id() == other.fuzzy_skin_facets.id());
++        assert(this->counterbore_bridge_facets.id() == other.counterbore_bridge_facets.id());
+         this->set_material_id(other.material_id());
+     }
+     // Providing a new mesh, therefore this volume will get a new unique ID assigned.
+@@ -1157,11 +1171,13 @@ private:
+         assert(this->seam_facets.id().valid());
+         assert(this->mmu_segmentation_facets.id().valid());
+         assert(this->fuzzy_skin_facets.id().valid());
++        assert(this->counterbore_bridge_facets.id().valid());
+         assert(this->id() != this->config.id());
+         assert(this->id() != this->supported_facets.id());
+         assert(this->id() != this->seam_facets.id());
+         assert(this->id() != this->mmu_segmentation_facets.id());
+         assert(this->id() != this->fuzzy_skin_facets.id());
++        assert(this->id() != this->counterbore_bridge_facets.id());
+ 		assert(this->id() != other.id());
+         assert(this->config.id() == other.config.id());
+         this->set_material_id(other.material_id());
+@@ -1174,11 +1190,13 @@ private:
+         assert(this->seam_facets.id() != other.seam_facets.id());
+         assert(this->mmu_segmentation_facets.id() != other.mmu_segmentation_facets.id());
+         assert(this->fuzzy_skin_facets.id() != other.fuzzy_skin_facets.id());
++        assert(this->counterbore_bridge_facets.id() != other.counterbore_bridge_facets.id());
+         assert(this->id() != this->config.id());
+         assert(this->supported_facets.empty());
+         assert(this->seam_facets.empty());
+         assert(this->mmu_segmentation_facets.empty());
+         assert(this->fuzzy_skin_facets.empty());
++        assert(this->counterbore_bridge_facets.empty());
+     }
+ 
+     ModelVolume& operator=(ModelVolume &rhs) = delete;
+@@ -1186,13 +1204,14 @@ private:
+ 	friend class cereal::access;
+ 	friend class UndoRedo::StackImpl;
+ 	// Used for deserialization, therefore no IDs are allocated.
+-	ModelVolume() : ObjectBase(-1), config(-1), supported_facets(-1), seam_facets(-1), mmu_segmentation_facets(-1), fuzzy_skin_facets(-1), object(nullptr) {
++	ModelVolume() : ObjectBase(-1), config(-1), supported_facets(-1), seam_facets(-1), mmu_segmentation_facets(-1), fuzzy_skin_facets(-1), counterbore_bridge_facets(-1), object(nullptr) {
+ 		assert(this->id().invalid());
+         assert(this->config.id().invalid());
+         assert(this->supported_facets.id().invalid());
+         assert(this->seam_facets.id().invalid());
+         assert(this->mmu_segmentation_facets.id().invalid());
+         assert(this->fuzzy_skin_facets.id().invalid());
++        assert(this->counterbore_bridge_facets.id().invalid());
+ 	}
+ 	template<class Archive> void load(Archive &ar) {
+ 		bool has_convex_hull;
+@@ -1211,7 +1230,9 @@ private:
+         cereal::load_by_value(ar, mmu_segmentation_facets);
+         mesh_changed |= t != mmu_segmentation_facets.timestamp();
+         cereal::load_by_value(ar, fuzzy_skin_facets);
++        cereal::load_by_value(ar, counterbore_bridge_facets);
+         mesh_changed |= t != fuzzy_skin_facets.timestamp();
++        mesh_changed |= t != counterbore_bridge_facets.timestamp();
+         cereal::load_by_value(ar, config);
+         cereal::load(ar, text_configuration);
+         cereal::load(ar, emboss_shape);
+@@ -1233,6 +1254,7 @@ private:
+         cereal::save_by_value(ar, seam_facets);
+         cereal::save_by_value(ar, mmu_segmentation_facets);
+         cereal::save_by_value(ar, fuzzy_skin_facets);
++        cereal::save_by_value(ar, counterbore_bridge_facets);
+         cereal::save_by_value(ar, config);
+         cereal::save(ar, text_configuration);
+         cereal::save(ar, emboss_shape);
+@@ -1724,6 +1746,7 @@ public:
+     bool          is_mm_painted() const;
+     // Checks if any of objects is painted using the fuzzy skin painting gizmo.
+     bool          is_fuzzy_skin_painted() const;
++    bool          is_counterbore_bridge_painted() const; // [ORCAPORT:PF-2]
+ 
+     std::unique_ptr<CalibPressureAdvancePattern> calib_pa_pattern;
+ 
+@@ -1789,6 +1812,7 @@ extern bool model_mmu_segmentation_data_changed(const ModelObject& mo, const Mod
+ // Test whether the now ModelObject has newer fuzzy skin data than the old one.
+ // The function assumes that volumes list is synchronized.
+ extern bool model_fuzzy_skin_data_changed(const ModelObject &mo, const ModelObject &mo_new);
++extern bool model_counterbore_bridge_data_changed(const ModelObject &mo, const ModelObject &mo_new); // [ORCAPORT:PF-2]
+ 
+ bool model_brim_points_data_changed(const ModelObject& mo, const ModelObject& mo_new);
+ 
+diff --git a/src/libslic3r/PrintApply.cpp b/src/libslic3r/PrintApply.cpp
+index 91b454f37d..b13c4171a6 100644
+--- a/src/libslic3r/PrintApply.cpp
++++ b/src/libslic3r/PrintApply.cpp
+@@ -1637,7 +1637,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+         bool solid_or_modifier_differ   = model_volume_list_changed(model_object, model_object_new, solid_or_modifier_types) ||
+                                           model_mmu_segmentation_data_changed(model_object, model_object_new) ||
+                                           (model_object_new.is_mm_painted() && num_extruders_changed) ||
+-                                          model_fuzzy_skin_data_changed(model_object, model_object_new);
++                                          model_fuzzy_skin_data_changed(model_object, model_object_new) ||
++                                          model_counterbore_bridge_data_changed(model_object, model_object_new); // [ORCAPORT:PF-2]
+         bool supports_differ            = model_volume_list_changed(model_object, model_object_new, ModelVolumeType::SUPPORT_BLOCKER) ||
+                                           model_volume_list_changed(model_object, model_object_new, ModelVolumeType::SUPPORT_ENFORCER);
+         bool layer_height_ranges_differ = ! layer_height_ranges_equal(model_object.layer_config_ranges, model_object_new.layer_config_ranges, model_object_new.layer_height_profile.empty());
+diff --git a/src/libslic3r/PrintObjectSlice.cpp b/src/libslic3r/PrintObjectSlice.cpp
+index 166305de05..86e7c6dcfc 100644
+--- a/src/libslic3r/PrintObjectSlice.cpp
++++ b/src/libslic3r/PrintObjectSlice.cpp
+@@ -831,11 +831,56 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
+     if (l0 == nullptr || l0->region_count() == 0)
+         return;
+     const PrintRegionConfig &cfg = l0->get_region(0)->region().config();
+-    if (cfg.counterbore_hole_bridging.value != chbSmart)
++    const bool auto_mode = cfg.counterbore_hole_bridging.value == chbSmart;
++    const bool painted   = po.model_object() != nullptr && po.model_object()->is_counterbore_bridge_painted();
++    if (!auto_mode && !painted)
+         return;
+     const int    num_transition_layers = std::clamp(cfg.counterbore_bridge_layers.value, 2, 9);
+     const double min_ring_scaled        = scale_(0.6); // ignore chamfers / thin rings
+ 
++    // [ORCAPORT:PF-2b] Painted counterbore areas per layer: smart = ENFORCER state, partial =
++    // BLOCKER state (the counterbore annotation has its own TriangleSelector, so the state
++    // values are internal to this feature).
++    std::vector<ExPolygons> painted_smart(n_layers), painted_partial(n_layers);
++    if (painted) {
++        const Transform3d vol_root = po.trafo_centered();
++        for (const ModelVolume *mv : po.model_object()->volumes) {
++            if (!mv->is_model_part() || !mv->is_counterbore_bridge_painted())
++                continue;
++            const Transform3d vol_trafo = vol_root * mv->get_matrix();
++            for (int mode = 0; mode < 2; ++mode) {
++                const EnforcerBlockerType state = mode == 0 ? EnforcerBlockerType::ENFORCER : EnforcerBlockerType::BLOCKER;
++                const indexed_triangle_set pits = mv->counterbore_bridge_facets.get_facets(*mv, state);
++                for (const auto &tri : pits.indices) {
++                    const Vec3d v0 = vol_trafo * pits.vertices[tri[0]].cast<double>();
++                    const Vec3d v1 = vol_trafo * pits.vertices[tri[1]].cast<double>();
++                    const Vec3d v2 = vol_trafo * pits.vertices[tri[2]].cast<double>();
++                    const double zmin = std::min({v0.z(), v1.z(), v2.z()});
++                    const double zmax = std::max({v0.z(), v1.z(), v2.z()});
++                    Polygon tri_poly;
++                    tri_poly.points = {Point(scale_(v0.x()), scale_(v0.y())), Point(scale_(v1.x()), scale_(v1.y())),
++                                       Point(scale_(v2.x()), scale_(v2.y()))};
++                    tri_poly.make_counter_clockwise();
++                    if (tri_poly.area() <= 0.0)
++                        continue;
++                    for (int L = 0; L < n_layers; ++L) {
++                        const double lz = po.get_layer(L)->print_z;
++                        const double hh = po.get_layer(L)->height * 0.5;
++                        if (zmin <= lz + hh && zmax >= lz - hh)
++                            (mode == 0 ? painted_smart : painted_partial)[L].emplace_back(ExPolygon(tri_poly));
++                    }
++                }
++            }
++        }
++        for (int L = 0; L < n_layers; ++L) {
++            if (!painted_smart[L].empty())
++                painted_smart[L] = offset2_ex(union_ex(painted_smart[L]), scale_(0.2), scale_(-0.2));
++            if (!painted_partial[L].empty())
++                painted_partial[L] = offset2_ex(union_ex(painted_partial[L]), scale_(0.2), scale_(-0.2));
++        }
++    }
++    auto overlaps_any = [](const ExPolygons &a, const ExPolygons &b) { return !a.empty() && !b.empty() && !intersection_ex(a, b).empty(); };
++
+     for (int L = 1; L + 1 < n_layers; ++L) {
+         Layer       *layer = po.get_layer(L);
+         const Layer *next  = po.get_layer(L + 1);
+@@ -850,6 +895,13 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
+                     continue;
+                 const ExPolygons bore_poly{bore};
+ 
++                // [ORCAPORT:PF-2b] gate by painted / auto mode; partial uses a single bridge layer.
++                const bool hole_smart   = auto_mode || overlaps_any(bore_poly, painted_smart[L]);
++                const bool hole_partial = painted && overlaps_any(bore_poly, painted_partial[L]);
++                if (!hole_smart && !hole_partial)
++                    continue;
++                const int N = (hole_partial && !hole_smart) ? 1 : num_transition_layers;
++
+                 // Find smaller holes in the next layer nested inside the bore (the shaft).
+                 ExPolygons shaft;
+                 for (const ExPolygon &nep : next->lslices)
+@@ -879,16 +931,16 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
+                 if (ring.empty())
+                     continue;
+ 
+-                const int layers_available = std::min(num_transition_layers, n_layers - 1 - L);
++                const int layers_available = std::min(N, n_layers - 1 - L);
+                 if (layers_available <= 0)
+                     continue;
+ 
+                 const BoundingBox shaft_bb = get_extents(shaft);
+                 const double      smear    = double(std::max(shaft_bb.size().x(), shaft_bb.size().y())) * 2.0;
+ 
+-                std::vector<ExPolygons> corridors(num_transition_layers);
+-                for (int step = 0; step < num_transition_layers; ++step) {
+-                    const double  angle  = step * M_PI / double(num_transition_layers);
++                std::vector<ExPolygons> corridors(N);
++                for (int step = 0; step < N; ++step) {
++                    const double  angle  = step * M_PI / double(N);
+                     const double  perp   = angle + M_PI / 2.0;
+                     const coord_t dx     = coord_t(std::cos(perp) * smear);
+                     const coord_t dy     = coord_t(std::sin(perp) * smear);
+@@ -920,7 +972,7 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
+                     merged.insert(merged.end(), bm.begin(), bm.end());
+                     tl->lslices = union_ex(merged);
+ 
+-                    const double bridge_angle = step * M_PI / double(num_transition_layers) + M_PI / 2.0;
++                    const double bridge_angle = step * M_PI / double(N) + M_PI / 2.0;
+                     tl->counterbore_bridge_regions.emplace_back(bm, bridge_angle);
+ 
+                     if (tl->region_count() > 0) {
+diff --git a/src/slic3r/CMakeLists.txt b/src/slic3r/CMakeLists.txt
+index cd51cecb23..d97b41f869 100644
+--- a/src/slic3r/CMakeLists.txt
++++ b/src/slic3r/CMakeLists.txt
+@@ -179,8 +179,10 @@ set(SLIC3R_GUI_SOURCES
+     GUI/Gizmos/GLGizmoFdmSupports.hpp
+     GUI/Gizmos/GLGizmoFlatten.cpp
+     GUI/Gizmos/GLGizmoFlatten.hpp
+-    GUI/Gizmos/GLGizmoFuzzySkin.cpp
+-    GUI/Gizmos/GLGizmoFuzzySkin.hpp
++GUI/Gizmos/GLGizmoFuzzySkin.cpp
++GUI/Gizmos/GLGizmoFuzzySkin.hpp
++GUI/Gizmos/GLGizmoCounterboreBridge.cpp
++GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+     #GUI/Gizmos/GLGizmoHollow.cpp
+     #GUI/Gizmos/GLGizmoHollow.hpp
+     GUI/Gizmos/GLGizmoMeasure.cpp
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+new file mode 100644
+index 0000000000..e1d2c4310e
+--- /dev/null
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+@@ -0,0 +1,201 @@
++// [ORCAPORT:PF-2b] Paint-on counterbore bridge gizmo. Adapted from Orca's GLGizmoFuzzySkin
++// (same painter base) and preFlight's GLGizmoCounterboreBridge.
++#include "GLGizmoCounterboreBridge.hpp"
++
++#include "libslic3r/Model.hpp"
++#include "libslic3r/Print.hpp"
++
++#include "slic3r/GUI/GLCanvas3D.hpp"
++#include "slic3r/GUI/GUI.hpp"
++#include "slic3r/GUI/GUI_App.hpp"
++#include "slic3r/GUI/GUI_ObjectList.hpp"
++#include "slic3r/GUI/ImGuiWrapper.hpp"
++#include "slic3r/GUI/Plater.hpp"
++#include "slic3r/Utils/UndoRedo.hpp"
++#include "GLGizmoUtils.hpp"
++
++#include <glad/gl.h>
++
++namespace Slic3r::GUI {
++
++GLGizmoCounterboreBridge::GLGizmoCounterboreBridge(GLCanvas3D &parent, const std::string &icon_filename,
++                                                   unsigned int sprite_id)
++    : GLGizmoPainterBase(parent, icon_filename, sprite_id)
++{
++}
++
++bool GLGizmoCounterboreBridge::on_init()
++{
++    m_shortcut_key = WXK_CONTROL_K;
++
++    m_desc["mode"]           = _L("Bridge type");
++    m_desc["smart"]          = _L("Smart (stepped)");
++    m_desc["partial"]        = _L("Partial");
++    m_desc["clipping_of_view"] = _L("Section view");
++    m_desc["reset_direction"]  = _L("Reset direction");
++    m_desc["cursor_size"]      = _L("Brush size");
++    m_desc["erase_all"]        = _L("Erase all");
++    return true;
++}
++
++std::string GLGizmoCounterboreBridge::on_get_name() const
++{
++    return _u8L("Counterbore bridge");
++}
++
++void GLGizmoCounterboreBridge::on_shutdown()
++{
++    m_parent.use_slope(false);
++    m_parent.toggle_model_objects_visibility(true);
++}
++
++void GLGizmoCounterboreBridge::render_painter_gizmo()
++{
++    const Selection &selection = m_parent.get_selection();
++
++    glsafe(::glEnable(GL_BLEND));
++    glsafe(::glEnable(GL_DEPTH_TEST));
++
++    render_triangles(selection);
++    m_c->object_clipper()->render_cut();
++    m_c->instances_hider()->render_cut();
++    render_cursor();
++
++    glsafe(::glDisable(GL_BLEND));
++}
++
++void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bottom_limit)
++{
++    ModelObject *mo = m_c->selection_info()->model_object();
++    if (!mo)
++        return;
++
++    const float scale = m_parent.get_scale();
++    y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
++#if BBS_TOOLBAR_ON_TOP
++    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
++#else
++    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
++#endif
++
++    ImGuiWrapper::push_toolbar_style(m_parent.get_scale());
++    GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
++                                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
++
++    const float sliders_width = m_imgui->scaled(7.0f);
++    const float left_width    = m_imgui->calc_text_size(m_desc.at("mode")).x + m_imgui->scaled(1.5f);
++
++    // Bridge type: smart stepped vs partial.
++    ImGui::AlignTextToFramePadding();
++    m_imgui->text(m_desc.at("mode"));
++    ImGui::SameLine(left_width);
++    if (m_imgui->button(m_desc.at("smart")))
++        m_partial = false;
++    ImGui::SameLine();
++    if (m_imgui->button(m_desc.at("partial")))
++        m_partial = true;
++    ImGui::SameLine();
++    m_imgui->text(m_partial ? _L("(partial: single bridge layer)") : _L("(smart: stepped ramp)"));
++
++    ImGui::Separator();
++
++    // Brush size.
++    ImGui::AlignTextToFramePadding();
++    m_imgui->text(m_desc.at("cursor_size"));
++    ImGui::SameLine(left_width);
++    ImGui::PushItemWidth(sliders_width);
++    m_imgui->bbl_slider_float_style("##cursor_radius", &m_cursor_radius, CursorRadiusMin, CursorRadiusMax,
++                                    "%.2f", 1.0f, true);
++
++    ImGui::Separator();
++
++    // Section view.
++    if (m_c->object_clipper()->get_position() == 0.f) {
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("clipping_of_view"));
++    } else if (m_imgui->button(m_desc.at("reset_direction"))) {
++        wxGetApp().CallAfter([this]() { m_c->object_clipper()->set_position_by_ratio(-1., false); });
++    }
++    auto clp_dist = float(m_c->object_clipper()->get_position());
++    ImGui::SameLine(left_width);
++    ImGui::PushItemWidth(sliders_width);
++    if (m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true))
++        m_c->object_clipper()->set_position_by_ratio(clp_dist, true);
++
++    ImGui::Separator();
++
++    m_imgui->disabled_begin(mo->is_counterbore_bridge_painted() == false);
++    if (m_imgui->button(m_desc.at("erase_all"))) {
++        Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Reset selection"), UndoRedo::SnapshotType::GizmoAction);
++        int idx = -1;
++        for (ModelVolume *mv : mo->volumes)
++            if (mv->is_model_part()) {
++                ++idx;
++                m_triangle_selectors[idx]->reset();
++                m_triangle_selectors[idx]->request_update_render_data(true);
++            }
++        update_model_object();
++        m_parent.set_as_dirty();
++    }
++    m_imgui->disabled_end();
++
++    ImGui::SameLine();
++    GLGizmoUtils::begin_right_aligned_buttons({_L("Done")});
++    if (m_imgui->button(_L("Done")))
++        m_parent.reset_all_gizmos();
++
++    GizmoImguiEnd();
++    ImGuiWrapper::pop_toolbar_style();
++}
++
++void GLGizmoCounterboreBridge::update_model_object()
++{
++    bool         updated = false;
++    ModelObject *mo      = m_c->selection_info()->model_object();
++    int          idx     = -1;
++    for (ModelVolume *mv : mo->volumes) {
++        if (!mv->is_model_part())
++            continue;
++        ++idx;
++        updated |= mv->counterbore_bridge_facets.set(*m_triangle_selectors[idx]);
++    }
++    if (updated) {
++        const ModelObjectPtrs &mos = wxGetApp().model().objects;
++        wxGetApp().obj_list()->update_info_items(std::find(mos.begin(), mos.end(), mo) - mos.begin());
++        m_parent.post_event(SimpleEvent(EVT_GLCANVAS_SCHEDULE_BACKGROUND_PROCESS));
++    }
++}
++
++void GLGizmoCounterboreBridge::update_from_model_object(bool first_update)
++{
++    wxBusyCursor wait;
++
++    const ModelObject *mo = m_c->selection_info()->model_object();
++    m_triangle_selectors.clear();
++
++    std::vector<ColorRGBA> ebt_colors;
++    ebt_colors.push_back(GLVolume::NEUTRAL_COLOR);
++    ebt_colors.push_back(TriangleSelectorGUI::enforcers_color); // smart
++    ebt_colors.push_back(TriangleSelectorGUI::blockers_color);  // partial
++
++    for (const ModelVolume *mv : mo->volumes) {
++        if (!mv->is_model_part())
++            continue;
++        const TriangleMesh *mesh = &mv->mesh();
++        m_triangle_selectors.emplace_back(std::make_unique<TriangleSelectorPatch>(*mesh, ebt_colors));
++        m_triangle_selectors.back()->deserialize(mv->counterbore_bridge_facets.get_data(), false);
++        m_triangle_selectors.back()->request_update_render_data();
++    }
++}
++
++PainterGizmoType GLGizmoCounterboreBridge::get_painter_type() const
++{
++    return PainterGizmoType::COUNTERBORE_BRIDGE;
++}
++
++wxString GLGizmoCounterboreBridge::handle_snapshot_action_name(bool shift_down, GLGizmoPainterBase::Button button_down) const
++{
++    return shift_down ? _L("Remove counterbore bridge") : _L("Add counterbore bridge");
++}
++
++} // namespace Slic3r::GUI
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+new file mode 100644
+index 0000000000..553fb09448
+--- /dev/null
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+@@ -0,0 +1,54 @@
++#ifndef slic3r_GLGizmoCounterboreBridge_hpp_
++#define slic3r_GLGizmoCounterboreBridge_hpp_
++
++// [ORCAPORT:PF-2b] Paint-on counterbore bridge gizmo (ported from preFlight's
++// GLGizmoCounterboreBridge, adapted to Orca's painter base). Painted regions drive the smart
++// counterbore bridging (PF-2a) or a single partial bridge layer.
++
++#include "GLGizmoPainterBase.hpp"
++
++#include "slic3r/GUI/I18N.hpp"
++
++namespace Slic3r::GUI {
++
++class GLGizmoCounterboreBridge : public GLGizmoPainterBase
++{
++public:
++    GLGizmoCounterboreBridge(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
++
++    void render_painter_gizmo() override;
++
++protected:
++    void        on_render_input_window(float x, float y, float bottom_limit) override;
++    std::string on_get_name() const override;
++
++    wxString handle_snapshot_action_name(bool shift_down, Button button_down) const override;
++
++    std::string get_gizmo_entering_text() const override { return _u8L("Entering counterbore bridge painting"); }
++    std::string get_gizmo_leaving_text() const override { return _u8L("Leaving counterbore bridge painting"); }
++    std::string get_action_snapshot_name() const override { return _u8L("Counterbore bridge editing"); }
++
++    // Smart = ENFORCER state, Partial = BLOCKER state (in the counterbore annotation only).
++    EnforcerBlockerType get_left_button_state_type() const override {
++        return m_partial ? EnforcerBlockerType::BLOCKER : EnforcerBlockerType::ENFORCER;
++    }
++    EnforcerBlockerType get_right_button_state_type() const override { return EnforcerBlockerType::NONE; }
++
++private:
++    bool on_init() override;
++    bool on_is_selectable() const override { return true; }
++    void on_opening() override {}
++    void on_shutdown() override;
++    void update_model_object() override;
++    void update_from_model_object(bool first_update) override;
++    PainterGizmoType get_painter_type() const override;
++
++    // false = smart stepped bridging, true = partial (single-layer) bridging.
++    bool m_partial = false;
++
++    std::map<std::string, wxString> m_desc;
++};
++
++} // namespace Slic3r::GUI
++
++#endif // slic3r_GLGizmoCounterboreBridge_hpp_
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
+index 1945cbceb5..4ad2c63a4f 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPainterBase.hpp
+@@ -27,7 +27,8 @@ enum class PainterGizmoType {
+     FDM_SUPPORTS,
+     SEAM,
+     MM_SEGMENTATION,
+-    FUZZY_SKIN
++    FUZZY_SKIN,
++    COUNTERBORE_BRIDGE // [ORCAPORT:PF-2b]
+ };
+ 
+ class TriangleSelectorGUI : public TriangleSelector {
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+index 16e415210d..ab848c3b34 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+@@ -16,6 +16,7 @@
+ //#include "slic3r/GUI/Gizmos/GLGizmoSlaSupports.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoFuzzySkin.hpp"
++#include "slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp" // [ORCAPORT:PF-2b]
+ #include "slic3r/GUI/Gizmos/GLGizmoBrimEars.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoAlignStack.hpp" // [ORCAPORT:AS-2]
+ #include "slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp" // [ORCAPORT:SU-5]
+@@ -184,6 +185,9 @@ void GLGizmosManager::switch_gizmos_icon_filename()
+         case (EType::SupportZones): // [ORCAPORT:SU-5]
+             gizmo->set_icon_filename(m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg");
+             break;
++        case (EType::CounterboreBridge): // [ORCAPORT:PF-2b]
++            gizmo->set_icon_filename(m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg");
++            break;
+         }
+ 
+     }
+@@ -229,6 +233,7 @@ bool GLGizmosManager::init()
+     m_gizmos.emplace_back(new GLGizmoBrimEars(m_parent, m_is_dark ? "toolbar_brimears_dark.svg" : "toolbar_brimears.svg", EType::BrimEars));
+     m_gizmos.emplace_back(new GLGizmoAlignStack(m_parent, m_is_dark ? "toolbar_align_stack_dark.svg" : "toolbar_align_stack.svg", EType::AlignStack)); // [ORCAPORT:AS-2]
+     m_gizmos.emplace_back(new GLGizmoSupportZones(m_parent, m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg", EType::SupportZones)); // [ORCAPORT:SU-5]
++    m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
+     //m_gizmos.emplace_back(new GLGizmoSlaSupports(m_parent, "sla_supports.svg", sprite_id++));
+     //m_gizmos.emplace_back(new GLGizmoFaceDetector(m_parent, "face recognition.svg", sprite_id++));
+     //m_gizmos.emplace_back(new GLGizmoHollow(m_parent, "hollow.svg", sprite_id++));
+@@ -534,6 +539,8 @@ bool GLGizmosManager::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_p
+         return dynamic_cast<GLGizmoCut3D*>(m_gizmos[Cut].get())->gizmo_event(action, mouse_position, shift_down, alt_down, control_down);
+     else if (m_current == FuzzySkin)
+         return dynamic_cast<GLGizmoFuzzySkin*>(m_gizmos[FuzzySkin].get())->gizmo_event(action, mouse_position, shift_down, alt_down, control_down);
++    else if (m_current == CounterboreBridge) // [ORCAPORT:PF-2b]
++        return dynamic_cast<GLGizmoCounterboreBridge*>(m_gizmos[CounterboreBridge].get())->gizmo_event(action, mouse_position, shift_down, alt_down, control_down);
+     else if (m_current == MeshBoolean)
+         return dynamic_cast<GLGizmoMeshBoolean*>(m_gizmos[MeshBoolean].get())->gizmo_event(action, mouse_position, shift_down, alt_down, control_down);
+     else if (m_current == BrimEars)
+@@ -547,6 +554,7 @@ bool GLGizmosManager::is_paint_gizmo()
+     return m_current == EType::FdmSupports ||
+            m_current == EType::MmSegmentation ||
+            m_current == EType::FuzzySkin ||
++           m_current == EType::CounterboreBridge || // [ORCAPORT:PF-2b]
+            m_current == EType::Seam;
+ }
+ 
+@@ -645,7 +653,7 @@ bool GLGizmosManager::on_mouse_wheel(const wxMouseEvent &evt)
+ {
+     bool processed = false;
+ 
+-    if (/*m_current == SlaSupports || m_current == Hollow ||*/ m_current == FdmSupports || m_current == Seam || m_current == MmSegmentation || m_current == FuzzySkin || m_current == BrimEars) {
++    if (/*m_current == SlaSupports || m_current == Hollow ||*/ m_current == FdmSupports || m_current == Seam || m_current == MmSegmentation || m_current == FuzzySkin || m_current == CounterboreBridge || m_current == BrimEars) {
+         float rot = (float)evt.GetWheelRotation() / (float)evt.GetWheelDelta();
+         if (gizmo_event((rot > 0.f ? SLAGizmoEventType::MouseWheelUp : SLAGizmoEventType::MouseWheelDown), Vec2d::Zero(), evt.ShiftDown(), evt.AltDown()
+             // BBS
+@@ -1439,7 +1447,7 @@ bool GLGizmosManager::activate_gizmo(EType type)
+     GLGizmoBase& new_gizmo = *m_gizmos[type];
+     if (!new_gizmo.is_activable()) return false;
+ 
+-    if (type == Seam || type == FdmSupports || type == FuzzySkin) {
++    if (type == Seam || type == FdmSupports || type == FuzzySkin || type == CounterboreBridge) { // [ORCAPORT:PF-2b]
+         if (wxGetApp().app_config != nullptr && wxGetApp().app_config->get_bool(SETTING_OPENGL_REALISTIC_MODE)) {
+             m_restore_realistic_view_after_paint = true;
+             wxGetApp().app_config->set_bool(SETTING_OPENGL_REALISTIC_MODE, false);
+@@ -1524,6 +1532,8 @@ std::string get_name_from_gizmo_etype(GLGizmosManager::EType type)
+         return "Color Painting";
+     case GLGizmosManager::EType::FuzzySkin:
+         return "Fuzzy Skin Painting";
++    case GLGizmosManager::EType::CounterboreBridge: // [ORCAPORT:PF-2b]
++        return "Counterbore Bridge";
+     default:
+         return "";
+     }
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+index 8978c5c7ea..018a14b9a1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+@@ -92,6 +92,7 @@ public:
+         BrimEars,
+         AlignStack, // [ORCAPORT:AS-2]
+         SupportZones, // [ORCAPORT:SU-5]
++        CounterboreBridge, // [ORCAPORT:PF-2b]
+         //SlaSupports,
+         // BBS
+         //FaceRecognition,

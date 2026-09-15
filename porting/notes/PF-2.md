@@ -110,3 +110,11 @@ minimum ring width / overlap threshold to avoid flagging tapered holes.
   `src/libslic3r/PrintObjectSlice.cpp`, `PrintObject.cpp`, `Fill/Fill.cpp`, `Fill/FillBase.{hpp,cpp}`,
   `Model.hpp/.cpp`, `Format/3mf.cpp`, `src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.{hpp,cpp}`,
   `GLGizmoPainterBase.hpp`, `GLGizmosManager.{hpp,cpp}`, `src/slic3r/CMakeLists.txt`, toolbar SVG.
+
+## PF-2b port (done)
+
+- ModelVolume::counterbore_bridge_facets (FacetsAnnotation), is_counterbore_bridge_painted(), model_counterbore_bridge_data_changed(), 3mf attribute slic3rpe:counterbore_bridge, PrintApply invalidation.
+- GLGizmoCounterboreBridge : GLGizmoPainterBase (PainterGizmoType::COUNTERBORE_BRIDGE, EType::CounterboreBridge, Ctrl+K, Smart/Partial choice). The triangle state selects the mode: ENFORCER = smart, BLOCKER = partial (the counterbore annotation has its own TriangleSelector).
+- Slicing: pply_counterbore_bridge_geometry() projects the painted triangles to per-layer areas and only bridges painted holes (plus auto-detection when counterbore_hole_bridging == smartbridge). Painted smart uses the stepped ramp (N = counterbore_bridge_layers); painted partial uses a single bridge layer.
+- Build: uild_win.bat -s -j 8 -> 0 errors; GLGizmoCounterboreBridge.cpp, GLGizmosManager.cpp, PrintObjectSlice.cpp compiled, DLL 2026-09-15 09:32. Patch 16_PF-2b.patch.
+- Known gaps: painted partial is a single-layer bridge (not Orca's chbBridges coverage algorithm); auto-detection convention is preFlight's (hole shrinks upward).
