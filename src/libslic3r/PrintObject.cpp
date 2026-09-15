@@ -4545,29 +4545,151 @@ void PrintObject::combine_infill()
     }
 }
 
+// [ORCAPORT:PF-10-paint] Remove the parts of `entities` that lie inside `clip_regions`, so a
+// support pass that appends to another pass's layers does not extrude over it twice.
+static void clip_extrusion_entities(ExtrusionEntitiesPtr &entities, const ExPolygons &clip_regions)
+{
+    if (clip_regions.empty())
+        return;
+
+    std::function<void(ExtrusionEntitiesPtr &)> clip_recursive;
+    clip_recursive = [&clip_regions, &clip_recursive](ExtrusionEntitiesPtr &ents) {
+        ExtrusionEntitiesPtr out;
+        out.reserve(ents.size());
+        for (ExtrusionEntity *entity : ents) {
+            if (ExtrusionPath *path = dynamic_cast<ExtrusionPath *>(entity)) {
+                ExtrusionEntityCollection clipped;
+                path->subtract_expolygons(clip_regions, &clipped);
+                for (ExtrusionEntity *e : clipped.entities)
+                    out.push_back(e);
+                clipped.entities.clear();
+                delete path;
+            } else if (ExtrusionMultiPath *multipath = dynamic_cast<ExtrusionMultiPath *>(entity)) {
+                ExtrusionPaths clipped_paths;
+                for (ExtrusionPath &subpath : multipath->paths) {
+                    ExtrusionEntityCollection clipped;
+                    subpath.subtract_expolygons(clip_regions, &clipped);
+                    for (ExtrusionEntity *e : clipped.entities) {
+                        if (ExtrusionPath *cp = dynamic_cast<ExtrusionPath *>(e)) {
+                            clipped_paths.push_back(std::move(*cp));
+                            delete cp;
+                        } else
+                            out.push_back(e);
+                    }
+                    clipped.entities.clear();
+                }
+                if (!clipped_paths.empty())
+                    out.push_back(new ExtrusionMultiPath(std::move(clipped_paths)));
+                delete multipath;
+            } else if (ExtrusionEntityCollection *collection = dynamic_cast<ExtrusionEntityCollection *>(entity)) {
+                clip_recursive(collection->entities);
+                if (!collection->empty())
+                    out.push_back(collection);
+                else
+                    delete collection;
+            } else if (ExtrusionLoop *loop = dynamic_cast<ExtrusionLoop *>(entity)) {
+                ExtrusionPaths clipped_paths;
+                for (ExtrusionPath &subpath : loop->paths) {
+                    ExtrusionEntityCollection clipped;
+                    subpath.subtract_expolygons(clip_regions, &clipped);
+                    for (ExtrusionEntity *e : clipped.entities) {
+                        if (ExtrusionPath *cp = dynamic_cast<ExtrusionPath *>(e)) {
+                            clipped_paths.push_back(std::move(*cp));
+                            delete cp;
+                        } else
+                            out.push_back(e);
+                    }
+                    clipped.entities.clear();
+                }
+                if (!clipped_paths.empty()) {
+                    if (clipped_paths.size() == 1)
+                        out.push_back(new ExtrusionPath(std::move(clipped_paths.front())));
+                    else
+                        out.push_back(new ExtrusionMultiPath(std::move(clipped_paths)));
+                }
+                delete loop;
+            } else {
+                out.push_back(entity);
+            }
+        }
+        ents = std::move(out);
+    };
+    clip_recursive(entities);
+}
+
+void PrintObject::merge_duplicate_support_layers()
+{
+    if (m_support_layers.size() < 2)
+        return;
+
+    // Classic layers are generated first, so keep them as the base of a merge at equal print_z.
+    std::stable_sort(m_support_layers.begin(), m_support_layers.end(),
+                     [](const SupportLayer *a, const SupportLayer *b) { return a->print_z < b->print_z; });
+
+    SupportLayerPtrs merged;
+    merged.reserve(m_support_layers.size());
+    size_t i = 0;
+    while (i < m_support_layers.size()) {
+        SupportLayer *base_layer = m_support_layers[i];
+        size_t        j          = i + 1;
+        while (j < m_support_layers.size() && std::abs(m_support_layers[j]->print_z - base_layer->print_z) < EPSILON) {
+            SupportLayer *dup_layer = m_support_layers[j];
+            if (!dup_layer->support_fills.empty()) {
+                if (!base_layer->support_islands.empty())
+                    clip_extrusion_entities(dup_layer->support_fills.entities, base_layer->support_islands);
+                if (!dup_layer->support_fills.empty())
+                    base_layer->support_fills.append(std::move(dup_layer->support_fills.entities));
+                dup_layer->support_fills.entities.clear();
+            }
+            if (!dup_layer->support_islands.empty()) {
+                append(base_layer->support_islands, dup_layer->support_islands);
+                base_layer->support_islands = union_ex(base_layer->support_islands);
+                dup_layer->support_islands.clear();
+            }
+            delete dup_layer;
+            m_support_layers[j] = nullptr;
+            ++j;
+        }
+        merged.push_back(base_layer);
+        i = j;
+    }
+    m_support_layers = std::move(merged);
+    for (size_t idx = 0; idx < m_support_layers.size(); ++idx)
+        m_support_layers[idx]->set_id(idx);
+}
+
 void PrintObject::_generate_support_material()
 {
-    // [ORCAPORT:PF-10-paint] Per-style support painting. When facets are painted with a
-    // registered support type, that type's engine and settings are forced for this object's
-    // support pass, and the painted facets are projected as enforcers (see the engines). With
-    // nothing painted the legacy path below runs unchanged.
-    //
-    // Current scope: a single painted style drives the whole pass. Mixing several styles that
-    // use different engines (e.g. Organic + Grid on one object) selects the first tree entry;
-    // true multi-pass composition is recorded as a follow-up in porting/notes/PF-10-paint.md.
-    const OrcaExt::SupportPaintType *paint = nullptr;
+    // [ORCAPORT:PF-10-paint] Multi-pass support composition. Painted explicit styles define
+    // which engine wires which region; the object's own engine handles the rest. Classic
+    // (Snug/Grid/NeoWave) regions share the single classic pass; tree (Organic/Baobab) regions
+    // run as a second, enforcer-only tree pass that appends and is then merged in. With nothing
+    // painted the legacy single-pass path below runs unchanged.
+    const OrcaExt::SupportPaintType *classic_paint = nullptr; // single classic style, if exactly one
+    const OrcaExt::SupportPaintType *tree_paint    = nullptr; // first painted tree style
+    size_t                           classic_count = 0;
+    std::vector<EnforcerBlockerType> classic_states, tree_states;
+
     if (this->has_support()) {
         for (const OrcaExt::SupportPaintType &t : OrcaExt::support_paint_types()) {
             if (t.state == OrcaExt::SUPPORT_PAINT_DEFAULT || t.state == OrcaExt::SUPPORT_PAINT_BLOCKER)
                 continue;
-            if (OrcaExt::has_painted_support_style(*this, t.state)) {
-                paint = &t;
-                break;
+            if (!OrcaExt::has_painted_support_style(*this, t.state))
+                continue;
+            if (t.is_tree) {
+                tree_states.push_back(t.state);
+                if (tree_paint == nullptr)
+                    tree_paint = &t;
+            } else {
+                classic_states.push_back(t.state);
+                ++classic_count;
+                if (classic_paint == nullptr)
+                    classic_paint = &t;
             }
         }
     }
 
-    if (paint == nullptr) {
+    if (classic_states.empty() && tree_states.empty()) {
         if (is_tree(m_config.support_type.value)) {
             TreeSupport tree_support(*this, m_slicing_params);
             tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
@@ -4580,50 +4702,90 @@ void PrintObject::_generate_support_material()
         return;
     }
 
-    // Scoped override of the object config for the painted engine pass.
-    const SupportType                       old_type  = m_config.support_type.value;
-    const SupportMaterialStyle              old_style = m_config.support_style.value;
-    const SupportMaterialPattern            old_base  = m_config.support_base_pattern.value;
-    const SupportMaterialInterfacePattern   old_iface = m_config.support_interface_pattern.value;
-    const SupportMaterialWaveRoofPattern    old_wrp   = m_config.wavesupport_roof_pattern.value;
-    const SupportMaterialWaveRoofOrder      old_wro   = m_config.wavesupport_roof_order.value;
-    const int                               old_wloops = m_config.wavesupport_wall_loops.value;
+    // Scoped override of the object config plus the pass transients.
+    const SupportType                     old_type   = m_config.support_type.value;
+    const SupportMaterialStyle            old_style  = m_config.support_style.value;
+    const SupportMaterialPattern          old_base   = m_config.support_base_pattern.value;
+    const SupportMaterialInterfacePattern old_iface  = m_config.support_interface_pattern.value;
+    const SupportMaterialWaveRoofPattern  old_wrp    = m_config.wavesupport_roof_pattern.value;
+    const SupportMaterialWaveRoofOrder    old_wro    = m_config.wavesupport_roof_order.value;
+    const int                             old_wloops = m_config.wavesupport_wall_loops.value;
 
     auto restore = [&]() {
-        m_config.support_type.value                    = old_type;
-        m_config.support_style.value                   = old_style;
-        m_config.support_base_pattern.value            = old_base;
-        m_config.support_interface_pattern.value       = old_iface;
-        m_config.wavesupport_roof_pattern.value        = old_wrp;
-        m_config.wavesupport_roof_order.value          = old_wro;
-        m_config.wavesupport_wall_loops.value          = old_wloops;
+        m_config.support_type.value              = old_type;
+        m_config.support_style.value             = old_style;
+        m_config.support_base_pattern.value      = old_base;
+        m_config.support_interface_pattern.value = old_iface;
+        m_config.wavesupport_roof_pattern.value  = old_wrp;
+        m_config.wavesupport_roof_order.value    = old_wro;
+        m_config.wavesupport_wall_loops.value    = old_wloops;
         this->set_painted_support_state(EnforcerBlockerType::NONE);
+        this->set_painted_support_blockers({});
+        this->set_support_pass_appends(false);
     };
 
-    m_config.support_type.value              = paint->support_type;
-    m_config.support_style.value             = paint->support_style;
-    const OrcaExt::SupportPaintOverrides &ov = paint->overrides;
-    if (ov.force_base_pattern)      m_config.support_base_pattern.value      = ov.base_pattern;
-    if (ov.force_interface_pattern) m_config.support_interface_pattern.value = ov.interface_pattern;
-    if (ov.force_wave_roof_pattern) m_config.wavesupport_roof_pattern.value  = ov.wave_roof_pattern;
-    if (ov.force_wave_roof_order)   m_config.wavesupport_roof_order.value    = ov.wave_roof_order;
-    if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
-    this->set_painted_support_state(paint->state);
+    auto apply_overrides = [&](const OrcaExt::SupportPaintOverrides &ov) {
+        if (ov.force_base_pattern)      m_config.support_base_pattern.value      = ov.base_pattern;
+        if (ov.force_interface_pattern) m_config.support_interface_pattern.value = ov.interface_pattern;
+        if (ov.force_wave_roof_pattern) m_config.wavesupport_roof_pattern.value  = ov.wave_roof_pattern;
+        if (ov.force_wave_roof_order)   m_config.wavesupport_roof_order.value    = ov.wave_roof_order;
+        if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
+    };
+
+    const bool object_tree = is_tree(m_config.support_type.value);
+    const bool run_classic = !classic_states.empty() || !object_tree;
+    const bool run_tree    = !tree_states.empty();
+    const bool compose     = run_classic && run_tree;
+
+    // The whole multi-pass owns the support layers; neither engine clears them now.
+    this->clear_support_layers();
 
     try {
-        if (is_tree(m_config.support_type.value)) {
+        if (run_classic) {
+            const OrcaExt::SupportPaintType *cp = (classic_count == 1) ? classic_paint : nullptr;
+            if (cp != nullptr) {
+                m_config.support_type.value  = cp->support_type;
+                m_config.support_style.value = cp->support_style;
+                apply_overrides(cp->overrides);
+                this->set_painted_support_state(cp->state);
+            } else {
+                // Several classic styles painted: Orca's classic style is object level, so fall
+                // back to the object's own; the painted facets still enforce support.
+                this->set_painted_support_state(EnforcerBlockerType::NONE);
+            }
+            this->set_painted_support_blockers(tree_states);
+            this->set_support_pass_appends(false);
+
+            PrintObjectSupportMaterial support_material(this, m_slicing_params);
+            support_material.generate(*this);
+        }
+
+        if (run_tree) {
+            if (tree_paint != nullptr) {
+                // Compose with the classic pass: manual (enforcer-only) tree so auto overhangs
+                // are not built twice.
+                m_config.support_type.value  = compose ? stTree : tree_paint->support_type;
+                m_config.support_style.value = tree_paint->support_style;
+                apply_overrides(tree_paint->overrides);
+                this->set_painted_support_state(tree_paint->state);
+            } else {
+                this->set_painted_support_state(EnforcerBlockerType::NONE);
+            }
+            this->set_painted_support_blockers(classic_states);
+            this->set_support_pass_appends(run_classic);
+
             TreeSupport tree_support(*this, m_slicing_params);
             tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
             tree_support.generate();
-        }
-        else {
-            PrintObjectSupportMaterial support_material(this, m_slicing_params);
-            support_material.generate(*this);
         }
     } catch (...) {
         restore();
         throw;
     }
+
+    if (compose)
+        this->merge_duplicate_support_layers();
+
     restore();
 }
 

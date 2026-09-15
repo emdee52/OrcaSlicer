@@ -476,6 +476,14 @@ public:
     // support pass. NONE keeps the legacy generic enforcer only. Set by the support dispatcher.
     EnforcerBlockerType         painted_support_state() const { return m_painted_support_state; }
     void                        set_painted_support_state(EnforcerBlockerType s) { m_painted_support_state = s; }
+    // [ORCAPORT:PF-10-paint] Paint states projected as blockers for the current support pass, so
+    // a pass does not build under another pass's painted regions.
+    const std::vector<EnforcerBlockerType> &painted_support_blockers() const { return m_painted_support_blockers; }
+    void                        set_painted_support_blockers(std::vector<EnforcerBlockerType> b) { m_painted_support_blockers = std::move(b); }
+    // [ORCAPORT:PF-10-paint] True while a support pass appends to existing support layers
+    // (multi-pass composition), so the tree engine must not clear them.
+    bool                        support_pass_appends() const { return m_support_pass_appends; }
+    void                        set_support_pass_appends(bool v) { m_support_pass_appends = v; }
     // Checks if the model object is painted using the multi-material painting gizmo.
     bool                        is_mm_painted()         const { return this->model_object()->is_mm_painted(); }
     // Checks if the model object is painted using the fuzzy skin painting gizmo.
@@ -609,6 +617,8 @@ private:
     void discover_horizontal_shells();
     void combine_infill();
     void _generate_support_material();
+    // [ORCAPORT:PF-10-paint] Merge support layers produced by several passes at the same print_z.
+    void merge_duplicate_support_layers();
     std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data(
         const std::vector<std::pair<const Surface*, float>>& surfaces_w_bottom_z) const;
     FillLightning::GeneratorPtr prepare_lightning_infill_data();
@@ -620,8 +630,10 @@ private:
     Vec3crd									m_size;
     double                                  m_max_z;
     PrintObjectConfig                       m_config;
-    // [ORCAPORT:PF-10-paint] See painted_support_state().
+    // [ORCAPORT:PF-10-paint] See painted_support_state() / painted_support_blockers().
     EnforcerBlockerType                     m_painted_support_state{EnforcerBlockerType::NONE};
+    std::vector<EnforcerBlockerType>        m_painted_support_blockers;
+    bool                                    m_support_pass_appends{false};
     // Translation in Z + Rotation + Scaling / Mirroring.
     Transform3d                             m_trafo = Transform3d::Identity();
     // Slic3r::Point objects in scaled G-code coordinates
