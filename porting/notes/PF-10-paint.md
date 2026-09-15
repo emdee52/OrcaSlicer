@@ -3,8 +3,8 @@
 - Source: preFlight v1.3.0 (`github.com/oozebot/preFlight`), fork sha `f74dc69`; NeoWave from the
   Neotko SU-4 port (`NEOTKOCM_RELEASE_2_36.md`, fork sha `e25039606d`).
 - Branch: `port/PF-10-paint`, based on `port/integration` @ `77c012654d`.
-- Category: B/D (re-implementation on Orca's paint/enforcer pipeline). Status: **ported, build
-  clean; runtime pending. Multi-pass composition is a documented follow-up.**
+- Category: B/D (re-implementation on Orca's paint/enforcer pipeline). Status: **ported including
+  multi-pass composition, build clean; runtime pending.**
 
 ## Intent
 
@@ -61,23 +61,36 @@ identically. Explicit styles use new states:
   the object config is scoped-overridden to that style's engine and forced options for the support
   pass, then restored. Nothing painted => the legacy path runs byte-identically.
 
-## Known limitation (follow-up PF-10-paint-b)
+## Multi-pass composition (PF-10-paint-b)
 
-The dispatcher currently forces **one** painted style for the whole object pass (the first painted
-tree entry, else the first entry). True per-region mixing of several engines is **not** yet
-implemented. The verified blockers found while porting:
+The dispatcher (`PrintObject::_generate_support_material`) now runs at most one classic pass plus
+one tree pass and merges them:
 
-1. `TreeSupport::detect_overhangs` (`TreeSupport.cpp:678`) calls `m_object->clear_support_layers()`,
-   which would wipe a prior classic pass. preFlight's tree path never clears (its
-   `detect_overhangs` was reworked).
-2. `PrintObjectSupportMaterial::generate` -> `generate_support_layers` builds a fresh support-layer
-   set per call, so two classic passes cannot compose without merging.
-3. Appending tree layers needs an id offset (classic layers occupy ids `0..N`), and prior supports
-   must be passed as collision (`additional_excluded_areas`) through
-   `generate_tree_support_3D`/`generate_support_areas`.
+- **Classic pass** (object default + painted Snug/Grid, or a sole painted NeoWave): the single
+  classic style is forced on the object config; other painted tree styles are projected as
+  blockers. Several classic styles in one object fall back to the object's own style (Orca's
+  classic style is object-level) - a documented limitation.
+- **Tree pass** (painted Organic/Baobab): runs **enforcer-only** (`support_type = stTree`) when it
+  composes with the classic pass, so auto overhangs are not built twice; classic facets are
+  projected as blockers.
+- **Composition plumbing** (the blockers found during recon):
+  1. `TreeSupport::detect_overhangs` no longer clears unconditionally; the dispatcher owns the
+     clear and sets `PrintObject::support_pass_appends()` for a composing tree pass.
+  2. `generate_support_layers` continues the support-layer id sequence when appending instead of
+     restarting at 0.
+  3. `TreeSupport3D::generate_support_areas` toolpaths only the layers it just created, so the
+     classic layers are not re-toolpathed.
+  4. `PrintObject::merge_duplicate_support_layers` (ported from preFlight, with
+     `clip_extrusion_entities`) merges same-`print_z` layers: fills are clipped against the base
+     islands, islands unioned, ids reassigned.
 
-The intended next step is to port preFlight's dispatcher (`PrintObject.cpp:4316-4498`) and its
-`additional_excluded_areas` plumbing, moving the layer clear to the dispatcher entry point.
+Still deferred: mixing **NeoWave with Snug/Grid** in one object needs a second classic pass, which
+`generate_support_layers`/`generate_support_toolpaths` do not support without a wider refactor.
+
+## Automatic painting
+
+A support-region auto-painter (preFlight's disabled "Automatic painting" button, reimplemented
+Orca-native) is tracked separately as `PF-10-auto`.
 
 ## Behavior-neutral at defaults
 

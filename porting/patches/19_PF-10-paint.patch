@@ -255,10 +255,10 @@ index 0000000000..273ee0341c
 +
 +#endif // slic3r_OrcaExt_SupportPaintTypes_hpp_
 diff --git a/src/libslic3r/Print.hpp b/src/libslic3r/Print.hpp
-index 8e47f32315..aa4c4675b7 100644
+index 8e47f32315..9e7bbe2f34 100644
 --- a/src/libslic3r/Print.hpp
 +++ b/src/libslic3r/Print.hpp
-@@ -472,6 +472,10 @@ public:
+@@ -472,6 +472,18 @@ public:
      bool                        has_support()           const { return m_config.enable_support || m_config.enforce_support_layers > 0; }
      bool                        has_raft()              const { return m_config.raft_layers > 0; }
      bool                        has_support_material()  const { return this->has_support() || this->has_raft(); }
@@ -266,20 +266,39 @@ index 8e47f32315..aa4c4675b7 100644
 +    // support pass. NONE keeps the legacy generic enforcer only. Set by the support dispatcher.
 +    EnforcerBlockerType         painted_support_state() const { return m_painted_support_state; }
 +    void                        set_painted_support_state(EnforcerBlockerType s) { m_painted_support_state = s; }
++    // [ORCAPORT:PF-10-paint] Paint states projected as blockers for the current support pass, so
++    // a pass does not build under another pass's painted regions.
++    const std::vector<EnforcerBlockerType> &painted_support_blockers() const { return m_painted_support_blockers; }
++    void                        set_painted_support_blockers(std::vector<EnforcerBlockerType> b) { m_painted_support_blockers = std::move(b); }
++    // [ORCAPORT:PF-10-paint] True while a support pass appends to existing support layers
++    // (multi-pass composition), so the tree engine must not clear them.
++    bool                        support_pass_appends() const { return m_support_pass_appends; }
++    void                        set_support_pass_appends(bool v) { m_support_pass_appends = v; }
      // Checks if the model object is painted using the multi-material painting gizmo.
      bool                        is_mm_painted()         const { return this->model_object()->is_mm_painted(); }
      // Checks if the model object is painted using the fuzzy skin painting gizmo.
-@@ -616,6 +620,8 @@ private:
+@@ -605,6 +617,8 @@ private:
+     void discover_horizontal_shells();
+     void combine_infill();
+     void _generate_support_material();
++    // [ORCAPORT:PF-10-paint] Merge support layers produced by several passes at the same print_z.
++    void merge_duplicate_support_layers();
+     std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data(
+         const std::vector<std::pair<const Surface*, float>>& surfaces_w_bottom_z) const;
+     FillLightning::GeneratorPtr prepare_lightning_infill_data();
+@@ -616,6 +630,10 @@ private:
      Vec3crd									m_size;
      double                                  m_max_z;
      PrintObjectConfig                       m_config;
-+    // [ORCAPORT:PF-10-paint] See painted_support_state().
++    // [ORCAPORT:PF-10-paint] See painted_support_state() / painted_support_blockers().
 +    EnforcerBlockerType                     m_painted_support_state{EnforcerBlockerType::NONE};
++    std::vector<EnforcerBlockerType>        m_painted_support_blockers;
++    bool                                    m_support_pass_appends{false};
      // Translation in Z + Rotation + Scaling / Mirroring.
      Transform3d                             m_trafo = Transform3d::Identity();
      // Slic3r::Point objects in scaled G-code coordinates
 diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
-index 9b0e05d7f4..a0db6c13fa 100644
+index 9b0e05d7f4..305ca68f94 100644
 --- a/src/libslic3r/PrintObject.cpp
 +++ b/src/libslic3r/PrintObject.cpp
 @@ -15,6 +15,7 @@
@@ -290,38 +309,159 @@ index 9b0e05d7f4..a0db6c13fa 100644
  #include "Surface.hpp"
  #include "Slicing.hpp"
  #include "Tesselate.hpp"
-@@ -4546,15 +4547,84 @@ void PrintObject::combine_infill()
+@@ -4544,17 +4545,248 @@ void PrintObject::combine_infill()
+     }
+ }
  
++// [ORCAPORT:PF-10-paint] Remove the parts of `entities` that lie inside `clip_regions`, so a
++// support pass that appends to another pass's layers does not extrude over it twice.
++static void clip_extrusion_entities(ExtrusionEntitiesPtr &entities, const ExPolygons &clip_regions)
++{
++    if (clip_regions.empty())
++        return;
++
++    std::function<void(ExtrusionEntitiesPtr &)> clip_recursive;
++    clip_recursive = [&clip_regions, &clip_recursive](ExtrusionEntitiesPtr &ents) {
++        ExtrusionEntitiesPtr out;
++        out.reserve(ents.size());
++        for (ExtrusionEntity *entity : ents) {
++            if (ExtrusionPath *path = dynamic_cast<ExtrusionPath *>(entity)) {
++                ExtrusionEntityCollection clipped;
++                path->subtract_expolygons(clip_regions, &clipped);
++                for (ExtrusionEntity *e : clipped.entities)
++                    out.push_back(e);
++                clipped.entities.clear();
++                delete path;
++            } else if (ExtrusionMultiPath *multipath = dynamic_cast<ExtrusionMultiPath *>(entity)) {
++                ExtrusionPaths clipped_paths;
++                for (ExtrusionPath &subpath : multipath->paths) {
++                    ExtrusionEntityCollection clipped;
++                    subpath.subtract_expolygons(clip_regions, &clipped);
++                    for (ExtrusionEntity *e : clipped.entities) {
++                        if (ExtrusionPath *cp = dynamic_cast<ExtrusionPath *>(e)) {
++                            clipped_paths.push_back(std::move(*cp));
++                            delete cp;
++                        } else
++                            out.push_back(e);
++                    }
++                    clipped.entities.clear();
++                }
++                if (!clipped_paths.empty())
++                    out.push_back(new ExtrusionMultiPath(std::move(clipped_paths)));
++                delete multipath;
++            } else if (ExtrusionEntityCollection *collection = dynamic_cast<ExtrusionEntityCollection *>(entity)) {
++                clip_recursive(collection->entities);
++                if (!collection->empty())
++                    out.push_back(collection);
++                else
++                    delete collection;
++            } else if (ExtrusionLoop *loop = dynamic_cast<ExtrusionLoop *>(entity)) {
++                ExtrusionPaths clipped_paths;
++                for (ExtrusionPath &subpath : loop->paths) {
++                    ExtrusionEntityCollection clipped;
++                    subpath.subtract_expolygons(clip_regions, &clipped);
++                    for (ExtrusionEntity *e : clipped.entities) {
++                        if (ExtrusionPath *cp = dynamic_cast<ExtrusionPath *>(e)) {
++                            clipped_paths.push_back(std::move(*cp));
++                            delete cp;
++                        } else
++                            out.push_back(e);
++                    }
++                    clipped.entities.clear();
++                }
++                if (!clipped_paths.empty()) {
++                    if (clipped_paths.size() == 1)
++                        out.push_back(new ExtrusionPath(std::move(clipped_paths.front())));
++                    else
++                        out.push_back(new ExtrusionMultiPath(std::move(clipped_paths)));
++                }
++                delete loop;
++            } else {
++                out.push_back(entity);
++            }
++        }
++        ents = std::move(out);
++    };
++    clip_recursive(entities);
++}
++
++void PrintObject::merge_duplicate_support_layers()
++{
++    if (m_support_layers.size() < 2)
++        return;
++
++    // Classic layers are generated first, so keep them as the base of a merge at equal print_z.
++    std::stable_sort(m_support_layers.begin(), m_support_layers.end(),
++                     [](const SupportLayer *a, const SupportLayer *b) { return a->print_z < b->print_z; });
++
++    SupportLayerPtrs merged;
++    merged.reserve(m_support_layers.size());
++    size_t i = 0;
++    while (i < m_support_layers.size()) {
++        SupportLayer *base_layer = m_support_layers[i];
++        size_t        j          = i + 1;
++        while (j < m_support_layers.size() && std::abs(m_support_layers[j]->print_z - base_layer->print_z) < EPSILON) {
++            SupportLayer *dup_layer = m_support_layers[j];
++            if (!dup_layer->support_fills.empty()) {
++                if (!base_layer->support_islands.empty())
++                    clip_extrusion_entities(dup_layer->support_fills.entities, base_layer->support_islands);
++                if (!dup_layer->support_fills.empty())
++                    base_layer->support_fills.append(std::move(dup_layer->support_fills.entities));
++                dup_layer->support_fills.entities.clear();
++            }
++            if (!dup_layer->support_islands.empty()) {
++                append(base_layer->support_islands, dup_layer->support_islands);
++                base_layer->support_islands = union_ex(base_layer->support_islands);
++                dup_layer->support_islands.clear();
++            }
++            delete dup_layer;
++            m_support_layers[j] = nullptr;
++            ++j;
++        }
++        merged.push_back(base_layer);
++        i = j;
++    }
++    m_support_layers = std::move(merged);
++    for (size_t idx = 0; idx < m_support_layers.size(); ++idx)
++        m_support_layers[idx]->set_id(idx);
++}
++
  void PrintObject::_generate_support_material()
  {
 -    if (is_tree(m_config.support_type.value)) {
 -        TreeSupport tree_support(*this, m_slicing_params);
 -        tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
 -        tree_support.generate();
-+    // [ORCAPORT:PF-10-paint] Per-style support painting. When facets are painted with a
-+    // registered support type, that type's engine and settings are forced for this object's
-+    // support pass, and the painted facets are projected as enforcers (see the engines). With
-+    // nothing painted the legacy path below runs unchanged.
-+    //
-+    // Current scope: a single painted style drives the whole pass. Mixing several styles that
-+    // use different engines (e.g. Organic + Grid on one object) selects the first tree entry;
-+    // true multi-pass composition is recorded as a follow-up in porting/notes/PF-10-paint.md.
-+    const OrcaExt::SupportPaintType *paint = nullptr;
++    // [ORCAPORT:PF-10-paint] Multi-pass support composition. Painted explicit styles define
++    // which engine wires which region; the object's own engine handles the rest. Classic
++    // (Snug/Grid/NeoWave) regions share the single classic pass; tree (Organic/Baobab) regions
++    // run as a second, enforcer-only tree pass that appends and is then merged in. With nothing
++    // painted the legacy single-pass path below runs unchanged.
++    const OrcaExt::SupportPaintType *classic_paint = nullptr; // single classic style, if exactly one
++    const OrcaExt::SupportPaintType *tree_paint    = nullptr; // first painted tree style
++    size_t                           classic_count = 0;
++    std::vector<EnforcerBlockerType> classic_states, tree_states;
++
 +    if (this->has_support()) {
 +        for (const OrcaExt::SupportPaintType &t : OrcaExt::support_paint_types()) {
 +            if (t.state == OrcaExt::SUPPORT_PAINT_DEFAULT || t.state == OrcaExt::SUPPORT_PAINT_BLOCKER)
 +                continue;
-+            if (OrcaExt::has_painted_support_style(*this, t.state)) {
-+                paint = &t;
-+                break;
++            if (!OrcaExt::has_painted_support_style(*this, t.state))
++                continue;
++            if (t.is_tree) {
++                tree_states.push_back(t.state);
++                if (tree_paint == nullptr)
++                    tree_paint = &t;
++            } else {
++                classic_states.push_back(t.state);
++                ++classic_count;
++                if (classic_paint == nullptr)
++                    classic_paint = &t;
 +            }
 +        }
-     }
--    else {
--        PrintObjectSupportMaterial support_material(this, m_slicing_params);
--        support_material.generate(*this);
++    }
 +
-+    if (paint == nullptr) {
++    if (classic_states.empty() && tree_states.empty()) {
 +        if (is_tree(m_config.support_type.value)) {
 +            TreeSupport tree_support(*this, m_slicing_params);
 +            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
@@ -332,98 +472,206 @@ index 9b0e05d7f4..a0db6c13fa 100644
 +            support_material.generate(*this);
 +        }
 +        return;
-+    }
+     }
+-    else {
+-        PrintObjectSupportMaterial support_material(this, m_slicing_params);
+-        support_material.generate(*this);
 +
-+    // Scoped override of the object config for the painted engine pass.
-+    const SupportType                       old_type  = m_config.support_type.value;
-+    const SupportMaterialStyle              old_style = m_config.support_style.value;
-+    const SupportMaterialPattern            old_base  = m_config.support_base_pattern.value;
-+    const SupportMaterialInterfacePattern   old_iface = m_config.support_interface_pattern.value;
-+    const SupportMaterialWaveRoofPattern    old_wrp   = m_config.wavesupport_roof_pattern.value;
-+    const SupportMaterialWaveRoofOrder      old_wro   = m_config.wavesupport_roof_order.value;
-+    const int                               old_wloops = m_config.wavesupport_wall_loops.value;
++    // Scoped override of the object config plus the pass transients.
++    const SupportType                     old_type   = m_config.support_type.value;
++    const SupportMaterialStyle            old_style  = m_config.support_style.value;
++    const SupportMaterialPattern          old_base   = m_config.support_base_pattern.value;
++    const SupportMaterialInterfacePattern old_iface  = m_config.support_interface_pattern.value;
++    const SupportMaterialWaveRoofPattern  old_wrp    = m_config.wavesupport_roof_pattern.value;
++    const SupportMaterialWaveRoofOrder    old_wro    = m_config.wavesupport_roof_order.value;
++    const int                             old_wloops = m_config.wavesupport_wall_loops.value;
 +
 +    auto restore = [&]() {
-+        m_config.support_type.value                    = old_type;
-+        m_config.support_style.value                   = old_style;
-+        m_config.support_base_pattern.value            = old_base;
-+        m_config.support_interface_pattern.value       = old_iface;
-+        m_config.wavesupport_roof_pattern.value        = old_wrp;
-+        m_config.wavesupport_roof_order.value          = old_wro;
-+        m_config.wavesupport_wall_loops.value          = old_wloops;
++        m_config.support_type.value              = old_type;
++        m_config.support_style.value             = old_style;
++        m_config.support_base_pattern.value      = old_base;
++        m_config.support_interface_pattern.value = old_iface;
++        m_config.wavesupport_roof_pattern.value  = old_wrp;
++        m_config.wavesupport_roof_order.value    = old_wro;
++        m_config.wavesupport_wall_loops.value    = old_wloops;
 +        this->set_painted_support_state(EnforcerBlockerType::NONE);
++        this->set_painted_support_blockers({});
++        this->set_support_pass_appends(false);
 +    };
 +
-+    m_config.support_type.value              = paint->support_type;
-+    m_config.support_style.value             = paint->support_style;
-+    const OrcaExt::SupportPaintOverrides &ov = paint->overrides;
-+    if (ov.force_base_pattern)      m_config.support_base_pattern.value      = ov.base_pattern;
-+    if (ov.force_interface_pattern) m_config.support_interface_pattern.value = ov.interface_pattern;
-+    if (ov.force_wave_roof_pattern) m_config.wavesupport_roof_pattern.value  = ov.wave_roof_pattern;
-+    if (ov.force_wave_roof_order)   m_config.wavesupport_roof_order.value    = ov.wave_roof_order;
-+    if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
-+    this->set_painted_support_state(paint->state);
++    auto apply_overrides = [&](const OrcaExt::SupportPaintOverrides &ov) {
++        if (ov.force_base_pattern)      m_config.support_base_pattern.value      = ov.base_pattern;
++        if (ov.force_interface_pattern) m_config.support_interface_pattern.value = ov.interface_pattern;
++        if (ov.force_wave_roof_pattern) m_config.wavesupport_roof_pattern.value  = ov.wave_roof_pattern;
++        if (ov.force_wave_roof_order)   m_config.wavesupport_roof_order.value    = ov.wave_roof_order;
++        if (ov.force_wave_wall_loops)   m_config.wavesupport_wall_loops.value    = ov.wave_wall_loops;
++    };
++
++    const bool object_tree = is_tree(m_config.support_type.value);
++    const bool run_classic = !classic_states.empty() || !object_tree;
++    const bool run_tree    = !tree_states.empty();
++    const bool compose     = run_classic && run_tree;
++
++    // The whole multi-pass owns the support layers; neither engine clears them now.
++    this->clear_support_layers();
 +
 +    try {
-+        if (is_tree(m_config.support_type.value)) {
++        if (run_classic) {
++            const OrcaExt::SupportPaintType *cp = (classic_count == 1) ? classic_paint : nullptr;
++            if (cp != nullptr) {
++                m_config.support_type.value  = cp->support_type;
++                m_config.support_style.value = cp->support_style;
++                apply_overrides(cp->overrides);
++                this->set_painted_support_state(cp->state);
++            } else {
++                // Several classic styles painted: Orca's classic style is object level, so fall
++                // back to the object's own; the painted facets still enforce support.
++                this->set_painted_support_state(EnforcerBlockerType::NONE);
++            }
++            this->set_painted_support_blockers(tree_states);
++            this->set_support_pass_appends(false);
++
++            PrintObjectSupportMaterial support_material(this, m_slicing_params);
++            support_material.generate(*this);
++        }
++
++        if (run_tree) {
++            if (tree_paint != nullptr) {
++                // Compose with the classic pass: manual (enforcer-only) tree so auto overhangs
++                // are not built twice.
++                m_config.support_type.value  = compose ? stTree : tree_paint->support_type;
++                m_config.support_style.value = tree_paint->support_style;
++                apply_overrides(tree_paint->overrides);
++                this->set_painted_support_state(tree_paint->state);
++            } else {
++                this->set_painted_support_state(EnforcerBlockerType::NONE);
++            }
++            this->set_painted_support_blockers(classic_states);
++            this->set_support_pass_appends(run_classic);
++
 +            TreeSupport tree_support(*this, m_slicing_params);
 +            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
 +            tree_support.generate();
-+        }
-+        else {
-+            PrintObjectSupportMaterial support_material(this, m_slicing_params);
-+            support_material.generate(*this);
 +        }
 +    } catch (...) {
 +        restore();
 +        throw;
      }
++
++    if (compose)
++        this->merge_duplicate_support_layers();
++
 +    restore();
  }
  
  // BBS
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index 6037b4aabf..93e89161e5 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -1368,9 +1368,11 @@ SupportGeneratorLayersPtr generate_support_layers(
+ 
+     // Sort the layers lexicographically by a raising print_z and a decreasing height.
+     std::sort(layers_sorted.begin(), layers_sorted.end(), [](auto *l1, auto *l2) { return *l1 < *l2; });
+-    int layer_id = 0;
+-    int layer_id_interface = 0;
+-    assert(object.support_layers().empty());
++    // [ORCAPORT:PF-10-paint] When a second support pass appends, continue the id sequence instead
++    // of restarting at 0 (duplicate ids break the toolpath stage).
++    assert(object.support_layers().empty() || object.support_pass_appends());
++    int layer_id = int(object.support_layers().size());
++    int layer_id_interface = layer_id;
+     for (size_t i = 0; i < layers_sorted.size();) {
+         // Find the last layer with roughly the same print_z, find the minimum layer height of all.
+         // Due to the floating point inaccuracies, the print_z may not be the same even if in theory they should.
 diff --git a/src/libslic3r/Support/SupportMaterial.cpp b/src/libslic3r/Support/SupportMaterial.cpp
-index c2f4e9a447..62a15ab096 100644
+index c2f4e9a447..60c8b4e16c 100644
 --- a/src/libslic3r/Support/SupportMaterial.cpp
 +++ b/src/libslic3r/Support/SupportMaterial.cpp
-@@ -1449,6 +1449,9 @@ struct SupportAnnotations
+@@ -1449,6 +1449,13 @@ struct SupportAnnotations
          // Append custom supports.
          object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
          object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
-+        // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support.
++        // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support;
++        // facets of other passes' styles are blocked so this pass does not build under them.
 +        if (const EnforcerBlockerType ps = object.painted_support_state(); ps != EnforcerBlockerType::NONE)
 +            object.project_and_append_custom_facets(false, ps, enforcers_layers);
++        for (const EnforcerBlockerType bs : object.painted_support_blockers())
++            if (bs != EnforcerBlockerType::NONE && bs != EnforcerBlockerType::BLOCKER)
++                object.project_and_append_custom_facets(false, bs, blockers_layers);
  
          // Expand the blocker a bit. Custom blockers produce strips
          // spanning just the projection between the two slices.
 diff --git a/src/libslic3r/Support/TreeSupport.cpp b/src/libslic3r/Support/TreeSupport.cpp
-index 0d02bb1ab3..f21a4e7f95 100644
+index 0d02bb1ab3..df3c2c9514 100644
 --- a/src/libslic3r/Support/TreeSupport.cpp
 +++ b/src/libslic3r/Support/TreeSupport.cpp
-@@ -1000,6 +1000,9 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
+@@ -674,8 +674,10 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
+         return;
+     }
+ 
+-    // Clear and create Tree Support Layers
+-    m_object->clear_support_layers();
++    // Clear and create Tree Support Layers. [ORCAPORT:PF-10-paint] When a second support pass
++    // appends (painted tree regions after the classic pass), keep the existing layers.
++    if (!m_object->support_pass_appends())
++        m_object->clear_support_layers();
+     m_object->clear_tree_support_preview_cache();
+ 
+     const PrintObjectConfig& config = m_object->config();
+@@ -1000,6 +1002,13 @@ void TreeSupport::detect_overhangs(bool check_support_necessity/* = false*/)
      m_vertical_enforcer_points.clear();
      m_object->project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers, &m_vertical_enforcer_points);
      m_object->project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers);
-+    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support.
++    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support;
++    // facets of other passes' styles are blocked so this pass does not build under them.
 +    if (const EnforcerBlockerType ps = m_object->painted_support_state(); ps != EnforcerBlockerType::NONE)
 +        m_object->project_and_append_custom_facets(false, ps, enforcers);
++    for (const EnforcerBlockerType bs : m_object->painted_support_blockers())
++        if (bs != EnforcerBlockerType::NONE && bs != EnforcerBlockerType::BLOCKER)
++            m_object->project_and_append_custom_facets(false, bs, blockers);
  
      if (is_auto(stype) && config_remove_small_overhangs) {
          // remove small overhangs
 diff --git a/src/libslic3r/Support/TreeSupport3D.cpp b/src/libslic3r/Support/TreeSupport3D.cpp
-index 3cd3f4110d..1cdab3d62d 100644
+index 3cd3f4110d..d028c7b6f0 100644
 --- a/src/libslic3r/Support/TreeSupport3D.cpp
 +++ b/src/libslic3r/Support/TreeSupport3D.cpp
-@@ -205,6 +205,9 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
+@@ -205,6 +205,13 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
      std::vector<Polygons>    blockers_layers{ print_object.slice_support_blockers() };
      print_object.project_and_append_custom_facets(false, EnforcerBlockerType::ENFORCER, enforcers_layers);
      print_object.project_and_append_custom_facets(false, EnforcerBlockerType::BLOCKER, blockers_layers);
-+    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support.
++    // [ORCAPORT:PF-10-paint] Facets painted with the active support style also enforce support;
++    // facets of other passes' styles are blocked so this pass does not build under them.
 +    if (const EnforcerBlockerType ps = print_object.painted_support_state(); ps != EnforcerBlockerType::NONE)
 +        print_object.project_and_append_custom_facets(false, ps, enforcers_layers);
++    for (const EnforcerBlockerType bs : print_object.painted_support_blockers())
++        if (bs != EnforcerBlockerType::NONE && bs != EnforcerBlockerType::BLOCKER)
++            print_object.project_and_append_custom_facets(false, bs, blockers_layers);
      const int                support_threshold      = config.support_threshold_angle.value;
      const bool               support_threshold_auto = support_threshold == 0;
      // +1 makes the threshold inclusive
+@@ -3590,6 +3597,9 @@ static void generate_support_areas(Print &print, TreeSupport* tree_support, cons
+             continue;
+ 
+         // Produce the support G-code.
++        // [ORCAPORT:PF-10-paint] When this pass appends to layers a previous pass produced, only
++        // toolpath this pass's own new layers; otherwise the classic layers would be re-toolpathed.
++        const size_t support_layer_base = print_object.support_layers().size();
+         SupportGeneratorLayersPtr raft_layers = generate_raft_base(print_object, support_params, print_object.slicing_parameters(), top_contacts, interface_layers, base_interface_layers, intermediate_layers, layer_storage);
+         SupportGeneratorLayersPtr layers_sorted = generate_support_layers(print_object, raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
+ 
+@@ -3599,7 +3609,9 @@ static void generate_support_areas(Print &print, TreeSupport* tree_support, cons
+         });
+ 
+         print.set_status(69, _L("Generating support"));
+-        generate_support_toolpaths(print_object.support_layers(), print_object.config(), support_params, print_object.slicing_parameters(),
++        SupportLayerPtrs new_support_layers(print_object.support_layers().begin() + support_layer_base,
++                                            print_object.support_layers().end());
++        generate_support_toolpaths(new_support_layers, print_object.config(), support_params, print_object.slicing_parameters(),
+             raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
+ 
+         auto t_end = std::chrono::high_resolution_clock::now();
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 index 035fb895aa..7b4171fb28 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
