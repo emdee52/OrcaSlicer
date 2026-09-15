@@ -8,6 +8,7 @@
 #include "Point.hpp"
 #include "PlaceholderParser.hpp"
 #include "PrintConfig.hpp"
+#include "OrcaExt/SeamNotch.hpp" // [ORCAPORT:PF-1]
 #include "GCode/AvoidCrossingPerimeters.hpp"
 #include "GCode/CoolingBuffer.hpp"
 #include "GCode/FanMover.hpp"
@@ -682,6 +683,10 @@ private:
     // [ORCAPORT:PQ-3] ExtrusionPath::force_no_spiral_lift of the last emitted path. Read by the
     // lift decision and the wipe retraction rebalance.
     bool                                m_last_path_force_no_spiral_lift{ false };
+    // [ORCAPORT:PF-1] Nip/Tuck notch state: set when an external perimeter is notched, consumed
+    // by the first inner perimeter emitted afterwards (relief pocket).
+    OrcaExt::SeamNotch::ExternalNotch   m_seam_notch;
+    bool                                m_seam_notch_trimmed{ true };
     // How many times will change_layer() be called?
     // change_layer() will update the progress bar.
     unsigned int                        m_layer_count;

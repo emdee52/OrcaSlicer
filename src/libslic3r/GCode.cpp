@@ -7337,13 +7337,21 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
     loop.clip_end(clip_length, &paths);
     if (paths.empty()) return "";
 
-    // [ORCAPORT:PF-1] Nip/Tuck seam shaping: reshape the external perimeter at the seam. Off by
-    // default (seam_type == Regular); never runs in spiral vase mode.
-    if (loop.role() == erExternalPerimeter && !m_config.spiral_mode
-        && m_config.seam_type.value != sntRegular) {
-        OrcaExt::SeamNotch::apply(paths, loop.polygon().is_counter_clockwise(), is_hole,
-            m_config.seam_type.value, m_config.seam_notch_target.value,
-            m_config.seam_notch_width.value, m_config.seam_notch_angle.value, layer_id());
+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping. Reshapes the external perimeter at the seam and
+    // relieves the first inner perimeter afterwards. Off by default (seam_type == Regular);
+    // never runs in spiral vase mode.
+    if (!m_config.spiral_mode && m_config.seam_type.value != sntRegular) {
+        if (loop.role() == erExternalPerimeter) {
+            m_seam_notch = OrcaExt::SeamNotch::apply_external(
+                paths, loop.polygon().is_counter_clockwise(), is_hole, m_config.seam_type.value,
+                m_config.seam_notch_target.value, m_config.seam_notch_width.value,
+                m_config.seam_notch_angle.value, layer_id());
+            m_seam_notch_trimmed = !m_seam_notch.applied;
+        } else if (loop.role() == erPerimeter && m_seam_notch.applied && !m_seam_notch_trimmed) {
+            const double inner_width = paths.front().width;
+            if (inner_width > 0.0 && OrcaExt::SeamNotch::trim_inner(paths, m_seam_notch, inner_width))
+                m_seam_notch_trimmed = true;
+        }
     }
 
     // SoftFever: check loop lenght for small perimeter. 
