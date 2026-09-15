@@ -1138,9 +1138,13 @@ void GLVolumeCollection::render(GLVolumeCollection::ERenderType       type,
     GLShaderProgram* edges_shader = GUI::OpenGLManager::get_gl_info().is_core_profile() ? GUI::wxGetApp().get_shader("dashed_thick_lines") : GUI::wxGetApp().get_shader("flat");
 #endif // SLIC3R_OPENGL_ES
 
+    // [ORCAPORT:SU-5] see set_transparent_depth_write(). Default true = no-op.
+    const bool no_depth_write = (type == ERenderType::Transparent) && ! m_transparent_depth_write;
     if (type == ERenderType::Transparent) {
         glsafe(::glEnable(GL_BLEND));
         glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+        if (no_depth_write)
+            glsafe(::glDepthMask(GL_FALSE));
     }
 
     glsafe(::glCullFace(GL_BACK));

@@ -401,6 +401,10 @@ public:
         All
     };
 
+    // [ORCAPORT:SU-5] ghost/preview toggle used by the Support Zones gizmo.
+    void set_transparent_depth_write(bool on) const { m_transparent_depth_write = on; }
+    bool get_transparent_depth_write() const { return m_transparent_depth_write; }
+
     struct PrintVolume
     {
         // see: Bed3D::EShapeType
@@ -418,6 +422,8 @@ public:
 private:
     PrintVolume m_print_volume;
     PrintVolume m_render_volume;
+    // [ORCAPORT:SU-5] true = the transparent pass writes depth (default).
+    mutable bool m_transparent_depth_write { true };
 
     // z range for clipping in shaders
     std::array<float, 2> m_z_range;

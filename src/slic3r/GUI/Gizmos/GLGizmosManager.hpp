@@ -91,6 +91,7 @@ public:
         Simplify,
         BrimEars,
         AlignStack, // [ORCAPORT:AS-2]
+        SupportZones, // [ORCAPORT:SU-5]
         //SlaSupports,
         // BBS
         //FaceRecognition,
