@@ -34,7 +34,7 @@ struct ExternalNotch {
 // (after GCode::extrude_loop's clip_end). `loop_ccw` = loop.polygon().is_counter_clockwise().
 ExternalNotch apply_external(ExtrusionPaths &paths, bool loop_ccw, bool is_hole, SeamNotchType type,
                              SeamNotchTarget target, double notch_width_factor,
-                             double corner_threshold_deg, int layer_index);
+                             double corner_threshold_deg, double width_fallback_mm, int layer_index);
 
 // Relieve the first inner perimeter near the notch so the pushed-in outer bead has room.
 // Only the points within the notch taper of the projected V-leg are nudged along the notch
