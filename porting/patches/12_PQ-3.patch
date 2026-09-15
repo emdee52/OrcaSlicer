@@ -1,0 +1,1954 @@
+diff --git a/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.cpp b/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.cpp
+index d6cb1331c1..9b0d65cfba 100644
+--- a/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.cpp
++++ b/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.cpp
+@@ -13,6 +13,7 @@
+ #include "RedistributeBeadingStrategy.hpp"
+ #include "OuterWallInsetBeadingStrategy.hpp"
+ #include "libslic3r/Arachne/BeadingStrategy/BeadingStrategy.hpp"
++#include "libslic3r/NeoArachne/NeoArachneBeadingStrategy.hpp" // [ORCAPORT:PQ-3]
+ 
+ namespace Slic3r::Arachne {
+ 
+@@ -28,7 +29,11 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(const coord_t preferred_
+                                                         const coord_t max_bead_count,
+                                                         const coord_t outer_wall_offset,
+                                                         const int     inward_distributed_center_wall_count,
+-                                                        const double  minimum_variable_line_ratio)
++                                                        const double  minimum_variable_line_ratio,
++                                                        const bool    hybrid_edge_enabled,
++                                                        const bool    hybrid_edge_pin_outer,
++                                                        const bool    hybrid_edge_cap_widening,
++                                                        const double  hybrid_edge_hysteresis_pct)
+ {
+     // Handle a special case when there is just one external perimeter.
+     // Because big differences in bead width for inner and other perimeters cause issues with current beading strategies.
+@@ -50,6 +55,18 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(const coord_t preferred_
+         ret = std::make_unique<OuterWallInsetBeadingStrategy>(outer_wall_offset, std::move(ret));
+     }
+ 
++    // [ORCAPORT:PQ-3] wrap with NeoArachneBeadingStrategy BEFORE Limited (Limited injects 0-width
++    // marker walls other strategies must not touch). Pins outer width for bead_count 1/2, caps inner
++    // widening, adds spatial hysteresis. No-op when hybrid_edge_enabled=false.
++    if (hybrid_edge_enabled) {
++        BOOST_LOG_TRIVIAL(trace) << "Applying the NeoArachne meta-strategy (pin outer + hysteresis " << hybrid_edge_hysteresis_pct << "%).";
++        ret = std::make_unique<NeoArachne::NeoArachneBeadingStrategy>(preferred_bead_width_outer,
++                                                                      hybrid_edge_hysteresis_pct,
++                                                                      hybrid_edge_pin_outer,
++                                                                      hybrid_edge_cap_widening,
++                                                                      std::move(ret));
++    }
++
+     // Apply the LimitedBeadingStrategy last, since that adds a 0-width marker wall which other beading strategies shouldn't touch.
+     BOOST_LOG_TRIVIAL(trace) << "Applying the Limited Beading meta-strategy with maximum bead count = " << max_bead_count << ".";
+     ret = std::make_unique<LimitedBeadingStrategy>(max_bead_count, std::move(ret));
+diff --git a/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.hpp b/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.hpp
+index e24a85e5c5..cd8f947770 100644
+--- a/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.hpp
++++ b/src/libslic3r/Arachne/BeadingStrategy/BeadingStrategyFactory.hpp
+@@ -31,7 +31,13 @@ public:
+         coord_t max_bead_count = 0,
+         coord_t outer_wall_offset = 0,
+         int inward_distributed_center_wall_count = 2,
+-        double minimum_variable_line_width = 0.5
++        double minimum_variable_line_width = 0.5,
++        // [ORCAPORT:PQ-3] when hybrid_edge_enabled, wrap the meta-chain (after Redistribute/
++        // Widening/OuterInset, BEFORE Limited) with NeoArachneBeadingStrategy. Defaults = stock.
++        bool   hybrid_edge_enabled = false,
++        bool   hybrid_edge_pin_outer = true,
++        bool   hybrid_edge_cap_widening = false,
++        double hybrid_edge_hysteresis_pct = 0.0
+     );
+ };
+ 
+diff --git a/src/libslic3r/Arachne/WallToolPaths.cpp b/src/libslic3r/Arachne/WallToolPaths.cpp
+index 724016bcb1..909e87c941 100644
+--- a/src/libslic3r/Arachne/WallToolPaths.cpp
++++ b/src/libslic3r/Arachne/WallToolPaths.cpp
+@@ -518,9 +518,16 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
+ 
+     const coord_t wall_transition_length = scaled<coord_t>(this->m_params.wall_transition_length);
+ 	
+-	const double wall_split_middle_threshold = std::clamp(2. * unscaled<double>(this->min_bead_width) / external_perimeter_extrusion_width - 1., 0.01, 0.99); // For an uneven nr. of lines: When to split the middle wall into two.
+-    const double wall_add_middle_threshold   = std::clamp(unscaled<double>(this->min_bead_width) / perimeter_extrusion_width, 0.01, 0.99); // For an even nr. of lines: When to add a new middle in between the innermost two walls.
+-    
++	// [ORCAPORT:PQ-3] max-bead-width as a CEILING (S3D semantics): cap the auto-derived thresholds
++	// from above, never push them up. Sentinel 0 = no ceiling (stock).
++	const double na_max_ceiling = (m_params.max_bead_width_pct > 0.f)
++	    ? std::clamp(double(m_params.max_bead_width_pct) / 100.0 - 1.0, 0.0, 1.0)
++	    : std::numeric_limits<double>::infinity();
++	const double stock_split_threshold = std::clamp(2. * unscaled<double>(this->min_bead_width) / external_perimeter_extrusion_width - 1., 0.01, 0.99); // For an uneven nr. of lines: When to split the middle wall into two.
++	const double stock_add_threshold   = std::clamp(unscaled<double>(this->min_bead_width) / perimeter_extrusion_width, 0.01, 0.99); // For an even nr. of lines: When to add a new middle in between the innermost two walls.
++	const double wall_split_middle_threshold = std::min(stock_split_threshold, na_max_ceiling);
++	const double wall_add_middle_threshold   = std::min(stock_add_threshold,   na_max_ceiling);
++
+     const int wall_distribution_count = this->m_params.wall_distribution_count;
+     const size_t max_bead_count = (inset_count < std::numeric_limits<coord_t>::max() / 2) ? 2 * inset_count : std::numeric_limits<coord_t>::max();
+     const auto beading_strat = BeadingStrategyFactory::makeStrategy
+@@ -536,9 +543,17 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
+             wall_add_middle_threshold,
+             max_bead_count,
+             wall_0_inset,
+-            wall_distribution_count
++            wall_distribution_count,
++            // minimum_variable_line_width - keep factory default
++            0.5,
++            // [ORCAPORT:PQ-3] hybrid meta-strategy wrap params.
++            m_params.hybrid_edge_enabled,
++            m_params.hybrid_edge_pin_outer,
++            m_params.hybrid_edge_cap_widening,
++            m_params.hybrid_edge_hysteresis_pct
+         );
+-    const coord_t transition_filter_dist   = scaled<coord_t>(100.f);
++    // [ORCAPORT:PQ-3] was hardcoded 100 mm; now read from params (default 100 = stock behaviour).
++    const coord_t transition_filter_dist   = scaled<coord_t>(m_params.wall_transition_filter_dist_mm);
+     const coord_t allowed_filter_deviation = wall_transition_filter_deviation;
+     SkeletalTrapezoidation wall_maker
+     (
+@@ -554,7 +569,9 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
+ 
+     stitchToolPaths(toolpaths, this->bead_width_x);
+ 
+-    removeSmallLines(toolpaths);
++    // [ORCAPORT:PQ-3] Edge Closure: keep short closure tails when asked; default false = stock.
++    if (!m_params.keep_short_tails)
++        removeSmallLines(toolpaths);
+ 
+     separateOutInnerContour();
+ 
+diff --git a/src/libslic3r/Arachne/WallToolPaths.hpp b/src/libslic3r/Arachne/WallToolPaths.hpp
+index d7120a088c..0cd1f21d70 100644
+--- a/src/libslic3r/Arachne/WallToolPaths.hpp
++++ b/src/libslic3r/Arachne/WallToolPaths.hpp
+@@ -32,6 +32,15 @@ public:
+     int     wall_distribution_count          = 1;
+     bool    is_top_or_bottom_layer           = false;
+ 
++    // [ORCAPORT:PQ-3] NeoArachne / Edge Closure params. Defaults = stock Arachne.
++    bool    keep_short_tails = false;            // skip removeSmallLines so closure tails survive
++    bool    hybrid_edge_enabled        = false;  // wrap the meta-chain with NeoArachneBeadingStrategy
++    bool    hybrid_edge_pin_outer      = true;
++    bool    hybrid_edge_cap_widening   = false;
++    double  hybrid_edge_hysteresis_pct = 0.0;
++    float   wall_transition_filter_dist_mm = 100.f; // stock Arachne hardcodes 100 mm
++    float   max_bead_width_pct = 0.f;               // 0 = stock auto-derivation
++
+     coord_t wall_maximum_resolution = meshfix_maximum_resolution();
+     coord_t wall_maximum_deviation  = meshfix_maximum_deviation();
+ };
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 3708918c34..0aa6a2f9fb 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -70,6 +70,18 @@ set(lisbslic3r_sources
+     Arachne/utils/SquareGrid.hpp
+     Arachne/WallToolPaths.cpp
+     Arachne/WallToolPaths.hpp
++    NeoArachne/NeoArachneBeadingStrategy.cpp
++    NeoArachne/NeoArachneBeadingStrategy.hpp
++    NeoArachne/NeoArachneConfig.hpp
++    NeoArachne/NeoArachneDebug.cpp
++    NeoArachne/NeoArachneDebug.hpp
++    NeoArachne/NeoArachneEngine.cpp
++    NeoArachne/NeoArachneEngine.hpp
++    NeoArachne/NeoArachneInterior.cpp
++    NeoArachne/NeoArachneInterior.hpp
++    NeoArachne/NeoArachnePlan.cpp
++    NeoArachne/NeoArachnePlan.hpp
++    NeoArachne/NeoArachneRuntime.hpp
+     ArcFitter.cpp
+     ArcFitter.hpp
+     Arrange.cpp
+diff --git a/src/libslic3r/ExtrusionEntity.hpp b/src/libslic3r/ExtrusionEntity.hpp
+index e8348b3bd5..a26bfbbfed 100644
+--- a/src/libslic3r/ExtrusionEntity.hpp
++++ b/src/libslic3r/ExtrusionEntity.hpp
+@@ -153,6 +153,11 @@ public:
+     // Orca: Used for inner/outer/inner mode - classic perimeter generator
+     int inset_idx = -1;
+ 
++    // [ORCAPORT:PQ-3] per-path override for the Auto Lift heuristic: when true, GCode forces
++    // LazyLift instead of SpiralLift. Set by NeoArachne on every path the hybrid region emits, to
++    // stop the spiral-smear blob around dense variable-width paths. Default false = stock.
++    bool force_no_spiral_lift = false;
++
+     static std::string role_to_string(ExtrusionRole role);
+     static ExtrusionRole string_to_role(const std::string_view role);
+ };
+@@ -190,7 +195,7 @@ public:
+         , m_can_reverse(rhs.m_can_reverse)
+         , m_role(rhs.m_role)
+         , m_no_extrusion(rhs.m_no_extrusion)
+-    {}
++    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
+     ExtrusionPath(ExtrusionPath &&rhs)
+         : polyline(std::move(rhs.polyline))
+         , overhang_degree(rhs.overhang_degree)
+@@ -203,7 +208,7 @@ public:
+         , m_can_reverse(rhs.m_can_reverse)
+         , m_role(rhs.m_role)
+         , m_no_extrusion(rhs.m_no_extrusion)
+-    {}
++    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
+     ExtrusionPath(const Polyline3 &polyline, const ExtrusionPath &rhs)
+         : polyline(polyline)
+         , overhang_degree(rhs.overhang_degree)
+@@ -216,7 +221,7 @@ public:
+         , m_can_reverse(rhs.m_can_reverse)
+         , m_role(rhs.m_role)
+         , m_no_extrusion(rhs.m_no_extrusion)
+-    {}
++    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
+     ExtrusionPath(Polyline3 &&polyline, const ExtrusionPath &rhs)
+         : polyline(std::move(polyline))
+         , overhang_degree(rhs.overhang_degree)
+@@ -229,7 +234,7 @@ public:
+         , m_can_reverse(rhs.m_can_reverse)
+         , m_role(rhs.m_role)
+         , m_no_extrusion(rhs.m_no_extrusion)
+-    {}
++    { this->force_no_spiral_lift = rhs.force_no_spiral_lift; }
+ 
+     ExtrusionPath& operator=(const ExtrusionPath& rhs) {
+         m_can_reverse = rhs.m_can_reverse;
+@@ -243,6 +248,7 @@ public:
+         this->overhang_degree = rhs.overhang_degree;
+         this->curve_degree = rhs.curve_degree;
+         this->polyline = rhs.polyline;
++        this->force_no_spiral_lift = rhs.force_no_spiral_lift; // [ORCAPORT:PQ-3]
+         return *this;
+     }
+     ExtrusionPath& operator=(ExtrusionPath&& rhs) {
+@@ -257,6 +263,7 @@ public:
+         this->overhang_degree = rhs.overhang_degree;
+         this->curve_degree = rhs.curve_degree;
+         this->polyline = std::move(rhs.polyline);
++        this->force_no_spiral_lift = rhs.force_no_spiral_lift; // [ORCAPORT:PQ-3]
+         return *this;
+     }
+ 
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index 5caf7b1617..4d53693459 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -500,6 +500,18 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
+         // and return the maximum allowed wipe amount to be retracted during the wipe move
+         retraction_length_before_wipe += retraction_length_remaining - retraction_length_during_wipe;
+ 
++        // [ORCAPORT:PQ-3] Hybrid paths end with pre-wipe retract ~0.1mm and during-wipe ~full,
++        // leaving the nozzle pressurized when the wipe starts (ooze smear). Force >= 50% before.
++        if (gcodegen.last_path_force_no_spiral_lift()) {
++            const double total = retraction_length_before_wipe + retraction_length_during_wipe;
++            const double min_before = total * 0.5;
++            if (retraction_length_before_wipe < min_before) {
++                const double shift = min_before - retraction_length_before_wipe;
++                retraction_length_before_wipe += shift;
++                retraction_length_during_wipe -= shift;
++            }
++        }
++
+         return { retraction_length_before_wipe, retraction_length_during_wipe, retraction_length_after_wipe };
+     }
+ 
+@@ -8360,6 +8372,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description,
+     char buf[64];
+     assert(is_decimal_separator_point());
+ 
++    // [ORCAPORT:PQ-3] track this path's spiral-lift opt-out for the next travel and the wipe rebalance.
++    m_last_path_force_no_spiral_lift = path.force_no_spiral_lift;
++
+     if (path.role() != m_last_processor_extrusion_role) {
+         m_last_processor_extrusion_role = path.role();
+         sprintf(buf, ";%s%s\n", GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role).c_str(), ExtrusionEntity::role_to_string(m_last_processor_extrusion_role).c_str());
+@@ -9215,6 +9230,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
+         else {
+             lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
+         }
++        // [ORCAPORT:PQ-3] NeoArachne paths opt out of SpiralLift (anti spiral-smear).
++        if (m_last_path_force_no_spiral_lift && lift_type == LiftType::SpiralLift)
++            lift_type = LiftType::SlopeLift;
+         return true;
+     }
+ 
+@@ -9249,6 +9267,9 @@ bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftTyp
+     else {
+         lift_type = to_lift_type(ZHopType(FILAMENT_CONFIG(z_hop_types)));
+     }
++    // [ORCAPORT:PQ-3] NeoArachne paths opt out of SpiralLift (anti spiral-smear).
++    if (m_last_path_force_no_spiral_lift && lift_type == LiftType::SpiralLift)
++        lift_type = LiftType::SlopeLift;
+     return true;
+ }
+ 
+diff --git a/src/libslic3r/GCode.hpp b/src/libslic3r/GCode.hpp
+index 6a89a0a7c3..57dd3f2373 100644
+--- a/src/libslic3r/GCode.hpp
++++ b/src/libslic3r/GCode.hpp
+@@ -237,6 +237,8 @@ public:
+     Vec3d                    point_to_gcode_quantized(const Point3& point) const;
+     const FullPrintConfig &config() const { return m_config; }
+     const Layer*    layer() const { return m_layer; }
++    // [ORCAPORT:PQ-3] true when the last emitted path opted out of SpiralLift (NeoArachne paths).
++    bool last_path_force_no_spiral_lift() const { return m_last_path_force_no_spiral_lift; }
+     GCodeWriter&    writer() { return m_writer; }
+     const GCodeWriter& writer() const { return m_writer; }
+     PlaceholderParser& placeholder_parser() { return m_placeholder_parser_integration.parser; }
+@@ -677,6 +679,9 @@ private:
+     bool                                m_enable_extrusion_role_markers;
+     // Keeps track of the last extrusion role passed to the processor
+     ExtrusionRole                       m_last_processor_extrusion_role;
++    // [ORCAPORT:PQ-3] ExtrusionPath::force_no_spiral_lift of the last emitted path. Read by the
++    // lift decision and the wipe retraction rebalance.
++    bool                                m_last_path_force_no_spiral_lift{ false };
+     // How many times will change_layer() be called?
+     // change_layer() will update the progress bar.
+     unsigned int                        m_layer_count;
+diff --git a/src/libslic3r/LayerRegion.cpp b/src/libslic3r/LayerRegion.cpp
+index 754a157ff0..4a845fbd1d 100644
+--- a/src/libslic3r/LayerRegion.cpp
++++ b/src/libslic3r/LayerRegion.cpp
+@@ -3,6 +3,7 @@
+ #include "ClipperUtils.hpp"
+ #include "Geometry.hpp"
+ #include "PerimeterGenerator.hpp"
++#include "NeoArachne/NeoArachneEngine.hpp" // [ORCAPORT:PQ-3]
+ #include "Point.hpp"
+ #include "Print.hpp"
+ #include "Surface.hpp"
+@@ -137,6 +138,9 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, const LayerRe
+ 
+     if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Arachne && !spiral_mode)
+         g.process_arachne();
++    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator (ungated; spiral mode falls back to Classic).
++    else if (this->layer()->object()->config().wall_generator.value == PerimeterGeneratorType::Hybrid && !spiral_mode)
++        Slic3r::NeoArachne::run(g);
+     else
+         g.process_classic();
+ }
+diff --git a/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.cpp b/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.cpp
+new file mode 100644
+index 0000000000..60f2b87858
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.cpp
+@@ -0,0 +1,153 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase3
++#include "NeoArachneBeadingStrategy.hpp"
++
++#include <algorithm>
++#include <numeric>
++#include <utility>
++
++namespace Slic3r { namespace NeoArachne {
++
++NeoArachneBeadingStrategy::NeoArachneBeadingStrategy(const coord_t                 optimal_width_outer,
++                                                     const double                  hysteresis_pct,
++                                                     const bool                    pin_outer,
++                                                     const bool                    cap_widening,
++                                                     Arachne::BeadingStrategyPtr   parent_in)
++    : Arachne::BeadingStrategy(*parent_in)
++    , parent(std::move(parent_in))
++    , optimal_width_outer(optimal_width_outer)
++    , hysteresis_shift(static_cast<coord_t>(double(optimal_width_outer) * std::clamp(hysteresis_pct, 0.0, 100.0) / 100.0))
++    , pin_outer(pin_outer)
++    , cap_widening(cap_widening)
++{
++    name = "NeoArachneBeadingStrategy";
++}
++
++coord_t NeoArachneBeadingStrategy::getOptimalThickness(coord_t bead_count) const
++{
++    return parent->getOptimalThickness(bead_count);
++}
++
++coord_t NeoArachneBeadingStrategy::getTransitionThickness(coord_t lower_bead_count) const
++{
++    // Shift the upward-transition threshold up by hysteresis_shift so the
++    // engine prefers to stay at the lower bead count for slightly wider
++    // strokes. Combined with the matching shift in getOptimalBeadCount
++    // below, this yields a stable spatial hysteresis with no breathing at
++    // borderline thicknesses.
++    return parent->getTransitionThickness(lower_bead_count) + hysteresis_shift;
++}
++
++coord_t NeoArachneBeadingStrategy::getOptimalBeadCount(coord_t thickness) const
++{
++    // Mirror of the transition shift: subtract the hysteresis from the
++    // input thickness so a stroke at (T_parent_transition + hysteresis) is
++    // still reported as the LOWER bead count. clamp at 0 to avoid going
++    // negative for very thin strokes (parent handles 0/min cases).
++    const coord_t effective = (thickness > hysteresis_shift) ? thickness - hysteresis_shift : 0;
++    return parent->getOptimalBeadCount(effective);
++}
++
++coord_t NeoArachneBeadingStrategy::getTransitioningLength(coord_t lower_bead_count) const
++{
++    return parent->getTransitioningLength(lower_bead_count);
++}
++
++float NeoArachneBeadingStrategy::getTransitionAnchorPos(coord_t lower_bead_count) const
++{
++    return parent->getTransitionAnchorPos(lower_bead_count);
++}
++
++std::string NeoArachneBeadingStrategy::toString() const
++{
++    return std::string("NeoArachneBeadingStrategy+") + parent->toString();
++}
++
++Arachne::BeadingStrategy::Beading NeoArachneBeadingStrategy::compute(coord_t thickness, coord_t bead_count) const
++{
++    // Delegate to parent first — let Redistribute / Distributed / Widening do
++    // their thing. We post-process the result with two independent overrides:
++    //   1. pin_outer (bead_count 1/2) — replace outer width with optimal_width.
++    //   2. cap_widening (any bead_count) — clamp every bead width to
++    //      optimal_width_outer to prevent Arachne's adaptive widening from
++    //      over-depositing in variable-thickness zones.
++    Arachne::BeadingStrategy::Beading ret = parent->compute(thickness, bead_count);
++
++    // ── (1) Pin outer for bead_count 1 and 2 ────────────────────────────────
++    // Upstream Redistribute uses thickness/bead_count for those cases, making
++    // the outer width "breathe" along borderline strokes. Force exact optimal_width.
++    if (pin_outer && (bead_count == 1 || bead_count == 2)
++        && thickness >= bead_count * optimal_width_outer) {
++
++        ret.bead_widths.clear();
++        ret.toolpath_locations.clear();
++
++        if (bead_count == 1) {
++            ret.bead_widths.push_back(optimal_width_outer);
++            ret.toolpath_locations.push_back(thickness / 2);
++        } else {
++            ret.bead_widths.push_back(optimal_width_outer);
++            ret.bead_widths.push_back(optimal_width_outer);
++            ret.toolpath_locations.push_back(optimal_width_outer / 2);
++            ret.toolpath_locations.push_back(thickness - optimal_width_outer / 2);
++        }
++        ret.total_thickness = thickness;
++        // left_over recomputed below by cap_widening branch, or set explicitly
++        // if cap_widening is off.
++    }
++
++    // ── (2) Cap widening — the s93 "dupe Classic with Arachne math" fix ─────
++    // Arachne's RedistributeBeadingStrategy + DistributedBeadingStrategy adapt
++    // inner bead widths to absorb the residual thickness between outer beads:
++    // if (thickness > N × optimal_width), each inner bead is widened by a
++    // cuadratic kernel so the total covers everything. That's the "fill
++    // 100% of thickness" feature of Arachne.
++    //
++    // Visually this manifests as variable-width main beads (0.3 → 0.6 mm in
++    // the s93 threestooges test) that, when laid layer-after-layer in
++    // transition zones (around holes, at junctions), deposit ~50% more
++    // material per mm than nominal → accumulated blob.
++    //
++    // Cap the widths at optimal_width_outer (= bead_width_x in Hybrid v2,
++    // same as Classic's line_width). The residual that no longer fits any
++    // bead becomes left_over, which Arachne handles via is_odd closure
++    // beads tagged as Gap_infill (see NeoArachneInterior.cpp role
++    // discrimination). Net behavior:
++    //   • Main beads: fixed-width, like Classic perimeters, predictable flow.
++    //   • Closures: is_odd beads at gap_infill_speed, calibrated for short paths.
++    //   • Anything below min_bead_width: left as gap, filled by downstream infill.
++    //
++    // Side effect: toolpath_locations stay where parent placed them. After
++    // capping, narrower beads leave small gaps between adjacent beads. Those
++    // gaps get picked up by Widening / is_odd in subsequent iterations, OR
++    // (if too small) fall through to the inner_contour and get covered by
++    // fill_surfaces infill — same as Classic.
++    if (cap_widening) {
++        bool modified = false;
++        for (auto& w : ret.bead_widths) {
++            if (w > optimal_width_outer) {
++                w = optimal_width_outer;
++                modified = true;
++            }
++        }
++        if (modified || (pin_outer && (bead_count == 1 || bead_count == 2))) {
++            ret.total_thickness = thickness;
++            ret.left_over = thickness
++                          - std::accumulate(ret.bead_widths.cbegin(),
++                                            ret.bead_widths.cend(),
++                                            static_cast<coord_t>(0));
++        }
++    } else if (pin_outer && (bead_count == 1 || bead_count == 2)
++               && thickness >= bead_count * optimal_width_outer) {
++        // pin_outer ran but cap_widening did not — finalize left_over here.
++        ret.left_over = thickness
++                      - std::accumulate(ret.bead_widths.cbegin(),
++                                        ret.bead_widths.cend(),
++                                        static_cast<coord_t>(0));
++    }
++
++    return ret;
++}
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.hpp b/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.hpp
+new file mode 100644
+index 0000000000..fc7faf0827
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneBeadingStrategy.hpp
+@@ -0,0 +1,83 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase3
++// NeoArachneBeadingStrategy — meta-strategy that wraps the upstream Arachne
++// chain (Distributed → Redistribute → [Widening] → [OuterInset]) to add two
++// S3D-style behaviors the user has relied on for years:
++//
++//   (1) PIN OUTER WIDTH for bead_count 1 and 2.
++//       Upstream RedistributeBeadingStrategy.cpp:86 pins outer at
++//       optimal_width_outer only when bead_count > 2; for 1 and 2 it falls
++//       back to `thickness / bead_count`, which makes the outer wall WIDTH
++//       breathe with the local thickness of the stroke. That's the visual
++//       "stair-step" S3D users notice on borderline letters. Pinning outer
++//       to optimal_width_outer EXACTLY (and absorbing the residual into the
++//       left_over / inner area) gives a constant outer width at the cost of
++//       a small under-fill that the closure pipeline already handles.
++//
++//   (2) HYSTERESIS on bead-count transitions.
++//       Stateless hysteresis: raise the transition thickness by a fraction
++//       of optimal_width_outer so a thin stroke at borderline width stays
++//       with the lower bead count instead of flipping back and forth along
++//       its length (breathing). Implemented by shifting `thickness` down
++//       before delegating to the parent in getOptimalBeadCount() AND
++//       shifting the parent's getTransitionThickness() up by the same
++//       amount — the engine consults both during skeleton decisions.
++//
++// Placement: this strategy wraps the chain BEFORE LimitedBeadingStrategy is
++// applied (LimitedBeading injects 0-width marker walls for the inner
++// contour; we don't want to touch those). See BeadingStrategyFactory.cpp
++// for the wrap order.
++//
++// See memory/hybrid_canonical_plan.md §"Mejoras NeoArachneBeading".
++#ifndef slic3r_NeoArachneBeadingStrategy_hpp_
++#define slic3r_NeoArachneBeadingStrategy_hpp_
++
++#include "../Arachne/BeadingStrategy/BeadingStrategy.hpp"
++
++namespace Slic3r { namespace NeoArachne {
++
++class NeoArachneBeadingStrategy : public Arachne::BeadingStrategy
++{
++public:
++    // hysteresis_pct: 0..100, fraction of optimal_width_outer added to the
++    //   upward-transition deadband. Typical 10–20%. 0 disables hysteresis.
++    // pin_outer: when true, bead_count 1 and 2 force outer width to
++    //   optimal_width_outer exactly (instead of thickness / bead_count).
++    // cap_widening: when true, ALL bead widths are capped to optimal_width_outer.
++    //   Prevents Distributed/Redistribute from widening inner beads to fill
++    //   variable thickness — the residual goes to left_over which Arachne emits
++    //   as is_odd beads (tagged as Gap_infill via NeoArachneInterior). This is
++    //   the "dupe Classic with Arachne math" structural fix: fixed-width main
++    //   beads + smart is_odd closures, both routed to their proper Slic3r
++    //   pipelines (perimeter_speed for main, gap_infill_speed for closures).
++    //   See memory/MEMORY.md s93 blob diagnosis.
++    NeoArachneBeadingStrategy(coord_t                       optimal_width_outer,
++                              double                        hysteresis_pct,
++                              bool                          pin_outer,
++                              bool                          cap_widening,
++                              Arachne::BeadingStrategyPtr   parent);
++
++    ~NeoArachneBeadingStrategy() override = default;
++
++    Beading compute(coord_t thickness, coord_t bead_count) const override;
++
++    coord_t getOptimalThickness(coord_t bead_count) const override;
++    coord_t getTransitionThickness(coord_t lower_bead_count) const override;
++    coord_t getOptimalBeadCount(coord_t thickness) const override;
++    coord_t getTransitioningLength(coord_t lower_bead_count) const override;
++    float   getTransitionAnchorPos(coord_t lower_bead_count) const override;
++
++    std::string toString() const override;
++
++protected:
++    Arachne::BeadingStrategyPtr parent;
++    coord_t optimal_width_outer;
++    coord_t hysteresis_shift;   // coord_t, pre-computed from optimal_width_outer * pct/100
++    bool    pin_outer;
++    bool    cap_widening;
++};
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachneConfig.hpp b/src/libslic3r/NeoArachne/NeoArachneConfig.hpp
+new file mode 100644
+index 0000000000..ee35eed4dd
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneConfig.hpp
+@@ -0,0 +1,68 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase0+fase2
++// Per-feature config POD for the NeoArachne hybrid wall generator.
++// See memory/hybrid_canonical_plan.md
++#ifndef slic3r_NeoArachneConfig_hpp_
++#define slic3r_NeoArachneConfig_hpp_
++
++#include <cstdint>
++#include "../PrintConfig.hpp"   // for HybridWallSource (top-level Slic3r::)
++
++namespace Slic3r { namespace NeoArachne {
++
++// Alias the top-level enum so internal code reads as `WallSource`. The enum itself MUST live in the
++// top-level Slic3r namespace because CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS can't expand a
++// nested-namespace name. See PrintConfig.hpp.
++using WallSource = HybridWallSource;
++
++struct Config {
++    bool       enabled = false;
++
++    // ── Wall source selectors (Fase 2) ──────────────────────────────────────
++    // Defaults revisados s91 (NeoArachne hybrid v2): Classic gobierna outer; Arachne
++    // gobierna todo el interior (inner walls + gap-fill integrados). Ver
++    // memory/hybrid_canonical_plan.md "Arquitectura por defecto — REVISADA s91".
++    WallSource outer_wall  = WallSource::Classic;
++    WallSource inner_walls = WallSource::ArachneStock;
++    WallSource gap_fill    = WallSource::Off;
++    WallSource thin_walls  = WallSource::Classic;  // Fase 6
++
++    // ── Edge Closure params (Fase 3.0 — S3D heritage) ───────────────────────
++    // Defaults reflect "PA-safe" starting point; user adjusts via UI.
++    double allowed_overlap_pct   = 0.0;    // % of ext_perimeter_spacing (s93: raised from 50→0; the structural ~11% from spacing math is enough seam closure, more causes over-deposit)
++    double min_bead_width_pct    = 30.0;   // % of nozzle_diameter
++    // NEOARACHNE max-bead-width — upper cap on variable bead width.
++    // Sentinel 0 = use stock auto-derivation (WallToolPaths.cpp:511). Any value
++    // >100 overrides wall_add_middle_threshold to (pct/100)-1, capping the
++    // single-bead width at pct% of nominal nozzle width. Default 200 matches
++    // physical ceiling for typical extrusion setups.
++    double max_bead_width_pct    = 200.0;  // % of nozzle_diameter (100-200 range)
++    double min_feature_size_pct  = 20.0;   // % of nozzle_diameter
++    bool   keep_short_tails      = true;
++
++    // ── hybrid math knobs (Fase 3 — NeoArachneBeadingStrategy) ─────────
++    // pin_outer_width: when true AND hybrid engaged, bead_count 1 and 2
++    // force outer width to optimal_width_outer exactly. Upstream Arachne uses
++    // thickness/bead_count for those cases → outer width "breathes" along
++    // borderline strokes. true = S3D-style constant outer width.
++    bool   pin_outer_width                = true;
++    // Spatial hysteresis (% of optimal_width_outer) applied to bead-count
++    // transitions. 0 = no hysteresis (upstream Arachne behaviour). Higher =
++    // bigger deadband, fewer transitions across borderline thickness.
++    double bead_count_hysteresis_pct      = 20.0;
++    // ── Fase 4 — SkeletalTrapezoidation transition smoothing ────────────────
++    double transition_filter_dist_mm      = 100.0;  // default 100 = upstream Arachne behavior
++    // ── Future math knobs (placeholder — Fase 5) ────────────────────────────
++    bool   gap_only_skeletal_mode         = true;   // Fase 5
++
++    // ── Debug channels (gated; cheap when off) ──────────────────────────────
++    bool emit_svg_per_layer  = false;
++    bool emit_gcode_comments = true;
++    int  svg_layer_from = -1;
++    int  svg_layer_to   = -1;
++};
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachneDebug.cpp b/src/libslic3r/NeoArachne/NeoArachneDebug.cpp
+new file mode 100644
+index 0000000000..bc4add75e7
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneDebug.cpp
+@@ -0,0 +1,26 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase0
++#include "NeoArachneDebug.hpp"
++#include "NeoArachneRuntime.hpp"
++
++#include <boost/log/trivial.hpp>
++
++namespace Slic3r { namespace NeoArachne {
++
++void log_dispatch(const Config& /*cfg*/, int layer_id, int region_id, const char* branch)
++{
++    BOOST_LOG_TRIVIAL(debug) << "[neoarachne] L" << layer_id
++                             << " region=" << region_id
++                             << " branch=" << (branch ? branch : "?");
++}
++
++Runtime& Runtime::mut()
++{
++    static Runtime g;
++    return g;
++}
++
++const Runtime& Runtime::get() { return mut(); }
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachneDebug.hpp b/src/libslic3r/NeoArachne/NeoArachneDebug.hpp
+new file mode 100644
+index 0000000000..eb56824f4e
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneDebug.hpp
+@@ -0,0 +1,23 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase0
++// Debug channels for NeoArachne. All gated on Config flags — cheap when off.
++//   - BOOST log: structured "[neoarachne] L{N} ..." lines.
++//   - SVG per layer per phase (Fase 1+): /tmp/hybrid_dbg/L{NNNN}_{phase}.svg
++//   - GCode comments (Fase 1+): grep-able banner emitted into the layer header.
++#ifndef slic3r_NeoArachneDebug_hpp_
++#define slic3r_NeoArachneDebug_hpp_
++
++#include <string>
++#include "NeoArachneConfig.hpp"
++
++namespace Slic3r { namespace NeoArachne {
++
++// Phase 0 stubs: log a one-line trace; SVG/gcode-comment helpers added in Phase 1.
++void log_dispatch(const Config& cfg, int layer_id, int region_id, const char* branch);
++
++// Future (Phase 1+): emit_svg(...), gcode_banner(...).
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachneEngine.cpp b/src/libslic3r/NeoArachne/NeoArachneEngine.cpp
+new file mode 100644
+index 0000000000..5d3f65fca8
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneEngine.cpp
+@@ -0,0 +1,25 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase1
++#include "NeoArachneEngine.hpp"
++#include "NeoArachnePlan.hpp"
++#include "NeoArachneRuntime.hpp"
++#include "NeoArachneDebug.hpp"
++
++#include "../PerimeterGenerator.hpp"
++
++namespace Slic3r { namespace NeoArachne {
++
++void run(PerimeterGenerator& g)
++{
++    // Phase 1+: orchestrate Classic-outer + Arachne-interior via the Plan.
++    // Phase 0's bit-identical passthrough lives implicitly: when the residual
++    // outline is empty (mono-wall fallback) or wall_loops <= 1, Plan::run
++    // emits only the Classic outer, matching pure Classic output for those
++    // geometries.
++    const Config& cfg = Runtime::get().cfg;
++    log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase1/plan-dispatch");
++    Plan::run(g);
++}
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachneEngine.hpp b/src/libslic3r/NeoArachne/NeoArachneEngine.hpp
+new file mode 100644
+index 0000000000..a96f51c22d
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneEngine.hpp
+@@ -0,0 +1,20 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase0
++// Facade dispatch for the hybrid Classic/Arachne wall generator.
++// Phase 0: pure passthrough to PerimeterGenerator::process_classic(),
++// bit-identical to selecting Classic. Phases 1+ replace this with the
++// real hybrid logic. Never calls process_classic/process_arachne with
++// a modified PerimeterGenerator — always delegates as-is.
++#ifndef slic3r_NeoArachneEngine_hpp_
++#define slic3r_NeoArachneEngine_hpp_
++
++namespace Slic3r {
++class PerimeterGenerator;
++namespace NeoArachne {
++
++void run(PerimeterGenerator& g);
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachneInterior.cpp b/src/libslic3r/NeoArachne/NeoArachneInterior.cpp
+new file mode 100644
+index 0000000000..b42e47d3e7
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneInterior.cpp
+@@ -0,0 +1,320 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase1
++#include "NeoArachneInterior.hpp"
++#include "NeoArachneDebug.hpp"
++#include "NeoArachneRuntime.hpp"
++
++#include "../PerimeterGenerator.hpp"
++#include "../PrintConfig.hpp"
++#include "../Print.hpp"
++#include "../Arachne/WallToolPaths.hpp"
++#include "../Arachne/utils/ExtrusionLine.hpp"
++#include "../ExtrusionEntityCollection.hpp"
++#include "../ClipperUtils.hpp"
++#include "../libslic3r.h"
++
++namespace Slic3r { namespace NeoArachne {
++
++ExPolygons Interior::run(PerimeterGenerator& g,
++                         const Polygons&     outline_polys,
++                         int                 inset_count,
++                         const Config&       cfg)
++{
++    // Nothing to do — no beads requested, or outline empty.
++    if (inset_count <= 0 || outline_polys.empty())
++        return union_ex(outline_polys);
++
++    // All beads are "interior" beads from Arachne's POV: bead_width_0 == bead_width_x ==
++    // perimeter_spacing. The outer perimeter has already been emitted by Classic.
++    const coord_t perimeter_spacing = g.perimeter_flow.scaled_spacing();
++
++    // Build params the same way process_arachne does, so global wall-related
++    // knobs (transition length, etc) keep working unchanged.
++    Arachne::WallToolPathsParams params = Arachne::make_paths_params(g.layer_id,
++                                                                     *g.object_config,
++                                                                     *g.print_config);
++
++    // Fase 3.0 Edge Closure — override Arachne's beading floors with the per-region
++    // NeoArachne config. The S3D-style behavior the user has relied on for 10+ years:
++    //   min_bead_width → WideningBeadingStrategy::min_output_width
++    //     Lower = thinner closure tails preserved (instead of being widened to
++    //     min and emitted as full-width walls).
++    //   min_feature_size → WideningBeadingStrategy::min_input_width
++    //     Lower = thinner input geometry survives instead of being discarded
++    //     entirely as "noise". Critical for letter strokes <0.5 mm.
++    //   keep_short_tails → flow-through to WallToolPaths, which gates the
++    //     removeSmallLines post-process that normally kills closure tails.
++    //
++    // s91 bug fix — UNIT CONTRACT: params.min_* live in MM as plain float, NOT
++    // scaled coord_t. WallToolPaths::ctor (WallToolPaths.cpp:71-72) is the one
++    // that calls `scaled<coord_t>(params.min_*)` to convert MM → coord_t. The
++    // upstream `make_paths_params` follows this contract:
++    //   input_params.min_feature_size = pct.value * 0.01 * nozzle_diameter;  // MM
++    // My initial Fase 3.0 code wrapped the value in `scaled<double>()` thinking
++    // params lived in coord_t. Result: double-scaling × 1e6 → min_bead_width
++    // ≈ 120000 mm → every real bead is below floor → Widening discards all of
++    // them → hollow W regardless of slider value. Removed the scaled<> wrapper.
++    // [ORCAPORT:PQ-3] upstream 2.5 dropped the region wall_filament slot; use the
++    // minimum configured nozzle, matching WallToolPaths::make_paths_params.
++    const double nozzle_diameter = *std::min_element(g.print_config->nozzle_diameter.values.begin(),
++                                                     g.print_config->nozzle_diameter.values.end());
++    if (nozzle_diameter > 0.0) {
++        params.min_bead_width   = float(nozzle_diameter * cfg.min_bead_width_pct   / 100.0);
++        params.min_feature_size = float(nozzle_diameter * cfg.min_feature_size_pct / 100.0);
++    }
++    params.keep_short_tails = cfg.keep_short_tails;
++
++    // NEOARACHNE max-bead-width — push user cap into WallToolPaths.
++    // WallToolPaths.cpp:511 reads this and overrides wall_add_middle_threshold
++    // (which auto-derives from min_bead_width otherwise). 0 = sentinel "use stock";
++    // any value in [100,200] = explicit cap. UI validator clamps to that range.
++    params.max_bead_width_pct = float(cfg.max_bead_width_pct);
++
++    // NEOARACHNE fase4 — transition_filter_dist exposure.
++    // Always overrides the upstream default (100mm), even in non-hybrid
++    // mode. Lower defaults (~20–50mm) produce crisper transitions which
++    // benefit Hybrid v2 in general; the user can dial back to 100mm to
++    // restore upstream behaviour if they observe over-sharp transitions.
++    if (cfg.transition_filter_dist_mm > 0.0)
++        params.wall_transition_filter_dist_mm = float(cfg.transition_filter_dist_mm);
++
++    // NEOARACHNE s93 — cap_widening ALWAYS active in Hybrid v2.
++    //
++    // The cap_widening behavior (= clamp every Arachne bead width to
++    // optimal_width_outer) is the structural fix for the s93 over-deposit /
++    // blob accumulation bug. It applies to ALL NeoArachne modes, not just
++    // when the user picks ArachneHybrid — because the over-deposit is
++    // intrinsic to Arachne's adaptive widening regardless of which selector
++    // is set.
++    //
++    // pin_outer and bead_count_hysteresis remain gated on hybrid mode
++    // (those are still "advanced math knobs"), but cap_widening becomes the
++    // default Hybrid v2 behavior. To disable it the user can switch to
++    // wall_generator=arachne (stock) directly.
++    //
++    // Engineering note: by enabling NeoArachneBeadingStrategy unconditionally
++    // we lose the "ArachneStock bit-identical to upstream" guarantee for the
++    // Arachne stock combo. That's the intentional trade-off — the upstream
++    // behavior is the source of the blobs.
++    const bool hybrid_edge_active = (cfg.inner_walls == WallSource::ArachneHybrid)
++                                 || (cfg.outer_wall  == WallSource::ArachneHybrid);
++    params.hybrid_edge_enabled      = true;  // always wrap with NeoArachneBeadingStrategy
++    params.hybrid_edge_cap_widening = true;  // always cap inner bead widths
++    if (hybrid_edge_active) {
++        params.hybrid_edge_pin_outer      = cfg.pin_outer_width;
++        params.hybrid_edge_hysteresis_pct = cfg.bead_count_hysteresis_pct;
++    } else {
++        // ArachneStock combo: skip pin_outer (let upstream Redistribute do
++        // its bead-count 1/2 logic) and skip hysteresis. Cap_widening is the
++        // only override.
++        params.hybrid_edge_pin_outer      = false;
++        params.hybrid_edge_hysteresis_pct = 0.0;
++    }
++
++    Arachne::WallToolPaths wtp(outline_polys,
++                               /*bead_width_0=*/perimeter_spacing,
++                               /*bead_width_x=*/perimeter_spacing,
++                               /*inset_count=*/size_t(inset_count),
++                               /*wall_0_inset=*/0,
++                               g.layer_height,
++                               params);
++
++    const std::vector<Arachne::VariableWidthLines>& perimeters = wtp.getToolPaths();
++
++    // NEOARACHNE s94 task#14 — GROUP-BY-ISLAND emission.
++    //
++    // Arachne::WallToolPaths::getToolPaths() guarantees its output is sorted
++    // by inset_idx (outermost → innermost) ACROSS ALL ISLANDS of the input
++    // (see WallToolPaths.cpp:569-573 assert). If we just iterate that order
++    // and dump everything into one ExtrusionEntityCollection, the printer
++    // ends up emitting [inset0 of island A, inset0 of island B, …, inset0 of
++    // island Z, inset1 of island A, …]. The chain_extrusion_entities pass in
++    // the GCode emitter cannot recover island grouping from that — it'll
++    // jump across islands at each inset level, producing the "ring around
++    // every letter first, then fill in letter by letter" visual the user
++    // reported. Classic process_classic naturally emits per-island
++    // (Surfaces are iterated one at a time and each gives its full
++    // outer+inner+gap), so the printer goes island A done → island B done →
++    // etc — what the user calls "ordered".
++    //
++    // The fix: bucket each Arachne ExtrusionLine into its containing island
++    // via point-in-polygon on the first junction. Each island bucket keeps
++    // its internal inset-major order (which IS optimal within one island)
++    // and is appended to g.loops as a separate top-level entity with
++    // no_sort=true. The outer g.loops collection is sorted normally, so
++    // chain_extrusion_entities picks islands by proximity — matching
++    // Classic's natural per-island traversal.
++    //
++    // Lines whose first junction falls in no island (rare numerical edge
++    // case at the polygon boundary) go to a shared bucket emitted last.
++    ExPolygons islands = union_ex(outline_polys);
++    const size_t n_islands = islands.size();
++    std::vector<ExtrusionEntityCollection> per_island(n_islands);
++    ExtrusionEntityCollection               shared_bucket;
++
++    auto find_island = [&](const Arachne::ExtrusionLine& el) -> size_t {
++        if (n_islands == 0 || el.junctions.empty()) return n_islands;
++        const Point& p = el.junctions.front().p;
++        for (size_t i = 0; i < n_islands; ++i)
++            if (islands[i].contains(p)) return i;
++        return n_islands;  // sentinel = shared bucket
++    };
++
++    size_t lines_emitted = 0;
++    size_t odd_lines     = 0;
++
++    for (const Arachne::VariableWidthLines& perimeter : perimeters) {
++        for (const Arachne::ExtrusionLine& ext_line : perimeter) {
++            if (ext_line.empty())
++                continue;
++
++            // NEOARACHNE fase3-bugfix-blobs
++            //
++            // Role discrimination by is_odd — the key fix for the over-extrusion /
++            // blob accumulation bug seen in s93 testing. Background:
++            //
++            // Arachne emits two kinds of ExtrusionLines along each inset:
++            //   • is_odd == false → "main" beads that form closed loops, behaving
++            //     as conventional inner perimeters (long, predictable, nominal width).
++            //   • is_odd == true  → variable-width closure beads (short open
++            //     polylines) that fill the medial-axis residual between adjacent
++            //     beads. Functionally they're EXACTLY equivalent to Classic's
++            //     gap_infill output: short paths of variable width depositing
++            //     material in the residual between perimeters.
++            //
++            // Until s93 we tagged every Arachne path as erPerimeter. That made
++            // Slic3r route them through the inner_wall pipeline (200 mm/s in the
++            // test profile + the user's PA/retract tuning calibrated for typical
++            // 10–30 mm inner-wall polylines). The result: 1–5 mm is_odd polylines
++            // at 200 mm/s with full retract+wipe cycles between them produced
++            // boluses of material at every start/stop, visible as blobs around
++            // the central hole and at bowl↔leg junctions in the threestooges
++            // test (see memory/MEMORY.md s93 cascade).
++            //
++            // The fix is structural and 1 line: tag is_odd beads as erGapFill so
++            // Slic3r:
++            //   1. Routes them through gap_infill_speed (≈70 mm/s typical) instead
++            //      of inner_wall_speed.
++            //   2. Applies the gap_infill retract heuristics (separate calibration
++            //      tuned for short paths).
++            //   3. Emits TYPE:Gap_infill in the gcode so the user's firmware can
++            //      apply per-feature PA / acceleration if configured.
++            //   4. Reports them under "Gap infill" in Orca's stats and visualizer,
++            //      which matches their physical role.
++            //
++            // is_odd beads from Arachne are always OPEN polylines by construction
++            // (closure tails of skeleton transitions), so they never reach the
++            // ExtrusionLoop branch below — they all flow through ExtrusionMultiPath.
++            const ExtrusionRole role = ext_line.is_odd ? erGapFill : erPerimeter;
++            ExtrusionPaths      paths;
++            extrusion_paths_append(paths, ext_line, role, g.perimeter_flow);
++            if (paths.empty())
++                continue;
++
++            const int inset_idx = int(ext_line.inset_idx);
++            for (ExtrusionPath& p : paths) {
++                p.inset_idx = inset_idx;
++                // NEOARACHNE s93 — opt every NeoArachne path out of
++                // SpiralLift. Auto Lift's overhang detector misreads dense
++                // Arachne path clusters (around holes, junctions) as overhang
++                // and emits G3 helical lifts whose XY arc smears residual ooze
++                // in a circle = the characteristic spiral blob. GCode.cpp
++                // reads this flag in needs_retraction and downgrades to
++                // LazyLift. Classic paths (with default false) keep Auto Lift
++                // behavior intact.
++                p.force_no_spiral_lift = true;
++            }
++
++            const size_t bucket_idx = find_island(ext_line);
++            ExtrusionEntityCollection& dst = (bucket_idx < n_islands)
++                                             ? per_island[bucket_idx]
++                                             : shared_bucket;
++
++            if (ext_line.is_closed) {
++                ExtrusionLoop loop(std::move(paths), elrDefault);
++                // NEOARACHNE s94 task#13 — preserve hole/contour
++                // semantics so the seam placer applies the correct policy.
++                // Arachne emits CW for holes and CCW for contours (mirrors
++                // the input polygon orientation). Classic tags loops with
++                // elrHole vs elrDefault based on this; without it the seam
++                // placer treats every loop as a contour → visible artefacts
++                // (seam picked from contour-only candidates inside holes,
++                // wrong start point on inset 0 walls around holes).
++                // make_counter_clockwise() destroys the orientation info,
++                // so we sample it BEFORE forcing CCW.
++                const bool is_hole = loop.is_clockwise();
++                loop.make_counter_clockwise();
++                loop.set_loop_role(is_hole ? elrHole : elrDefault);
++                loop.inset_idx = inset_idx;
++                dst.append(std::move(loop));
++            } else {
++                // Open ExtrusionLine (typical for is_odd gap-fill segments).
++                ExtrusionMultiPath mp;
++                mp.paths.reserve(paths.size());
++                mp.paths.emplace_back(std::move(paths.front()));
++                mp.inset_idx = inset_idx;
++                for (auto it = std::next(paths.begin()); it != paths.end(); ++it) {
++                    if (mp.paths.back().last_point() != it->first_point()) {
++                        dst.append(ExtrusionMultiPath(std::move(mp)));
++                        mp = ExtrusionMultiPath();
++                        mp.inset_idx = inset_idx;
++                    }
++                    mp.paths.emplace_back(std::move(*it));
++                }
++                dst.append(ExtrusionMultiPath(std::move(mp)));
++            }
++
++            ++lines_emitted;
++            if (ext_line.is_odd)
++                ++odd_lines;
++        }
++    }
++
++    // Append each island bucket as a top-level entity in g.loops with
++    // no_sort=true so the internal inset-major order survives
++    // chain_extrusion_entities. The OUTER g.loops collection keeps its
++    // default sort behaviour — that's what picks islands by proximity at
++    // emission time, exactly mirroring Classic's natural per-island chain.
++    for (ExtrusionEntityCollection& bucket : per_island) {
++        if (bucket.empty()) continue;
++        bucket.no_sort = true;
++        g.loops->append(bucket);
++    }
++    if (!shared_bucket.empty()) {
++        shared_bucket.no_sort = true;
++        g.loops->append(shared_bucket);
++    }
++
++    log_dispatch(Runtime::get().cfg, g.layer_id, /*region_id=*/-1,
++                 "phase1/interior-arachne-emitted");
++
++    // ── Compute the inner contour the CALLER uses to clip fill_surfaces ─────
++    //
++    // Arachne's getInnerContour() returns polygons taken from the synthetic
++    // "0-width contour walls" SkeletalTrapezoidation injects to mark the
++    // inner boundary. In practice it can return EMPTY in legitimate cases
++    // (thin regions, low inset_count, variable beading that didn't trigger
++    // contour synthesis). Earlier s91 bug: when that happened, Plan::run
++    // skipped the fill_surfaces clip and infill ended up overlapping the
++    // Arachne walls → catastrophic double extrusion on top/bottom layers.
++    //
++    // Fix: ALWAYS return a non-empty bound. Prefer Arachne's reported contour
++    // (exact when it exists), fall back to a conservative shrink of the
++    // residual by total wall thickness. The conservative version may under-
++    // report a sliver of infill area in pathological cases but never
++    // overlaps walls.
++    const Polygons& arachne_reported = wtp.getInnerContour();
++    if (!arachne_reported.empty())
++        return union_ex(arachne_reported);
++
++    // Fallback: offset residual inward by inset_count × perimeter_spacing.
++    // That's the inner edge of the innermost wall assuming uniform spacing,
++    // which matches what Arachne does when there's room. Where there isn't
++    // room the offset returns empty → fill_surfaces gets cleared and no
++    // infill is laid down (matching the "lose a sliver" trade-off).
++    return offset_ex(union_ex(outline_polys),
++                     -float(inset_count) * float(perimeter_spacing));
++}
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachneInterior.hpp b/src/libslic3r/NeoArachne/NeoArachneInterior.hpp
+new file mode 100644
+index 0000000000..f2a53aed91
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneInterior.hpp
+@@ -0,0 +1,48 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase1
++// Interior wall generator: hands a residual outline to Arachne WallToolPaths and
++// converts the resulting VariableWidthLines into ExtrusionEntities appended to
++// PerimeterGenerator.loops. Inner walls only — never produces outer perimeters
++// (the outer is owned by Classic in the NeoArachne hybrid v2 architecture).
++//
++// All "inner" beads use perimeter_flow (NOT ext_perimeter_flow). The variable-
++// width gap-fill segments Arachne emits as is_odd are kept in the same output
++// stream — no filtering — because in this hybrid the gap-fill is integrated.
++//
++// Overhang detection is intentionally NOT applied here: the interior walls are
++// shielded by the outer Classic perimeter which already handled overhangs at
++// the slice boundary. Keeping this stripped lets us reuse extrusion_paths_append
++// directly without depending on traverse_extrusions' static helpers.
++#ifndef slic3r_NeoArachneInterior_hpp_
++#define slic3r_NeoArachneInterior_hpp_
++
++#include "../ExPolygon.hpp"
++#include "../Polygon.hpp"
++#include "NeoArachneConfig.hpp"
++
++namespace Slic3r {
++class PerimeterGenerator;
++namespace NeoArachne {
++
++class Interior {
++public:
++    // Run Arachne over outline_polys, emit walls to g.loops. Returns Arachne's
++    // inner contour (region still available for infill after walls consumed
++    // their area). Caller is responsible for using this to update fill_surfaces
++    // if it wants infill to avoid the wall region.
++    //
++    // inset_count: number of interior beads requested (typically wall_loops-1).
++    //              0 → no walls generated, returns outline_polys as inner_contour.
++    //
++    // cfg: drives Edge Closure params — min_bead_width_pct, min_feature_size_pct,
++    //      keep_short_tails — passed through to Arachne's WallToolPathsParams.
++    static ExPolygons run(PerimeterGenerator& g,
++                          const Polygons&     outline_polys,
++                          int                 inset_count,
++                          const Config&       cfg);
++};
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachnePlan.cpp b/src/libslic3r/NeoArachne/NeoArachnePlan.cpp
+new file mode 100644
+index 0000000000..bfeba5de86
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachnePlan.cpp
+@@ -0,0 +1,385 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase1+fase2+fase3.0
++#include "NeoArachnePlan.hpp"
++#include "NeoArachneInterior.hpp"
++#include "NeoArachneRuntime.hpp"
++#include "NeoArachneDebug.hpp"
++
++#include "../PerimeterGenerator.hpp"
++#include "../PrintConfig.hpp"
++#include "../Print.hpp"
++#include "../SurfaceCollection.hpp"
++#include "../ClipperUtils.hpp"
++#include "../ExtrusionEntityCollection.hpp"
++
++#include <algorithm>  // std::clamp
++
++namespace Slic3r { namespace NeoArachne {
++
++// NEOARACHNE s93 #30b — Recursively walk an ExtrusionEntity tree and
++// set force_no_spiral_lift=true on every leaf ExtrusionPath. Used in Plan::run
++// to mark the Classic outer paths (emitted by process_classic) that participate
++// in Hybrid v2, so the travel from Classic outer → Arachne inner doesn't
++// trigger Auto Lift's SpiralLift heuristic.
++//
++// Without this, ~143 G3 helical lifts persist in base02 after #30 — these are
++// the travels OUT of Classic outer paths that, isolated, look like normal
++// perimeter exits and trigger spiral. With this, ALL paths emitted during a
++// NeoArachne region opt out of spiral, restoring linear LazyLift everywhere
++// within the region.
++static void set_no_spiral_lift_recursive(ExtrusionEntity *ee)
++{
++    if (ee == nullptr) return;
++    if (auto *path = dynamic_cast<ExtrusionPath*>(ee)) {
++        path->force_no_spiral_lift = true;
++        return;
++    }
++    if (auto *loop = dynamic_cast<ExtrusionLoop*>(ee)) {
++        loop->force_no_spiral_lift = true;
++        for (ExtrusionPath &p : loop->paths)
++            p.force_no_spiral_lift = true;
++        return;
++    }
++    if (auto *mp = dynamic_cast<ExtrusionMultiPath*>(ee)) {
++        mp->force_no_spiral_lift = true;
++        for (ExtrusionPath &p : mp->paths)
++            p.force_no_spiral_lift = true;
++        return;
++    }
++    if (auto *coll = dynamic_cast<ExtrusionEntityCollection*>(ee)) {
++        coll->force_no_spiral_lift = true;
++        for (ExtrusionEntity *child : coll->entities)
++            set_no_spiral_lift_recursive(child);
++        return;
++    }
++}
++
++// NEOARACHNE fase2.5 + s93 #32 — Dispatch table (revised).
++//
++//   outer family    │ inner family   │ gap (advisory) │ action                       │ status
++//   ────────────────┼────────────────┼────────────────┼──────────────────────────────┼─────────
++//   Classic         │ Classic        │ *              │ process_classic              │ ✅ sanity
++//   ArachneStock    │ ArachneStock   │ *              │ process_arachne              │ ✅ sanity
++//   ArachneNotEdge  │ ArachneNotEdge │ *              │ process_arachne + warn       │ ⏳ Fase 5 (real injection)
++//   Classic         │ Arachne*       │ *              │ Hybrid v2 (Classic outer + Arachne inner) │ ✅ DEFAULT
++//   Arachne*        │ Classic        │ *              │ validator BLOQUEA (alinea)   │ ⛔ rejected
++//
++// s93 #32 changes from the original Fase 2.5 dispatch:
++//   • Removed the gap_fill == Off constraint from sanity branches. Classic
++//     and Arachne handle gap_fill internally (Classic via medial-axis,
++//     Arachne via is_odd beads); the hybrid_gap_fill selector only
++//     advises the Hybrid v2 pipeline.
++//   • Added ArachneNotEdge/ArachneNotEdge → process_arachne with warning
++//     (Fase 5 will inject cap_widening / hysteresis params into make_paths_params
++//     so this combo runs the full hybrid pipeline natively).
++//   • Documented the validator-blocked case explicitly.
++//
++// Combos blocked by the UI validator (ConfigManipulation::update_print_fff_config):
++//   outer = Off                              → forced to Classic
++//   outer = Arachne* + inner = Classic       → inner aligned to outer
++
++void Plan::run(PerimeterGenerator& g)
++{
++    // ── Build the per-region NeoArachne config from the live PrintRegionConfig ──
++    // s91 Fase 2: was reading from Runtime::get().cfg (singleton with hardcoded
++    // defaults). Now we read the actual config keys hybrid_outer_wall /
++    // _inner_walls / _gap_fill that the user picked in the UI. The singleton
++    // is reserved for global Advanced ⚙ toggles in Fase 6.
++    const PrintRegionConfig* original_cfg = g.config;
++    Config cfg;
++    cfg.enabled     = true;
++    cfg.outer_wall  = original_cfg->hybrid_outer_wall.value;
++    cfg.inner_walls = original_cfg->hybrid_inner_walls.value;
++    cfg.gap_fill    = original_cfg->hybrid_gap_fill.value;
++    cfg.thin_walls  = WallSource::Classic;  // Fase 6
++    // Fase 3.0 — Edge Closure params from the live config.
++    cfg.allowed_overlap_pct  = original_cfg->hybrid_allowed_overlap_pct.value;
++    cfg.min_bead_width_pct   = original_cfg->hybrid_min_bead_width_pct.value;
++    cfg.max_bead_width_pct   = original_cfg->hybrid_max_bead_width_pct.value;
++    cfg.min_feature_size_pct = original_cfg->hybrid_min_feature_size_pct.value;
++    cfg.keep_short_tails     = original_cfg->hybrid_keep_short_tails.value;
++    // Fase 3 — NeoArachneBeadingStrategy knobs.
++    cfg.pin_outer_width           = original_cfg->hybrid_pin_outer_width.value;
++    cfg.bead_count_hysteresis_pct = original_cfg->hybrid_bead_count_hysteresis_pct.value;
++    // Fase 4 — SkeletalTrapezoidation transition smoothing.
++    cfg.transition_filter_dist_mm = original_cfg->hybrid_transition_filter_dist_mm.value;
++    // pin_outer_width is gated upstream by hybrid_edge_active anyway (ConfigManipulation
++    // hides the control unless outer or inner wall source is ArachneHybrid).
++    // Merge global advanced toggles from Runtime singleton (Fase 6 will fill these).
++    const Config& runtime = Runtime::get().cfg;
++    cfg.emit_svg_per_layer  = runtime.emit_svg_per_layer;
++    cfg.emit_gcode_comments = runtime.emit_gcode_comments;
++    cfg.svg_layer_from      = runtime.svg_layer_from;
++    cfg.svg_layer_to        = runtime.svg_layer_to;
++
++    // ── Dispatch on the wall-source combo (s93 #32 revised). ─────────────────
++    // The user can mix-and-match outer/inner across {Classic, ArachneStock,
++    // ArachneHybrid}. We map combo families to engine pipelines.
++    const bool outer_is_arachne_family = (cfg.outer_wall  == WallSource::ArachneStock)
++                                      || (cfg.outer_wall  == WallSource::ArachneHybrid);
++    const bool inner_is_arachne_family = (cfg.inner_walls == WallSource::ArachneStock)
++                                      || (cfg.inner_walls == WallSource::ArachneHybrid);
++
++    // Case A: Classic outer + Classic inner — delegate to Classic. Classic
++    // handles its own medial-axis gap_fill; the hybrid_gap_fill selector
++    // is informational only here.
++    if (!outer_is_arachne_family && cfg.inner_walls == WallSource::Classic) {
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase2.5/sanity-classic");
++        g.process_classic();
++        return;
++    }
++
++    // Case B: ArachneStock outer + ArachneStock inner — delegate to upstream
++    // Arachne stock. No NeoArachne machinery engaged → bit-identical to
++    // wall_generator=arachne. Useful as a baseline.
++    if (cfg.outer_wall == WallSource::ArachneStock
++        && cfg.inner_walls == WallSource::ArachneStock) {
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase2.5/sanity-arachne-stock");
++        g.process_arachne();
++        return;
++    }
++
++    // Case C: hybrid outer + hybrid inner — would ideally run upstream
++    // Arachne with our cap/pin/hysteresis params injected. That requires
++    // hooking make_paths_params to read NeoArachneConfig globally — pending
++    // for Fase 5. For now, fallback to process_arachne with a loud log so the
++    // user sees that the full-hybrid combo isn't producing different
++    // output from stock Arachne.
++    if (cfg.outer_wall == WallSource::ArachneHybrid
++        && cfg.inner_walls == WallSource::ArachneHybrid) {
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1,
++                     "phase2.5/full-hybrid-edge-fallback-to-stock-arachne-fase5");
++        g.process_arachne();
++        return;
++    }
++
++    // Case D: outer = Arachne* + inner = Classic — invalid combo (Arachne is
++    // a generator that handles both outer + inner together; can't have
++    // "Arachne outer only"). The validator (ConfigManipulation) should
++    // intercept this before we get here, but as a defensive fallback we log
++    // it and route to process_arachne (the closer-to-intent behaviour).
++    if (outer_is_arachne_family && !inner_is_arachne_family) {
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1,
++                     "phase2.5/invalid-combo-arachne-outer-classic-inner-falling-back-to-arachne");
++        g.process_arachne();
++        return;
++    }
++
++    // Case E (default): Classic outer + Arachne* inner — the canonical NeoArachne
++    // Hybrid v2. Interior::run handles the Arachne inner residual with our
++    // cap_widening / is_odd-as-gap-fill / no-spiral-lift pipeline.
++    log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase2.5/hybrid-v2");
++
++    if (cfg.gap_fill == WallSource::ArachneHybrid
++        || cfg.gap_fill == WallSource::ArachneStock) {
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1,
++                     "phase2.5/extra-gap-fill-pass-pending-fase5-noop");
++        // Extra gap_fill pass (Hybrid v1 legacy) — Fase 5.
++    }
++    // ── Capture originals from the live config ──────────────────────────────
++    const int    orig_wall_loops = original_cfg->wall_loops.value;
++
++    // ── Build a thread-local copy with the two knobs mutated ────────────────
++    // Strategy (A) from session s91: do NOT modify the shared config (other
++    // LayerRegions on the same PrintRegion may be slicing in parallel). Make
++    // an independent stack copy, swap the pointer, restore on exit.
++    PrintRegionConfig modified_cfg = *original_cfg;
++    modified_cfg.wall_loops.value           = 1;     // Classic emits only the outer.
++    // [ORCAPORT:PQ-3] upstream 2.5 gap_infill_speed is per-extruder
++    // (ConfigOptionFloatsNullable); suppress Classic medial-axis gap fill on all.
++    std::fill(modified_cfg.gap_infill_speed.values.begin(),
++              modified_cfg.gap_infill_speed.values.end(), 0.);
++    // s91 fix — bug "capa sí capa no": alternate_extra_wall fires on odd layers
++    // (PerimeterGenerator.cpp:1206) and would push loop_number from 0 to 1,
++    // making Classic emit a second wall on top of which Arachne would lay its
++    // own → double extrusion in alternating layers. Force off for the duration
++    // of the Classic-outer pass.
++    modified_cfg.alternate_extra_wall.value = false;
++    // s91 fix — detect_thin_wall emits Classic's medial-axis thin walls in narrow
++    // zones (PerimeterGenerator.cpp:1230). Those zones are exactly where Arachne
++    // does its beading, so leaving it on causes overlapping extrusion in W-style
++    // letter strokes (0.47–1 mm wide). Hand thin-wall handling to Arachne.
++    modified_cfg.detect_thin_wall.value     = false;
++
++    // ── Snapshot the slice extents BEFORE Classic so we can derive the
++    //    residual outline that goes to Arachne. We can't reliably use
++    //    g.fill_surfaces after process_classic because it has already been
++    //    munged with infill_peri_overlap math that doesn't match what
++    //    Arachne expects. ───────────────────────────────────────────────────
++    ExPolygons original_slice;
++    original_slice.reserve(g.slices->surfaces.size());
++    for (const Surface& s : g.slices->surfaces)
++        original_slice.push_back(s.expolygon);
++
++    // ── Swap config, run Classic, restore. ──────────────────────────────────
++    // Mark which entries existed in g.loops AND g.gap_fill BEFORE process_classic,
++    // so we can identify what it appends and tag them with force_no_spiral_lift=true
++    // (NEOARACHNE s93 #30b).
++    const size_t loops_size_before_classic    = g.loops->entities.size();
++    const size_t gap_fill_size_before_classic = (g.gap_fill != nullptr) ? g.gap_fill->entities.size() : 0;
++    g.config = &modified_cfg;
++    log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase1/classic-outer-only");
++    g.process_classic();
++    g.config = original_cfg;
++    // Snapshot — after this, Interior::run will append per-island buckets.
++    // Used by the wall_sequence reorder at the end of this function.
++    const size_t loops_size_after_classic = g.loops->entities.size();
++    // Tag the Classic outer paths emitted by process_classic so the travel
++    // OUT of these paths doesn't trigger SpiralLift in needs_retraction.
++    // Without this, ~143 G3 helical lifts persisted in the s93 test because
++    // travels from Classic outer → Arachne inner (within the same NeoArachne
++    // region) read m_last_path_force_no_spiral_lift = false from the Classic
++    // outer and chose SpiralLift. Now every path in a NeoArachne region opts
++    // out, regardless of which engine emitted it.
++    for (size_t i = loops_size_before_classic; i < g.loops->entities.size(); ++i)
++        set_no_spiral_lift_recursive(g.loops->entities[i]);
++    if (g.gap_fill != nullptr) {
++        for (size_t i = gap_fill_size_before_classic; i < g.gap_fill->entities.size(); ++i)
++            set_no_spiral_lift_recursive(g.gap_fill->entities[i]);
++    }
++
++    // ── Decide if Arachne interior is needed. ───────────────────────────────
++    // Mirror Classic's wall-count reduction logic (PerimeterGenerator.cpp:1208-1212)
++    // so NeoArachne respects the same "force single wall" toggles. Without this
++    // guard NeoArachne would add Arachne interior walls on layers where Classic
++    // would have emitted only the outer (raft top + only_one_wall_first_layer,
++    // or the topmost layer + only_one_wall_top).
++    int effective_walls = orig_wall_loops;
++    if (g.layer_id == g.object_config->raft_layers && original_cfg->only_one_wall_first_layer)
++        effective_walls = 1;
++    if (effective_walls > 1 && original_cfg->only_one_wall_top && g.upper_slices == nullptr)
++        effective_walls = 1;
++
++    if (effective_walls <= 1) {
++        // Only one wall is appropriate — Classic already emitted it. Done.
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase1/single-wall-no-interior");
++        return;
++    }
++
++    // ── Compute the residual outline that Arachne should fill. ──────────────
++    // Baseline: the Classic outer perimeter centerline sits at ext_perimeter_spacing/2
++    // inside the slice boundary; its inner edge is ext_perimeter_spacing away.
++    // Offsetting the slice by -ext_perimeter_spacing aligns Arachne's first bead
++    // exactly with that inner edge → no overlap, no gap (in theory). In practice
++    // tolerances leave a visible seam.
++    //
++    // Fase 3.0 Edge Closure: allowed_overlap_pct PULLS the residual outward toward
++    // the Classic outer, so Arachne's first bead overlaps the Classic outer by
++    // up to that fraction of ext_perimeter_spacing. Closes the seam gap visible
++    // on letters (P/W observed s91). Default 50% balances seam closure against
++    // Pressure Advance over-compensation.
++    //
++    //   residual = slice ⊖ (ext_perimeter_spacing × (1 − overlap_pct/100))
++    //
++    // overlap=0%  → original behavior (visible seam)
++    // overlap=50% → Arachne first bead halfway through Classic outer (default)
++    // overlap=100% → residual == slice, Arachne overwrites Classic entirely
++    //               (validator blocks this; harmful)
++    const coord_t ext_perimeter_spacing = g.ext_perimeter_flow.scaled_spacing();
++    const double  overlap_frac          = std::clamp(cfg.allowed_overlap_pct / 100.0, 0.0, 1.0);
++    const coord_t residual_offset       = coord_t(double(ext_perimeter_spacing) * (1.0 - overlap_frac));
++    const ExPolygons residual = offset_ex(original_slice, -float(residual_offset));
++    if (residual.empty()) {
++        // Mono-wall fallback (a) from session s91 decision: accept that the
++        // Classic outer is all there is. No interior to fill. The user can
++        // tune line_width if a real feature is being lost; future "ancho
++        // detector" will automate that.
++        log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase1/mono-wall-fallback");
++        return;
++    }
++
++    // ── Drive Arachne over the residual. ────────────────────────────────────
++    const int inset_count = effective_walls - 1;
++    const ExPolygons arachne_inner = Interior::run(g, to_polygons(residual), inset_count, cfg);
++
++    // ── Clip fill_surfaces by Arachne's inner contour. ──────────────────────
++    // process_classic populated g.fill_surfaces assuming there were no inner
++    // walls (loop_number == 0 path inside it, with inset = ext_perimeter_spacing/2).
++    // That leaves fill_surfaces covering ALMOST the entire interior. Now that
++    // Arachne has consumed part of that area with N inner walls, restrict the
++    // infill region to whatever Arachne left untouched.
++    //
++    // s91 bug fix: this clip MUST happen unconditionally. Earlier we guarded
++    // with `if (!arachne_inner.empty())` which silently kept the full interior
++    // when Arachne's getInnerContour() reported empty (common in thin regions
++    // and certain beading configurations). Result: solid-top/solid-bottom
++    // infill was emitted over the full interior, overlapping every Arachne
++    // wall — the "capa imprime mal, después imprime bien" duplicate-extrusion
++    // bug the user observed in the W letter test. Interior::run now ALWAYS
++    // returns a bounded inner contour (Arachne-reported or conservative
++    // fallback), so unconditional clipping is safe and correct.
++    {
++        Surfaces  clipped;
++        const Surfaces& src = g.fill_surfaces->surfaces;
++        clipped.reserve(src.size());
++        for (const Surface& s : src) {
++            ExPolygons isect = intersection_ex(ExPolygons{ s.expolygon }, arachne_inner);
++            for (ExPolygon& ex : isect)
++                clipped.emplace_back(Surface(s, std::move(ex)));
++        }
++        g.fill_surfaces->surfaces = std::move(clipped);
++    }
++
++    // Also restrict fill_no_overlap_expolygons. process_classic populated this
++    // with the no-overlap variant of the same wall_loops=1 interior. Without
++    // clipping it here it leaks the unclipped boundary into downstream infill
++    // helpers (BBS no-overlap math) that some patterns consult. Mirror the
++    // same intersection logic.
++    if (g.fill_no_overlap != nullptr && !g.fill_no_overlap->empty()) {
++        *g.fill_no_overlap = intersection_ex(*g.fill_no_overlap, arachne_inner);
++    }
++
++    // ── wall_sequence reorder (NEOARACHNE s94 task#12). ──────────
++    //
++    // Bug verified empirically: setting wall_sequence in the UI had ZERO
++    // effect on NeoArachne objects because Plan::run hardcoded the emission
++    // order to outer-then-inner. Reason: process_classic ran with
++    // wall_loops=1, which gave its internal wall_sequence reorder logic
++    // (PerimeterGenerator.cpp:1441) a single entity to operate on — a
++    // no-op. Then Interior::run appended inner walls AFTER, with no
++    // consultation of wall_sequence.
++    //
++    // The fix: after both passes have populated g.loops, rotate the slice
++    // of entries [outers_begin .. inners_end) according to the requested
++    // wall_sequence. The outer block (one entity per island from
++    // process_classic) lives at [loops_size_before_classic ..
++    // loops_size_after_classic). The inner block (one bucket per island
++    // from Interior::run) lives at [loops_size_after_classic .. end).
++    //
++    //   OuterInner       : current layout — no change.
++    //   InnerOuter       : swap to [inners..., outers...]. The downstream
++    //                      chain_extrusion_entities still picks islands by
++    //                      proximity, so in practice it produces
++    //                      (inner_A → outer_A → inner_B → outer_B → …)
++    //                      because each (inner, outer) pair is co-located.
++    //   InnerOuterInner  : sandwich mode. Splitting per-island inner walls
++    //                      into "first-internal" and "rest" requires
++    //                      reaching into the per_island buckets and
++    //                      reordering by inset_idx — invasive. For this
++    //                      first iteration we approximate as InnerOuter
++    //                      (which is the closer of the two simple options).
++    //                      Full sandwich support is task #12.5.
++    const WallSequence ws = original_cfg->wall_sequence;
++    if (ws != WallSequence::OuterInner) {
++        const size_t outers_begin = loops_size_before_classic;
++        const size_t outers_end   = loops_size_after_classic;
++        const size_t inners_end   = g.loops->entities.size();
++        if (outers_begin < outers_end && outers_end < inners_end) {
++            auto it_begin  = g.loops->entities.begin() + outers_begin;
++            auto it_middle = g.loops->entities.begin() + outers_end;
++            auto it_end    = g.loops->entities.begin() + inners_end;
++            // Rotate so the inner block (currently second) becomes first.
++            std::rotate(it_begin, it_middle, it_end);
++            if (ws == WallSequence::InnerOuterInner) {
++                log_dispatch(cfg, g.layer_id, /*region_id=*/-1,
++                             "phase2/wall_sequence=InnerOuterInner (approximated as InnerOuter; task#12.5)");
++            } else {
++                log_dispatch(cfg, g.layer_id, /*region_id=*/-1,
++                             "phase2/wall_sequence=InnerOuter");
++            }
++        }
++    }
++}
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachnePlan.hpp b/src/libslic3r/NeoArachne/NeoArachnePlan.hpp
+new file mode 100644
+index 0000000000..a6b7f49d2b
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachnePlan.hpp
+@@ -0,0 +1,30 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase1
++// NeoArachne orchestration plan for the "NeoArachne hybrid v2" architecture:
++//   1) Run PerimeterGenerator::process_classic() with wall_loops forced to 1
++//      and gap_infill_speed forced to 0 → Classic emits a single outer
++//      perimeter; no medial-axis gap fill is generated.
++//   2) Compute the residual interior outline (offset of slice by
++//      ext_perimeter_spacing) and hand it to NeoArachne::Interior, which
++//      drives Arachne::WallToolPaths and emits inner walls + integrated
++//      gap-fill to g.loops.
++//
++// process_classic is NEVER modified — we only swap g.config to point at a
++// local PrintRegionConfig copy with the two values mutated, then restore.
++// This honors the "facade only" filosofía of the canonical plan.
++#ifndef slic3r_NeoArachnePlan_hpp_
++#define slic3r_NeoArachnePlan_hpp_
++
++namespace Slic3r {
++class PerimeterGenerator;
++namespace NeoArachne {
++
++class Plan {
++public:
++    static void run(PerimeterGenerator& g);
++};
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/NeoArachne/NeoArachneRuntime.hpp b/src/libslic3r/NeoArachne/NeoArachneRuntime.hpp
+new file mode 100644
+index 0000000000..d8db8e6bc9
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneRuntime.hpp
+@@ -0,0 +1,24 @@
++// [ORCAPORT FILE] NeoArachne - hybrid wall generator module
++// Source: NEOTKOCM_RELEASE_2_38.md; fork sha 2c90c65bea
++// NEOARACHNE fase0
++// Singleton runtime for NeoArachne UI toggles (pattern mirrors
++// PathBlendSchedulerRuntime in ColorStitch.hpp). Lives at libslic3r
++// level so both backend and GUI can read/write without pulling GUI
++// headers into libslic3r. Real UI wiring lands in Fase 2/6.
++#ifndef slic3r_NeoArachneRuntime_hpp_
++#define slic3r_NeoArachneRuntime_hpp_
++
++#include "NeoArachneConfig.hpp"
++
++namespace Slic3r { namespace NeoArachne {
++
++struct Runtime {
++    Config cfg;
++
++    static Runtime&       mut();
++    static const Runtime& get();
++};
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index 773c3ae2f5..0b8fde5d18 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1337,6 +1337,10 @@ static std::vector<std::string> s_Preset_print_options{
+     // [ORCAPORT:SU-5] Support Zones per-volume keys: without these the gesture blob and zone
+     // options would not travel to the 3mf.
+     "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only", "support_zone_solid", "support_zone_land_only",
++    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator keys.
++    "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill", "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct",
++    "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct", "hybrid_keep_short_tails", "hybrid_pin_outer_width",
++    "hybrid_bead_count_hysteresis_pct", "hybrid_transition_filter_dist_mm",
+     "small_area_infill_flow_compensation",
+     "small_area_infill_flow_compensation_model",
+     "enable_wrapping_detection",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 8c76e95996..24b332252b 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -582,10 +582,20 @@ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(InputShaperType)
+ 
+ static t_config_enum_values s_keys_map_PerimeterGeneratorType{
+     { "classic", int(PerimeterGeneratorType::Classic) },
+-    { "arachne", int(PerimeterGeneratorType::Arachne) }
++    { "arachne", int(PerimeterGeneratorType::Arachne) },
++    { "hybrid",  int(PerimeterGeneratorType::Hybrid) } // [ORCAPORT:PQ-3]
+ };
+ CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(PerimeterGeneratorType)
+ 
++// [ORCAPORT:PQ-3] NeoArachne per-feature wall source.
++static t_config_enum_values s_keys_map_HybridWallSource{
++    { "classic",          int(HybridWallSource::Classic) },
++    { "arachne_stock",    int(HybridWallSource::ArachneStock) },
++    { "arachne_hybrid", int(HybridWallSource::ArachneHybrid) },
++    { "off",              int(HybridWallSource::Off) }
++};
++CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(HybridWallSource)
++
+ static t_config_enum_values s_keys_map_ToolChangeOrderingType {
+     { "default", int(ToolChangeOrderingType::Default) },
+     { "cyclic",  int(ToolChangeOrderingType::Cyclic) }
+@@ -8017,11 +8027,137 @@ void PrintConfigDef::init_fff_params()
+     def->enum_keys_map = &ConfigOptionEnum<PerimeterGeneratorType>::get_enum_values();
+     def->enum_values.push_back("classic");
+     def->enum_values.push_back("arachne");
++    def->enum_values.push_back("hybrid"); // [ORCAPORT:PQ-3]
+     def->enum_labels.push_back(L("Classic"));
+     def->enum_labels.push_back(L("Arachne"));
++    def->enum_labels.push_back(L("NeoArachne")); // [ORCAPORT:PQ-3]
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Arachne));
+ 
++    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator: per-feature wall source selectors.
++    auto add_hybrid_wallsource = [this](const char* key, const std::string& label,
++                                        const std::string& tooltip,
++                                        HybridWallSource def_val, bool allow_off) {
++        ConfigOptionDef* d = this->add(key, coEnum);
++        d->label = label;
++        d->category = L("Quality");
++        d->tooltip = tooltip;
++        d->enum_keys_map = &ConfigOptionEnum<HybridWallSource>::get_enum_values();
++        d->enum_values.push_back("classic");
++        d->enum_values.push_back("arachne_stock");
++        d->enum_values.push_back("arachne_hybrid");
++        d->enum_labels.push_back(L("Classic"));
++        d->enum_labels.push_back(L("Arachne (stock)"));
++        d->enum_labels.push_back(L("Arachne (hybrid)"));
++        if (allow_off) {
++            d->enum_values.push_back("off");
++            d->enum_labels.push_back(L("Off"));
++        }
++        d->mode = comAdvanced;
++        d->set_default_value(new ConfigOptionEnum<HybridWallSource>(def_val));
++    };
++    add_hybrid_wallsource("hybrid_outer_wall",
++        L("Outer wall source"),
++        L("Engine that emits the outer perimeter when wall generator = NeoArachne. "
++          "Classic = constant width, clean surface (default). Arachne variants = variable-width "
++          "outer. Off is not allowed for the outer wall."),
++        HybridWallSource::Classic, /*allow_off=*/false);
++    add_hybrid_wallsource("hybrid_inner_walls",
++        L("Inner walls source"),
++        L("Engine that emits all interior perimeters. Arachne (stock) is the default: variable-width "
++          "beading with integrated gap-fill. Classic falls back to constant-width onion shells."),
++        HybridWallSource::ArachneStock, /*allow_off=*/false);
++    add_hybrid_wallsource("hybrid_gap_fill",
++        L("Gap-fill source"),
++        L("Engine for the dedicated gap-fill pass. Default Off because Arachne already integrates "
++          "gap-fill into its inner wall pass."),
++        HybridWallSource::Off, /*allow_off=*/true);
++
++    def = this->add("hybrid_allowed_overlap_pct", coPercent);
++    def->label = L("Allowed perimeter overlap");
++    def->category = L("Quality");
++    def->tooltip = L("Percentage of the outer perimeter spacing by which the Arachne first interior "
++        "bead may overlap the Classic outer perimeter. Default 0%: the seam is already closed by the "
++        "spacing math. Use small positive values (5-15%) only if a visible seam appears.");
++    def->sidetext = L("%");
++    def->min = 0;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(0));
++
++    def = this->add("hybrid_min_bead_width_pct", coPercent);
++    def->label = L("Min Line Width");
++    def->category = L("Quality");
++    def->tooltip = L("Minimum variable-width bead emitted by Arachne, as a percentage of nozzle "
++        "diameter. Default 40%. Below ~25% some Bowden extruders skip steps.");
++    def->sidetext = L("% of nozzle");
++    def->min = 5;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(40));
++
++    def = this->add("hybrid_max_bead_width_pct", coPercent);
++    def->label = L("Max Line Width");
++    def->category = L("Quality");
++    def->tooltip = L("Ceiling on variable-width beads: Arachne splits a bead into two once it would "
++        "grow above this percentage of nozzle diameter. Default 200% = effectively auto.");
++    def->sidetext = L("% of nozzle");
++    def->min = 100;
++    def->max = 200;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(200));
++
++    def = this->add("hybrid_min_feature_size_pct", coPercent);
++    def->label = L("Min Feature Threshold");
++    def->category = L("Quality");
++    def->tooltip = L("Geometry thinner than this percentage of nozzle diameter is discarded by "
++        "Arachne. Default 10%. Must be <= minimum bead width.");
++    def->sidetext = L("% of nozzle");
++    def->min = 1;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(10));
++
++    def = this->add("hybrid_keep_short_tails", coBool);
++    def->label = L("Preserve Thin Edges");
++    def->category = L("Quality");
++    def->tooltip = L("Suppresses Arachne's removeSmallLines post-process, keeping the short closure "
++        "tails that approach the outer perimeter. Disable only for speckled artifacts from extremely "
++        "short segments.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(true));
++
++    def = this->add("hybrid_pin_outer_width", coBool);
++    def->label = L("Pin Outer Wall Width");
++    def->category = L("Quality");
++    def->tooltip = L("When a wall source is \"Arachne (hybrid)\" and the bead count is 1 or 2, force "
++        "the outer wall width to the nominal nozzle width instead of letting it breathe with local "
++        "thickness. Disable to fall back to stock Arachne behaviour.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(true));
++
++    def = this->add("hybrid_bead_count_hysteresis_pct", coPercent);
++    def->label = L("Wall Count Stability");
++    def->category = L("Quality");
++    def->tooltip = L("Spatial hysteresis on Arachne's bead-count transitions (as a % of the outer "
++        "wall width) when a wall source is \"Arachne (hybrid)\". 0 disables. Typical 10-25%.");
++    def->sidetext = L("%");
++    def->min = 0;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(20));
++
++    def = this->add("hybrid_transition_filter_dist_mm", coFloat);
++    def->label = L("Wall Blend Distance");
++    def->category = L("Quality");
++    def->tooltip = L("SkeletalTrapezoidation transition smoothing distance in mm. Upstream Arachne "
++        "hardcodes 100 mm; lower values (20-50 mm) produce sharper, more localised transitions.");
++    def->sidetext = L("mm");
++    def->min = 1;
++    def->max = 500;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionFloat(100.0));
++
+     def = this->add("wall_transition_length", coPercent);
+     def->label = L("Wall transition length");
+     def->category = L("Quality");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index d505854c67..9a169c8991 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -390,7 +390,20 @@ enum class PerimeterGeneratorType
+     Classic,
+     // Perimeter generator with variable extrusion width based on the paper
+     // "A framework for adaptive width control of dense contour-parallel toolpaths in fused deposition modeling" ported from Cura.
+-    Arachne
++    Arachne,
++    // [ORCAPORT:PQ-3] NeoArachne hybrid: a per-feature mix of Classic and Arachne (Classic outer +
++    // Arachne interior by default). Label kept as "NeoArachne"; the serialized key is neutral.
++    Hybrid
++};
++
++// [ORCAPORT:PQ-3] Per-feature wall source for the hybrid generator. Top-level namespace because
++// CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS cannot expand a nested-namespace name; NeoArachne aliases it.
++enum class HybridWallSource
++{
++    Classic,
++    ArachneStock,
++    ArachneHybrid,
++    Off
+ };
+ 
+ enum class ToolChangeOrderingType
+@@ -705,6 +718,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PrintHostType)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(AuthorizationType)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerWallType)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PerimeterGeneratorType)
++CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(HybridWallSource) // [ORCAPORT:PQ-3]
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(ToolChangeOrderingType)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PowerLossRecoveryMode)
+ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SurfaceFillOrder)
+@@ -1475,6 +1489,18 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionBool,    support_zone_roof_only))
+     ((ConfigOptionBool,    support_zone_solid))
+     ((ConfigOptionBool,    support_zone_land_only))
++    // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator per-region keys.
++    ((ConfigOptionEnum<HybridWallSource>, hybrid_outer_wall))
++    ((ConfigOptionEnum<HybridWallSource>, hybrid_inner_walls))
++    ((ConfigOptionEnum<HybridWallSource>, hybrid_gap_fill))
++    ((ConfigOptionPercent, hybrid_allowed_overlap_pct))
++    ((ConfigOptionPercent, hybrid_min_bead_width_pct))
++    ((ConfigOptionPercent, hybrid_max_bead_width_pct))
++    ((ConfigOptionPercent, hybrid_min_feature_size_pct))
++    ((ConfigOptionBool,    hybrid_keep_short_tails))
++    ((ConfigOptionBool,    hybrid_pin_outer_width))
++    ((ConfigOptionPercent, hybrid_bead_count_hysteresis_pct))
++    ((ConfigOptionFloat,   hybrid_transition_filter_dist_mm))
+     )
+ 
+ PRINT_CONFIG_CLASS_DEFINE(
+diff --git a/src/slic3r/GUI/ConfigManipulation.cpp b/src/slic3r/GUI/ConfigManipulation.cpp
+index 3cdafb404f..3f9fbd1edf 100644
+--- a/src/slic3r/GUI/ConfigManipulation.cpp
++++ b/src/slic3r/GUI/ConfigManipulation.cpp
+@@ -702,6 +702,66 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
+         apply(config, &new_conf);
+         is_msg_dlg_already_exist = false;
+     }
++
++    // [ORCAPORT:PQ-3] validate the NeoArachne hybrid wall-source combo and Edge Closure invariants.
++    // Runs on a possibly-sparse per-object config, so guard every read with has().
++    if (config->has("wall_generator")
++        && config->opt_enum<PerimeterGeneratorType>("wall_generator") == PerimeterGeneratorType::Hybrid
++        && config->has("hybrid_outer_wall")
++        && config->has("hybrid_inner_walls")
++        && config->has("hybrid_min_bead_width_pct")
++        && config->has("hybrid_min_feature_size_pct")
++        && !is_msg_dlg_already_exist)
++    {
++        const auto outer = config->opt_enum<HybridWallSource>("hybrid_outer_wall");
++        const auto inner = config->opt_enum<HybridWallSource>("hybrid_inner_walls");
++
++        // (1) outer = Off is meaningless - every part needs at least one outer.
++        if (outer == HybridWallSource::Off) {
++            MessageDialog dialog(m_msg_dlg_parent,
++                _L("NeoArachne - outer wall set to Off is not allowed. Reset to Classic?"),
++                _L("NeoArachne - invalid combo"), wxICON_WARNING | wxYES | wxNO);
++            is_msg_dlg_already_exist = true;
++            const auto ans = dialog.ShowModal();
++            is_msg_dlg_already_exist = false;
++            if (ans == wxID_YES) {
++                DynamicPrintConfig nc = *config;
++                nc.set_key_value("hybrid_outer_wall", new ConfigOptionEnum<HybridWallSource>(HybridWallSource::Classic));
++                apply(config, &nc);
++            }
++        }
++        // (2) outer = Arachne* + inner = Classic breaks Arachne's whole-slab beading.
++        else if ((outer == HybridWallSource::ArachneStock || outer == HybridWallSource::ArachneHybrid)
++                 && inner == HybridWallSource::Classic)
++        {
++            MessageDialog dialog(m_msg_dlg_parent,
++                _L("NeoArachne - outer = Arachne with inner = Classic is unsupported "
++                   "(Arachne's beading needs the whole slab). Switch inner to match outer?"),
++                _L("NeoArachne - invalid combo"), wxICON_WARNING | wxYES | wxNO);
++            is_msg_dlg_already_exist = true;
++            const auto ans = dialog.ShowModal();
++            is_msg_dlg_already_exist = false;
++            if (ans == wxID_YES) {
++                DynamicPrintConfig nc = *config;
++                nc.set_key_value("hybrid_inner_walls", new ConfigOptionEnum<HybridWallSource>(outer));
++                apply(config, &nc);
++            }
++        }
++
++        // (3) Edge Closure invariant: min_feature_size_pct <= min_bead_width_pct (silent swap).
++        const ConfigOption* min_bead_opt = config->option("hybrid_min_bead_width_pct");
++        const ConfigOption* min_feat_opt = config->option("hybrid_min_feature_size_pct");
++        if (min_bead_opt && min_feat_opt) {
++            const double min_bead = min_bead_opt->getFloat();
++            const double min_feat = min_feat_opt->getFloat();
++            if (min_feat > min_bead) {
++                DynamicPrintConfig nc = *config;
++                nc.set_key_value("hybrid_min_feature_size_pct", new ConfigOptionPercent(min_bead));
++                nc.set_key_value("hybrid_min_bead_width_pct",   new ConfigOptionPercent(min_feat));
++                apply(config, &nc);
++            }
++        }
++    }
+ }
+ 
+ void ConfigManipulation::apply_null_fff_config(DynamicPrintConfig *config, std::vector<std::string> const &keys, std::map<ObjectBase *, ModelConfig *> const &configs)
+@@ -1139,6 +1199,22 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
+         toggle_line(el, have_arachne);
+     toggle_field("detect_thin_wall", !have_arachne);
+ 
++    // [ORCAPORT:PQ-3] show the NeoArachne hybrid controls only when wall_generator = NeoArachne.
++    const bool have_hybrid = config->opt_enum<PerimeterGeneratorType>("wall_generator") == PerimeterGeneratorType::Hybrid;
++    for (auto el : { "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill" })
++        toggle_line(el, have_hybrid);
++    const bool inner_readable = have_hybrid && config->has("hybrid_inner_walls");
++    const auto inner_src = inner_readable ? config->opt_enum<HybridWallSource>("hybrid_inner_walls") : HybridWallSource::ArachneStock;
++    const bool inner_is_arachne = inner_src == HybridWallSource::ArachneStock || inner_src == HybridWallSource::ArachneHybrid;
++    for (auto el : { "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct", "hybrid_max_bead_width_pct",
++                     "hybrid_min_feature_size_pct", "hybrid_keep_short_tails" })
++        toggle_line(el, have_hybrid && inner_is_arachne);
++    const auto outer_src = (have_hybrid && config->has("hybrid_outer_wall")) ? config->opt_enum<HybridWallSource>("hybrid_outer_wall") : HybridWallSource::Classic;
++    const bool hybrid_edge_active = have_hybrid && (inner_src == HybridWallSource::ArachneHybrid || outer_src == HybridWallSource::ArachneHybrid);
++    toggle_line("hybrid_pin_outer_width", hybrid_edge_active);
++    toggle_line("hybrid_bead_count_hysteresis_pct", hybrid_edge_active);
++    toggle_line("hybrid_transition_filter_dist_mm", have_hybrid && inner_is_arachne);
++
+     // Orca
+     auto is_role_based_wipe_speed = config->opt_bool("role_based_wipe_speed");
+     toggle_field("wipe_speed",!is_role_based_wipe_speed);
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index 6a8163b0ae..5f381bda92 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2718,6 +2718,19 @@ void TabPrint::build()
+         optgroup->append_single_option_line("wall_maximum_resolution", "quality_settings_wall_generator#maximum-wall-resolution");
+         optgroup->append_single_option_line("wall_maximum_deviation", "quality_settings_wall_generator#maximum-wall-deviation");
+ 
++        // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator options (visible when the generator is NeoArachne).
++        optgroup->append_single_option_line("hybrid_outer_wall", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_inner_walls", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_gap_fill", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_allowed_overlap_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_min_bead_width_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_max_bead_width_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_min_feature_size_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_keep_short_tails", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_pin_outer_width", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_bead_count_hysteresis_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_transition_filter_dist_mm", "quality_settings_wall_generator");
++
+         optgroup = page->new_optgroup(L("Walls and surfaces"), L"param_wall_surface");
+         optgroup->append_single_option_line("wall_sequence", "quality_settings_wall_and_surfaces#walls-printing-order");
+         optgroup->append_single_option_line("is_infill_first", "quality_settings_wall_and_surfaces#print-infill-first");
