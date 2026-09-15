@@ -63,13 +63,20 @@ Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's bas
 - The copied `GLGizmoSupportZones.{hpp,cpp}` are staged in the tree but **not** registered yet
   (Phase 2 UI); they are not in CMake, so they do not affect the build.
 
-**Remaining (Phase 1b):**
-- `Model.{hpp,cpp}` config hash so a zone's config identity is part of region identity.
-- The ~1,400-line zone engine in `Support/SupportMaterial.cpp` (42 sites: enforcer seeding,
-  `SupportAnnotations`, corridor descent, family/area build, `support_family_areas` population,
-  wall loops, zone merging) + `SupportMaterial.hpp`/`SupportCommon.{hpp,cpp}` helpers
-  (`support_family_areas_at` consumption, `split_support_fills_by_family`).
-- `PrintObject.cpp` / `PrintApply.cpp` zone propagation + invalidation.
-- `GCode.cpp` / `ToolOrdering.cpp` family -> tool routing.
-- Then Phase 2: the gizmo UI + `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
+**Phase 1b done (build clean):**
+- `Model.{hpp,cpp}`: `model_support_volume_config_changed()` (a zone recipe edit now invalidates
+  `posSupportMaterial`), wired in `PrintApply.cpp`.
+- `Support/SupportMaterial.cpp`: the ~1,400-line zone engine (enforcer seeding, `SupportAnnotations`,
+  corridor descent, roof-layer, zone merge, family build) ported from the fork's `v2.3.5` diff,
+  keys renamed to `support_zone_*`, NeoDebug/Gravity/wave-bugfix stripped.
+- `Support/SupportCommon.{hpp,cpp}`: `split_support_fills_by_family()` + the `generate_support_toolpaths`
+  `object_for_families` argument and split call; `PrintObject::push_support_zone_style_warning()`.
+
+**Remaining:**
+- `GCode.cpp` / `ToolOrdering.cpp` family -> tool routing (only needed for zones that use a different
+  filament; single-filament aimed pillars already work).
+- Other `PrintObject.cpp` zone propagation hooks.
+- Phase 2: the `GLGizmoSupportZones` UI (copied into the tree but not registered) +
+  `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
+
 
