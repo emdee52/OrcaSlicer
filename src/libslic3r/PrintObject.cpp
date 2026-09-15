@@ -1198,6 +1198,12 @@ bool PrintObject::invalidate_state_by_config_options(
     std::vector<PrintObjectStep> steps;
     bool invalidated = false;
     for (const t_config_option_key &opt_key : opt_keys) {
+        // [ORCAPORT:SU-5] The gesture key is descriptive only (the engine does not read it; the
+        // volume mesh invalidates on its own). Without this `continue` the trailing "legacy"
+        // else-branch would invalidate the whole object on every zone edit.
+        if (opt_key == "support_zone_gesture")
+            continue;
+
         if (   opt_key == "brim_width"
             || opt_key == "brim_object_gap"
             || opt_key == "brim_use_efc_outline"
@@ -1338,6 +1344,12 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_object_xy_distance"
             || opt_key == "support_object_first_layer_gap"
             || opt_key == "support_cross_object_avoidance" // [ORCAPORT:SU-1]
+            // [ORCAPORT:SU-5] a zone's lean/solid/land_only decide the pillar geometry, so a change
+            // must regenerate the support (unlike the descriptive gesture key handled above).
+            || opt_key == "support_zone_lean_deg"
+            || opt_key == "support_zone_roof_only"
+            || opt_key == "support_zone_solid"
+            || opt_key == "support_zone_land_only"
             || opt_key == "support_base_pattern_spacing"
             || opt_key == "support_expansion"
             || opt_key == "independent_support_layer_height" // Orca
