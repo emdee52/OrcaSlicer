@@ -5,7 +5,7 @@
   angle override, key `counterbore_bridge_layers`.
 - Category: D (Bambu/Orca slicing pipeline differs). Split into **PF-2a (global option)** and
   **PF-2b (painting gizmo)**.
-- Status: planned.
+- Status: **PF-2a ported** (branch `port/PF-2a`); PF-2b planned.
 
 ## What preFlight does (verified)
 
@@ -74,12 +74,35 @@ Confirm the geometry/direction of the user's counterbore and define the auto-det
 for each layer L, is it "hole at L larger than at L+1" (preFlight) or the inverse? Also pick a
 minimum ring width / overlap threshold to avoid flagging tapered holes.
 
-## Verification
+## PF-2a port (done)
 
-- Off by default (`counterbore_hole_bridging = none`) -> byte-identical.
-- Manual: a block with a covered counterbore, no support, `Smart bridging` + N -> the ring closes
-  over N layers with a rotating bridge direction per layer; `Partially bridged` keeps Orca's
-  behaviour; different holes bridge along their own corridor angle.
+- `CounterboreHoleBridgingOption` += `chbSmart` (serialized `smartbridge`, label "Smart
+  bridging"), appended last. `counterbore_bridge_layers` (coInt 2-9, default 2) in
+  `PrintRegionConfig` next to it; `Preset.cpp` whitelist.
+- `Layer::counterbore_bridge_regions` = `vector<pair<ExPolygons, double>>` (bridge material,
+  fill angle).
+- `FillBase::counterbore_fill_angle` (< 0 = not a counterbore bridge). `FillBase::_infill_direction`
+  uses it ahead of `bridge_angle`; `Layer::make_fills` sets it per surface by intersecting the
+  surface with `counterbore_bridge_regions`.
+- `PrintObjectSlice.cpp`: `apply_counterbore_bridge_geometry(PrintObject&)` ports preFlight's
+  stepping (rotating-angle convex-hull corridors, cumulative intersection, `ring - remainder`),
+  with the guards below. Called from `PrintObject::slice()` after `groupingVolumesForBrim`,
+  before the bbox/backup pass, when `counterbore_hole_bridging == chbSmart`.
+- **Auto-detection (new):** for each layer L (>=1), for each hole, find smaller holes on L+1
+  nested inside it (area < 0.9x, centroid inside). bore = L's hole, shaft = the nested hole;
+  `ring = bore - shaft`. Guards: equivalent-diameter difference >= 0.6 mm, steps capped by
+  layers available, layer 0 skipped.
+- Off by default (`none`): byte-identical.
+
+### Build
+
+`build_win.bat -s --no-configure -j 8` -> 0 errors; `PrintObjectSlice.cpp`, `Fill.cpp`,
+`FillBase.cpp`, `PrintConfig.cpp` compiled, `OrcaSlicer.dll` linked 2026-09-15 08:35.
+
+### Verification
+
+- Manual (pending): counterbore with a wide void under material; `Smart bridging` + N -> the ring
+  closes over N layers with a rotating bridge direction; `None` -> unchanged.
 
 ## Files (Orca)
 
