@@ -56,9 +56,16 @@ shell collection's clipping plane when a plane is active.
   object id).
 - `src/slic3r/GUI/Plater.cpp` - the Preview canvas did **not** bind
   `EVT_GLCANVAS_RIGHT_CLICK`; the port adds `on_preview_right_click` and a small local menu
-  with "Clipping Plane" that activates the controller for the hovered object. This differs
-  from preFlight's rewritten native/custom menu (Orca's preview had no right-click menu at
-  all), but is the minimal Orca-idiomatic hook.
+  with "Clipping Plane" that activates the controller for the object under the cursor. This
+  differs from preFlight's rewritten native/custom menu (Orca's preview had no right-click
+  menu at all), but is the minimal Orca-idiomatic hook.
+  - The object under the cursor is found by `PreviewClipController::pick_object`, which
+    raycasts the preview **shell** volumes (`GLVolume::mesh_raycaster`) and returns the
+    nearest hit's `composite_id.object_id`. This is required because the Preview canvas has
+    `picking` disabled (`Preview::init` never calls `enable_picking(true)`), so
+    `m_hover_volume_idxs`/`GLCanvas3D` picking is always empty in Preview, and
+    `wxGetApp().is_gcode_viewer()` is only true in the standalone G-code viewer app mode, not
+    the editor's Preview tab.
 - `src/slic3r/CMakeLists.txt` - the two new controller files.
 
 ## Anchors (for a future upstream rebase)
