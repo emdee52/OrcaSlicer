@@ -6,6 +6,7 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/Camera.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/MeshUtils.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
@@ -38,6 +39,41 @@ static GCodeViewer* get_current_gcode_viewer()
     if (canvas == nullptr)
         return nullptr;
     return &canvas->get_gcode_viewer();
+}
+
+// [ORCAPORT:PF-6] The Preview canvas has picking disabled and no volume raycasters, so pick the
+// object by raycasting the preview shell volumes (which do carry a MeshRaycaster) directly.
+int PreviewClipController::pick_object(const Vec2d& screen_pos) const
+{
+    GCodeViewer* viewer = get_current_gcode_viewer();
+    if (viewer == nullptr)
+        return -1;
+
+    const Camera& camera          = wxGetApp().plater()->get_camera();
+    const Vec3d   camera_position = camera.get_position();
+
+    int    best_id   = -1;
+    double best_dist = DBL_MAX;
+    for (GLVolume* volume : viewer->get_shells_volumes().volumes)
+    {
+        if (volume == nullptr || volume->composite_id.object_id < 0 || volume->mesh_raycaster == nullptr)
+            continue;
+
+        Vec3f hit_position, hit_normal;
+        if (!volume->mesh_raycaster->closest_hit(screen_pos, volume->world_matrix(), camera, hit_position, hit_normal))
+            continue;
+
+        // closest_hit reports the hit in the mesh's local frame; bring it back to world space
+        const Vec3d  world_hit = volume->world_matrix() * hit_position.cast<double>();
+        const double dist      = (world_hit - camera_position).squaredNorm();
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_id   = volume->composite_id.object_id;
+        }
+    }
+
+    return best_id;
 }
 
 void PreviewClipController::activate(int object_id)

@@ -11,11 +11,6 @@
 #include <vector>
 
 namespace Slic3r {
-namespace GUI {
-class GCodeViewer;
-class GLCanvas3D;
-class Camera;
-} // namespace GUI
 
 namespace OrcaExt {
 namespace Gui {
@@ -30,6 +25,9 @@ public:
     void set_position(double ratio);
     void reset_direction();
     void render_imgui();
+
+    // [ORCAPORT:PF-6] object id under the given canvas mouse position (physical/retina pixels), or -1
+    int pick_object(const Vec2d& screen_pos) const;
 
     bool is_active() const { return m_active; }
     int  get_object_id() const { return m_object_id; }

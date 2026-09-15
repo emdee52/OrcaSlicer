@@ -625,25 +625,6 @@ index 5ba748775c..57f7b5d19e 100644
      std::vector<double> get_layers_zs() const {
          const std::vector<float> zs = m_viewer.get_layers_zs();
          std::vector<double> ret;
-diff --git a/src/slic3r/GUI/GLCanvas3D.hpp b/src/slic3r/GUI/GLCanvas3D.hpp
-index 2486ca70b0..b81e8cc4c9 100644
---- a/src/slic3r/GUI/GLCanvas3D.hpp
-+++ b/src/slic3r/GUI/GLCanvas3D.hpp
-@@ -1157,6 +1157,14 @@ public:
- 
-     int get_move_volume_id() const { return m_mouse.drag.move_volume_idx; }
-     int get_first_hover_volume_idx() const { return m_hover_volume_idxs.empty() ? -1 : m_hover_volume_idxs.front(); }
-+    // [ORCAPORT:PF-6] model object id of the volume under the cursor, or -1
-+    int get_first_hover_object_id() const
-+    {
-+        const int idx = get_first_hover_volume_idx();
-+        if (idx < 0 || idx >= static_cast<int>(m_volumes.volumes.size()) || m_volumes.volumes[idx] == nullptr)
-+            return -1;
-+        return m_volumes.volumes[idx]->object_idx();
-+    }
-     void set_selected_extruder(int extruder) { m_selected_extruder = extruder;}
- 
-     class WipeTowerInfo {
 diff --git a/src/slic3r/GUI/GLShadersManager.cpp b/src/slic3r/GUI/GLShadersManager.cpp
 index 2b8a0edf0a..924ceffbc5 100644
 --- a/src/slic3r/GUI/GLShadersManager.cpp
@@ -659,10 +640,10 @@ index 2b8a0edf0a..924ceffbc5 100644
      // used to render printbed
 diff --git a/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
 new file mode 100644
-index 0000000000..90cac213c4
+index 0000000000..719701dda3
 --- /dev/null
 +++ b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,245 @@
 +// [ORCAPORT FILE] OrcaExtGuiPreviewClipController - interactive clipping plane for the G-code preview
 +// Source: preFlight v1.3.0 (preFlight.PreviewClipController.*); re-implemented on OrcaSlicer 2.5 APIs
 +#include "PreviewClipController.hpp"
@@ -671,6 +652,7 @@ index 0000000000..90cac213c4
 +#include "slic3r/GUI/GLCanvas3D.hpp"
 +#include "slic3r/GUI/Camera.hpp"
 +#include "slic3r/GUI/GUI_App.hpp"
++#include "slic3r/GUI/MeshUtils.hpp"
 +#include "slic3r/GUI/Plater.hpp"
 +#include "slic3r/GUI/3DScene.hpp"
 +#include "slic3r/GUI/ImGuiWrapper.hpp"
@@ -703,6 +685,41 @@ index 0000000000..90cac213c4
 +    if (canvas == nullptr)
 +        return nullptr;
 +    return &canvas->get_gcode_viewer();
++}
++
++// [ORCAPORT:PF-6] The Preview canvas has picking disabled and no volume raycasters, so pick the
++// object by raycasting the preview shell volumes (which do carry a MeshRaycaster) directly.
++int PreviewClipController::pick_object(const Vec2d& screen_pos) const
++{
++    GCodeViewer* viewer = get_current_gcode_viewer();
++    if (viewer == nullptr)
++        return -1;
++
++    const Camera& camera          = wxGetApp().plater()->get_camera();
++    const Vec3d   camera_position = camera.get_position();
++
++    int    best_id   = -1;
++    double best_dist = DBL_MAX;
++    for (GLVolume* volume : viewer->get_shells_volumes().volumes)
++    {
++        if (volume == nullptr || volume->composite_id.object_id < 0 || volume->mesh_raycaster == nullptr)
++            continue;
++
++        Vec3f hit_position, hit_normal;
++        if (!volume->mesh_raycaster->closest_hit(screen_pos, volume->world_matrix(), camera, hit_position, hit_normal))
++            continue;
++
++        // closest_hit reports the hit in the mesh's local frame; bring it back to world space
++        const Vec3d  world_hit = volume->world_matrix() * hit_position.cast<double>();
++        const double dist      = (world_hit - camera_position).squaredNorm();
++        if (dist < best_dist)
++        {
++            best_dist = dist;
++            best_id   = volume->composite_id.object_id;
++        }
++    }
++
++    return best_id;
 +}
 +
 +void PreviewClipController::activate(int object_id)
@@ -874,10 +891,10 @@ index 0000000000..90cac213c4
 +} // namespace Slic3r
 diff --git a/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp b/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp
 new file mode 100644
-index 0000000000..e8343827ba
+index 0000000000..90b21632e4
 --- /dev/null
 +++ b/src/slic3r/GUI/OrcaExt/PreviewClipController.hpp
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,58 @@
 +// [ORCAPORT FILE] OrcaExtGuiPreviewClipController - interactive clipping plane for the G-code preview
 +// Source: preFlight v1.3.0 (preFlight.PreviewClipController.*); re-implemented on OrcaSlicer 2.5 APIs
 +#ifndef slic3r_OrcaExt_PreviewClipController_hpp_
@@ -891,11 +908,6 @@ index 0000000000..e8343827ba
 +#include <vector>
 +
 +namespace Slic3r {
-+namespace GUI {
-+class GCodeViewer;
-+class GLCanvas3D;
-+class Camera;
-+} // namespace GUI
 +
 +namespace OrcaExt {
 +namespace Gui {
@@ -910,6 +922,9 @@ index 0000000000..e8343827ba
 +    void set_position(double ratio);
 +    void reset_direction();
 +    void render_imgui();
++
++    // [ORCAPORT:PF-6] object id under the given canvas mouse position (physical/retina pixels), or -1
++    int pick_object(const Vec2d& screen_pos) const;
 +
 +    bool is_active() const { return m_active; }
 +    int  get_object_id() const { return m_object_id; }
@@ -939,7 +954,7 @@ index 0000000000..e8343827ba
 +
 +#endif // slic3r_OrcaExt_PreviewClipController_hpp_
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 839b12dd03..32ff21e038 100644
+index 839b12dd03..eac6c2479f 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -7121,6 +7121,8 @@ struct Plater::priv
@@ -967,14 +982,14 @@ index 839b12dd03..32ff21e038 100644
 +// [ORCAPORT:PF-6] BEGIN - right-click an object in Preview to clip the preview around it
 +void Plater::priv::on_preview_right_click(RBtnEvent& evt)
 +{
-+    if (!wxGetApp().is_gcode_viewer())
-+        return;
-+
 +    GLCanvas3D* canvas = preview->get_canvas3d();
 +    if (canvas == nullptr)
 +        return;
 +
-+    const int object_id = canvas->get_first_hover_object_id();
++    // The Preview canvas has picking disabled, so pick by raycasting the preview shell volumes.
++    Vec2d mouse_position = evt.data.first;
++    canvas->apply_retina_scale(mouse_position);
++    const int object_id = canvas->get_gcode_viewer().get_preview_clip_controller().pick_object(mouse_position);
 +    if (object_id < 0)
 +        return;
 +
