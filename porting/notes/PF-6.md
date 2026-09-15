@@ -66,6 +66,11 @@ shell collection's clipping plane when a plane is active.
     `m_hover_volume_idxs`/`GLCanvas3D` picking is always empty in Preview, and
     `wxGetApp().is_gcode_viewer()` is only true in the standalone G-code viewer app mode, not
     the editor's Preview tab.
+  - **Primary entry point is a button, not the context menu.** Right-click turned out not to
+    reach the preview canvas reliably, so `GCodeViewer::render` draws an always-visible
+    "Clipping Plane" button (top-center ImGui window) in Preview. It activates clipping for
+    the selected object, else the first object that has shells. The right-click handler is
+    kept but is not the main path.
 - `src/slic3r/CMakeLists.txt` - the two new controller files.
 
 ## Anchors (for a future upstream rebase)
