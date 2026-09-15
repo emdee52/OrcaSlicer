@@ -75,9 +75,11 @@ Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's bas
   filament (roles actually present, 1-based, clamped to physical extruders); `GCode::process_layer`
   routes each family to its own `ObjectByExtruder` cube; `GCode::extrude_support` filters the
   family-tagged entities. All gated on non-empty `support_fills_family`.
+- `PrintObject::invalidate_state_by_config_options`: the descriptive `support_zone_gesture` key is
+  skipped (no reload), while `support_zone_lean_deg/roof_only/solid/land_only` invalidate
+  `posSupportMaterial`.
 
 **Remaining:**
-- Other `PrintObject.cpp` zone propagation hooks (invalidation/first-layer; verify against the fork).
 - Phase 2: the `GLGizmoSupportZones` UI (copied into the tree but not registered) +
   `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
 
