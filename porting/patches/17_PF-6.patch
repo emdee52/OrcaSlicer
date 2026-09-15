@@ -640,10 +640,10 @@ index 2b8a0edf0a..924ceffbc5 100644
      // used to render printbed
 diff --git a/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
 new file mode 100644
-index 0000000000..719701dda3
+index 0000000000..3418380db5
 --- /dev/null
 +++ b/src/slic3r/GUI/OrcaExt/PreviewClipController.cpp
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,287 @@
 +// [ORCAPORT FILE] OrcaExtGuiPreviewClipController - interactive clipping plane for the G-code preview
 +// Source: preFlight v1.3.0 (preFlight.PreviewClipController.*); re-implemented on OrcaSlicer 2.5 APIs
 +#include "PreviewClipController.hpp"
@@ -856,15 +856,57 @@ index 0000000000..719701dda3
 +
 +void PreviewClipController::render_imgui()
 +{
-+    if (!m_active)
-+        return;
-+
 +    ImGuiWrapper& imgui = *wxGetApp().imgui();
 +
 +    const auto cnv_size = wxGetApp().plater()->get_current_canvas3D()->get_canvas_size();
 +    imgui.set_next_window_pos(static_cast<float>(cnv_size.get_width()) * 0.5f, 10.0f, ImGuiCond_Once, 0.5f, 0.0f);
 +
 +    const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
++
++    // [ORCAPORT:PF-6] always-visible toggle in the preview; right-click is unreliable there
++    if (!m_active)
++    {
++        const std::string title = "Clipping Plane###PreviewClipControllerToggle";
++        ImGui::Begin(title.c_str(), nullptr, flags);
++        if (ImGui::Button("Clipping Plane"))
++        {
++            // Clip the selected object, else the first object that has shells
++            GCodeViewer* viewer = get_current_gcode_viewer();
++            if (viewer != nullptr)
++            {
++                GLVolumeCollection& shells = viewer->get_shells_volumes();
++                int object_id = -1;
++                Plater* plater = wxGetApp().plater();
++                if (plater != nullptr)
++                {
++                    const int selected = plater->get_selected_object_idx();
++                    for (GLVolume* v : shells.volumes)
++                    {
++                        if (v != nullptr && v->composite_id.object_id == selected)
++                        {
++                            object_id = selected;
++                            break;
++                        }
++                    }
++                }
++                if (object_id < 0)
++                {
++                    for (GLVolume* v : shells.volumes)
++                    {
++                        if (v != nullptr && v->composite_id.object_id >= 0)
++                        {
++                            object_id = v->composite_id.object_id;
++                            break;
++                        }
++                    }
++                }
++                if (object_id >= 0)
++                    activate(object_id);
++            }
++        }
++        ImGui::End();
++        return;
++    }
 +
 +    const std::string title = "Clipping Plane - " + get_object_name() + "###PreviewClipController";
 +    ImGui::Begin(title.c_str(), nullptr, flags);
