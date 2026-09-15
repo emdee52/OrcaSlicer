@@ -1372,10 +1372,9 @@ void PerimeterGenerator::generate_interlocking_perimeters(const ExPolygons &zone
 
         const double tier_flow  = (k == 0) ? (m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0) : 2.0;
         const double flow_ratio = 1.0 + (tier_flow - 1.0) * m_interlock_strength;
-        // The bead is over-extruded (up to 200% flow for the inner interlocking shells), so its
-        // visual width grows with the flow; PF-9 applies this as a per-segment flow, we fold it
-        // into both width and mm3_per_mm.
-        const float  width      = base_width_mm * float(flow_ratio);
+        // Geometry width follows PF-9's main_w/boundary_w: sqrt(flow)*w (<=1.414x), so the widest
+        // bead stays printable on the nozzle. The over-extrusion itself is in mm3_per_mm.
+        const float  width      = base_width_mm * float(std::sqrt(flow_ratio));
         const double mm3        = base_mm3 * flow_ratio;
 
         for (const ExPolygon &ex : ring) {

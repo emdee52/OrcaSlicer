@@ -33,7 +33,7 @@ index 4a845fbd1d..d68e4ceac3 100644
          g.process_arachne();
      // [ORCAPORT:PQ-3] NeoArachne hybrid wall generator (ungated; spiral mode falls back to Classic).
 diff --git a/src/libslic3r/PerimeterGenerator.cpp b/src/libslic3r/PerimeterGenerator.cpp
-index a6b38889a5..465120fe5d 100644
+index a6b38889a5..3f553c9a0b 100644
 --- a/src/libslic3r/PerimeterGenerator.cpp
 +++ b/src/libslic3r/PerimeterGenerator.cpp
 @@ -25,6 +25,8 @@ static const double narrow_loop_length_threshold = 10;
@@ -45,7 +45,7 @@ index a6b38889a5..465120fe5d 100644
  
  namespace Slic3r {
      
-@@ -1318,6 +1320,87 @@ static void reorient_perimeters(ExtrusionEntityCollection &entities, bool steep_
+@@ -1318,6 +1320,86 @@ static void reorient_perimeters(ExtrusionEntityCollection &entities, bool steep_
      }
  }
  
@@ -101,10 +101,9 @@ index a6b38889a5..465120fe5d 100644
 +
 +        const double tier_flow  = (k == 0) ? (m_interlock_even ? INTERLOCK_BOUNDARY_FLOW : 1.0) : 2.0;
 +        const double flow_ratio = 1.0 + (tier_flow - 1.0) * m_interlock_strength;
-+        // The bead is over-extruded (up to 200% flow for the inner interlocking shells), so its
-+        // visual width grows with the flow; PF-9 applies this as a per-segment flow, we fold it
-+        // into both width and mm3_per_mm.
-+        const float  width      = base_width_mm * float(flow_ratio);
++        // Geometry width follows PF-9's main_w/boundary_w: sqrt(flow)*w (<=1.414x), so the widest
++        // bead stays printable on the nozzle. The over-extrusion itself is in mm3_per_mm.
++        const float  width      = base_width_mm * float(std::sqrt(flow_ratio));
 +        const double mm3        = base_mm3 * flow_ratio;
 +
 +        for (const ExPolygon &ex : ring) {
@@ -133,7 +132,7 @@ index a6b38889a5..465120fe5d 100644
  void PerimeterGenerator::process_classic()
  {
      group_region_by_fuzzify(*this);
-@@ -1404,10 +1487,27 @@ void PerimeterGenerator::process_classic()
+@@ -1404,10 +1486,27 @@ void PerimeterGenerator::process_classic()
      for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
          const Surface &surface = all_surfaces[surface_order[order_idx]];
          // detect how many perimeters must be generated for this island
@@ -163,7 +162,7 @@ index a6b38889a5..465120fe5d 100644
          if (this->layer_id == object_config->raft_layers && only_one_wall_first_layer)
              loop_number = 0;
          // Set the topmost layer to be one wall
-@@ -1808,6 +1908,19 @@ void PerimeterGenerator::process_classic()
+@@ -1808,6 +1907,19 @@ void PerimeterGenerator::process_classic()
              if (! entities.empty())
                  this->loops->append(entities);
  
@@ -183,7 +182,7 @@ index a6b38889a5..465120fe5d 100644
          } // for each loop of an island
  
          // fill gaps
-@@ -2393,6 +2506,7 @@ void PerimeterGenerator::process_arachne()
+@@ -2393,6 +2505,7 @@ void PerimeterGenerator::process_arachne()
          int sparse_infill_density = this->config->sparse_infill_density.value;
          if (this->config->alternate_extra_wall && this->layer_id % 2 == 1 && !m_spiral_vase && sparse_infill_density > 0) // add alternating extra wall
              loop_number++;
