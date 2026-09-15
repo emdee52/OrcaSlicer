@@ -7626,6 +7626,20 @@ std::string GCode::extrude_entity(const ExtrusionEntity&      entity,
         return this->extrude_multi_path(*multipath, description, speed);
     else if (const ExtrusionLoop* loop = dynamic_cast<const ExtrusionLoop*>(&entity))
         return this->extrude_loop(*loop, description, speed, region_perimeters);
+    // [ORCAPORT:PQ-3] accept a nested ExtrusionEntityCollection. NeoArachne wraps its per-island
+    // inner walls in a no_sort collection so the outer chain still visits islands by proximity.
+    // Without this the dispatcher threw "Invalid argument supplied to extrude()".
+    else if (const ExtrusionEntityCollection* coll = dynamic_cast<const ExtrusionEntityCollection*>(&entity)) {
+        std::string gcode;
+        if (coll->no_sort) {
+            for (const ExtrusionEntity* ee : coll->entities)
+                gcode += this->extrude_entity(*ee, description, speed, region_perimeters);
+        } else {
+            for (ExtrusionEntity* ee : coll->chained_path_from(this->last_pos()).entities)
+                gcode += this->extrude_entity(*ee, description, speed, region_perimeters);
+        }
+        return gcode;
+    }
     else
         throw Slic3r::InvalidArgument("Invalid argument supplied to extrude()");
     return "";
