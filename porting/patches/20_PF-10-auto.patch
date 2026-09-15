@@ -1,0 +1,481 @@
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index a17f09e1a8..ff9d397dbf 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -370,6 +370,8 @@ OrcaExt/NeoWaveContact.hpp
+     OrcaExt/SeamNotch.hpp
+     OrcaExt/SupportPaintTypes.cpp
+     OrcaExt/SupportPaintTypes.hpp
++    OrcaExt/SupportAutoPaint.cpp
++    OrcaExt/SupportAutoPaint.hpp
+     Orient.cpp
+     Orient.hpp
+     ParameterUtils.cpp
+diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
+new file mode 100644
+index 0000000000..e64c3b86cf
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
+@@ -0,0 +1,161 @@
++// [ORCAPORT FILE] SupportAutoPaint - automatic painting of support regions
++// Source: preFlight v1.3.0 "Automatic painting" (fork sha f74dc69), reimplemented Orca-native.
++#include "SupportAutoPaint.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <set>
++
++#include "../AABBTreeIndirect.hpp"
++#include "../Layer.hpp"
++#include "../Model.hpp"
++#include "../Print.hpp"
++#include "../TriangleMesh.hpp"
++#include "../libslic3r.h"
++#include "SupportPaintTypes.hpp"
++
++namespace Slic3r {
++namespace OrcaExt {
++
++namespace {
++
++using Tree = AABBTreeIndirect::Tree<3, float>;
++
++// Cast `origin` along `dir` (world/centered coords) against a volume mesh given by its world
++// transform; return the nearest hit face index when the ray hits a downward-facing facet.
++bool nearest_facet_above(const indexed_triangle_set      &its,
++                         const Tree                      &tree,
++                         const Transform3d               &world,
++                         const Vec3d                     &origin,
++                         size_t                          &facet_out)
++{
++    const Transform3d inv = world.inverse();
++    const Vec3d       o   = inv * origin;
++    const Vec3d       d   = inv.linear() * Vec3d(0., 0., 1.);
++    std::vector<igl::Hit<float>> hits;
++    if (!AABBTreeIndirect::intersect_ray_all_hits(its.vertices, its.indices, tree, o, d, hits) || hits.empty())
++        return false;
++    const int face = hits.front().id;
++    if (face < 0 || size_t(face) >= its.indices.size())
++        return false;
++    // Downward-facing only: the facet the support touches from below.
++    const Vec3f n = its_face_normal(its, face);
++    if ((world.linear() * n.cast<double>()).z() >= 0.)
++        return false;
++    facet_out = size_t(face);
++    return true;
++}
++
++double support_height_below(const std::vector<const SupportLayer *> &layers, size_t start_idx,
++                            const Point &p, double object_print_z_min)
++{
++    double height = 0.;
++    size_t steps  = 0;
++    for (size_t j = start_idx + 1; j-- > 0 && steps < 3000; ++steps) {
++        const SupportLayer *sl = layers[j];
++        if (sl == nullptr || sl->print_z < object_print_z_min + EPSILON)
++            break;
++        bool found = false;
++        for (const ExPolygon &isl : sl->support_islands)
++            if (isl.contains(p)) {
++                found = true;
++                break;
++            }
++        if (!found)
++            break;
++        height += sl->height;
++    }
++    return height;
++}
++
++} // namespace
++
++std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object)
++{
++    std::vector<SupportAutoPaintHit> hits;
++
++    const ModelObject *mo = object.model_object();
++    if (mo == nullptr)
++        return hits;
++
++    std::vector<const SupportLayer *> slayers;
++    slayers.reserve(object.support_layers().size());
++    for (const SupportLayer *sl : object.support_layers())
++        if (sl != nullptr)
++            slayers.push_back(sl);
++    if (slayers.empty())
++        return hits;
++
++    const double object_print_z_min = object.slicing_parameters().object_print_z_min;
++    const Transform3d obj_trafo     = object.trafo_centered();
++
++    // Build the mesh acceleration structures once per model-part volume.
++    struct VolumeRay { const ModelVolume *mv; Transform3d world; const indexed_triangle_set *its; Tree tree; };
++    std::vector<VolumeRay> volumes;
++    for (const ModelVolume *mv : mo->volumes) {
++        if (!mv->is_model_part())
++            continue;
++        VolumeRay vr;
++        vr.mv    = mv;
++        vr.world = obj_trafo * mv->get_matrix();
++        vr.its   = &mv->mesh().its;
++        vr.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vr.its->vertices, vr.its->indices);
++        volumes.push_back(std::move(vr));
++    }
++    if (volumes.empty())
++        return hits;
++
++    std::set<std::pair<size_t, size_t>> seen;
++
++    for (size_t li = 0; li < slayers.size(); ++li) {
++        const SupportLayer *sl = slayers[li];
++        if (sl->print_z < object_print_z_min + EPSILON || sl->support_islands.empty())
++            continue;
++
++        for (const ExPolygon &island : sl->support_islands) {
++            if (island.contour.points.empty())
++                continue;
++            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
++
++            // Sample the island: its contour vertices plus the centroid.
++            Points samples = island.contour.points;
++            Point  centroid = island.contour.centroid();
++            samples.push_back(centroid);
++
++            for (const Point &p : samples) {
++                const Vec3d origin(unscale<double>(p.x()), unscale<double>(p.y()), sl->print_z);
++                size_t      facet = 0;
++                bool        found = false;
++                size_t      volume_index = 0;
++                for (size_t vi = 0; vi < volumes.size(); ++vi) {
++                    if (nearest_facet_above(*volumes[vi].its, volumes[vi].tree, volumes[vi].world, origin, facet)) {
++                        volume_index = vi;
++                        found        = true;
++                        break;
++                    }
++                }
++                if (!found)
++                    continue;
++                if (!seen.emplace(volume_index, facet).second)
++                    continue;
++
++                const double height = support_height_below(slayers, li, p, object_print_z_min);
++                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
++                if (state == EnforcerBlockerType::NONE)
++                    continue;
++
++                SupportAutoPaintHit hit;
++                hit.volume_index      = volume_index;
++                hit.facet_index       = facet;
++                hit.state             = state;
++                hit.contact_area_mm2  = contact_area;
++                hit.support_height_mm = height;
++                hits.push_back(hit);
++            }
++        }
++    }
++    return hits;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
+new file mode 100644
+index 0000000000..40625095b5
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
+@@ -0,0 +1,39 @@
++// [ORCAPORT FILE] SupportAutoPaint - automatic painting of support regions
++// Source: preFlight v1.3.0 "Automatic painting" (fork sha f74dc69), reimplemented Orca-native.
++#ifndef slic3r_OrcaExt_SupportAutoPaint_hpp_
++#define slic3r_OrcaExt_SupportAutoPaint_hpp_
++
++#include <cstddef>
++#include <vector>
++
++#include "../TriangleSelector.hpp"
++
++namespace Slic3r {
++
++class PrintObject;
++
++namespace OrcaExt {
++
++// One model facet the auto-painter wants to paint with a classified support type.
++struct SupportAutoPaintHit
++{
++    size_t              volume_index{0}; // index among the object's model-part volumes
++    size_t              facet_index{0};  // facet index in that volume's mesh
++    EnforcerBlockerType state{EnforcerBlockerType::NONE};
++    double              contact_area_mm2{0.};
++    double              support_height_mm{0.};
++};
++
++// Classify the object's support contact regions into paint states.
++//
++// Precondition: the object has been sliced and its support generated (call
++// PrintObject::generate_support_preview() first); with no support layers this returns {}.
++// The caller applies the hits and must skip facets already painted as BLOCKER, so the auto-paint
++// follows existing blockers. The classification thresholds live in the OrcaExt support-paint
++// registry (SupportPaintTypes.hpp).
++std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object);
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif
+diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
+index e973267474..5b0d72e3c7 100644
+--- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
++++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
+@@ -30,6 +30,7 @@ std::vector<SupportPaintType> make_default_registry()
+         t.is_tree = false;
+         t.support_type = stNormalAuto;
+         t.support_style = smsDefault;
++        t.classify.auto_selectable = false;
+         v.emplace_back(t);
+     }
+     // Snug: classic engine, object supports forced to snug in the painted region.
+@@ -41,6 +42,7 @@ std::vector<SupportPaintType> make_default_registry()
+         t.is_tree = false;
+         t.support_type = stNormalAuto;
+         t.support_style = smsSnug;
++        t.classify = {true, 50., 1.0e30, 0., 1.0e30, 10};
+         v.emplace_back(t);
+     }
+     // Grid: classic engine, grid base pattern in the painted region.
+@@ -52,6 +54,7 @@ std::vector<SupportPaintType> make_default_registry()
+         t.is_tree = false;
+         t.support_type = stNormalAuto;
+         t.support_style = smsGrid;
++        t.classify = {true, 0., 1.0e30, 0., 1.0e30, 1};
+         v.emplace_back(t);
+     }
+     // Organic: tree engine, organic style in the painted region.
+@@ -63,6 +66,8 @@ std::vector<SupportPaintType> make_default_registry()
+         t.is_tree = true;
+         t.support_type = stTreeAuto;
+         t.support_style = smsTreeOrganic;
++        // Tall, small-footprint overhangs: a tree routes around the model and saves material.
++        t.classify = {true, 0., 25., 3., 1.0e30, 20};
+         v.emplace_back(t);
+     }
+     // NeoWave: classic engine. The painter hardcodes its tested recipe: hollow base, wave
+@@ -80,6 +85,8 @@ std::vector<SupportPaintType> make_default_registry()
+         t.overrides.force_wave_roof_pattern = true; t.overrides.wave_roof_pattern = smwrpWave;
+         t.overrides.force_wave_roof_order   = true; t.overrides.wave_roof_order   = smwroSmart;
+         t.overrides.force_wave_wall_loops   = true; t.overrides.wave_wall_loops   = 1;
++        // Wide flat overhangs on a tall support: the wave roof eases removal.
++        t.classify = {true, 100., 1.0e30, 3., 1.0e30, 15};
+         v.emplace_back(t);
+     }
+     return v;
+@@ -127,6 +134,22 @@ bool has_painted_support_styles(const PrintObject &object)
+     return false;
+ }
+ 
++EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm)
++{
++    const SupportPaintType *best = nullptr;
++    for (const SupportPaintType &t : registry()) {
++        if (!t.classify.auto_selectable)
++            continue;
++        if (contact_area_mm2 < t.classify.min_area_mm2 || contact_area_mm2 > t.classify.max_area_mm2)
++            continue;
++        if (support_height_mm < t.classify.min_height_mm || support_height_mm > t.classify.max_height_mm)
++            continue;
++        if (best == nullptr || t.classify.priority > best->classify.priority)
++            best = &t;
++    }
++    return best != nullptr ? best->state : EnforcerBlockerType::NONE;
++}
++
+ bool has_painted_support_style(const PrintObject &object, EnforcerBlockerType state)
+ {
+     const ModelObject *mo = object.model_object();
+diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
+index 273ee0341c..f5da71d194 100644
+--- a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
++++ b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
+@@ -38,6 +38,18 @@ struct SupportPaintOverrides
+     int    wave_wall_loops{1};
+ };
+ 
++// Data-driven region classification for automatic painting. A region matches when its contact
++// area and support height fall inside the range; among the matches the highest priority wins.
++struct SupportPaintClassify
++{
++    bool   auto_selectable{false};
++    double min_area_mm2{0.};
++    double max_area_mm2{1.0e30};
++    double min_height_mm{0.};
++    double max_height_mm{1.0e30};
++    int    priority{0};
++};
++
+ struct SupportPaintType
+ {
+     // Paint state stored in ModelVolume::supported_facets. Support painting and MMU painting use
+@@ -54,8 +66,14 @@ struct SupportPaintType
+     SupportMaterialStyle support_style{smsDefault};
+     // Forced object-config overrides applied only to this painted region's engine pass.
+     SupportPaintOverrides overrides;
++    // Automatic-painting classification rule.
++    SupportPaintClassify  classify;
+ };
+ 
++// Classify a region by its support contact area (mm^2) and support height (mm) into the state of
++// the best-matching auto-selectable registry entry, or NONE when nothing matches.
++EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm);
++
+ // The ordered registry (guarded statics). The first entry is the legacy generic "Default"
+ // enforcer, which keeps the object's own support type/style so existing painted projects are
+ // unaffected.
+diff --git a/src/libslic3r/TriangleSelector.hpp b/src/libslic3r/TriangleSelector.hpp
+index 78b9c817f9..59f8afafa6 100644
+--- a/src/libslic3r/TriangleSelector.hpp
++++ b/src/libslic3r/TriangleSelector.hpp
+@@ -362,6 +362,15 @@ public:
+     // Set facet of the mesh to a given state. Only works for original triangles.
+     void set_facet(int facet_idx, EnforcerBlockerType state);
+ 
++    // [ORCAPORT:PF-10-auto] State of an original facet (NONE when unset or split). Used by the
++    // automatic support painter to avoid overwriting a painted blocker.
++    EnforcerBlockerType get_facet_state(int facet_idx) const
++    {
++        if (facet_idx < 0 || size_t(facet_idx) >= m_triangles.size() || m_triangles[facet_idx].is_split())
++            return EnforcerBlockerType::NONE;
++        return m_triangles[facet_idx].get_state();
++    }
++
+     // Clear everything and make the tree empty.
+     void reset();
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
+index 7b4171fb28..1f6569760b 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
+@@ -5,6 +5,7 @@
+ #include "libslic3r/Layer.hpp"
+ #include "libslic3r/Thread.hpp"
+ #include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
++#include "libslic3r/OrcaExt/SupportAutoPaint.hpp" // [ORCAPORT:PF-10-auto]
+ 
+ //#include "slic3r/GUI/3DScene.hpp"
+ #include "slic3r/GUI/GLCanvas3D.hpp"
+@@ -101,6 +102,7 @@ bool GLGizmoFdmSupports::on_init()
+     m_desc["highlight_by_angle"] = _L("Highlight overhangs");
+     m_desc["tool_type"]          = _L("Tool type");
+     m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
++    m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
+     m_desc["gap_fill"]           = _L("Gap fill");
+     m_desc["reset_direction"]    = _L("Reset direction");
+     m_desc["clipping_of_view"]   = _L("Section view");
+@@ -207,6 +209,12 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+     if (! m_c->selection_info()->model_object())
+         return;
+ 
++    // [ORCAPORT:PF-10-auto] Once the forced support preview has finished, classify and paint.
++    if (m_auto_paint_pending && m_edit_state == state_ready) {
++        m_auto_paint_pending = false;
++        apply_auto_paint();
++    }
++
+     float  scale       = m_parent.get_scale();
+     #ifdef WIN32
+         int dpi = get_dpi_for_window(wxGetApp().GetTopWindow());
+@@ -340,6 +348,17 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+         }
+     }
+ 
++    // [ORCAPORT:PF-10-auto] Automatic painting: generate support for every overhang (respecting
++    // painted blockers) and classify each contact region into a support type.
++    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
++    m_imgui->disabled_begin(m_print_instance.print_object == nullptr);
++    if (m_imgui->button(m_desc.at("autopaint"))) {
++        m_auto_paint_pending = true;
++        invalid_support_volumes(true);
++        update_support_volumes();
++    }
++    m_imgui->disabled_end();
++
+     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+ 
+     if (m_current_tool == ImGui::CircleButtonIcon) {
+@@ -839,7 +858,8 @@ void GLGizmoFdmSupports::update_support_volumes()
+         return;
+     }
+ 
+-    if (m_volume_valid || !need_regenerate_support_volumes())
++    // [ORCAPORT:PF-10-auto] An automatic-paint request always regenerates.
++    if (m_volume_valid || (!m_auto_paint_pending && !need_regenerate_support_volumes()))
+     {
+         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
+ 
+@@ -850,9 +870,10 @@ void GLGizmoFdmSupports::update_support_volumes()
+         lck.unlock();
+         return;
+     }
+-
+     //generate_support_preview in async mode
+     std::unique_lock<std::mutex> lck(m_mutex);
++    if (m_auto_paint_pending)
++        m_edit_state = state_generating;
+     m_volume_ready = false;
+     //destroy previous support volume
+     if (m_support_volume)
+@@ -955,6 +976,39 @@ _finished:
+     return;
+ }
+ 
++// [ORCAPORT:PF-10-auto] Classify the support contact regions and paint them. Runs on the UI
++// thread once the forced preview finished. Blockers are never overwritten (and a blocked region
++// produces no support contact in the first place, because support generation respects them).
++void GLGizmoFdmSupports::apply_auto_paint()
++{
++    if (m_print_instance.print_object == nullptr)
++        return;
++
++    const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
++        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
++    if (hits.empty())
++        return;
++
++    bool painted = false;
++    for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
++        if (hit.volume_index >= m_triangle_selectors.size())
++            continue;
++        TriangleSelectorPatch *sel = dynamic_cast<TriangleSelectorPatch *>(m_triangle_selectors[hit.volume_index].get());
++        if (sel == nullptr)
++            continue;
++        if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
++            continue;
++        sel->set_facet(int(hit.facet_index), hit.state);
++        sel->request_update_render_data();
++        painted = true;
++    }
++
++    if (painted) {
++        update_model_object();
++        m_parent.set_as_dirty();
++    }
++}
++
+ void GLGizmoFdmSupports::generate_support_volume()
+ {
+     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",before finalize_geometry";
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
+index 51a5ce1b46..ac47bec491 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
+@@ -70,6 +70,11 @@ private:
+     // generic enforcer by default, so existing painted projects behave unchanged.
+     EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
+ 
++    // [ORCAPORT:PF-10-auto] Automatic painting: after a forced support preview finishes, classify
++    // the support contact regions and paint them.
++    bool m_auto_paint_pending = false;
++    void apply_auto_paint();
++
+     //BBS: add support preview logic
+     void init_print_instance();
+     void update_support_volumes();

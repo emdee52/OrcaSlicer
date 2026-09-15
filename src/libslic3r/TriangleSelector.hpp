@@ -362,6 +362,15 @@ public:
     // Set facet of the mesh to a given state. Only works for original triangles.
     void set_facet(int facet_idx, EnforcerBlockerType state);
 
+    // [ORCAPORT:PF-10-auto] State of an original facet (NONE when unset or split). Used by the
+    // automatic support painter to avoid overwriting a painted blocker.
+    EnforcerBlockerType get_facet_state(int facet_idx) const
+    {
+        if (facet_idx < 0 || size_t(facet_idx) >= m_triangles.size() || m_triangles[facet_idx].is_split())
+            return EnforcerBlockerType::NONE;
+        return m_triangles[facet_idx].get_state();
+    }
+
     // Clear everything and make the tree empty.
     void reset();
 

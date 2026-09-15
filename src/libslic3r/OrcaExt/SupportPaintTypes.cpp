@@ -30,6 +30,7 @@ std::vector<SupportPaintType> make_default_registry()
         t.is_tree = false;
         t.support_type = stNormalAuto;
         t.support_style = smsDefault;
+        t.classify.auto_selectable = false;
         v.emplace_back(t);
     }
     // Snug: classic engine, object supports forced to snug in the painted region.
@@ -41,6 +42,7 @@ std::vector<SupportPaintType> make_default_registry()
         t.is_tree = false;
         t.support_type = stNormalAuto;
         t.support_style = smsSnug;
+        t.classify = {true, 50., 1.0e30, 0., 1.0e30, 10};
         v.emplace_back(t);
     }
     // Grid: classic engine, grid base pattern in the painted region.
@@ -52,6 +54,7 @@ std::vector<SupportPaintType> make_default_registry()
         t.is_tree = false;
         t.support_type = stNormalAuto;
         t.support_style = smsGrid;
+        t.classify = {true, 0., 1.0e30, 0., 1.0e30, 1};
         v.emplace_back(t);
     }
     // Organic: tree engine, organic style in the painted region.
@@ -63,6 +66,8 @@ std::vector<SupportPaintType> make_default_registry()
         t.is_tree = true;
         t.support_type = stTreeAuto;
         t.support_style = smsTreeOrganic;
+        // Tall, small-footprint overhangs: a tree routes around the model and saves material.
+        t.classify = {true, 0., 25., 3., 1.0e30, 20};
         v.emplace_back(t);
     }
     // NeoWave: classic engine. The painter hardcodes its tested recipe: hollow base, wave
@@ -80,6 +85,8 @@ std::vector<SupportPaintType> make_default_registry()
         t.overrides.force_wave_roof_pattern = true; t.overrides.wave_roof_pattern = smwrpWave;
         t.overrides.force_wave_roof_order   = true; t.overrides.wave_roof_order   = smwroSmart;
         t.overrides.force_wave_wall_loops   = true; t.overrides.wave_wall_loops   = 1;
+        // Wide flat overhangs on a tall support: the wave roof eases removal.
+        t.classify = {true, 100., 1.0e30, 3., 1.0e30, 15};
         v.emplace_back(t);
     }
     return v;
@@ -125,6 +132,22 @@ bool has_painted_support_styles(const PrintObject &object)
                 return true;
     }
     return false;
+}
+
+EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm)
+{
+    const SupportPaintType *best = nullptr;
+    for (const SupportPaintType &t : registry()) {
+        if (!t.classify.auto_selectable)
+            continue;
+        if (contact_area_mm2 < t.classify.min_area_mm2 || contact_area_mm2 > t.classify.max_area_mm2)
+            continue;
+        if (support_height_mm < t.classify.min_height_mm || support_height_mm > t.classify.max_height_mm)
+            continue;
+        if (best == nullptr || t.classify.priority > best->classify.priority)
+            best = &t;
+    }
+    return best != nullptr ? best->state : EnforcerBlockerType::NONE;
 }
 
 bool has_painted_support_style(const PrintObject &object, EnforcerBlockerType state)

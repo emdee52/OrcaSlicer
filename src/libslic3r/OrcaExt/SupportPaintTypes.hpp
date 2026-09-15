@@ -38,6 +38,18 @@ struct SupportPaintOverrides
     int    wave_wall_loops{1};
 };
 
+// Data-driven region classification for automatic painting. A region matches when its contact
+// area and support height fall inside the range; among the matches the highest priority wins.
+struct SupportPaintClassify
+{
+    bool   auto_selectable{false};
+    double min_area_mm2{0.};
+    double max_area_mm2{1.0e30};
+    double min_height_mm{0.};
+    double max_height_mm{1.0e30};
+    int    priority{0};
+};
+
 struct SupportPaintType
 {
     // Paint state stored in ModelVolume::supported_facets. Support painting and MMU painting use
@@ -54,7 +66,13 @@ struct SupportPaintType
     SupportMaterialStyle support_style{smsDefault};
     // Forced object-config overrides applied only to this painted region's engine pass.
     SupportPaintOverrides overrides;
+    // Automatic-painting classification rule.
+    SupportPaintClassify  classify;
 };
+
+// Classify a region by its support contact area (mm^2) and support height (mm) into the state of
+// the best-matching auto-selectable registry entry, or NONE when nothing matches.
+EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm);
 
 // The ordered registry (guarded statics). The first entry is the legacy generic "Default"
 // enforcer, which keeps the object's own support type/style so existing painted projects are

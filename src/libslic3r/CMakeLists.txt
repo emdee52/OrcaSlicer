@@ -370,6 +370,8 @@ OrcaExt/NeoWaveContact.hpp
     OrcaExt/SeamNotch.hpp
     OrcaExt/SupportPaintTypes.cpp
     OrcaExt/SupportPaintTypes.hpp
+    OrcaExt/SupportAutoPaint.cpp
+    OrcaExt/SupportAutoPaint.hpp
     Orient.cpp
     Orient.hpp
     ParameterUtils.cpp

@@ -5,6 +5,7 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
+#include "libslic3r/OrcaExt/SupportAutoPaint.hpp" // [ORCAPORT:PF-10-auto]
 
 //#include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -101,6 +102,7 @@ bool GLGizmoFdmSupports::on_init()
     m_desc["highlight_by_angle"] = _L("Highlight overhangs");
     m_desc["tool_type"]          = _L("Tool type");
     m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
+    m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
     m_desc["gap_fill"]           = _L("Gap fill");
     m_desc["reset_direction"]    = _L("Reset direction");
     m_desc["clipping_of_view"]   = _L("Section view");
@@ -206,6 +208,12 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     init_print_instance();
     if (! m_c->selection_info()->model_object())
         return;
+
+    // [ORCAPORT:PF-10-auto] Once the forced support preview has finished, classify and paint.
+    if (m_auto_paint_pending && m_edit_state == state_ready) {
+        m_auto_paint_pending = false;
+        apply_auto_paint();
+    }
 
     float  scale       = m_parent.get_scale();
     #ifdef WIN32
@@ -339,6 +347,17 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
             }
         }
     }
+
+    // [ORCAPORT:PF-10-auto] Automatic painting: generate support for every overhang (respecting
+    // painted blockers) and classify each contact region into a support type.
+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+    m_imgui->disabled_begin(m_print_instance.print_object == nullptr);
+    if (m_imgui->button(m_desc.at("autopaint"))) {
+        m_auto_paint_pending = true;
+        invalid_support_volumes(true);
+        update_support_volumes();
+    }
+    m_imgui->disabled_end();
 
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
 
@@ -839,7 +858,8 @@ void GLGizmoFdmSupports::update_support_volumes()
         return;
     }
 
-    if (m_volume_valid || !need_regenerate_support_volumes())
+    // [ORCAPORT:PF-10-auto] An automatic-paint request always regenerates.
+    if (m_volume_valid || (!m_auto_paint_pending && !need_regenerate_support_volumes()))
     {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
 
@@ -850,9 +870,10 @@ void GLGizmoFdmSupports::update_support_volumes()
         lck.unlock();
         return;
     }
-
     //generate_support_preview in async mode
     std::unique_lock<std::mutex> lck(m_mutex);
+    if (m_auto_paint_pending)
+        m_edit_state = state_generating;
     m_volume_ready = false;
     //destroy previous support volume
     if (m_support_volume)
@@ -953,6 +974,39 @@ _finished:
     m_parent.post_event(SimpleEvent(wxEVT_PAINT));
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", finished all";
     return;
+}
+
+// [ORCAPORT:PF-10-auto] Classify the support contact regions and paint them. Runs on the UI
+// thread once the forced preview finished. Blockers are never overwritten (and a blocked region
+// produces no support contact in the first place, because support generation respects them).
+void GLGizmoFdmSupports::apply_auto_paint()
+{
+    if (m_print_instance.print_object == nullptr)
+        return;
+
+    const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
+        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
+    if (hits.empty())
+        return;
+
+    bool painted = false;
+    for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
+        if (hit.volume_index >= m_triangle_selectors.size())
+            continue;
+        TriangleSelectorPatch *sel = dynamic_cast<TriangleSelectorPatch *>(m_triangle_selectors[hit.volume_index].get());
+        if (sel == nullptr)
+            continue;
+        if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
+            continue;
+        sel->set_facet(int(hit.facet_index), hit.state);
+        sel->request_update_render_data();
+        painted = true;
+    }
+
+    if (painted) {
+        update_model_object();
+        m_parent.set_as_dirty();
+    }
 }
 
 void GLGizmoFdmSupports::generate_support_volume()

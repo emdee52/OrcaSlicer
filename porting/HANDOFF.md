@@ -69,7 +69,7 @@ port intent onto Orca's pipelines.
 | PF-8 | Serpentine | excluded (user) | - | - |
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
 | PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
-| PF-10-auto | Automatic support painting (support-preview-driven, respects blockers, auto-classifies) | planned | notes/PF-10-auto.md | - |
+| PF-10-auto | Automatic support painting (support-preview-driven, respects blockers, auto-classifies) | ported (runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
 | PF-10 | Baobab supports (recon first) | planned | notes/PF-10.md | - |
 
 ## What to do next
@@ -78,9 +78,11 @@ port intent onto Orca's pipelines.
 and merged into `port/integration` (build clean, runtime pending). It adds an extensible
 `OrcaExt/SupportPaintTypes` registry (a new support = one row), extends the support gizmo with
 Default/Snug/Grid/Organic/NeoWave, and runs one classic pass + one enforcer-only tree pass then
-merges them, so different support engines coexist on one object. Next: **PF-10-auto** (automatic
-painting; support-preview-driven, respects blockers, auto-classifies) then **PF-10 Baobab** (XL,
-recon-first). PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported (PF-9 runtime-verified).
+merges them, so different support engines coexist on one object. **PF-10-auto** (Automatic painting
+button; support-preview-driven, follows blockers, auto-classifies via the registry) is ported on
+`port/PF-10-auto` (build clean, runtime pending). Next: **PF-10 Baobab** (XL, recon-first; adds its
+paint row and classifier rule). PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported (PF-9
+runtime-verified).
 
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
