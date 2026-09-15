@@ -509,8 +509,20 @@ branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
    so the plane cuts toolpaths **and** shells. Preview canvas had no right-click menu, so the entry
    is a small local menu (`Plater::priv::on_preview_right_click`). ES shaders intentionally unpatched
    (matches preFlight). See `notes/PF-6.md`.
-10. **PF-7..PF-10 - recon pending.** Next after PF-6; PF-7 is category D and medium-large.
-
+10. **PF-7 Manual fan controls - EXCLUDED.** User decision. `fan_spinup_*` overlaps Orca's existing
+    `fan_speedup_time`/`fan_speedup_overhangs`/`fan_kickstart` (category A); the per-feature manual
+    fan half lands in the bug-prone cooling buffer for modest value.
+11. **PF-8 Serpentine - EXCLUDED.** User decision.
+12. **PF-9 Interlocking perimeters - DONE** (`port/PF-9`, patch `18_PF-9.patch`). Not a wholesale
+    port: preFlight built it on Athena's skeletal trapezoidation with a per-segment flow role model
+    Orca lacks. Re-implemented the **intent** on Orca's Classic shell generator, generalizing
+    `alternate_extra_wall`: extra interlocking shells inside the regular walls with alternating tier
+    widths/flows (even shell0 boundary ~146%, odd shell0 100%, inner shells 200%), `strength` scaling
+    the over-extrusion, `overlap` tightening the shell spacing. Solid top/bottom margins computed in
+    `LayerRegion` from neighbour layer slices. Arachne gets count/regular/margins only (tier
+    overrides are Classic-only). `interlock_flow_detection` and `interlocking_perimeter_extruder`
+    dropped. Off by default byte-identical. See `notes/PF-9.md`.
+13. **PF-10 Baobab supports - remaining.** Recon-first; XL.
 ### Risks
 
 - Everything is category D: preFlight's perimeter/seam/support/fill/GCode code does not map

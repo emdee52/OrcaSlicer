@@ -476,6 +476,29 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
         apply(config, &new_conf);
     }
 
+    // [ORCAPORT:PF-9] interlocking perimeters need ensure vertical shell thickness off
+    if (config->opt_bool("interlock_perimeters_enabled") &&
+        (config->opt_enum<EnsureVerticalShellThickness>("ensure_vertical_shell_thickness") == evstAll)) {
+        wxString msg_text = _(L("Interlocking perimeters don't work well when ensure vertical shell thickness is set to All."));
+
+        if (is_global_config)
+            msg_text += "\n\n" + _(L("Change these settings automatically?\n"
+                                     "Yes - Change ensure vertical shell thickness to Moderate\n"
+                                     "No  - Don't use interlocking perimeters"));
+
+        MessageDialog dialog(m_msg_dlg_parent, msg_text, "",
+                               wxICON_WARNING | (is_global_config ? wxYES | wxNO : wxOK));
+        DynamicPrintConfig new_conf = *config;
+        auto answer = dialog.ShowModal();
+        if (!is_global_config || answer == wxID_YES) {
+            new_conf.set_key_value("ensure_vertical_shell_thickness", new ConfigOptionEnum<EnsureVerticalShellThickness>(evstModerate));
+        }
+        else {
+            new_conf.set_key_value("interlock_perimeters_enabled", new ConfigOptionBool(false));
+        }
+        apply(config, &new_conf);
+    }
+
     // BBS
     int filament_cnt = wxGetApp().preset_bundle->filament_presets.size();
 #if 0
@@ -816,6 +839,11 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         toggle_field(el, have_perimeters);
     for (auto el : { "inner_wall_speed", "outer_wall_speed", "small_perimeter_speed", "small_perimeter_threshold" })
         toggle_field(el, have_perimeters, variant_index);
+
+    // [ORCAPORT:PF-9] interlocking sub-options follow the master switch
+    for (auto el : { "interlock_perimeter_count", "interlock_regular_perimeters", "interlock_solid_layers_top",
+                     "interlock_solid_layers_bottom", "interlock_perimeter_strength", "interlock_perimeter_overlap" })
+        toggle_field(el, config->opt_bool("interlock_perimeters_enabled"));
 
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament_id uses the same logic as in Print::extruders()

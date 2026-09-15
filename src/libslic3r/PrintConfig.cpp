@@ -5729,7 +5729,82 @@ void PrintConfigDef::init_fff_params()
                      "Using lightning infill together with this option is not recommended as there is limited infill to anchor the extra perimeters to.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
-    
+
+    // [ORCAPORT:PF-9] BEGIN - interlocking perimeters (native re-implementation of preFlight PF-9)
+    def = this->add("interlock_perimeters_enabled", coBool);
+    def->label = L("Enable interlocking perimeters");
+    def->category = L("Strength");
+    def->tooltip = L("Creates interlocking layers by varying the width and flow of the innermost perimeters across layers. "
+                     "On alternating layers the interlocking shells are over-extruded so the next layer compresses into the "
+                     "gaps, improving layer bonding. Expected strength increase: 10-15% with no additional material or time cost.\n\n"
+                     "Requires 'Ensure vertical shell thickness' to be disabled. Classic wall generator only.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("interlock_perimeter_count", coInt);
+    def->label = L("Interlocking perimeter count");
+    def->category = L("Strength");
+    def->tooltip = L("Number of interlocking perimeter shells added inside the regular walls on alternating layers.");
+    def->sidetext = L("perimeters");
+    def->min = 3;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(5));
+
+    def = this->add("interlock_regular_perimeters", coInt);
+    def->label = L("Perimeters while interlocking");
+    def->category = L("Strength");
+    def->tooltip = L("Overrides the number of regular perimeters on layers where interlocking is active. "
+                     "0 = use the normal Perimeters setting (no override).");
+    def->sidetext = L("(0 = off)");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("interlock_solid_layers_top", coInt);
+    def->label = L("Above");
+    def->full_label = L("Solid layers above interlocking");
+    def->category = L("Strength");
+    def->tooltip = L("Number of solid layers between interlocking perimeters and a top surface, "
+                     "so the interlocking pattern stays hidden inside the object.");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(3));
+
+    def = this->add("interlock_solid_layers_bottom", coInt);
+    def->label = L("Below");
+    def->full_label = L("Solid layers below interlocking");
+    def->category = L("Strength");
+    def->tooltip = L("Number of solid layers between interlocking perimeters and a bottom surface, "
+                     "so the interlocking pattern stays hidden inside the object.");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(3));
+
+    def = this->add("interlock_perimeter_strength", coPercent);
+    def->label = L("Interlocking strength");
+    def->category = L("Strength");
+    def->tooltip = L("Controls the interlocking extrusion amount. At 100% the inner interlocking shells extrude at 200% flow "
+                     "to compress material into the gaps of the layer below. 0% disables the over-extrusion.");
+    def->sidetext = L("%");
+    def->min = 0;
+    def->max = 200;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(100));
+
+    def = this->add("interlock_perimeter_overlap", coFloatOrPercent);
+    def->label = L("Interlocking overlap");
+    def->category = L("Strength");
+    def->tooltip = L("Controls the gap width between interlocking shells. Higher values narrow the channels and compress "
+                     "more material into the interlocking pattern. Default: 10.73% of layer height.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "layer_height";
+    def->min = -50;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloatOrPercent(10.73, true));
+    // [ORCAPORT:PF-9] END
+
     def = this->add("post_process", coStrings);
     def->label = L("Post-processing Scripts");
     def->tooltip = L("If you want to process the output G-code through custom scripts, "

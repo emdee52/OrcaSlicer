@@ -2792,6 +2792,14 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Walls"), L"param_wall");
         optgroup->append_single_option_line("wall_loops", "strength_settings_walls#wall-loops");
         optgroup->append_single_option_line("alternate_extra_wall", "strength_settings_walls#alternate-extra-wall");
+        // [ORCAPORT:PF-9] interlocking perimeters
+        optgroup->append_single_option_line("interlock_perimeters_enabled", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_perimeter_count", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_regular_perimeters", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_perimeter_strength", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_perimeter_overlap", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_solid_layers_top", "strength_settings_walls#wall-loops");
+        optgroup->append_single_option_line("interlock_solid_layers_bottom", "strength_settings_walls#wall-loops");
         optgroup->append_single_option_line("detect_thin_wall", "strength_settings_walls#detect-thin-wall");
 
         optgroup = page->new_optgroup(L("Top/bottom shells"), L"param_shell");
