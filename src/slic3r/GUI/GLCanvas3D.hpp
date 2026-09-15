@@ -396,7 +396,8 @@ class GLCanvas3D
         NozzleFilamentIncompatible,
         MixtureFilamentIncompatible,
         SingleExtruderMixedFilament,
-        FlushingVolumeZero
+        FlushingVolumeZero,
+        SterileSupportZone // [ORCAPORT:SU-5] a support zone that catches nothing
     };
 
     class RenderStats
@@ -739,6 +740,18 @@ public:
     };
 
     SnapDragIndicator m_snapdrag_indicator;
+
+    // [ORCAPORT:SU-5] What each support zone will catch (built in world coordinates, one model for
+    // every instance). See Feature/SupportZones/SupportZoneProbe.hpp.
+    GLModel m_support_zone_lit;
+    bool    m_support_zone_sterile { false };
+    float   m_support_zone_marker_alpha { 0.35f };
+    // The "might need support" gap map: red grid over surface that passes the threshold and is
+    // inside no zone. Render only; what NEEDS support is still detect_overhangs().
+    GLModel m_support_zone_gaps;
+    bool    m_support_zone_show_gaps { false };
+    float   m_support_zone_gap_normal_z { -0.7071f };
+    float   m_support_zone_gap_step { 1.0f };
 
     struct ToolbarHighlighter
     {
@@ -1212,6 +1225,19 @@ public:
     bool is_overhang_shown() const { return m_slope.is_GlobalUsed(); }
     void show_overhang(bool show) { m_slope.globalUse(show); }
 
+    // [ORCAPORT:SU-5] support-zone viewport overlays.
+    void set_support_zone_marker_alpha(float a) { m_support_zone_marker_alpha = a; }
+    float get_support_zone_marker_alpha() const { return m_support_zone_marker_alpha; }
+    void set_support_zone_gaps(bool on, float max_normal_z, float step_mm) {
+        if (on != m_support_zone_show_gaps || max_normal_z != m_support_zone_gap_normal_z || step_mm != m_support_zone_gap_step) {
+            m_support_zone_show_gaps    = on;
+            m_support_zone_gap_normal_z = max_normal_z;
+            m_support_zone_gap_step     = step_mm;
+            m_support_zone_gaps.reset();
+            _update_support_zones();
+        }
+    }
+
     bool is_using_slope() const { return m_slope.is_used(); }
     void use_slope(bool use) { m_slope.use(use); }
     void set_slope_normal_angle(float angle_in_deg) { m_slope.set_normal_angle(angle_in_deg); }
@@ -1323,6 +1349,9 @@ private:
     void _render_plane() const;
     void _render_selection();
     void _render_sequential_clearance();
+    // [ORCAPORT:SU-5] support-zone highlight/gap overlays and their probe.
+    void _update_support_zones();
+    void _render_support_zones();
     // [ORCAPORT:AS-3] landing shadow/beam while Snap & Drag is dragging
     void _render_snapdrag_indicator();
 #if ENABLE_RENDER_SELECTION_CENTER

@@ -79,8 +79,16 @@ Feasibility verified: target's `SupportMaterial.cpp` differs from the fork's bas
   skipped (no reload), while `support_zone_lean_deg/roof_only/solid/land_only` invalidate
   `posSupportMaterial`.
 
-**Remaining:**
-- Phase 2: the `GLGizmoSupportZones` UI (copied into the tree but not registered) +
-  `GLGizmosManager`/`GLCanvas3D`/`3DScene`/CMake/icons.
+**Phase 2 done (build clean):**
+- `GLGizmoSupportZones.{hpp,cpp}` (the full ~6.7k-line aimed-pillar / block-tree author) registered in
+  `GLGizmosManager` (`EType::SupportZones`, icon, ctor) with two toolbar SVGs. LibreMode gate removed;
+  `NeoDebug` calls inert via a local no-op shim.
+- Shared look `GizmoStyle.hpp`, ported from the fork's `GizmoNeotkoStyle.hpp` with neutral names
+  (`NeoCol`->`GizmoCol`, `neo_`->`gizmo_`).
+- `GLCanvas3D`: zone highlight / coverage overlays (`_update_support_zones` / `_render_support_zones`)
+  and the sterile-zone warning (`EWarning::SterileSupportZone`). `GLVolumeCollection` gains the
+  transparent-depth-write ghost toggle used by the gizmo.
+
+**Status: ported** (build clean; runtime verification pending).
 
 
