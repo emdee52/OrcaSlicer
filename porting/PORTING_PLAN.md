@@ -453,3 +453,55 @@ Suggested checkpoints (stop and reassess at each):
 10. **U1-specific `M220 B`/`M220 R` cleanup - dropped.**
 
 No open decisions remain. Next: implement Phase 2, starting with PQ-1.
+
+---
+
+# preFlight 3D addendum (PF-* ports)
+
+Scope: port selected features from **preFlight** (`github.com/oozebot/preFlight`, v1.3.0), a
+PrusaSlicer fork. Source list and per-feature portability notes live in
+`PREFLIGHT_FEATURE_INVENTORY.md`. The Neotko mission above is complete; this addendum covers
+the second source. Same rules apply (`PORTING_GUIDELINES.md`, `HANDOFF.md`).
+
+**Key architectural note:** preFlight's **"Athena" IS its Arachne fork** (`Athena/` mirrors
+`Arachne/`; `"classic"` aliases `PerimeterGeneratorType::Athena`). OrcaSlicer already has
+Arachne (+ NeoArachne), so **no Athena work is needed**; port into Orca's Classic/Arachne/
+NeoArachne and the shared fill/GCode pipelines.
+
+## Selected IDs and order
+
+| ID | Feature | Effort | Notes file |
+|----|---------|--------|-----------|
+| PF-1 | Nip & Tuck seams (incl. new `seam_notch_target`, Holes-only default) | M | notes/PF-1.md |
+| PF-2 | Counterbore Bridge gizmo | M | notes/PF-2.md |
+| PF-3 | Auto Speed | M | notes/PF-3.md |
+| PF-4 | Width Control (max width + warning) | S-M | notes/PF-4.md |
+| PF-5 | Max Commands Per Second | S-M | notes/PF-5.md |
+| PF-6 | Preview Clipping Plane | S-M | notes/PF-6.md |
+| PF-7 | Manual fan controls | S-M | notes/PF-7.md |
+| PF-8 | Serpentine | L | notes/PF-8.md |
+| PF-9 | Interlocking perimeters | L | notes/PF-9.md |
+| PF-10 | Baobab supports | XL | notes/PF-10.md |
+
+Order: **PF-1 -> PF-2 -> PF-3..PF-7 (quick wins) -> PF-8/PF-9 -> PF-10**. Each is its own
+branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
+
+### Decisions (confirmed with the user)
+
+1. **Separate branches** for each port, including each quick win.
+2. **PF-1 seam type/target is per-object** (put the keys in `PrintObjectConfig`, next to
+   `seam_position`). Per-region is not required.
+3. **PF-1 default = Holes only**: notch internal cavities (bores), leave outer-contour seams
+   on the normal seam. `seam_notch_target` = {All external, Holes only (default), Outer only}.
+4. **PF-10 Baobab is recon-first** (read-only feasibility notes) before implementation; do it
+   after PF-8/PF-9, not now.
+5. The quick wins PF-3..PF-7 were added at the user's request; each is independent.
+
+### Risks
+
+- Everything is category D: preFlight's perimeter/seam/support/fill/GCode code does not map
+  1:1 onto OrcaSlicer's. Re-implement against 2.5 APIs; never paste preFlight code.
+- Some features (PF-2, PF-9, PF-10) touch profile/3mf-affecting data (facet annotations, enum
+  state space, support styles) - keep backward compatibility and append enum values last.
+- PF-8 (Serpentine) and PF-10 (Baobab) are large; treat effort estimates as ranges.
+

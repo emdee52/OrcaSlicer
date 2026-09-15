@@ -18,6 +18,7 @@
 #include "GCode/OrderingStrategies.hpp"
 #include "Print.hpp"
 #include "OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b]
+#include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
 #include "libslic3r.h"
@@ -7335,6 +7336,15 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
     ExtrusionPaths paths;
     loop.clip_end(clip_length, &paths);
     if (paths.empty()) return "";
+
+    // [ORCAPORT:PF-1] Nip/Tuck seam shaping: reshape the external perimeter at the seam. Off by
+    // default (seam_type == Regular); never runs in spiral vase mode.
+    if (loop.role() == erExternalPerimeter && !m_config.spiral_mode
+        && m_config.seam_type.value != sntRegular) {
+        OrcaExt::SeamNotch::apply(paths, loop.polygon().is_counter_clockwise(), is_hole,
+            m_config.seam_type.value, m_config.seam_notch_target.value,
+            m_config.seam_notch_width.value, m_config.seam_notch_angle.value, layer_id());
+    }
 
     // SoftFever: check loop lenght for small perimeter. 
     double small_peri_speed = -1;
