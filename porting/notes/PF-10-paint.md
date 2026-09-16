@@ -114,6 +114,17 @@ style, so it is the recommended way to "leave this region to the object default"
 A support-region auto-painter (preFlight's disabled "Automatic painting" button, reimplemented
 Orca-native) is tracked separately as `PF-10-auto`.
 
+## Gizmo layout / QOL (follow-up)
+
+- Layout: the tool's own controls (brush size, smart fill angle, gap area) now sit directly under the
+  tool selector; dividers separate tool settings, the support-type palette, automatic painting, and
+  the min-overhang-area slider.
+- Each support-type radio now shows a colour swatch of its prepare-view colour, so the palette
+  matches what appears on the model at a glance.
+- "Remap support types": a collapsible From/To pair (registry types + Blocker) that rewrites every
+  facet painted with one state to another, via `TriangleSelector::remap_triangle_state`, in one undo
+  step. Mirrors the colour-painting gizmo's "Remap filaments" but for support states.
+
 ## Behavior-neutral at defaults
 
 No style facets painted => `paint == nullptr` => the original single-pass path, byte-identical.
