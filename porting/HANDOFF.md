@@ -69,7 +69,7 @@ port intent onto Orca's pipelines.
 | PF-8 | Serpentine | excluded (user) | - | - |
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
 | PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
-| PF-10-auto | Automatic support painting (support-preview-driven, respects blockers, auto-classifies) | ported (runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
+| PF-10-auto | Automatic support painting (mesh-driven region scoring, respects blockers, per-type opt-in) | ported (build+tests clean, runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
 | PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
 ## What to do next
@@ -79,8 +79,12 @@ and merged into `port/integration` (build clean, runtime pending). It adds an ex
 `OrcaExt/SupportPaintTypes` registry (a new support = one row), extends the support gizmo with
 Default/Snug/Grid/Organic/NeoWave, and runs one classic pass + one enforcer-only tree pass then
 merges them, so different support engines coexist on one object. **PF-10-auto** (Automatic painting
-button; support-preview-driven, follows blockers, auto-classifies via the registry) is ported on
-`port/PF-10-auto` (build clean, runtime pending). **PF-10 Baobab was abandoned by user decision**
+button) was **rewritten on `port/PF-10-auto-fix`**: the support-preview-driven version did nothing at
+runtime, so it is now a synchronous mesh analysis that scores each overhang region
+(area/span/height/wall-angle/curvature/gap-below) against the registry's per-type rules, honours the
+highlight angle / on-overhangs-only, never overwrites painted/blocker facets (split-safe
+`TriangleSelector::painted_facet_mask`), and has per-type checkboxes + undo. Build clean and
+`ctest` 807/807; runtime pending. **PF-10 Baobab was abandoned by user decision**
 (attempted across 4 rounds, then fully removed: code, keys, paint row, `port/PF-10` branch;
 `port/integration` reset to `c1e9289f6c`). Do not re-attempt unless the user asks. PF-3/4/5/7/8 were
 excluded; PF-6 and PF-9 are ported (PF-9 runtime-verified).
@@ -205,10 +209,11 @@ Kill a running slicer before rebuilding (it holds the DLL -> `LNK1104`):
 - Patch: `porting/patches/NN_<ID>.patch`, from
   `git diff "<base>..HEAD" -- src resources` where `<base>` is the integration commit the feature
   branched from. Verify with `git apply --check -R <patch>` (should succeed).
-- Push the feature branch, `git merge --no-ff` into `port/integration`, push integration.
 - `manifest.tsv` is the source of truth; keep it and the notes in sync with the code.
-- **The user has a standing order to commit/merge/push** each completed feature (they have been
-  asking throughout). Do not merge an incomplete feature.
+- **Commit policy (updated): always commit** each completed change on its port branch (product
+  commit, then a separate `port:` docs+patch commit). **Do not merge into `port/integration` and do
+  not push** until the user has tested the build and explicitly asks - the merge is the user's gate.
+  Do not merge an incomplete feature.
 
 ## Built but not runtime/print-verified (user should test)
 

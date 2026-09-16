@@ -20,6 +20,8 @@
 
 #include <glad/gl.h>
 
+#include <algorithm>
+
 #include <boost/log/trivial.hpp>
 
 namespace Slic3r::GUI {
@@ -104,6 +106,8 @@ bool GLGizmoFdmSupports::on_init()
     m_desc["tool_type"]          = _L("Tool type");
     m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
     m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
+    m_desc["autopaint_types"]    = _L("Automatic types");    // [ORCAPORT:PF-10-auto]
+    m_desc["autopaint_min_area"] = _L("Min overhang area");  // [ORCAPORT:PF-10-auto]
     m_desc["gap_fill"]           = _L("Gap fill");
     m_desc["reset_direction"]    = _L("Reset direction");
     m_desc["clipping_of_view"]   = _L("Section view");
@@ -209,12 +213,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     init_print_instance();
     if (! m_c->selection_info()->model_object())
         return;
-
-    // [ORCAPORT:PF-10-auto] Once the forced support preview has finished, classify and paint.
-    if (m_auto_paint_pending && m_edit_state == state_ready) {
-        m_auto_paint_pending = false;
-        apply_auto_paint();
-    }
 
     float  scale       = m_parent.get_scale();
     #ifdef WIN32
@@ -350,16 +348,55 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
         }
     }
 
-    // [ORCAPORT:PF-10-auto] Automatic painting: generate support for every overhang (respecting
-    // painted blockers) and classify each contact region into a support type.
+    // [ORCAPORT:PF-10-auto] Automatic painting: a synchronous mesh analysis of the object's
+    // overhang regions, classified by the registry's scoring rules. The checkbox row chooses which
+    // support types automatic painting may select.
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
-    m_imgui->disabled_begin(m_print_instance.print_object == nullptr);
-    if (m_imgui->button(m_desc.at("autopaint"))) {
-        m_auto_paint_pending = true;
-        invalid_support_volumes(true);
-        update_support_volumes();
-    }
+    m_imgui->disabled_begin(m_c->selection_info()->model_object() == nullptr);
+    if (m_imgui->button(m_desc.at("autopaint")))
+        run_auto_paint();
     m_imgui->disabled_end();
+
+    {
+        const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
+        if (!m_auto_paint_types_initialized) {
+            for (const Slic3r::OrcaExt::SupportPaintType &t : types)
+                if (!t.rules.empty() && t.auto_enabled_by_default)
+                    m_auto_paint_types.push_back(t.state);
+            m_auto_paint_types_initialized = true;
+        }
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("autopaint_types"));
+        bool first = true;
+        for (const Slic3r::OrcaExt::SupportPaintType &t : types) {
+            if (t.rules.empty())
+                continue;
+            if (!first)
+                ImGui::SameLine();
+            first = false;
+            auto it    = std::find(m_auto_paint_types.begin(), m_auto_paint_types.end(), t.state);
+            bool enabled = it != m_auto_paint_types.end();
+            if (m_imgui->bbl_checkbox(localized_support_label(t), enabled)) {
+                if (enabled)
+                    m_auto_paint_types.push_back(t.state);
+                else
+                    m_auto_paint_types.erase(std::remove(m_auto_paint_types.begin(), m_auto_paint_types.end(), t.state),
+                                             m_auto_paint_types.end());
+            }
+        }
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("autopaint_min_area"));
+        ImGui::SameLine(sliders_left_width);
+        ImGui::PushItemWidth(sliders_width);
+        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 20.f, "%.1f", 1.0f, true);
+        ImGui::SameLine(drag_left_width + sliders_left_width);
+        ImGui::PushItemWidth(1.5 * slider_icon_width);
+        ImGui::BBLDragFloat("##autopaint_min_area_input", &m_auto_paint_min_area, 0.1f, 0.0f, 20.0f, "%.1f");
+        if (ImGui::IsItemHovered())
+            m_imgui->tooltip(_L("Overhang regions smaller than this area, in square millimeters, are left "
+                                "unpainted; a tiny sliver cannot hold a support tip."),
+                             max_tooltip_width);
+    }
 
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
 
@@ -860,8 +897,7 @@ void GLGizmoFdmSupports::update_support_volumes()
         return;
     }
 
-    // [ORCAPORT:PF-10-auto] An automatic-paint request always regenerates.
-    if (m_volume_valid || (!m_auto_paint_pending && !need_regenerate_support_volumes()))
+    if (m_volume_valid || !need_regenerate_support_volumes())
     {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
 
@@ -874,8 +910,6 @@ void GLGizmoFdmSupports::update_support_volumes()
     }
     //generate_support_preview in async mode
     std::unique_lock<std::mutex> lck(m_mutex);
-    if (m_auto_paint_pending)
-        m_edit_state = state_generating;
     m_volume_ready = false;
     //destroy previous support volume
     if (m_support_volume)
@@ -978,20 +1012,71 @@ _finished:
     return;
 }
 
-// [ORCAPORT:PF-10-auto] Classify the support contact regions and paint them. Runs on the UI
-// thread once the forced preview finished. Blockers are never overwritten (and a blocked region
-// produces no support contact in the first place, because support generation respects them).
-void GLGizmoFdmSupports::apply_auto_paint()
+// [ORCAPORT:PF-10-auto] Mesh-driven automatic painting. Runs synchronously on the UI thread: the
+// object's overhang regions are measured (SupportAutoPaint) and scored against the registry's
+// rules, then the winning support type is painted on each region. Already painted facets and
+// blockers are excluded before clustering, so existing painting is never overwritten. Unclassified
+// regions are left unpainted and fall back to the object's own support style.
+void GLGizmoFdmSupports::run_auto_paint()
 {
-    if (m_print_instance.print_object == nullptr)
+    if (!m_auto_paint_types_initialized) {
+        for (const Slic3r::OrcaExt::SupportPaintType &t : Slic3r::OrcaExt::support_paint_types())
+            if (!t.rules.empty() && t.auto_enabled_by_default)
+                m_auto_paint_types.push_back(t.state);
+        m_auto_paint_types_initialized = true;
+    }
+
+    const ModelObject *mo = m_c->selection_info()->model_object();
+    if (mo == nullptr)
         return;
+
+    const int inst_idx = m_c->selection_info()->get_active_instance();
+    if (inst_idx < 0 || size_t(inst_idx) >= mo->instances.size())
+        return;
+    const Transform3d trafo = mo->instances[size_t(inst_idx)]->get_matrix();
+
+    // The selectors mirror the object's model-part volumes; keep them in sync if the object changed.
+    size_t model_parts = 0;
+    for (const ModelVolume *mv : mo->volumes)
+        if (mv->is_model_part())
+            ++model_parts;
+    if (m_triangle_selectors.size() != model_parts)
+        update_from_model_object(false);
+    if (m_triangle_selectors.size() != model_parts)
+        return;
+
+    std::vector<std::vector<uint8_t>> painted;
+    painted.reserve(m_triangle_selectors.size());
+    for (const std::unique_ptr<TriangleSelectorGUI> &sel : m_triangle_selectors) {
+        const TriangleSelectorPatch *tsp = dynamic_cast<const TriangleSelectorPatch *>(sel.get());
+        painted.push_back(tsp != nullptr ? tsp->painted_facet_mask() : std::vector<uint8_t>{});
+    }
+
+    Slic3r::OrcaExt::SupportAutoPaintParams params;
+    params.overhang_angle_deg = m_highlight_by_angle_threshold_deg;
+    params.overhangs_only     = m_paint_on_overhangs_only;
+    params.enabled_types      = m_auto_paint_types;
+    params.min_region_area_mm2 = m_auto_paint_min_area;
+    {
+        // With "supports on build plate only", a normal/grid column that would rest on the model is
+        // dropped; classify such regions as tree instead.
+        const DynamicPrintConfig &obj_cfg = mo->config.get();
+        const DynamicPrintConfig &glb_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        params.build_plate_only = obj_cfg.option("support_on_build_plate_only")
+                                      ? obj_cfg.opt_bool("support_on_build_plate_only")
+                                      : glb_cfg.opt_bool("support_on_build_plate_only");
+    }
 
     const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
-        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
-    if (hits.empty())
+        Slic3r::OrcaExt::classify_support_paint(*mo, trafo, painted, params);
+    if (hits.empty()) {
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", no overhang region matched a support type";
         return;
+    }
 
-    bool painted = false;
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), "Automatic support painting", UndoRedo::SnapshotType::GizmoAction);
+
+    bool painted_any = false;
     for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
         if (hit.volume_index >= m_triangle_selectors.size())
             continue;
@@ -1001,11 +1086,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
         if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
             continue;
         sel->set_facet(int(hit.facet_index), hit.state);
-        sel->request_update_render_data();
-        painted = true;
+        sel->request_update_render_data(true); // true = paint changed, forces the geometry rebuild
+        painted_any = true;
     }
 
-    if (painted) {
+    if (painted_any) {
         update_model_object();
         m_parent.set_as_dirty();
     }

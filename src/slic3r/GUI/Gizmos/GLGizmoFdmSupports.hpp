@@ -70,10 +70,15 @@ private:
     // generic enforcer by default, so existing painted projects behave unchanged.
     EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
 
-    // [ORCAPORT:PF-10-auto] Automatic painting: after a forced support preview finishes, classify
-    // the support contact regions and paint them.
-    bool m_auto_paint_pending = false;
-    void apply_auto_paint();
+    // [ORCAPORT:PF-10-auto] Automatic painting: a synchronous mesh analysis of the object's
+    // overhang regions. m_auto_paint_types holds the states the user allowed (the per-type
+    // checkboxes); it is seeded from the registry on first use.
+    std::vector<EnforcerBlockerType> m_auto_paint_types;
+    bool m_auto_paint_types_initialized = false;
+    // Minimum overhang region area (mm^2) automatic painting will consider; smaller slivers are
+    // left unpainted. 0 disables the filter.
+    float m_auto_paint_min_area = 4.f;
+    void run_auto_paint();
 
     //BBS: add support preview logic
     void init_print_instance();
