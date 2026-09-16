@@ -85,6 +85,25 @@ per painted type plus a default pass, then merges them.
   4. `PrintObject::merge_duplicate_support_layers` (ported from preFlight, with
      `clip_extrusion_entities`) merges same-`print_z` layers: fills clipped against the base
      islands, islands unioned, ids reassigned.
+  5. **Each pass runs against an EMPTY support-layer set.** Both engines assume
+     `support_layer_count() == 0` while generating: `PrintObject::total_layer_count()` is
+     `layer_count() + support_layer_count()` (`Print.hpp:419`) and the classic descent walks
+     `*object.get_layer(i)` up to `total_layer_count()-2` (`SupportMaterial.cpp`). With a second
+     classic pass the earlier layers made that index run past `m_layers` -> ACCESS_VIOLATION.
+     The dispatcher now moves the existing layers aside, runs the pass, then composes
+     (prior + fresh) and merges.
+
+### Gizmo defaults / settings
+
+- The overhang "Highlight overhangs" slider defaults to **30 deg** when the gizmo opens.
+- `support_on_build_plate_only` is honored by painted per-region passes: their enforcers are
+  trimmed by the build-plate-covered mask too (the legacy generic enforcer keeps its historical
+  exemption; `SupportAnnotations::painted_pass`).
+- Every other process/object/region setting is inherited by each pass unchanged; the dispatcher
+  only overrides `support_type`/`support_style` per pass and the NeoWave recipe (hollow base,
+  wave interface/roof, smart order, one wall loop). Painted passes are manual (`stNormal`/`stTree`),
+  so automatic-overhang settings (`support_threshold_angle`, sharp-tail/critical-region filters)
+  act on the default/auto pass, not on painted facets.
 
 Known gap: with **raft layers** enabled, each pass may add its own raft (merged by z); multi-pass
 with a raft is untested. `Default` painting is the legacy generic enforcer and keeps the object's own
