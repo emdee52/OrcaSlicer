@@ -70,7 +70,7 @@ port intent onto Orca's pipelines.
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
 | PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
 | PF-10-auto | Automatic support painting (support-preview-driven, respects blockers, auto-classifies) | ported (runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
-| PF-10 | Baobab supports (recon first) | planned | notes/PF-10.md | - |
+| PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
 ## What to do next
 
@@ -80,9 +80,10 @@ and merged into `port/integration` (build clean, runtime pending). It adds an ex
 Default/Snug/Grid/Organic/NeoWave, and runs one classic pass + one enforcer-only tree pass then
 merges them, so different support engines coexist on one object. **PF-10-auto** (Automatic painting
 button; support-preview-driven, follows blockers, auto-classifies via the registry) is ported on
-`port/PF-10-auto` (build clean, runtime pending). Next: **PF-10 Baobab** (XL, recon-first; adds its
-paint row and classifier rule). PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported (PF-9
-runtime-verified).
+`port/PF-10-auto` (build clean, runtime pending). **PF-10 Baobab was abandoned by user decision**
+(attempted across 4 rounds, then fully removed: code, keys, paint row, `port/PF-10` branch;
+`port/integration` reset to `c1e9289f6c`). Do not re-attempt unless the user asks. PF-3/4/5/7/8 were
+excluded; PF-6 and PF-9 are ported (PF-9 runtime-verified).
 
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
@@ -93,8 +94,9 @@ Also queued as known gaps (do if the user asks):
 - **PF-2b partial**: painted "Partial" currently = a single bridge layer, not Orca's `chbBridges`
   coverage algorithm (per-region routing to Orca's partial path needs region splitting).
 
-Before the big ones (PF-8 Serpentine ~164 KB module, PF-10 Baobab canopy engine) do a read-only
-recon and write `notes/<ID>.md` first; see the preFlight inventory for portability verdicts.
+Before the big ones (PF-8 Serpentine ~164 KB module) do a read-only recon and write `notes/<ID>.md`
+first; see the preFlight inventory for portability verdicts. (PF-8 stays excluded; PF-10 Baobab is
+abandoned.)
 
 ## Environment & build
 

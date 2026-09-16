@@ -481,7 +481,7 @@ NeoArachne and the shared fill/GCode pipelines.
 | PF-7 | Manual fan controls | S-M | notes/PF-7.md |
 | PF-8 | Serpentine | L | notes/PF-8.md |
 | PF-9 | Interlocking perimeters | L | notes/PF-9.md |
-| PF-10 | Baobab supports | XL | notes/PF-10.md |
+| PF-10 | Baobab supports | abandoned (user) | - |
 
 Order: **PF-1 -> PF-2 -> PF-3..PF-7 (quick wins) -> PF-8/PF-9 -> PF-10**. Each is its own
 branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
@@ -522,7 +522,11 @@ branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
     `LayerRegion` from neighbour layer slices. Arachne gets count/regular/margins only (tier
     overrides are Classic-only). `interlock_flow_detection` and `interlocking_perimeter_extruder`
     dropped. Off by default byte-identical. See `notes/PF-9.md`.
-13. **PF-10 Baobab supports - remaining.** Recon-first; XL.
+13. **PF-10 Baobab supports - ABANDONED (user decision).** Attempted across 4 rounds (canopy
+    geometry, tip seeding, toolpaths) and then fully removed: all code, the 8 `support_baobab_*`
+    keys, the paint row, `porting/notes/PF-10.md`, `porting/patches/24_PF-10.patch`, and the
+    `port/PF-10` branch. `port/integration` was reset to `c1e9289f6c` (the PF-10-paint state). Do not
+    re-attempt unless the user asks.
 ### Risks
 
 - Everything is category D: preFlight's perimeter/seam/support/fill/GCode code does not map
