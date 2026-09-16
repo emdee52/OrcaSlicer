@@ -1798,15 +1798,21 @@ static inline std::tuple<Polygons, Polygons, double> detect_contacts(
                       { { union_safety_offset_ex(enforcer_polygons) }, { "new_contacts",               "red",    "black", "", scaled<coord_t>(0.1f), 0.5f } } });
 #endif /* SLIC3R_DEBUG */
                 if (!enforcer_polygons.empty()) {
-                    polygons_append(overhang_polygons, enforcer_polygons);
                     slices_margin_update(std::min(lower_layer_offset, float(scale_(gap_xy))), no_interface_offset);
                     // [ORCAPORT:PF-10-paint] A painted per-region pass honors "on build plate only"
-                    // for its enforcers too (the legacy generic enforcer keeps its exemption).
-                    const Polygons &enforcer_trim =
-                        (annotations.painted_pass && buildplate_only)
+                    // for its enforcers too (the legacy generic enforcer keeps its exemption). Both
+                    // the contact and the seeded overhang (which drives the interface) are trimmed
+                    // by the build-plate mask.
+                    const bool trim_enforcer = annotations.painted_pass && buildplate_only;
+                    const Polygons &enforcer_contact_trim =
+                        trim_enforcer
                             ? slices_margin.polygons
                             : (slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons);
-                    polygons_append(contact_polygons, diff(enforcer_polygons, enforcer_trim));
+                    const Polygons enforcer_for_overhang =
+                        trim_enforcer ? diff(enforcer_polygons, slices_margin.polygons) : enforcer_polygons;
+                    if (!enforcer_for_overhang.empty())
+                        polygons_append(overhang_polygons, enforcer_for_overhang);
+                    polygons_append(contact_polygons, diff(enforcer_polygons, enforcer_contact_trim));
                 }
             }
 
@@ -3951,6 +3957,17 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
 
         Polygons &layer_support_area = layer_support_areas[layer_id];
         Polygons *layer_buildplate_covered = buildplate_covered.empty() ? nullptr : &buildplate_covered[layer_id];
+        // [ORCAPORT:PF-10-paint] A painted pass honors "on build plate only" for its enforcers too:
+        // the enforcer column is trimmed by the build-plate mask during the descent, so it cannot
+        // rest on the model. The mask is copied because the general projection below consumes the
+        // original (it is moved from).
+        Polygons  enforcer_buildplate_covered;
+        Polygons *enforcer_buildplate_ptr = nullptr;
+        if (layer_buildplate_covered != nullptr && buildplate_only &&
+            object.painted_support_state() != EnforcerBlockerType::NONE) {
+            enforcer_buildplate_covered = *layer_buildplate_covered;
+            enforcer_buildplate_ptr      = &enforcer_buildplate_covered;
+        }
         // Filtering the propagated support columns to two extrusions, overlapping by maximum 20%.
 //        float column_propagation_filtering_radius = scaled<float>(0.8 * 0.5 * (m_support_params.support_material_flow.spacing() + m_support_params.support_material_flow.width()));
         task_group.run([&grid_params, &overhangs_projection, &overhangs_projection_raw, &layer, &layer_support_area, layer_buildplate_covered /* , column_propagation_filtering_radius */
@@ -3970,13 +3987,14 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
 
         Polygons layer_support_area_enforcers;
         if (! enforcers_projection_raw.empty())
-            // Project the enforcers polygons downwards, don't trim them with the "buildplate only" polygons.
-            task_group.run([&grid_params, &enforcers_projection, &enforcers_projection_raw, &layer, &layer_support_area_enforcers
+            // Project the enforcers polygons downwards. Normally they are not trimmed with the
+            // "buildplate only" polygons; a painted pass passes the mask instead.
+            task_group.run([&grid_params, &enforcers_projection, &enforcers_projection_raw, &layer, &layer_support_area_enforcers, enforcer_buildplate_ptr
 #ifdef SLIC3R_DEBUG 
                 , iRun, layer_id
 #endif /* SLIC3R_DEBUG */
             ]{
-                std::tie(layer_support_area_enforcers, enforcers_projection) = project_support_to_grid(layer, grid_params, enforcers_projection_raw, nullptr
+                std::tie(layer_support_area_enforcers, enforcers_projection) = project_support_to_grid(layer, grid_params, enforcers_projection_raw, enforcer_buildplate_ptr
 #ifdef SLIC3R_DEBUG 
                     , iRun, layer_id, "enforcers"
 #endif /* SLIC3R_DEBUG */
