@@ -4687,6 +4687,11 @@ void PrintObject::_generate_support_material()
         return;
     }
 
+    // Shared objects share the support-layer pointers with their source; composing passes here
+    // would double-free. The shared source already generated the painted support.
+    if (m_shared_object != nullptr)
+        return;
+
     // Scoped override of the object config plus the pass transients.
     const SupportType                     old_type   = m_config.support_type.value;
     const SupportMaterialStyle            old_style  = m_config.support_style.value;
@@ -4742,15 +4747,34 @@ void PrintObject::_generate_support_material()
             apply_overrides(*ov);
         this->set_painted_support_state(enforcer);
         this->set_painted_support_blockers(std::move(blockers));
-        this->set_support_pass_appends(!this->support_layers().empty());
-        if (is_tree_pass) {
-            TreeSupport tree_support(*this, m_slicing_params);
-            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
-            tree_support.generate();
-        } else {
-            PrintObjectSupportMaterial support_material(this, m_slicing_params);
-            support_material.generate(*this);
+
+        // [ORCAPORT:PF-10-paint] Run this pass against an EMPTY support-layer set. Both engines
+        // assume `support_layer_count() == 0` while generating (e.g. the classic descent walks
+        // `*object.get_layer(i)` up to `total_layer_count()-2`, which sums object AND support
+        // layers). Layers from earlier passes are set aside and composed afterwards.
+        SupportLayerPtrs prior_layers = std::move(this->support_layers());
+        this->set_support_pass_appends(false);
+        try {
+            if (is_tree_pass) {
+                TreeSupport tree_support(*this, m_slicing_params);
+                tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
+                tree_support.generate();
+            } else {
+                PrintObjectSupportMaterial support_material(this, m_slicing_params);
+                support_material.generate(*this);
+            }
+        } catch (...) {
+            SupportLayerPtrs fresh = std::move(this->support_layers());
+            this->support_layers() = std::move(prior_layers);
+            for (SupportLayer *l : fresh)
+                this->support_layers().push_back(l);
+            throw;
         }
+        // Compose: earlier passes' layers first (merge keeps them as the base at equal print_z).
+        SupportLayerPtrs fresh_layers = std::move(this->support_layers());
+        this->support_layers() = std::move(prior_layers);
+        for (SupportLayer *l : fresh_layers)
+            this->support_layers().push_back(l);
     };
 
     try {

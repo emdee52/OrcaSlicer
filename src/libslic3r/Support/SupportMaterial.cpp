@@ -1370,7 +1370,10 @@ struct SupportAnnotations
                        float roof_expand) :
         enforcers_layers(object.slice_support_enforcers()),
         blockers_layers(object.slice_support_blockers()),
-        buildplate_covered(buildplate_covered)
+        buildplate_covered(buildplate_covered),
+        // [ORCAPORT:PF-10-paint] A painted per-region pass also trims its enforcers by "build
+        // plate only"; the legacy generic enforcer keeps its historical exemption.
+        painted_pass(object.painted_support_state() != EnforcerBlockerType::NONE)
     {
         // NEOTKO_SUPPORTZONES_TAG s300e — EL ENFORCER AGARRA DONDE EL BLOQUE EMPIEZA, NO POR DONDE PASA.
         //
@@ -1477,6 +1480,7 @@ struct SupportAnnotations
     std::vector<Polygons>         roof_only_layers;
     std::vector<Polygons>         blockers_layers;
     const std::vector<Polygons>&  buildplate_covered;
+    bool                          painted_pass { false }; // [ORCAPORT:PF-10-paint]
 };
 
 struct SlicesMarginCache
@@ -1796,7 +1800,13 @@ static inline std::tuple<Polygons, Polygons, double> detect_contacts(
                 if (!enforcer_polygons.empty()) {
                     polygons_append(overhang_polygons, enforcer_polygons);
                     slices_margin_update(std::min(lower_layer_offset, float(scale_(gap_xy))), no_interface_offset);
-                    polygons_append(contact_polygons, diff(enforcer_polygons, slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons));
+                    // [ORCAPORT:PF-10-paint] A painted per-region pass honors "on build plate only"
+                    // for its enforcers too (the legacy generic enforcer keeps its exemption).
+                    const Polygons &enforcer_trim =
+                        (annotations.painted_pass && buildplate_only)
+                            ? slices_margin.polygons
+                            : (slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons);
+                    polygons_append(contact_polygons, diff(enforcer_polygons, enforcer_trim));
                 }
             }
 
