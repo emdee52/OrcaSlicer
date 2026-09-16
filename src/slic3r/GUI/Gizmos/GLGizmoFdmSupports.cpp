@@ -388,7 +388,10 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
         m_imgui->text(m_desc.at("autopaint_min_area"));
         ImGui::SameLine(sliders_left_width);
         ImGui::PushItemWidth(sliders_width);
-        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 100.f, "%.1f", 1.0f, true);
+        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 20.f, "%.1f", 1.0f, true);
+        ImGui::SameLine(drag_left_width + sliders_left_width);
+        ImGui::PushItemWidth(1.5 * slider_icon_width);
+        ImGui::BBLDragFloat("##autopaint_min_area_input", &m_auto_paint_min_area, 0.1f, 0.0f, 20.0f, "%.1f");
         if (ImGui::IsItemHovered())
             m_imgui->tooltip(_L("Overhang regions smaller than this area, in square millimeters, are left "
                                 "unpainted; a tiny sliver cannot hold a support tip."),
@@ -1054,6 +1057,15 @@ void GLGizmoFdmSupports::run_auto_paint()
     params.overhangs_only     = m_paint_on_overhangs_only;
     params.enabled_types      = m_auto_paint_types;
     params.min_region_area_mm2 = m_auto_paint_min_area;
+    {
+        // With "supports on build plate only", a normal/grid column that would rest on the model is
+        // dropped; classify such regions as tree instead.
+        const DynamicPrintConfig &obj_cfg = mo->config.get();
+        const DynamicPrintConfig &glb_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+        params.build_plate_only = obj_cfg.option("support_on_build_plate_only")
+                                      ? obj_cfg.opt_bool("support_on_build_plate_only")
+                                      : glb_cfg.opt_bool("support_on_build_plate_only");
+    }
 
     const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
         Slic3r::OrcaExt::classify_support_paint(*mo, trafo, painted, params);

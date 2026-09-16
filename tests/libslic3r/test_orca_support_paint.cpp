@@ -99,6 +99,50 @@ TEST_CASE("NeoWave is never chosen when its type is disabled", "[OrcaSupportPain
     CHECK(support_paint_classify(f, default_enabled()) != state_of("NeoWave"));
 }
 
+TEST_CASE("A flat overhang above the part becomes tree with build-plate-only", "[OrcaSupportPaint]")
+{
+    SupportRegionFeatures f;
+    f.area_mm2       = 1000.;
+    f.span_mm        = 100.;
+    f.height_mm      = 10.;
+    f.wall_angle_deg = 85.;
+    f.curvature      = 0.05;
+    f.gap_below_mm   = 2.; // model geometry directly below
+
+    // Normally this is a rigid Grid region.
+    CHECK(support_paint_classify(f, default_enabled()) == state_of("Grid"));
+    // But a build-plate-only restriction would drop a normal column resting on the model, so the
+    // tree type is preferred.
+    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
+}
+
+TEST_CASE("Build-plate-only keeps normal support when nothing is below the region", "[OrcaSupportPaint]")
+{
+    SupportRegionFeatures f;
+    f.area_mm2       = 1000.;
+    f.span_mm        = 100.;
+    f.height_mm      = 10.;
+    f.wall_angle_deg = 85.;
+    f.curvature      = 0.05;
+    f.gap_below_mm   = 1.0e30; // open down to the plate
+
+    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Grid"));
+}
+
+TEST_CASE("Build-plate-only keeps normal support when no tree type is enabled", "[OrcaSupportPaint]")
+{
+    SupportRegionFeatures f;
+    f.area_mm2       = 1000.;
+    f.span_mm        = 100.;
+    f.height_mm      = 10.;
+    f.wall_angle_deg = 85.;
+    f.curvature      = 0.05;
+    f.gap_below_mm   = 2.;
+
+    const std::vector<EnforcerBlockerType> enabled{state_of("Snug"), state_of("Grid")};
+    CHECK(support_paint_classify(f, enabled, true) == state_of("Grid"));
+}
+
 TEST_CASE("A region that matches no rule is left unpainted", "[OrcaSupportPaint]")
 {
     SupportRegionFeatures f;

@@ -222,10 +222,17 @@ double support_type_score(const SupportPaintType &type, const SupportRegionFeatu
 }
 
 EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
-                                           const std::vector<EnforcerBlockerType> &enabled)
+                                           const std::vector<EnforcerBlockerType> &enabled,
+                                           bool build_plate_only)
 {
-    const SupportPaintType *best       = nullptr;
-    double                  best_score = 0.;
+    const SupportPaintType *best            = nullptr;
+    const SupportPaintType *best_tree       = nullptr;
+    double                  best_score      = 0.;
+    double                  best_tree_score = 0.;
+
+    // "Model geometry below" = the downward ray hit a surface, i.e. a normal support column would
+    // rest on the part rather than reach the plate.
+    const bool part_below = features.gap_below_mm < 1.0e29;
 
     for (const SupportPaintType &t : registry()) {
         if (t.rules.empty())
@@ -234,13 +241,26 @@ EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features
         if (!enabled.empty() && std::find(enabled.begin(), enabled.end(), t.state) == enabled.end())
             continue;
         const double score = support_type_score(t, features);
-        if (score < t.min_score)
-            continue;
-        if (best == nullptr || score > best_score) {
+        // Eligible types compete normally.
+        if (score >= t.min_score && (best == nullptr || score > best_score)) {
             best       = &t;
             best_score = score;
         }
+        // Tree types are candidates for the build-plate-only override even when their own rules did
+        // not reach min_score: a large flat overhang above the part is still better off on a tree,
+        // whose branches can reach the plate, than on a normal column that would rest on the model.
+        if (t.is_tree && (best_tree == nullptr || score > best_tree_score)) {
+            best_tree       = &t;
+            best_tree_score = score;
+        }
     }
+
+    // [ORCAPORT:PF-10-auto] Build-plate-only drops any support whose base would rest on the model,
+    // so for a region with the part directly below, a branching (tree) type is the only one that
+    // can actually reach the plate. Prefer it when one is enabled.
+    if (build_plate_only && part_below && best_tree != nullptr)
+        return best_tree->state;
+
     return best != nullptr ? best->state : EnforcerBlockerType::NONE;
 }
 

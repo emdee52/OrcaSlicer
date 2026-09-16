@@ -215,7 +215,8 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                                    bb_min.z() - 0.01);
             feat.gap_below_mm = ray_down_to_next_surface(gap_origin, vdatas);
 
-            const EnforcerBlockerType state = support_paint_classify(feat, params.enabled_types);
+            const EnforcerBlockerType state =
+                support_paint_classify(feat, params.enabled_types, params.build_plate_only);
             if (state == EnforcerBlockerType::NONE)
                 continue;
 

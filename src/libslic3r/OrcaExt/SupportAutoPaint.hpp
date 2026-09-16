@@ -36,6 +36,10 @@ struct SupportAutoPaintParams
     // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
     // regions, so they can be classified (and coloured) independently.
     float region_split_angle_deg{30.f};
+    // Mirrors the object's "supports on build plate only". When set, a region with the model
+    // directly below it is classified as a tree type (if one is enabled), because a normal/grid
+    // column there would rest on the model and be dropped.
+    bool build_plate_only{false};
 };
 
 // One model facet the auto-painter wants to paint, plus the region measurements that selected it.

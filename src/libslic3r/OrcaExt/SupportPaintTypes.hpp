@@ -122,9 +122,13 @@ double support_type_score(const SupportPaintType &type, const SupportRegionFeatu
 
 // Pick the best-matching enabled support type for the region, or NONE to leave it unpainted.
 // `enabled` is the set of states the user allowed automatic painting to choose; an empty set
-// means every auto-selectable type is eligible.
+// means every auto-selectable type is eligible. When `build_plate_only` is set and the region has
+// model geometry directly below it, an eligible tree type is preferred: a normal/grid column there
+// would rest on the model and be dropped by the build-plate-only restriction, while a tree can
+// branch down to the plate.
 EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
-                                           const std::vector<EnforcerBlockerType> &enabled = {});
+                                           const std::vector<EnforcerBlockerType> &enabled = {},
+                                           bool build_plate_only = false);
 
 // The ordered registry (guarded statics). The first entry is the legacy generic "Default"
 // enforcer, which keeps the object's own support type/style so existing painted projects are
