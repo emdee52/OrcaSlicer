@@ -116,6 +116,20 @@ TEST_CASE("A flat overhang above the part becomes tree with build-plate-only", "
     CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
 }
 
+TEST_CASE("Build-plate-only uses tree from the part-below flag even when gap looks open", "[OrcaSupportPaint]")
+{
+    SupportRegionFeatures f;
+    f.area_mm2       = 40.;
+    f.span_mm        = 10.;
+    f.height_mm      = 10.;
+    f.wall_angle_deg = 85.;
+    f.curvature      = 0.05;
+    f.gap_below_mm   = 1.0e30; // centroid ray missed, but some facets have the model below
+    f.part_below     = true;
+
+    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
+}
+
 TEST_CASE("Build-plate-only keeps normal support when nothing is below the region", "[OrcaSupportPaint]")
 {
     SupportRegionFeatures f;

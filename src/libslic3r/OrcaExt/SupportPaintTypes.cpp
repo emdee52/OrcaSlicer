@@ -230,9 +230,10 @@ EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features
     double                  best_score      = 0.;
     double                  best_tree_score = 0.;
 
-    // "Model geometry below" = the downward ray hit a surface, i.e. a normal support column would
-    // rest on the part rather than reach the plate.
-    const bool part_below = features.gap_below_mm < 1.0e29;
+    // "Model geometry below" = a downward ray hit a surface, i.e. a normal support column would
+    // rest on the part rather than reach the plate. `part_below` is the per-region flag set by the
+    // automatic painter; the gap test is the fallback for callers that only fill the metrics.
+    const bool part_below = features.part_below || features.gap_below_mm < 1.0e29;
 
     for (const SupportPaintType &t : registry()) {
         if (t.rules.empty())

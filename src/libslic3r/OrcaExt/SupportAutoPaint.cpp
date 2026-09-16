@@ -154,6 +154,22 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                 candidate[f] = 1;
         }
 
+        // [ORCAPORT:PF-10-auto] With build-plate-only, a facet whose vertical drop lands on the model
+        // cannot be served by a normal column (it would be dropped), so it needs a tree. Measure
+        // this per facet so a region can be split between its part-backed ends and its plate-backed
+        // middle instead of being decided by a single centroid sample.
+        std::vector<uint8_t> part_below(nfacets, 0);
+        if (params.build_plate_only) {
+            for (size_t f = 0; f < nfacets; ++f) {
+                if (!candidate[f])
+                    continue;
+                const Vec3i32 &tri = its.indices[f];
+                const Vec3d    c   = (wv[tri[0]] + wv[tri[1]] + wv[tri[2]]) / 3.;
+                if (ray_down_to_next_surface(Vec3d(c.x(), c.y(), c.z() - 0.01), vdatas) < 1.0e29)
+                    part_below[f] = 1;
+            }
+        }
+
         // Only merge facets whose world normals are close, so a flat face and an adjacent curved or
         // skewed sliver stay separate regions (and can get different support styles / colours).
         const double split_cos = std::cos(std::clamp(double(params.region_split_angle_deg), 1.0, 179.0) * PI / 180.);
@@ -164,7 +180,8 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
             if (!candidate[f])
                 continue;
             for (int n : neighbors[f])
-                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos)
+                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos &&
+                    part_below[f] == part_below[size_t(n)])
                     dsu.unite(int(f), n);
         }
 
@@ -179,6 +196,7 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
             SupportRegionFeatures feat;
             double                area_sum  = 0.;
             double                best_sev  = -2.;
+            bool                  region_part_below = false;
             Vec3d                 normal_sum = Vec3d::Zero();
             Vec3d                 bb_min(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
             Vec3d                 bb_max(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
@@ -188,6 +206,7 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                 const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
                 area_sum += a;
                 normal_sum += wn[f] * a;
+                region_part_below = region_part_below || (part_below[f] != 0);
                 best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
                 for (int k = 0; k < 3; ++k)
                     for (int axis = 0; axis < 3; ++axis) {
@@ -201,9 +220,10 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
             if (params.min_region_area_mm2 > 0. && area_sum < params.min_region_area_mm2)
                 continue;
 
-            feat.area_mm2 = area_sum;
-            feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
-            feat.height_mm = bb_min.z();
+            feat.area_mm2   = area_sum;
+            feat.span_mm    = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
+            feat.height_mm  = bb_min.z();
+            feat.part_below = region_part_below;
             feat.curvature = area_sum > 0.
                                  ? std::clamp(1. - normal_sum.norm() / area_sum, 0., 1.)
                                  : 0.;

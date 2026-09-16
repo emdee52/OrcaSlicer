@@ -34,6 +34,11 @@ struct SupportRegionFeatures
     double wall_angle_deg{0.};  // 0 = vertical wall, 90 = horizontal ceiling
     double curvature{0.};       // 0 = flat, 1 = highly curved
     double gap_below_mm{1.0e30}; // distance from the region down to the next model surface (inf = none)
+    // True when any facet of the region has model geometry directly below it, so a normal support
+    // column would rest on the model rather than reach the plate. Set per facet by the automatic
+    // painter (which also splits regions on it); the classifier uses it for the build-plate-only
+    // tree override.
+    bool   part_below{false};
 };
 
 enum class SupportFeature { Area, Span, Height, WallAngle, Curvature, GapBelow, Count };
