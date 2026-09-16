@@ -371,6 +371,13 @@ public:
         return m_triangles[facet_idx].get_state();
     }
 
+    // [ORCAPORT:PF-10-auto] Mask of original mesh facets that currently carry any paint state.
+    // Unlike get_facet_state(), this accounts for split triangles: every triangle (original or
+    // split) keeps its `source_triangle` index, so a subdivided painted/blocker region is still
+    // reported. The automatic painter uses this to never overwrite existing painting. Returns an
+    // array indexed by original facet index; 1 = painted, 0 = free.
+    std::vector<uint8_t> painted_facet_mask() const;
+
     // Clear everything and make the tree empty.
     void reset();
 

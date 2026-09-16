@@ -4,12 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
-#include <set>
+#include <limits>
+#include <unordered_map>
 
 #include "../AABBTreeIndirect.hpp"
-#include "../Layer.hpp"
 #include "../Model.hpp"
-#include "../Print.hpp"
 #include "../TriangleMesh.hpp"
 #include "../libslic3r.h"
 #include "SupportPaintTypes.hpp"
@@ -19,141 +18,206 @@ namespace OrcaExt {
 
 namespace {
 
+constexpr double PI = 3.14159265358979323846;
+
 using Tree = AABBTreeIndirect::Tree<3, float>;
 
-// Cast `origin` along `dir` (world/centered coords) against a volume mesh given by its world
-// transform; return the nearest hit face index when the ray hits a downward-facing facet.
-bool nearest_facet_above(const indexed_triangle_set      &its,
-                         const Tree                      &tree,
-                         const Transform3d               &world,
-                         const Vec3d                     &origin,
-                         size_t                          &facet_out)
+struct VolumeData
 {
-    const Transform3d inv = world.inverse();
-    const Vec3d       o   = inv * origin;
-    const Vec3d       d   = inv.linear() * Vec3d(0., 0., 1.);
-    std::vector<igl::Hit<float>> hits;
-    if (!AABBTreeIndirect::intersect_ray_all_hits(its.vertices, its.indices, tree, o, d, hits) || hits.empty())
-        return false;
-    const int face = hits.front().id;
-    if (face < 0 || size_t(face) >= its.indices.size())
-        return false;
-    // Downward-facing only: the facet the support touches from below.
-    const Vec3f n = its_face_normal(its, face);
-    if ((world.linear() * n.cast<double>()).z() >= 0.)
-        return false;
-    facet_out = size_t(face);
-    return true;
-}
+    const indexed_triangle_set *its{nullptr};
+    Transform3d                 world{Transform3d::Identity()};
+    Tree                        tree;
+};
 
-double support_height_below(const std::vector<const SupportLayer *> &layers, size_t start_idx,
-                            const Point &p, double object_print_z_min)
+// Disjoint-set over facets for connected-component clustering.
+struct DSU
 {
-    double height = 0.;
-    size_t steps  = 0;
-    for (size_t j = start_idx + 1; j-- > 0 && steps < 3000; ++steps) {
-        const SupportLayer *sl = layers[j];
-        if (sl == nullptr || sl->print_z < object_print_z_min + EPSILON)
-            break;
-        bool found = false;
-        for (const ExPolygon &isl : sl->support_islands)
-            if (isl.contains(p)) {
-                found = true;
-                break;
-            }
-        if (!found)
-            break;
-        height += sl->height;
+    std::vector<int> parent;
+
+    void reset(size_t n)
+    {
+        parent.resize(n);
+        for (size_t i = 0; i < n; ++i)
+            parent[i] = int(i);
     }
-    return height;
+    int find(int x)
+    {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]];
+            x         = parent[x];
+        }
+        return x;
+    }
+    void unite(int a, int b)
+    {
+        a = find(a);
+        b = find(b);
+        if (a != b)
+            parent[a] = b;
+    }
+};
+
+// Distance from `world_origin` straight down to the nearest model surface, or a huge value when
+// nothing is below. Used as the "support would sit in a tight/inaccessible gap" signal.
+double ray_down_to_next_surface(const Vec3d &world_origin, const std::vector<VolumeData> &vdatas)
+{
+    double best = 1.0e30;
+    for (const VolumeData &vd : vdatas) {
+        if (vd.its == nullptr || vd.its->indices.empty())
+            continue;
+        const Transform3d inv = vd.world.inverse();
+        const Vec3d       o   = inv * world_origin;
+        const Vec3d       d   = inv.linear() * Vec3d(0., 0., -1.);
+        if (d.squaredNorm() < 1.0e-12)
+            continue;
+        igl::Hit<float> hit;
+        if (AABBTreeIndirect::intersect_ray_first_hit(vd.its->vertices, vd.its->indices, vd.tree, o, d, hit)) {
+            const Vec3d  local_p = o + d * double(hit.t);
+            const Vec3d  world_p = vd.world * local_p;
+            const double dist    = world_origin.z() - world_p.z();
+            if (dist > 1.0e-6 && dist < best)
+                best = dist;
+        }
+    }
+    return best;
 }
 
 } // namespace
 
-std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object)
+std::vector<SupportAutoPaintHit> classify_support_paint(
+    const ModelObject                       &model_object,
+    const Transform3d                       &instance_trafo,
+    const std::vector<std::vector<uint8_t>> &painted,
+    const SupportAutoPaintParams            &params)
 {
     std::vector<SupportAutoPaintHit> hits;
 
-    const ModelObject *mo = object.model_object();
-    if (mo == nullptr)
-        return hits;
-
-    std::vector<const SupportLayer *> slayers;
-    slayers.reserve(object.support_layers().size());
-    for (const SupportLayer *sl : object.support_layers())
-        if (sl != nullptr)
-            slayers.push_back(sl);
-    if (slayers.empty())
-        return hits;
-
-    const double object_print_z_min = object.slicing_parameters().object_print_z_min;
-    const Transform3d obj_trafo     = object.trafo_centered();
-
-    // Build the mesh acceleration structures once per model-part volume.
-    struct VolumeRay { const ModelVolume *mv; Transform3d world; const indexed_triangle_set *its; Tree tree; };
-    std::vector<VolumeRay> volumes;
-    for (const ModelVolume *mv : mo->volumes) {
+    // Build the per-model-part volume data, keeping the model-part index aligned with the caller's
+    // TriangleSelector list. Empty parts stay in the list (with a null mesh) so indices do not shift.
+    std::vector<VolumeData> vdatas;
+    for (const ModelVolume *mv : model_object.volumes) {
         if (!mv->is_model_part())
             continue;
-        VolumeRay vr;
-        vr.mv    = mv;
-        vr.world = obj_trafo * mv->get_matrix();
-        vr.its   = &mv->mesh().its;
-        vr.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vr.its->vertices, vr.its->indices);
-        volumes.push_back(std::move(vr));
+        VolumeData vd;
+        const indexed_triangle_set &its = mv->mesh().its;
+        if (!its.indices.empty()) {
+            vd.its   = &its;
+            vd.world = instance_trafo * mv->get_matrix();
+            vd.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(its.vertices, its.indices);
+        }
+        vdatas.push_back(std::move(vd));
     }
-    if (volumes.empty())
+    if (vdatas.empty())
         return hits;
 
-    std::set<std::pair<size_t, size_t>> seen;
+    // Overhang criterion, mirroring GLGizmoFdmSupports::select_facets_by_angle. When the user is not
+    // restricting to the highlighted set, use 90 degrees: every downward-facing facet is a candidate.
+    const double theta_deg = params.overhangs_only
+                                 ? std::clamp(double(params.overhang_angle_deg), 1.0, 90.0)
+                                 : 90.0;
+    const double theta_rad = theta_deg * PI / 180.0;
 
-    for (size_t li = 0; li < slayers.size(); ++li) {
-        const SupportLayer *sl = slayers[li];
-        if (sl->print_z < object_print_z_min + EPSILON || sl->support_islands.empty())
+    for (size_t vi = 0; vi < vdatas.size(); ++vi) {
+        const VolumeData &vd = vdatas[vi];
+        if (vd.its == nullptr)
             continue;
+        const indexed_triangle_set &its       = *vd.its;
+        const size_t                nfacets   = its.indices.size();
 
-        for (const ExPolygon &island : sl->support_islands) {
-            if (island.contour.points.empty())
+        const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+        const std::vector<Vec3f>   normals   = its_face_normals(its);
+
+        // Local frame of the highlight predicate.
+        Eigen::Matrix3d inv_lin = vd.world.linear().inverse();
+        Vec3d           down    = (inv_lin * (-Vec3d::UnitZ())).normalized();
+        Vec3d limit = (inv_lin * Vec3d(std::sin(theta_rad), 0., -std::cos(theta_rad))).normalized();
+        const double dot_limit = limit.dot(down);
+
+        // World vertices (for area / span / height / curvature / gap).
+        std::vector<Vec3d> wv(its.vertices.size());
+        for (size_t i = 0; i < its.vertices.size(); ++i)
+            wv[i] = vd.world * its.vertices[i].cast<double>();
+
+        const std::vector<uint8_t> *painted_mask =
+            vi < painted.size() && painted[vi].size() == nfacets ? &painted[vi] : nullptr;
+
+        std::vector<uint8_t> candidate(nfacets, 0);
+        for (size_t f = 0; f < nfacets; ++f) {
+            if (painted_mask != nullptr && (*painted_mask)[f] != 0)
                 continue;
-            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
+            if (normals[f].cast<double>().dot(down) > dot_limit)
+                candidate[f] = 1;
+        }
 
-            // Sample the island: its contour vertices plus the centroid.
-            Points samples = island.contour.points;
-            Point  centroid = island.contour.centroid();
-            samples.push_back(centroid);
+        DSU dsu;
+        dsu.reset(nfacets);
+        for (size_t f = 0; f < nfacets; ++f) {
+            if (!candidate[f])
+                continue;
+            for (int n : neighbors[f])
+                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)])
+                    dsu.unite(int(f), n);
+        }
 
-            for (const Point &p : samples) {
-                const Vec3d origin(unscale<double>(p.x()), unscale<double>(p.y()), sl->print_z);
-                size_t      facet = 0;
-                bool        found = false;
-                size_t      volume_index = 0;
-                for (size_t vi = 0; vi < volumes.size(); ++vi) {
-                    if (nearest_facet_above(*volumes[vi].its, volumes[vi].tree, volumes[vi].world, origin, facet)) {
-                        volume_index = vi;
-                        found        = true;
-                        break;
+        std::unordered_map<int, std::vector<size_t>> components;
+        for (size_t f = 0; f < nfacets; ++f)
+            if (candidate[f])
+                components[dsu.find(int(f))].push_back(f);
+
+        for (const auto &entry : components) {
+            const std::vector<size_t> &facets = entry.second;
+
+            SupportRegionFeatures feat;
+            double                area_sum  = 0.;
+            double                best_sev  = -2.;
+            Vec3d                 normal_sum = Vec3d::Zero();
+            Vec3d                 bb_min(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+            Vec3d                 bb_max(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
+
+            for (size_t f : facets) {
+                const Vec3i32 &tri = its.indices[f];
+                const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
+                area_sum += a;
+                const Vec3d nw = (vd.world.linear() * normals[f].cast<double>()).normalized();
+                normal_sum += nw * a;
+                best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
+                for (int k = 0; k < 3; ++k)
+                    for (int axis = 0; axis < 3; ++axis) {
+                        bb_min(axis) = std::min(bb_min(axis), wv[tri[k]](axis));
+                        bb_max(axis) = std::max(bb_max(axis), wv[tri[k]](axis));
                     }
-                }
-                if (!found)
-                    continue;
-                if (!seen.emplace(volume_index, facet).second)
-                    continue;
+            }
 
-                const double height = support_height_below(slayers, li, p, object_print_z_min);
-                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
-                if (state == EnforcerBlockerType::NONE)
-                    continue;
+            feat.area_mm2 = area_sum;
+            feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
+            feat.height_mm = bb_min.z();
+            feat.curvature = area_sum > 0.
+                                 ? std::clamp(1. - normal_sum.norm() / area_sum, 0., 1.)
+                                 : 0.;
+            const double sev     = std::clamp(best_sev, -1., 1.);
+            feat.wall_angle_deg  = 90. - std::acos(sev) * 180. / PI;
 
+            const Vec3d gap_origin((bb_min.x() + bb_max.x()) * 0.5,
+                                   (bb_min.y() + bb_max.y()) * 0.5,
+                                   bb_min.z() - 0.01);
+            feat.gap_below_mm = ray_down_to_next_surface(gap_origin, vdatas);
+
+            const EnforcerBlockerType state = support_paint_classify(feat, params.enabled_types);
+            if (state == EnforcerBlockerType::NONE)
+                continue;
+
+            hits.reserve(hits.size() + facets.size());
+            for (size_t f : facets) {
                 SupportAutoPaintHit hit;
-                hit.volume_index      = volume_index;
-                hit.facet_index       = facet;
-                hit.state             = state;
-                hit.contact_area_mm2  = contact_area;
-                hit.support_height_mm = height;
+                hit.volume_index = vi;
+                hit.facet_index  = f;
+                hit.state        = state;
+                hit.features     = feat;
                 hits.push_back(hit);
             }
         }
     }
+
     return hits;
 }
 

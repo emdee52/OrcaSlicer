@@ -1013,6 +1013,25 @@ void TriangleSelector::set_facet(int facet_idx, EnforcerBlockerType state)
     m_triangles[facet_idx].set_state(state);
 }
 
+// [ORCAPORT:PF-10-auto] See header. Iterate every live triangle; a split triangle's real state
+// lives in its children (which are themselves entries in m_triangles), so only non-split
+// triangles are read and each is attributed to its original source facet.
+std::vector<uint8_t> TriangleSelector::painted_facet_mask() const
+{
+    const size_t n = m_orig_size_indices > 0 ? size_t(m_orig_size_indices) : 0;
+    std::vector<uint8_t> mask(n, 0);
+    for (const Triangle &tr : m_triangles) {
+        if (! tr.valid() || tr.is_split())
+            continue;
+        if (tr.state == EnforcerBlockerType::NONE)
+            continue;
+        const int src = tr.source_triangle;
+        if (src >= 0 && size_t(src) < n)
+            mask[size_t(src)] = 1;
+    }
+    return mask;
+}
+
 // called by select_patch()->select_triangle()...select_triangle()
 // to decide which sides of the triangle to split and to actually split it calling set_division() and perform_split().
 void TriangleSelector::split_triangle(int facet_idx, const Vec3i32 &neighbors)

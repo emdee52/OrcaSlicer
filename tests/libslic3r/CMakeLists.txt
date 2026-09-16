@@ -34,6 +34,7 @@ add_executable(${_TEST_NAME}_tests
     test_step.cpp
     test_stl.cpp
     test_triangle_selector.cpp
+    test_orca_support_paint.cpp
     test_meshboolean.cpp
     test_marchingsquares.cpp
     test_model.cpp
