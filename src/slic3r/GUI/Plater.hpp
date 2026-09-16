@@ -96,6 +96,8 @@ inline constexpr int kSidebarContextMenuFilamentId = -2;
 #define EVT_PUBLISHING_STOP         2
 
 //BBS: add EVT_SLICING_UPDATE declare here
+// [ORCAPORT:MCP-1] declare the background-process refresh event so the MCP helpers can post it (defined in Plater.cpp)
+wxDECLARE_EVENT(EVT_SCHEDULE_BACKGROUND_PROCESS, SimpleEvent);
 wxDECLARE_EVENT(EVT_SLICING_UPDATE, Slic3r::SlicingStatusEvent);
 wxDECLARE_EVENT(EVT_PUBLISH,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_OPEN_PLATESETTINGSDIALOG,        wxCommandEvent);
@@ -515,6 +517,8 @@ public:
 
     void send_to_printer(bool isall = false);
     void export_gcode(bool prefer_removable);
+    // [ORCAPORT:MCP-1] silent G-code export to an explicit path (used by the MCP export_gcode tool)
+    bool export_gcode_to_file(const std::string& output_path);
     void export_gcode_3mf(bool export_all = false);
     void send_gcode_finish(wxString name);
     void export_core_3mf();

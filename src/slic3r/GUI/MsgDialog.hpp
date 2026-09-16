@@ -63,6 +63,9 @@ struct MsgDialog : DPIDialog
 	MsgDialog &operator=(const MsgDialog &) = delete;
 	virtual ~MsgDialog();
 
+	// [ORCAPORT:MCP-1] allow MCP to suppress the modal and record the message
+	virtual int ShowModal() override;
+
 	void show_dsa_button(wxString const & title = {});
 	bool get_checkbox_state();
 	virtual void on_dpi_changed(const wxRect& suggested_rect);
@@ -99,6 +102,9 @@ protected:
     MsgButtonsHash  m_buttons;
 	CheckBox* m_checkbox_dsa{nullptr};
     wxString  m_forward_str;
+	// [ORCAPORT:MCP-1] stored for MCP dialog suppression
+	long      m_style{wxOK};
+	wxString  m_mcp_message;
 };
 
 
