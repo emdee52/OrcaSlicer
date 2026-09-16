@@ -76,6 +76,7 @@ void GLGizmoFdmSupports::on_opening()
 {
     m_angle_threshold_deg = 40;
     m_highlight_by_angle_threshold_deg = 30.f; // [ORCAPORT:PF-10-paint] default overhang highlight
+    m_paint_on_overhangs_only = true;          // [ORCAPORT:PF-10-paint] paint overhangs only by default
     m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
     if (! m_parent.is_using_slope()) {
         m_parent.use_slope(true);
@@ -435,14 +436,13 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     m_imgui->text(m_desc.at("support_type"));
     {
         const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
-        // Swatch sized to the text line and pinned to its top, so its centre matches the radio's.
-        const float row_y  = ImGui::GetCursorPosY();
-        const float swatch = ImGui::GetTextLineHeight();
+        // The radio circle is drawn with diameter GetFrameHeight() (text + frame padding), centred
+        // on the row, so a swatch of the same size on the same row lines up with it exactly.
+        const float swatch = ImGui::GetFrameHeight();
         for (size_t i = 0; i < types.size(); ++i) {
             if (i != 0)
                 ImGui::SameLine();
             ImGui::PushID(int(i));
-            ImGui::SetCursorPosY(row_y);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f * scale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.f);
             ImGui::ColorButton("##swatch",
@@ -451,7 +451,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
                                ImVec2(swatch, swatch));
             ImGui::PopStyleVar(2);
             ImGui::SameLine();
-            ImGui::SetCursorPosY(row_y);
             if (m_imgui->radio_button(localized_support_label(types[i]), m_enforcer_type == types[i].state) &&
                 m_enforcer_type != types[i].state) {
                 m_enforcer_type = types[i].state;
