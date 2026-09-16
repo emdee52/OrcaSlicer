@@ -75,6 +75,9 @@ private:
     // checkboxes); it is seeded from the registry on first use.
     std::vector<EnforcerBlockerType> m_auto_paint_types;
     bool m_auto_paint_types_initialized = false;
+    // Minimum overhang region area (mm^2) automatic painting will consider; smaller slivers are
+    // left unpainted. 0 disables the filter.
+    float m_auto_paint_min_area = 4.f;
     void run_auto_paint();
 
     //BBS: add support preview logic

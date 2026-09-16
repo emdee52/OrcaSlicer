@@ -28,6 +28,14 @@ struct SupportAutoPaintParams
     // States the user allowed automatic painting to choose (the per-type checkboxes). An empty
     // vector means every auto-selectable registry type is eligible.
     std::vector<EnforcerBlockerType> enabled_types;
+    // Regions smaller than this are never painted: a tiny overhang sliver cannot hold a support
+    // tip/interface, so painting it only makes the tree engine aim branches at an unsupportable
+    // spot. 0 disables the filter.
+    double min_region_area_mm2{4.0};
+    // Adjacent candidate facets merge into one region only when their normals differ by at most
+    // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
+    // regions, so they can be classified (and coloured) independently.
+    float region_split_angle_deg{30.f};
 };
 
 // One model facet the auto-painter wants to paint, plus the region measurements that selected it.

@@ -138,6 +138,11 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
         for (size_t i = 0; i < its.vertices.size(); ++i)
             wv[i] = vd.world * its.vertices[i].cast<double>();
 
+        // World facet normals, used for region splitting and curvature.
+        std::vector<Vec3d> wn(nfacets);
+        for (size_t f = 0; f < nfacets; ++f)
+            wn[f] = (vd.world.linear() * normals[f].cast<double>()).normalized();
+
         const std::vector<uint8_t> *painted_mask =
             vi < painted.size() && painted[vi].size() == nfacets ? &painted[vi] : nullptr;
 
@@ -149,13 +154,17 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                 candidate[f] = 1;
         }
 
+        // Only merge facets whose world normals are close, so a flat face and an adjacent curved or
+        // skewed sliver stay separate regions (and can get different support styles / colours).
+        const double split_cos = std::cos(std::clamp(double(params.region_split_angle_deg), 1.0, 179.0) * PI / 180.);
+
         DSU dsu;
         dsu.reset(nfacets);
         for (size_t f = 0; f < nfacets; ++f) {
             if (!candidate[f])
                 continue;
             for (int n : neighbors[f])
-                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)])
+                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos)
                     dsu.unite(int(f), n);
         }
 
@@ -178,8 +187,7 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                 const Vec3i32 &tri = its.indices[f];
                 const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
                 area_sum += a;
-                const Vec3d nw = (vd.world.linear() * normals[f].cast<double>()).normalized();
-                normal_sum += nw * a;
+                normal_sum += wn[f] * a;
                 best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
                 for (int k = 0; k < 3; ++k)
                     for (int axis = 0; axis < 3; ++axis) {
@@ -187,6 +195,11 @@ std::vector<SupportAutoPaintHit> classify_support_paint(
                         bb_max(axis) = std::max(bb_max(axis), wv[tri[k]](axis));
                     }
             }
+
+            // Tiny overhang slivers cannot hold a support tip/interface; painting them only makes
+            // the tree engine aim branches at an unsupportable spot.
+            if (params.min_region_area_mm2 > 0. && area_sum < params.min_region_area_mm2)
+                continue;
 
             feat.area_mm2 = area_sum;
             feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());

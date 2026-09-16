@@ -107,6 +107,7 @@ bool GLGizmoFdmSupports::on_init()
     m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
     m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
     m_desc["autopaint_types"]    = _L("Automatic types");    // [ORCAPORT:PF-10-auto]
+    m_desc["autopaint_min_area"] = _L("Min overhang area");  // [ORCAPORT:PF-10-auto]
     m_desc["gap_fill"]           = _L("Gap fill");
     m_desc["reset_direction"]    = _L("Reset direction");
     m_desc["clipping_of_view"]   = _L("Section view");
@@ -383,6 +384,15 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
                                              m_auto_paint_types.end());
             }
         }
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("autopaint_min_area"));
+        ImGui::SameLine(sliders_left_width);
+        ImGui::PushItemWidth(sliders_width);
+        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 100.f, "%.1f", 1.0f, true);
+        if (ImGui::IsItemHovered())
+            m_imgui->tooltip(_L("Overhang regions smaller than this area, in square millimeters, are left "
+                                "unpainted; a tiny sliver cannot hold a support tip."),
+                             max_tooltip_width);
     }
 
     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
@@ -1043,6 +1053,7 @@ void GLGizmoFdmSupports::run_auto_paint()
     params.overhang_angle_deg = m_highlight_by_angle_threshold_deg;
     params.overhangs_only     = m_paint_on_overhangs_only;
     params.enabled_types      = m_auto_paint_types;
+    params.min_region_area_mm2 = m_auto_paint_min_area;
 
     const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
         Slic3r::OrcaExt::classify_support_paint(*mo, trafo, painted, params);

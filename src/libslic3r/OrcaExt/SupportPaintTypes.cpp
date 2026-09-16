@@ -60,7 +60,8 @@ std::vector<SupportPaintType> make_default_registry()
         SupportPaintType t;
         t.state = SUPPORT_PAINT_DEFAULT;
         t.label = "Default";
-        t.color[0] = 0.5f; t.color[1] = 1.f;  t.color[2] = 0.5f; t.color[3] = 1.f;
+        // Amber: the legacy light green was too close to Organic (tree) in the painter palette.
+        t.color[0] = 1.f; t.color[1] = 0.65f; t.color[2] = 0.f; t.color[3] = 1.f;
         t.is_tree = false;
         t.support_type = stNormalAuto;
         t.support_style = smsDefault;
