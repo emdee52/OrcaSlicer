@@ -74,9 +74,15 @@ the left brush when a region should keep the object's own style.
 - "Automatic painting" runs the analysis synchronously and paints; `TakeSnapshot` is taken first.
 - Plus a per-type checkbox row ("Automatic types") seeded from `auto_enabled_by_default`; NeoWave is
   off until checked. The enabled set is passed to the classifier (`enabled_types`).
-- A "Min overhang area" slider (default 4 mm^2, 0 = off) skips overhang regions too small to hold a
-  support tip, so the tree engine is not sent branches at unsupportable slivers.
+- A "Min overhang area" slider (default 4 mm^2, range 0-20, with a numeric drag box) skips overhang
+  regions too small to hold a support tip, so the tree engine is not sent branches at slivers.
 - Uses the existing "Highlight overhangs" angle and "On highlighted overhangs only" checkbox.
+- **Build-plate-only aware:** when the object has `support_on_build_plate_only`, a region with model
+  geometry directly below it (finite `gap_below_mm`) is classified as a tree type if any tree type
+  is enabled. A normal/grid column there would rest on the model and be dropped by the restriction,
+  whereas a tree can branch down to the plate. The tree type is preferred even if its own scoring
+  rules did not match (a large flat overhang is still better off on a tree here). If no tree type is
+  enabled, the normal result is kept.
 - The old preview/thread hooks (`m_auto_paint_pending`) were removed; `update_support_volumes`
   returns to its stock form.
 

@@ -1,5 +1,5 @@
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
-index e64c3b86cf..9cabff62ca 100644
+index e64c3b86cf..ba0615388f 100644
 --- a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 @@ -4,12 +4,11 @@
@@ -17,7 +17,7 @@ index e64c3b86cf..9cabff62ca 100644
  #include "../TriangleMesh.hpp"
  #include "../libslic3r.h"
  #include "SupportPaintTypes.hpp"
-@@ -19,141 +18,219 @@ namespace OrcaExt {
+@@ -19,141 +18,220 @@ namespace OrcaExt {
  
  namespace {
  
@@ -318,7 +318,8 @@ index e64c3b86cf..9cabff62ca 100644
 +                                   bb_min.z() - 0.01);
 +            feat.gap_below_mm = ray_down_to_next_surface(gap_origin, vdatas);
 +
-+            const EnforcerBlockerType state = support_paint_classify(feat, params.enabled_types);
++            const EnforcerBlockerType state =
++                support_paint_classify(feat, params.enabled_types, params.build_plate_only);
 +            if (state == EnforcerBlockerType::NONE)
 +                continue;
 +
@@ -343,10 +344,10 @@ index e64c3b86cf..9cabff62ca 100644
  }
  
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-index 40625095b5..727144e3a5 100644
+index 40625095b5..2e8554a1a7 100644
 --- a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-@@ -4,36 +4,65 @@
+@@ -4,36 +4,69 @@
  #define slic3r_OrcaExt_SupportAutoPaint_hpp_
  
  #include <cstddef>
@@ -384,6 +385,10 @@ index 40625095b5..727144e3a5 100644
 +    // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
 +    // regions, so they can be classified (and coloured) independently.
 +    float region_split_angle_deg{30.f};
++    // Mirrors the object's "supports on build plate only". When set, a region with the model
++    // directly below it is classified as a tree type (if one is enabled), because a normal/grid
++    // column there would rest on the model and be dropped.
++    bool build_plate_only{false};
 +};
 +
 +// One model facet the auto-painter wants to paint, plus the region measurements that selected it.
@@ -425,7 +430,7 @@ index 40625095b5..727144e3a5 100644
 -#endif
 +#endif // slic3r_OrcaExt_SupportAutoPaint_hpp_
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
-index 5b0d72e3c7..d0dbdd9d4d 100644
+index 5b0d72e3c7..d5d5ccda3e 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 @@ -2,6 +2,9 @@
@@ -573,7 +578,7 @@ index 5b0d72e3c7..d0dbdd9d4d 100644
          v.emplace_back(t);
      }
      return v;
-@@ -100,6 +157,93 @@ std::vector<SupportPaintType> &registry()
+@@ -100,6 +157,113 @@ std::vector<SupportPaintType> &registry()
  
  } // namespace
  
@@ -642,10 +647,17 @@ index 5b0d72e3c7..d0dbdd9d4d 100644
 +}
 +
 +EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
-+                                           const std::vector<EnforcerBlockerType> &enabled)
++                                           const std::vector<EnforcerBlockerType> &enabled,
++                                           bool build_plate_only)
 +{
-+    const SupportPaintType *best       = nullptr;
-+    double                  best_score = 0.;
++    const SupportPaintType *best            = nullptr;
++    const SupportPaintType *best_tree       = nullptr;
++    double                  best_score      = 0.;
++    double                  best_tree_score = 0.;
++
++    // "Model geometry below" = the downward ray hit a surface, i.e. a normal support column would
++    // rest on the part rather than reach the plate.
++    const bool part_below = features.gap_below_mm < 1.0e29;
 +
 +    for (const SupportPaintType &t : registry()) {
 +        if (t.rules.empty())
@@ -654,20 +666,33 @@ index 5b0d72e3c7..d0dbdd9d4d 100644
 +        if (!enabled.empty() && std::find(enabled.begin(), enabled.end(), t.state) == enabled.end())
 +            continue;
 +        const double score = support_type_score(t, features);
-+        if (score < t.min_score)
-+            continue;
-+        if (best == nullptr || score > best_score) {
++        // Eligible types compete normally.
++        if (score >= t.min_score && (best == nullptr || score > best_score)) {
 +            best       = &t;
 +            best_score = score;
 +        }
++        // Tree types are candidates for the build-plate-only override even when their own rules did
++        // not reach min_score: a large flat overhang above the part is still better off on a tree,
++        // whose branches can reach the plate, than on a normal column that would rest on the model.
++        if (t.is_tree && (best_tree == nullptr || score > best_tree_score)) {
++            best_tree       = &t;
++            best_tree_score = score;
++        }
 +    }
++
++    // [ORCAPORT:PF-10-auto] Build-plate-only drops any support whose base would rest on the model,
++    // so for a region with the part directly below, a branching (tree) type is the only one that
++    // can actually reach the plate. Prefer it when one is enabled.
++    if (build_plate_only && part_below && best_tree != nullptr)
++        return best_tree->state;
++
 +    return best != nullptr ? best->state : EnforcerBlockerType::NONE;
 +}
 +
  const std::vector<SupportPaintType> &support_paint_types()
  {
      return registry();
-@@ -134,22 +278,6 @@ bool has_painted_support_styles(const PrintObject &object)
+@@ -134,22 +298,6 @@ bool has_painted_support_styles(const PrintObject &object)
      return false;
  }
  
@@ -691,7 +716,7 @@ index 5b0d72e3c7..d0dbdd9d4d 100644
  {
      const ModelObject *mo = object.model_object();
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
-index f5da71d194..eff37de6eb 100644
+index f5da71d194..d0844358b8 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
 @@ -16,10 +16,51 @@ class ModelObject;
@@ -766,7 +791,7 @@ index f5da71d194..eff37de6eb 100644
  struct SupportPaintType
  {
      // Paint state stored in ModelVolume::supported_facets. Support painting and MMU painting use
-@@ -66,13 +95,36 @@ struct SupportPaintType
+@@ -66,13 +95,40 @@ struct SupportPaintType
      SupportMaterialStyle support_style{smsDefault};
      // Forced object-config overrides applied only to this painted region's engine pass.
      SupportPaintOverrides overrides;
@@ -802,9 +827,13 @@ index f5da71d194..eff37de6eb 100644
 +
 +// Pick the best-matching enabled support type for the region, or NONE to leave it unpainted.
 +// `enabled` is the set of states the user allowed automatic painting to choose; an empty set
-+// means every auto-selectable type is eligible.
++// means every auto-selectable type is eligible. When `build_plate_only` is set and the region has
++// model geometry directly below it, an eligible tree type is preferred: a normal/grid column there
++// would rest on the model and be dropped by the build-plate-only restriction, while a tree can
++// branch down to the plate.
 +EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
-+                                           const std::vector<EnforcerBlockerType> &enabled = {});
++                                           const std::vector<EnforcerBlockerType> &enabled = {},
++                                           bool build_plate_only = false);
  
  // The ordered registry (guarded statics). The first entry is the legacy generic "Default"
  // enforcer, which keeps the object's own support type/style so existing painted projects are
@@ -857,7 +886,7 @@ index 59f8afafa6..2ada914e41 100644
      void reset();
  
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-index a338cb8e0d..584a0718a4 100644
+index a338cb8e0d..c88f682677 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 @@ -20,6 +20,8 @@
@@ -891,7 +920,7 @@ index a338cb8e0d..584a0718a4 100644
      float  scale       = m_parent.get_scale();
      #ifdef WIN32
          int dpi = get_dpi_for_window(wxGetApp().GetTopWindow());
-@@ -350,17 +348,53 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -350,17 +348,56 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
          }
      }
  
@@ -943,7 +972,10 @@ index a338cb8e0d..584a0718a4 100644
 +        m_imgui->text(m_desc.at("autopaint_min_area"));
 +        ImGui::SameLine(sliders_left_width);
 +        ImGui::PushItemWidth(sliders_width);
-+        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 100.f, "%.1f", 1.0f, true);
++        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 20.f, "%.1f", 1.0f, true);
++        ImGui::SameLine(drag_left_width + sliders_left_width);
++        ImGui::PushItemWidth(1.5 * slider_icon_width);
++        ImGui::BBLDragFloat("##autopaint_min_area_input", &m_auto_paint_min_area, 0.1f, 0.0f, 20.0f, "%.1f");
 +        if (ImGui::IsItemHovered())
 +            m_imgui->tooltip(_L("Overhang regions smaller than this area, in square millimeters, are left "
 +                                "unpainted; a tiny sliver cannot hold a support tip."),
@@ -953,7 +985,7 @@ index a338cb8e0d..584a0718a4 100644
      ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
  
      if (m_current_tool == ImGui::CircleButtonIcon) {
-@@ -860,8 +894,7 @@ void GLGizmoFdmSupports::update_support_volumes()
+@@ -860,8 +897,7 @@ void GLGizmoFdmSupports::update_support_volumes()
          return;
      }
  
@@ -963,7 +995,7 @@ index a338cb8e0d..584a0718a4 100644
      {
          BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
  
-@@ -874,8 +907,6 @@ void GLGizmoFdmSupports::update_support_volumes()
+@@ -874,8 +910,6 @@ void GLGizmoFdmSupports::update_support_volumes()
      }
      //generate_support_preview in async mode
      std::unique_lock<std::mutex> lck(m_mutex);
@@ -972,7 +1004,7 @@ index a338cb8e0d..584a0718a4 100644
      m_volume_ready = false;
      //destroy previous support volume
      if (m_support_volume)
-@@ -978,20 +1009,62 @@ _finished:
+@@ -978,20 +1012,71 @@ _finished:
      return;
  }
  
@@ -1001,7 +1033,7 @@ index a338cb8e0d..584a0718a4 100644
 +
 +    const int inst_idx = m_c->selection_info()->get_active_instance();
 +    if (inst_idx < 0 || size_t(inst_idx) >= mo->instances.size())
-+        return;
+         return;
 +    const Transform3d trafo = mo->instances[size_t(inst_idx)]->get_matrix();
 +
 +    // The selectors mirror the object's model-part volumes; keep them in sync if the object changed.
@@ -1012,8 +1044,8 @@ index a338cb8e0d..584a0718a4 100644
 +    if (m_triangle_selectors.size() != model_parts)
 +        update_from_model_object(false);
 +    if (m_triangle_selectors.size() != model_parts)
-         return;
- 
++        return;
++
 +    std::vector<std::vector<uint8_t>> painted;
 +    painted.reserve(m_triangle_selectors.size());
 +    for (const std::unique_ptr<TriangleSelectorGUI> &sel : m_triangle_selectors) {
@@ -1026,7 +1058,16 @@ index a338cb8e0d..584a0718a4 100644
 +    params.overhangs_only     = m_paint_on_overhangs_only;
 +    params.enabled_types      = m_auto_paint_types;
 +    params.min_region_area_mm2 = m_auto_paint_min_area;
-+
++    {
++        // With "supports on build plate only", a normal/grid column that would rest on the model is
++        // dropped; classify such regions as tree instead.
++        const DynamicPrintConfig &obj_cfg = mo->config.get();
++        const DynamicPrintConfig &glb_cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
++        params.build_plate_only = obj_cfg.option("support_on_build_plate_only")
++                                      ? obj_cfg.opt_bool("support_on_build_plate_only")
++                                      : glb_cfg.opt_bool("support_on_build_plate_only");
++    }
+ 
      const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
 -        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
 -    if (hits.empty())
@@ -1043,7 +1084,7 @@ index a338cb8e0d..584a0718a4 100644
      for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
          if (hit.volume_index >= m_triangle_selectors.size())
              continue;
-@@ -1001,11 +1074,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
+@@ -1001,11 +1086,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
          if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
              continue;
          sel->set_facet(int(hit.facet_index), hit.state);
@@ -1096,10 +1137,10 @@ index 5c10ab1496..9d6b13886c 100644
      test_model.cpp
 diff --git a/tests/libslic3r/test_orca_support_paint.cpp b/tests/libslic3r/test_orca_support_paint.cpp
 new file mode 100644
-index 0000000000..c7d0a9d555
+index 0000000000..600aee0083
 --- /dev/null
 +++ b/tests/libslic3r/test_orca_support_paint.cpp
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,186 @@
 +#include <catch2/catch_all.hpp>
 +
 +#include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
@@ -1199,6 +1240,50 @@ index 0000000000..c7d0a9d555
 +    f.gap_below_mm   = 0.8;
 +
 +    CHECK(support_paint_classify(f, default_enabled()) != state_of("NeoWave"));
++}
++
++TEST_CASE("A flat overhang above the part becomes tree with build-plate-only", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 1000.;
++    f.span_mm        = 100.;
++    f.height_mm      = 10.;
++    f.wall_angle_deg = 85.;
++    f.curvature      = 0.05;
++    f.gap_below_mm   = 2.; // model geometry directly below
++
++    // Normally this is a rigid Grid region.
++    CHECK(support_paint_classify(f, default_enabled()) == state_of("Grid"));
++    // But a build-plate-only restriction would drop a normal column resting on the model, so the
++    // tree type is preferred.
++    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
++}
++
++TEST_CASE("Build-plate-only keeps normal support when nothing is below the region", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 1000.;
++    f.span_mm        = 100.;
++    f.height_mm      = 10.;
++    f.wall_angle_deg = 85.;
++    f.curvature      = 0.05;
++    f.gap_below_mm   = 1.0e30; // open down to the plate
++
++    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Grid"));
++}
++
++TEST_CASE("Build-plate-only keeps normal support when no tree type is enabled", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 1000.;
++    f.span_mm        = 100.;
++    f.height_mm      = 10.;
++    f.wall_angle_deg = 85.;
++    f.curvature      = 0.05;
++    f.gap_below_mm   = 2.;
++
++    const std::vector<EnforcerBlockerType> enabled{state_of("Snug"), state_of("Grid")};
++    CHECK(support_paint_classify(f, enabled, true) == state_of("Grid"));
 +}
 +
 +TEST_CASE("A region that matches no rule is left unpainted", "[OrcaSupportPaint]")
