@@ -10,3 +10,7 @@
 # resume after `call :label`. With LF endings that offset can land wrong and the
 # label lookup fails, so keep these CRLF whatever the platform.
 *.bat text eol=crlf
+
+# Patch files must keep LF endings: `git apply` reads their diff context verbatim, and a
+# CRLF checkout on Windows makes every context line mismatch. Keep them byte-exact.
+*.patch -text
