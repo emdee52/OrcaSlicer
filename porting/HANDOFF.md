@@ -70,6 +70,7 @@ port intent onto Orca's pipelines.
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
 | PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
 | PF-10-auto | Automatic support painting (mesh-driven region scoring, respects blockers, per-type opt-in) | ported (build+tests clean, runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
+| PF-10-multisupport | Multi-pass support collision avoidance (later passes avoid earlier supports) | ported (build clean; runtime pending) | notes/PF-10-multisupport.md | 21_PF-10-multisupport.patch |
 | PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
 ## What to do next
