@@ -31,7 +31,7 @@ struct SupportAutoPaintParams
     // Regions smaller than this are never painted: a tiny overhang sliver cannot hold a support
     // tip/interface, so painting it only makes the tree engine aim branches at an unsupportable
     // spot. 0 disables the filter.
-    double min_region_area_mm2{4.0};
+    double min_region_area_mm2{3.0};
     // Adjacent candidate facets merge into one region only when their normals differ by at most
     // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
     // regions, so they can be classified (and coloured) independently.

@@ -77,8 +77,14 @@ private:
     bool m_auto_paint_types_initialized = false;
     // Minimum overhang region area (mm^2) automatic painting will consider; smaller slivers are
     // left unpainted. 0 disables the filter.
-    float m_auto_paint_min_area = 4.f;
+    float m_auto_paint_min_area = 3.f;
     void run_auto_paint();
+
+    // [ORCAPORT:PF-10-paint] Swap one painted support type for another across the object.
+    void render_support_remap_ui(float scale);
+    void remap_support_types();
+    int  m_remap_from_idx = 0;
+    int  m_remap_to_idx   = 0;
 
     //BBS: add support preview logic
     void init_print_instance();
