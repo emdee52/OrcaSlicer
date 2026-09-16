@@ -1,481 +1,1206 @@
-diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
-index a17f09e1a8..ff9d397dbf 100644
---- a/src/libslic3r/CMakeLists.txt
-+++ b/src/libslic3r/CMakeLists.txt
-@@ -370,6 +370,8 @@ OrcaExt/NeoWaveContact.hpp
-     OrcaExt/SeamNotch.hpp
-     OrcaExt/SupportPaintTypes.cpp
-     OrcaExt/SupportPaintTypes.hpp
-+    OrcaExt/SupportAutoPaint.cpp
-+    OrcaExt/SupportAutoPaint.hpp
-     Orient.cpp
-     Orient.hpp
-     ParameterUtils.cpp
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
-new file mode 100644
-index 0000000000..e64c3b86cf
---- /dev/null
+index e64c3b86cf..ba61bfeb9b 100644
+--- a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
-@@ -0,0 +1,161 @@
-+// [ORCAPORT FILE] SupportAutoPaint - automatic painting of support regions
-+// Source: preFlight v1.3.0 "Automatic painting" (fork sha f74dc69), reimplemented Orca-native.
-+#include "SupportAutoPaint.hpp"
+@@ -4,12 +4,11 @@
+ 
+ #include <algorithm>
+ #include <cmath>
+-#include <set>
++#include <limits>
++#include <unordered_map>
+ 
+ #include "../AABBTreeIndirect.hpp"
+-#include "../Layer.hpp"
+ #include "../Model.hpp"
+-#include "../Print.hpp"
+ #include "../TriangleMesh.hpp"
+ #include "../libslic3r.h"
+ #include "SupportPaintTypes.hpp"
+@@ -19,141 +18,206 @@ namespace OrcaExt {
+ 
+ namespace {
+ 
++constexpr double PI = 3.14159265358979323846;
 +
-+#include <algorithm>
-+#include <cmath>
-+#include <set>
+ using Tree = AABBTreeIndirect::Tree<3, float>;
+ 
+-// Cast `origin` along `dir` (world/centered coords) against a volume mesh given by its world
+-// transform; return the nearest hit face index when the ray hits a downward-facing facet.
+-bool nearest_facet_above(const indexed_triangle_set      &its,
+-                         const Tree                      &tree,
+-                         const Transform3d               &world,
+-                         const Vec3d                     &origin,
+-                         size_t                          &facet_out)
++struct VolumeData
+ {
+-    const Transform3d inv = world.inverse();
+-    const Vec3d       o   = inv * origin;
+-    const Vec3d       d   = inv.linear() * Vec3d(0., 0., 1.);
+-    std::vector<igl::Hit<float>> hits;
+-    if (!AABBTreeIndirect::intersect_ray_all_hits(its.vertices, its.indices, tree, o, d, hits) || hits.empty())
+-        return false;
+-    const int face = hits.front().id;
+-    if (face < 0 || size_t(face) >= its.indices.size())
+-        return false;
+-    // Downward-facing only: the facet the support touches from below.
+-    const Vec3f n = its_face_normal(its, face);
+-    if ((world.linear() * n.cast<double>()).z() >= 0.)
+-        return false;
+-    facet_out = size_t(face);
+-    return true;
+-}
++    const indexed_triangle_set *its{nullptr};
++    Transform3d                 world{Transform3d::Identity()};
++    Tree                        tree;
++};
+ 
+-double support_height_below(const std::vector<const SupportLayer *> &layers, size_t start_idx,
+-                            const Point &p, double object_print_z_min)
++// Disjoint-set over facets for connected-component clustering.
++struct DSU
+ {
+-    double height = 0.;
+-    size_t steps  = 0;
+-    for (size_t j = start_idx + 1; j-- > 0 && steps < 3000; ++steps) {
+-        const SupportLayer *sl = layers[j];
+-        if (sl == nullptr || sl->print_z < object_print_z_min + EPSILON)
+-            break;
+-        bool found = false;
+-        for (const ExPolygon &isl : sl->support_islands)
+-            if (isl.contains(p)) {
+-                found = true;
+-                break;
+-            }
+-        if (!found)
+-            break;
+-        height += sl->height;
++    std::vector<int> parent;
 +
-+#include "../AABBTreeIndirect.hpp"
-+#include "../Layer.hpp"
-+#include "../Model.hpp"
-+#include "../Print.hpp"
-+#include "../TriangleMesh.hpp"
-+#include "../libslic3r.h"
-+#include "SupportPaintTypes.hpp"
-+
-+namespace Slic3r {
-+namespace OrcaExt {
-+
-+namespace {
-+
-+using Tree = AABBTreeIndirect::Tree<3, float>;
-+
-+// Cast `origin` along `dir` (world/centered coords) against a volume mesh given by its world
-+// transform; return the nearest hit face index when the ray hits a downward-facing facet.
-+bool nearest_facet_above(const indexed_triangle_set      &its,
-+                         const Tree                      &tree,
-+                         const Transform3d               &world,
-+                         const Vec3d                     &origin,
-+                         size_t                          &facet_out)
-+{
-+    const Transform3d inv = world.inverse();
-+    const Vec3d       o   = inv * origin;
-+    const Vec3d       d   = inv.linear() * Vec3d(0., 0., 1.);
-+    std::vector<igl::Hit<float>> hits;
-+    if (!AABBTreeIndirect::intersect_ray_all_hits(its.vertices, its.indices, tree, o, d, hits) || hits.empty())
-+        return false;
-+    const int face = hits.front().id;
-+    if (face < 0 || size_t(face) >= its.indices.size())
-+        return false;
-+    // Downward-facing only: the facet the support touches from below.
-+    const Vec3f n = its_face_normal(its, face);
-+    if ((world.linear() * n.cast<double>()).z() >= 0.)
-+        return false;
-+    facet_out = size_t(face);
-+    return true;
-+}
-+
-+double support_height_below(const std::vector<const SupportLayer *> &layers, size_t start_idx,
-+                            const Point &p, double object_print_z_min)
-+{
-+    double height = 0.;
-+    size_t steps  = 0;
-+    for (size_t j = start_idx + 1; j-- > 0 && steps < 3000; ++steps) {
-+        const SupportLayer *sl = layers[j];
-+        if (sl == nullptr || sl->print_z < object_print_z_min + EPSILON)
-+            break;
-+        bool found = false;
-+        for (const ExPolygon &isl : sl->support_islands)
-+            if (isl.contains(p)) {
-+                found = true;
-+                break;
-+            }
-+        if (!found)
-+            break;
-+        height += sl->height;
++    void reset(size_t n)
++    {
++        parent.resize(n);
++        for (size_t i = 0; i < n; ++i)
++            parent[i] = int(i);
 +    }
-+    return height;
-+}
-+
-+} // namespace
-+
-+std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object)
-+{
-+    std::vector<SupportAutoPaintHit> hits;
-+
-+    const ModelObject *mo = object.model_object();
-+    if (mo == nullptr)
-+        return hits;
-+
-+    std::vector<const SupportLayer *> slayers;
-+    slayers.reserve(object.support_layers().size());
-+    for (const SupportLayer *sl : object.support_layers())
-+        if (sl != nullptr)
-+            slayers.push_back(sl);
-+    if (slayers.empty())
-+        return hits;
-+
-+    const double object_print_z_min = object.slicing_parameters().object_print_z_min;
-+    const Transform3d obj_trafo     = object.trafo_centered();
-+
-+    // Build the mesh acceleration structures once per model-part volume.
-+    struct VolumeRay { const ModelVolume *mv; Transform3d world; const indexed_triangle_set *its; Tree tree; };
-+    std::vector<VolumeRay> volumes;
-+    for (const ModelVolume *mv : mo->volumes) {
-+        if (!mv->is_model_part())
-+            continue;
-+        VolumeRay vr;
-+        vr.mv    = mv;
-+        vr.world = obj_trafo * mv->get_matrix();
-+        vr.its   = &mv->mesh().its;
-+        vr.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vr.its->vertices, vr.its->indices);
-+        volumes.push_back(std::move(vr));
-+    }
-+    if (volumes.empty())
-+        return hits;
-+
-+    std::set<std::pair<size_t, size_t>> seen;
-+
-+    for (size_t li = 0; li < slayers.size(); ++li) {
-+        const SupportLayer *sl = slayers[li];
-+        if (sl->print_z < object_print_z_min + EPSILON || sl->support_islands.empty())
-+            continue;
-+
-+        for (const ExPolygon &island : sl->support_islands) {
-+            if (island.contour.points.empty())
-+                continue;
-+            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
-+
-+            // Sample the island: its contour vertices plus the centroid.
-+            Points samples = island.contour.points;
-+            Point  centroid = island.contour.centroid();
-+            samples.push_back(centroid);
-+
-+            for (const Point &p : samples) {
-+                const Vec3d origin(unscale<double>(p.x()), unscale<double>(p.y()), sl->print_z);
-+                size_t      facet = 0;
-+                bool        found = false;
-+                size_t      volume_index = 0;
-+                for (size_t vi = 0; vi < volumes.size(); ++vi) {
-+                    if (nearest_facet_above(*volumes[vi].its, volumes[vi].tree, volumes[vi].world, origin, facet)) {
-+                        volume_index = vi;
-+                        found        = true;
-+                        break;
-+                    }
-+                }
-+                if (!found)
-+                    continue;
-+                if (!seen.emplace(volume_index, facet).second)
-+                    continue;
-+
-+                const double height = support_height_below(slayers, li, p, object_print_z_min);
-+                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
-+                if (state == EnforcerBlockerType::NONE)
-+                    continue;
-+
-+                SupportAutoPaintHit hit;
-+                hit.volume_index      = volume_index;
-+                hit.facet_index       = facet;
-+                hit.state             = state;
-+                hit.contact_area_mm2  = contact_area;
-+                hit.support_height_mm = height;
-+                hits.push_back(hit);
-+            }
++    int find(int x)
++    {
++        while (parent[x] != x) {
++            parent[x] = parent[parent[x]];
++            x         = parent[x];
 +        }
++        return x;
 +    }
-+    return hits;
-+}
-+
-+} // namespace OrcaExt
-+} // namespace Slic3r
-diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-new file mode 100644
-index 0000000000..40625095b5
---- /dev/null
-+++ b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-@@ -0,0 +1,39 @@
-+// [ORCAPORT FILE] SupportAutoPaint - automatic painting of support regions
-+// Source: preFlight v1.3.0 "Automatic painting" (fork sha f74dc69), reimplemented Orca-native.
-+#ifndef slic3r_OrcaExt_SupportAutoPaint_hpp_
-+#define slic3r_OrcaExt_SupportAutoPaint_hpp_
-+
-+#include <cstddef>
-+#include <vector>
-+
-+#include "../TriangleSelector.hpp"
-+
-+namespace Slic3r {
-+
-+class PrintObject;
-+
-+namespace OrcaExt {
-+
-+// One model facet the auto-painter wants to paint with a classified support type.
-+struct SupportAutoPaintHit
-+{
-+    size_t              volume_index{0}; // index among the object's model-part volumes
-+    size_t              facet_index{0};  // facet index in that volume's mesh
-+    EnforcerBlockerType state{EnforcerBlockerType::NONE};
-+    double              contact_area_mm2{0.};
-+    double              support_height_mm{0.};
++    void unite(int a, int b)
++    {
++        a = find(a);
++        b = find(b);
++        if (a != b)
++            parent[a] = b;
++    }
 +};
 +
-+// Classify the object's support contact regions into paint states.
++// Distance from `world_origin` straight down to the nearest model surface, or a huge value when
++// nothing is below. Used as the "support would sit in a tight/inaccessible gap" signal.
++double ray_down_to_next_surface(const Vec3d &world_origin, const std::vector<VolumeData> &vdatas)
++{
++    double best = 1.0e30;
++    for (const VolumeData &vd : vdatas) {
++        if (vd.its == nullptr || vd.its->indices.empty())
++            continue;
++        const Transform3d inv = vd.world.inverse();
++        const Vec3d       o   = inv * world_origin;
++        const Vec3d       d   = inv.linear() * Vec3d(0., 0., -1.);
++        if (d.squaredNorm() < 1.0e-12)
++            continue;
++        igl::Hit<float> hit;
++        if (AABBTreeIndirect::intersect_ray_first_hit(vd.its->vertices, vd.its->indices, vd.tree, o, d, hit)) {
++            const Vec3d  local_p = o + d * double(hit.t);
++            const Vec3d  world_p = vd.world * local_p;
++            const double dist    = world_origin.z() - world_p.z();
++            if (dist > 1.0e-6 && dist < best)
++                best = dist;
++        }
+     }
+-    return height;
++    return best;
+ }
+ 
+ } // namespace
+ 
+-std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object)
++std::vector<SupportAutoPaintHit> classify_support_paint(
++    const ModelObject                       &model_object,
++    const Transform3d                       &instance_trafo,
++    const std::vector<std::vector<uint8_t>> &painted,
++    const SupportAutoPaintParams            &params)
+ {
+     std::vector<SupportAutoPaintHit> hits;
+ 
+-    const ModelObject *mo = object.model_object();
+-    if (mo == nullptr)
+-        return hits;
+-
+-    std::vector<const SupportLayer *> slayers;
+-    slayers.reserve(object.support_layers().size());
+-    for (const SupportLayer *sl : object.support_layers())
+-        if (sl != nullptr)
+-            slayers.push_back(sl);
+-    if (slayers.empty())
+-        return hits;
+-
+-    const double object_print_z_min = object.slicing_parameters().object_print_z_min;
+-    const Transform3d obj_trafo     = object.trafo_centered();
+-
+-    // Build the mesh acceleration structures once per model-part volume.
+-    struct VolumeRay { const ModelVolume *mv; Transform3d world; const indexed_triangle_set *its; Tree tree; };
+-    std::vector<VolumeRay> volumes;
+-    for (const ModelVolume *mv : mo->volumes) {
++    // Build the per-model-part volume data, keeping the model-part index aligned with the caller's
++    // TriangleSelector list. Empty parts stay in the list (with a null mesh) so indices do not shift.
++    std::vector<VolumeData> vdatas;
++    for (const ModelVolume *mv : model_object.volumes) {
+         if (!mv->is_model_part())
+             continue;
+-        VolumeRay vr;
+-        vr.mv    = mv;
+-        vr.world = obj_trafo * mv->get_matrix();
+-        vr.its   = &mv->mesh().its;
+-        vr.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vr.its->vertices, vr.its->indices);
+-        volumes.push_back(std::move(vr));
++        VolumeData vd;
++        const indexed_triangle_set &its = mv->mesh().its;
++        if (!its.indices.empty()) {
++            vd.its   = &its;
++            vd.world = instance_trafo * mv->get_matrix();
++            vd.tree  = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(its.vertices, its.indices);
++        }
++        vdatas.push_back(std::move(vd));
+     }
+-    if (volumes.empty())
++    if (vdatas.empty())
+         return hits;
+ 
+-    std::set<std::pair<size_t, size_t>> seen;
++    // Overhang criterion, mirroring GLGizmoFdmSupports::select_facets_by_angle. When the user is not
++    // restricting to the highlighted set, use 90 degrees: every downward-facing facet is a candidate.
++    const double theta_deg = params.overhangs_only
++                                 ? std::clamp(double(params.overhang_angle_deg), 1.0, 90.0)
++                                 : 90.0;
++    const double theta_rad = theta_deg * PI / 180.0;
+ 
+-    for (size_t li = 0; li < slayers.size(); ++li) {
+-        const SupportLayer *sl = slayers[li];
+-        if (sl->print_z < object_print_z_min + EPSILON || sl->support_islands.empty())
++    for (size_t vi = 0; vi < vdatas.size(); ++vi) {
++        const VolumeData &vd = vdatas[vi];
++        if (vd.its == nullptr)
+             continue;
++        const indexed_triangle_set &its       = *vd.its;
++        const size_t                nfacets   = its.indices.size();
++
++        const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
++        const std::vector<Vec3f>   normals   = its_face_normals(its);
+ 
+-        for (const ExPolygon &island : sl->support_islands) {
+-            if (island.contour.points.empty())
++        // Local frame of the highlight predicate.
++        Eigen::Matrix3d inv_lin = vd.world.linear().inverse();
++        Vec3d           down    = (inv_lin * (-Vec3d::UnitZ())).normalized();
++        Vec3d limit = (inv_lin * Vec3d(std::sin(theta_rad), 0., -std::cos(theta_rad))).normalized();
++        const double dot_limit = limit.dot(down);
++
++        // World vertices (for area / span / height / curvature / gap).
++        std::vector<Vec3d> wv(its.vertices.size());
++        for (size_t i = 0; i < its.vertices.size(); ++i)
++            wv[i] = vd.world * its.vertices[i].cast<double>();
++
++        const std::vector<uint8_t> *painted_mask =
++            vi < painted.size() && painted[vi].size() == nfacets ? &painted[vi] : nullptr;
++
++        std::vector<uint8_t> candidate(nfacets, 0);
++        for (size_t f = 0; f < nfacets; ++f) {
++            if (painted_mask != nullptr && (*painted_mask)[f] != 0)
+                 continue;
+-            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
+-
+-            // Sample the island: its contour vertices plus the centroid.
+-            Points samples = island.contour.points;
+-            Point  centroid = island.contour.centroid();
+-            samples.push_back(centroid);
+-
+-            for (const Point &p : samples) {
+-                const Vec3d origin(unscale<double>(p.x()), unscale<double>(p.y()), sl->print_z);
+-                size_t      facet = 0;
+-                bool        found = false;
+-                size_t      volume_index = 0;
+-                for (size_t vi = 0; vi < volumes.size(); ++vi) {
+-                    if (nearest_facet_above(*volumes[vi].its, volumes[vi].tree, volumes[vi].world, origin, facet)) {
+-                        volume_index = vi;
+-                        found        = true;
+-                        break;
++            if (normals[f].cast<double>().dot(down) > dot_limit)
++                candidate[f] = 1;
++        }
++
++        DSU dsu;
++        dsu.reset(nfacets);
++        for (size_t f = 0; f < nfacets; ++f) {
++            if (!candidate[f])
++                continue;
++            for (int n : neighbors[f])
++                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)])
++                    dsu.unite(int(f), n);
++        }
++
++        std::unordered_map<int, std::vector<size_t>> components;
++        for (size_t f = 0; f < nfacets; ++f)
++            if (candidate[f])
++                components[dsu.find(int(f))].push_back(f);
++
++        for (const auto &entry : components) {
++            const std::vector<size_t> &facets = entry.second;
++
++            SupportRegionFeatures feat;
++            double                area_sum  = 0.;
++            double                best_sev  = -2.;
++            Vec3d                 normal_sum = Vec3d::Zero();
++            Vec3d                 bb_min(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
++            Vec3d                 bb_max(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
++
++            for (size_t f : facets) {
++                const Vec3i32 &tri = its.indices[f];
++                const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
++                area_sum += a;
++                const Vec3d nw = (vd.world.linear() * normals[f].cast<double>()).normalized();
++                normal_sum += nw * a;
++                best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
++                for (int k = 0; k < 3; ++k)
++                    for (int axis = 0; axis < 3; ++axis) {
++                        bb_min(axis) = std::min(bb_min(axis), wv[tri[k]](axis));
++                        bb_max(axis) = std::max(bb_max(axis), wv[tri[k]](axis));
+                     }
+-                }
+-                if (!found)
+-                    continue;
+-                if (!seen.emplace(volume_index, facet).second)
+-                    continue;
++            }
+ 
+-                const double height = support_height_below(slayers, li, p, object_print_z_min);
+-                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
+-                if (state == EnforcerBlockerType::NONE)
+-                    continue;
++            feat.area_mm2 = area_sum;
++            feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
++            feat.height_mm = bb_min.z();
++            feat.curvature = area_sum > 0.
++                                 ? std::clamp(1. - normal_sum.norm() / area_sum, 0., 1.)
++                                 : 0.;
++            const double sev     = std::clamp(best_sev, -1., 1.);
++            feat.wall_angle_deg  = 90. - std::acos(sev) * 180. / PI;
++
++            const Vec3d gap_origin((bb_min.x() + bb_max.x()) * 0.5,
++                                   (bb_min.y() + bb_max.y()) * 0.5,
++                                   bb_min.z() - 0.01);
++            feat.gap_below_mm = ray_down_to_next_surface(gap_origin, vdatas);
++
++            const EnforcerBlockerType state = support_paint_classify(feat, params.enabled_types);
++            if (state == EnforcerBlockerType::NONE)
++                continue;
+ 
++            hits.reserve(hits.size() + facets.size());
++            for (size_t f : facets) {
+                 SupportAutoPaintHit hit;
+-                hit.volume_index      = volume_index;
+-                hit.facet_index       = facet;
+-                hit.state             = state;
+-                hit.contact_area_mm2  = contact_area;
+-                hit.support_height_mm = height;
++                hit.volume_index = vi;
++                hit.facet_index  = f;
++                hit.state        = state;
++                hit.features     = feat;
+                 hits.push_back(hit);
+             }
+         }
+     }
++
+     return hits;
+ }
+ 
+diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
+index 40625095b5..64af77fccc 100644
+--- a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
++++ b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
+@@ -4,36 +4,57 @@
+ #define slic3r_OrcaExt_SupportAutoPaint_hpp_
+ 
+ #include <cstddef>
++#include <cstdint>
+ #include <vector>
+ 
+ #include "../TriangleSelector.hpp"
++#include "SupportPaintTypes.hpp"
+ 
+ namespace Slic3r {
+ 
+-class PrintObject;
++class ModelObject;
+ 
+ namespace OrcaExt {
+ 
+-// One model facet the auto-painter wants to paint with a classified support type.
++// Parameters of one automatic-painting request, taken from the support-painting gizmo.
++struct SupportAutoPaintParams
++{
++    // Overhang criterion, in the same convention as the gizmo's "Highlight overhangs" slider: a
++    // facet is a candidate when its normal lies within this many degrees of straight down.
++    float overhang_angle_deg{30.f};
++    // When true, restrict to the highlighted overhang set (the angle above). When false, use every
++    // downward-facing facet (90 degrees), i.e. treat any overhang as a candidate.
++    bool  overhangs_only{true};
++    // States the user allowed automatic painting to choose (the per-type checkboxes). An empty
++    // vector means every auto-selectable registry type is eligible.
++    std::vector<EnforcerBlockerType> enabled_types;
++};
++
++// One model facet the auto-painter wants to paint, plus the region measurements that selected it.
+ struct SupportAutoPaintHit
+ {
+     size_t              volume_index{0}; // index among the object's model-part volumes
+     size_t              facet_index{0};  // facet index in that volume's mesh
+     EnforcerBlockerType state{EnforcerBlockerType::NONE};
+-    double              contact_area_mm2{0.};
+-    double              support_height_mm{0.};
++    SupportRegionFeatures features;
+ };
+ 
+-// Classify the object's support contact regions into paint states.
++// Classify the object's overhang regions into paint states.
 +//
-+// Precondition: the object has been sliced and its support generated (call
-+// PrintObject::generate_support_preview() first); with no support layers this returns {}.
-+// The caller applies the hits and must skip facets already painted as BLOCKER, so the auto-paint
-+// follows existing blockers. The classification thresholds live in the OrcaExt support-paint
-+// registry (SupportPaintTypes.hpp).
-+std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object);
-+
-+} // namespace OrcaExt
-+} // namespace Slic3r
-+
-+#endif
++// This is a pure mesh analysis: it needs no slicing and no support preview. `instance_trafo` is the
++// active instance matrix; the volume transform is applied on top of it. `painted` (optional) holds
++// one mask per model-part volume (see TriangleSelector::painted_facet_mask) and excludes already
++// painted or blocked facets from both the clustering and the output, so existing painting is never
++// overwritten.
+ //
+-// Precondition: the object has been sliced and its support generated (call
+-// PrintObject::generate_support_preview() first); with no support layers this returns {}.
+-// The caller applies the hits and must skip facets already painted as BLOCKER, so the auto-paint
+-// follows existing blockers. The classification thresholds live in the OrcaExt support-paint
+-// registry (SupportPaintTypes.hpp).
+-std::vector<SupportAutoPaintHit> classify_support_paint(const PrintObject &object);
++// The thresholds live in the OrcaExt support-paint registry (SupportPaintTypes.hpp).
++std::vector<SupportAutoPaintHit> classify_support_paint(
++    const ModelObject                        &model_object,
++    const Transform3d                        &instance_trafo,
++    const std::vector<std::vector<uint8_t>>  &painted,
++    const SupportAutoPaintParams             &params);
+ 
+ } // namespace OrcaExt
+ } // namespace Slic3r
+ 
+-#endif
++#endif // slic3r_OrcaExt_SupportAutoPaint_hpp_
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
-index e973267474..5b0d72e3c7 100644
+index 5b0d72e3c7..cc520ca0a5 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
-@@ -30,6 +30,7 @@ std::vector<SupportPaintType> make_default_registry()
+@@ -2,6 +2,9 @@
+ // Source: preFlight v1.3.0 support painter (fork sha f74dc69); NeoWave from NEOTKOCM_RELEASE_2_36.md
+ #include "SupportPaintTypes.hpp"
+ 
++#include <algorithm>
++#include <cmath>
++
+ #include "../Model.hpp"
+ #include "../Print.hpp"
+ 
+@@ -17,11 +20,42 @@ inline constexpr EnforcerBlockerType st_grid    = static_cast<EnforcerBlockerTyp
+ inline constexpr EnforcerBlockerType st_organic = static_cast<EnforcerBlockerType>(5);
+ inline constexpr EnforcerBlockerType st_neowave = static_cast<EnforcerBlockerType>(6);
+ 
++constexpr double INF = 1.0e30;
++
++// A hard (required) range term. soft bounds are left at 0 to mean "no soft falloff".
++SupportPaintRule::Term hard_term(SupportFeature feature, double min_val, double max_val, double weight = 1.)
++{
++    SupportPaintRule::Term t;
++    t.feature = feature;
++    t.min_val = min_val;
++    t.max_val = max_val;
++    t.weight  = weight;
++    t.hard    = true;
++    return t;
++}
++
++// A soft (preferred) range term: full credit inside [min_val,max_val], decaying to zero between
++// the hard window and [soft_min,soft_max].
++SupportPaintRule::Term soft_term(SupportFeature feature, double min_val, double max_val,
++                                 double soft_min, double soft_max, double weight = 1.)
++{
++    SupportPaintRule::Term t;
++    t.feature  = feature;
++    t.min_val  = min_val;
++    t.max_val  = max_val;
++    t.soft_min = soft_min;
++    t.soft_max = soft_max;
++    t.weight   = weight;
++    t.hard     = false;
++    return t;
++}
++
+ std::vector<SupportPaintType> make_default_registry()
+ {
+     std::vector<SupportPaintType> v;
+ 
+     // Legacy generic enforcer: no forced style, the object's own support type/style applies.
++    // It has no scoring rules, so automatic painting never selects it.
+     {
+         SupportPaintType t;
+         t.state = SUPPORT_PAINT_DEFAULT;
+@@ -30,10 +64,10 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsDefault;
-+        t.classify.auto_selectable = false;
+-        t.classify.auto_selectable = false;
          v.emplace_back(t);
      }
-     // Snug: classic engine, object supports forced to snug in the painted region.
-@@ -41,6 +42,7 @@ std::vector<SupportPaintType> make_default_registry()
+-    // Snug: classic engine, object supports forced to snug in the painted region.
++    // Snug: classic engine, snug style. Broad functional default for any overhang large enough
++    // to leave a support footprint; low priority so Grid/Organic/NeoWave can win when apt.
+     {
+         SupportPaintType t;
+         t.state = st_snug;
+@@ -42,10 +76,13 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsSnug;
-+        t.classify = {true, 50., 1.0e30, 0., 1.0e30, 10};
+-        t.classify = {true, 50., 1.0e30, 0., 1.0e30, 10};
++        t.rules = { SupportPaintRule{ { hard_term(SupportFeature::Area, 50., INF) }, 1. } };
++        t.min_score = 0.5;
++        t.priority  = 1.;
          v.emplace_back(t);
      }
-     // Grid: classic engine, grid base pattern in the painted region.
-@@ -52,6 +54,7 @@ std::vector<SupportPaintType> make_default_registry()
+-    // Grid: classic engine, grid base pattern in the painted region.
++    // Grid: classic engine, grid base. Maximum rigidity for large, low, flat overhangs; loses to
++    // Snug above the height ceiling (tall towers are better off snug/organic).
+     {
+         SupportPaintType t;
+         t.state = st_grid;
+@@ -54,10 +91,17 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsGrid;
-+        t.classify = {true, 0., 1.0e30, 0., 1.0e30, 1};
+-        t.classify = {true, 0., 1.0e30, 0., 1.0e30, 1};
++        t.rules = { SupportPaintRule{ {
++            hard_term(SupportFeature::Area,   400., INF),
++            hard_term(SupportFeature::Span,    40., INF),
++            hard_term(SupportFeature::Height,   0., 50.)
++        }, 1. } };
++        t.min_score = 0.9;
++        t.priority  = 2.;
          v.emplace_back(t);
      }
-     // Organic: tree engine, organic style in the painted region.
-@@ -63,6 +66,8 @@ std::vector<SupportPaintType> make_default_registry()
+-    // Organic: tree engine, organic style in the painted region.
++    // Organic: tree engine. Small elevated patches, or curved elevated surfaces, where a tree
++    // routes around the model and saves material.
+     {
+         SupportPaintType t;
+         t.state = st_organic;
+@@ -66,12 +110,18 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = true;
          t.support_type = stTreeAuto;
          t.support_style = smsTreeOrganic;
-+        // Tall, small-footprint overhangs: a tree routes around the model and saves material.
-+        t.classify = {true, 0., 25., 3., 1.0e30, 20};
+-        // Tall, small-footprint overhangs: a tree routes around the model and saves material.
+-        t.classify = {true, 0., 25., 3., 1.0e30, 20};
++        t.rules = {
++            SupportPaintRule{ { hard_term(SupportFeature::Area,    0., 30.),
++                               hard_term(SupportFeature::Height,  4., INF) }, 1. },
++            SupportPaintRule{ { hard_term(SupportFeature::Curvature, 0.5, 1.),
++                               hard_term(SupportFeature::Height,   10., INF) }, 1. }
++        };
++        t.min_score = 0.6;
++        t.priority  = 3.;
          v.emplace_back(t);
      }
-     // NeoWave: classic engine. The painter hardcodes its tested recipe: hollow base, wave
-@@ -80,6 +85,8 @@ std::vector<SupportPaintType> make_default_registry()
+-    // NeoWave: classic engine. The painter hardcodes its tested recipe: hollow base, wave
+-    // interface, wave roof, smart roof order and a single wall loop.
++    // NeoWave: classic engine. Near-horizontal, hard overhangs - optionally right above another
++    // surface (tight gap). Opt-in: enabled by default is false, the user checks it on.
+     {
+         SupportPaintType t;
+         t.state = st_neowave;
+@@ -85,8 +135,14 @@ std::vector<SupportPaintType> make_default_registry()
          t.overrides.force_wave_roof_pattern = true; t.overrides.wave_roof_pattern = smwrpWave;
          t.overrides.force_wave_roof_order   = true; t.overrides.wave_roof_order   = smwroSmart;
          t.overrides.force_wave_wall_loops   = true; t.overrides.wave_wall_loops   = 1;
-+        // Wide flat overhangs on a tall support: the wave roof eases removal.
-+        t.classify = {true, 100., 1.0e30, 3., 1.0e30, 15};
+-        // Wide flat overhangs on a tall support: the wave roof eases removal.
+-        t.classify = {true, 100., 1.0e30, 3., 1.0e30, 15};
++        t.rules = {
++            SupportPaintRule{ { hard_term(SupportFeature::WallAngle, 70., 90.),
++                               soft_term(SupportFeature::GapBelow,   0., 1.5, 0., 4.) }, 1. },
++            SupportPaintRule{ { hard_term(SupportFeature::WallAngle, 78., 90.) }, 1. }
++        };
++        t.min_score = 0.5;
++        t.priority  = 3.;
++        t.auto_enabled_by_default = false;
          v.emplace_back(t);
      }
      return v;
-@@ -127,6 +134,22 @@ bool has_painted_support_styles(const PrintObject &object)
-     return false;
- }
+@@ -100,6 +156,93 @@ std::vector<SupportPaintType> &registry()
  
-+EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm)
+ } // namespace
+ 
++double support_feature_value(SupportFeature feature, const SupportRegionFeatures &f)
 +{
-+    const SupportPaintType *best = nullptr;
++    switch (feature) {
++    case SupportFeature::Area:      return f.area_mm2;
++    case SupportFeature::Span:      return f.span_mm;
++    case SupportFeature::Height:    return f.height_mm;
++    case SupportFeature::WallAngle: return f.wall_angle_deg;
++    case SupportFeature::Curvature: return f.curvature;
++    case SupportFeature::GapBelow:  return f.gap_below_mm;
++    default:                        return 0.;
++    }
++}
++
++double support_term_membership(const SupportPaintRule::Term &term, double value)
++{
++    const double lo = std::min(term.min_val, term.max_val);
++    const double hi = std::max(term.min_val, term.max_val);
++    if (value >= lo && value <= hi)
++        return 1.;
++
++    if (value < lo) {
++        // soft_min marks the zero-credit bound; no soft band when it is not below min_val.
++        if (term.soft_min >= lo || value <= term.soft_min)
++            return 0.;
++        return (value - term.soft_min) / (lo - term.soft_min);
++    }
++
++    // value > hi
++    if (term.soft_max <= hi || value >= term.soft_max)
++        return 0.;
++    return (term.soft_max - value) / (term.soft_max - hi);
++}
++
++double support_rule_score(const SupportPaintRule &rule, const SupportRegionFeatures &features)
++{
++    if (rule.terms.empty())
++        return 0.;
++
++    double sum = 0., sum_w = 0.;
++    for (const SupportPaintRule::Term &term : rule.terms) {
++        const double value = support_feature_value(term.feature, features);
++        if (term.hard) {
++            const double lo = std::min(term.min_val, term.max_val);
++            const double hi = std::max(term.min_val, term.max_val);
++            if (value < lo || value > hi)
++                return 0.;
++            sum   += term.weight;
++            sum_w += term.weight;
++        } else {
++            sum   += term.weight * support_term_membership(term, value);
++            sum_w += term.weight;
++        }
++    }
++    return sum_w > 0. ? (sum / sum_w) * rule.weight : 0.;
++}
++
++double support_type_score(const SupportPaintType &type, const SupportRegionFeatures &features)
++{
++    double best = 0.;
++    for (const SupportPaintRule &rule : type.rules)
++        best = std::max(best, support_rule_score(rule, features));
++    return best * type.priority;
++}
++
++EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
++                                           const std::vector<EnforcerBlockerType> &enabled)
++{
++    const SupportPaintType *best       = nullptr;
++    double                  best_score = 0.;
++
 +    for (const SupportPaintType &t : registry()) {
-+        if (!t.classify.auto_selectable)
++        if (t.rules.empty())
 +            continue;
-+        if (contact_area_mm2 < t.classify.min_area_mm2 || contact_area_mm2 > t.classify.max_area_mm2)
++        // An empty `enabled` set means "all auto-selectable types are allowed".
++        if (!enabled.empty() && std::find(enabled.begin(), enabled.end(), t.state) == enabled.end())
 +            continue;
-+        if (support_height_mm < t.classify.min_height_mm || support_height_mm > t.classify.max_height_mm)
++        const double score = support_type_score(t, features);
++        if (score < t.min_score)
 +            continue;
-+        if (best == nullptr || t.classify.priority > best->classify.priority)
-+            best = &t;
++        if (best == nullptr || score > best_score) {
++            best       = &t;
++            best_score = score;
++        }
 +    }
 +    return best != nullptr ? best->state : EnforcerBlockerType::NONE;
 +}
 +
+ const std::vector<SupportPaintType> &support_paint_types()
+ {
+     return registry();
+@@ -134,22 +277,6 @@ bool has_painted_support_styles(const PrintObject &object)
+     return false;
+ }
+ 
+-EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm)
+-{
+-    const SupportPaintType *best = nullptr;
+-    for (const SupportPaintType &t : registry()) {
+-        if (!t.classify.auto_selectable)
+-            continue;
+-        if (contact_area_mm2 < t.classify.min_area_mm2 || contact_area_mm2 > t.classify.max_area_mm2)
+-            continue;
+-        if (support_height_mm < t.classify.min_height_mm || support_height_mm > t.classify.max_height_mm)
+-            continue;
+-        if (best == nullptr || t.classify.priority > best->classify.priority)
+-            best = &t;
+-    }
+-    return best != nullptr ? best->state : EnforcerBlockerType::NONE;
+-}
+-
  bool has_painted_support_style(const PrintObject &object, EnforcerBlockerType state)
  {
      const ModelObject *mo = object.model_object();
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
-index 273ee0341c..f5da71d194 100644
+index f5da71d194..eff37de6eb 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
-@@ -38,6 +38,18 @@ struct SupportPaintOverrides
+@@ -16,10 +16,51 @@ class ModelObject;
+ 
+ namespace OrcaExt {
+ 
++// ---------------------------------------------------------------------------------------------
++// Automatic-painting feature model
++//
++// The automatic painter measures each overhang region once and scores every registered support
++// type against that measurement. A new support type is one registry row (see below); it does not
++// touch the classifier or the gizmo. Adding a new *feature* means one value in SupportFeature plus
++// one computation in SupportAutoPaint, after which every type can weigh against it.
++// ---------------------------------------------------------------------------------------------
++
++// Measurements of one overhang region, shared by every support type's scoring rule.
++struct SupportRegionFeatures
++{
++    double area_mm2{0.};        // region surface area
++    double span_mm{0.};         // largest XY extent of the region ("bridge length" proxy)
++    double height_mm{0.};       // lowest point of the region above the plate
++    double wall_angle_deg{0.};  // 0 = vertical wall, 90 = horizontal ceiling
++    double curvature{0.};       // 0 = flat, 1 = highly curved
++    double gap_below_mm{1.0e30}; // distance from the region down to the next model surface (inf = none)
++};
++
++enum class SupportFeature { Area, Span, Height, WallAngle, Curvature, GapBelow, Count };
++
++// One conjunctive clause: a set of ranged preferences over the feature vector. The clause score is
++// the weight-averaged membership of each term; a `hard` term outside its [min,max] window zeroes
++// the whole clause. A type may carry several clauses (OR) and keeps its best-scoring one.
++struct SupportPaintRule
++{
++    struct Term
++    {
++        SupportFeature feature{SupportFeature::Area};
++        double         min_val{0.};   // full credit inside [min_val, max_val]
++        double         max_val{0.};
++        double         soft_min{0.};  // zero credit at/below soft_min (<= min_val)
++        double         soft_max{0.};  // zero credit at/above soft_max (>= max_val)
++        double         weight{1.};    // relative importance within the clause
++        bool           hard{false};   // outside [min_val,max_val] rejects the clause
++    };
++    std::vector<Term> terms;
++    double            weight{1.};     // clause strength within the type's OR group
++};
++
+ // A single paintable support type. This table is the single extension point for support painting:
+ // a new support type is one row here (plus, if it needs them, fields on SupportPaintOverrides).
+ // The gizmo builds its radio buttons and palette from this list, and the slicing dispatcher runs
+-// one engine pass per painted row.
++// one engine pass per painted row. The `rules` field drives automatic selection.
+ struct SupportPaintOverrides
+ {
+     bool   force_base_pattern{false};
+@@ -38,18 +79,6 @@ struct SupportPaintOverrides
      int    wave_wall_loops{1};
  };
  
-+// Data-driven region classification for automatic painting. A region matches when its contact
-+// area and support height fall inside the range; among the matches the highest priority wins.
-+struct SupportPaintClassify
-+{
-+    bool   auto_selectable{false};
-+    double min_area_mm2{0.};
-+    double max_area_mm2{1.0e30};
-+    double min_height_mm{0.};
-+    double max_height_mm{1.0e30};
-+    int    priority{0};
-+};
-+
+-// Data-driven region classification for automatic painting. A region matches when its contact
+-// area and support height fall inside the range; among the matches the highest priority wins.
+-struct SupportPaintClassify
+-{
+-    bool   auto_selectable{false};
+-    double min_area_mm2{0.};
+-    double max_area_mm2{1.0e30};
+-    double min_height_mm{0.};
+-    double max_height_mm{1.0e30};
+-    int    priority{0};
+-};
+-
  struct SupportPaintType
  {
      // Paint state stored in ModelVolume::supported_facets. Support painting and MMU painting use
-@@ -54,8 +66,14 @@ struct SupportPaintType
+@@ -66,13 +95,36 @@ struct SupportPaintType
      SupportMaterialStyle support_style{smsDefault};
      // Forced object-config overrides applied only to this painted region's engine pass.
      SupportPaintOverrides overrides;
-+    // Automatic-painting classification rule.
-+    SupportPaintClassify  classify;
+-    // Automatic-painting classification rule.
+-    SupportPaintClassify  classify;
++    // Automatic-painting scoring: OR of clauses. Empty => this row is not auto-selectable
++    // (e.g. the legacy generic "Default" enforcer, which is chosen manually).
++    std::vector<SupportPaintRule> rules;
++    // Eligibility floor: the type only wins when its weighted score reaches this value.
++    double min_score{1.};
++    // Global bias against the other types (future strength/material weighting UI). A score is
++    // multiplied by this before comparison.
++    double priority{1.};
++    // Seeds the gizmo's per-type checkbox the first time it is shown.
++    bool   auto_enabled_by_default{true};
  };
  
-+// Classify a region by its support contact area (mm^2) and support height (mm) into the state of
-+// the best-matching auto-selectable registry entry, or NONE when nothing matches.
-+EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm);
+-// Classify a region by its support contact area (mm^2) and support height (mm) into the state of
+-// the best-matching auto-selectable registry entry, or NONE when nothing matches.
+-EnforcerBlockerType support_paint_classify(double contact_area_mm2, double support_height_mm);
++// Value of one feature from the measurement vector.
++double support_feature_value(SupportFeature feature, const SupportRegionFeatures &f);
 +
++// Membership of `value` in the term window: 1 inside [min_val,max_val], decaying linearly to 0 at
++// the soft bounds outside it (soft bounds default to the hard bounds when unset).
++double support_term_membership(const SupportPaintRule::Term &term, double value);
++
++// Score of one clause in [0,1] (0 when a hard term misses).
++double support_rule_score(const SupportPaintRule &rule, const SupportRegionFeatures &features);
++
++// Score of a type: its best-scoring clause times its priority (0 when it has no rules).
++double support_type_score(const SupportPaintType &type, const SupportRegionFeatures &features);
++
++// Pick the best-matching enabled support type for the region, or NONE to leave it unpainted.
++// `enabled` is the set of states the user allowed automatic painting to choose; an empty set
++// means every auto-selectable type is eligible.
++EnforcerBlockerType support_paint_classify(const SupportRegionFeatures &features,
++                                           const std::vector<EnforcerBlockerType> &enabled = {});
+ 
  // The ordered registry (guarded statics). The first entry is the legacy generic "Default"
  // enforcer, which keeps the object's own support type/style so existing painted projects are
- // unaffected.
+diff --git a/src/libslic3r/TriangleSelector.cpp b/src/libslic3r/TriangleSelector.cpp
+index c394cb9cf0..0fec7831c4 100644
+--- a/src/libslic3r/TriangleSelector.cpp
++++ b/src/libslic3r/TriangleSelector.cpp
+@@ -1013,6 +1013,25 @@ void TriangleSelector::set_facet(int facet_idx, EnforcerBlockerType state)
+     m_triangles[facet_idx].set_state(state);
+ }
+ 
++// [ORCAPORT:PF-10-auto] See header. Iterate every live triangle; a split triangle's real state
++// lives in its children (which are themselves entries in m_triangles), so only non-split
++// triangles are read and each is attributed to its original source facet.
++std::vector<uint8_t> TriangleSelector::painted_facet_mask() const
++{
++    const size_t n = m_orig_size_indices > 0 ? size_t(m_orig_size_indices) : 0;
++    std::vector<uint8_t> mask(n, 0);
++    for (const Triangle &tr : m_triangles) {
++        if (! tr.valid() || tr.is_split())
++            continue;
++        if (tr.state == EnforcerBlockerType::NONE)
++            continue;
++        const int src = tr.source_triangle;
++        if (src >= 0 && size_t(src) < n)
++            mask[size_t(src)] = 1;
++    }
++    return mask;
++}
++
+ // called by select_patch()->select_triangle()...select_triangle()
+ // to decide which sides of the triangle to split and to actually split it calling set_division() and perform_split().
+ void TriangleSelector::split_triangle(int facet_idx, const Vec3i32 &neighbors)
 diff --git a/src/libslic3r/TriangleSelector.hpp b/src/libslic3r/TriangleSelector.hpp
-index 78b9c817f9..59f8afafa6 100644
+index 59f8afafa6..2ada914e41 100644
 --- a/src/libslic3r/TriangleSelector.hpp
 +++ b/src/libslic3r/TriangleSelector.hpp
-@@ -362,6 +362,15 @@ public:
-     // Set facet of the mesh to a given state. Only works for original triangles.
-     void set_facet(int facet_idx, EnforcerBlockerType state);
+@@ -371,6 +371,13 @@ public:
+         return m_triangles[facet_idx].get_state();
+     }
  
-+    // [ORCAPORT:PF-10-auto] State of an original facet (NONE when unset or split). Used by the
-+    // automatic support painter to avoid overwriting a painted blocker.
-+    EnforcerBlockerType get_facet_state(int facet_idx) const
-+    {
-+        if (facet_idx < 0 || size_t(facet_idx) >= m_triangles.size() || m_triangles[facet_idx].is_split())
-+            return EnforcerBlockerType::NONE;
-+        return m_triangles[facet_idx].get_state();
-+    }
++    // [ORCAPORT:PF-10-auto] Mask of original mesh facets that currently carry any paint state.
++    // Unlike get_facet_state(), this accounts for split triangles: every triangle (original or
++    // split) keeps its `source_triangle` index, so a subdivided painted/blocker region is still
++    // reported. The automatic painter uses this to never overwrite existing painting. Returns an
++    // array indexed by original facet index; 1 = painted, 0 = free.
++    std::vector<uint8_t> painted_facet_mask() const;
 +
      // Clear everything and make the tree empty.
      void reset();
  
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-index 7b4171fb28..1f6569760b 100644
+index a338cb8e0d..f105d5f3cf 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-@@ -5,6 +5,7 @@
- #include "libslic3r/Layer.hpp"
- #include "libslic3r/Thread.hpp"
- #include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
-+#include "libslic3r/OrcaExt/SupportAutoPaint.hpp" // [ORCAPORT:PF-10-auto]
+@@ -20,6 +20,8 @@
  
- //#include "slic3r/GUI/3DScene.hpp"
- #include "slic3r/GUI/GLCanvas3D.hpp"
-@@ -101,6 +102,7 @@ bool GLGizmoFdmSupports::on_init()
-     m_desc["highlight_by_angle"] = _L("Highlight overhangs");
+ #include <glad/gl.h>
+ 
++#include <algorithm>
++
+ #include <boost/log/trivial.hpp>
+ 
+ namespace Slic3r::GUI {
+@@ -104,6 +106,7 @@ bool GLGizmoFdmSupports::on_init()
      m_desc["tool_type"]          = _L("Tool type");
      m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
-+    m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
+     m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
++    m_desc["autopaint_types"]    = _L("Automatic types");    // [ORCAPORT:PF-10-auto]
      m_desc["gap_fill"]           = _L("Gap fill");
      m_desc["reset_direction"]    = _L("Reset direction");
      m_desc["clipping_of_view"]   = _L("Section view");
-@@ -207,6 +209,12 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -210,12 +213,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
      if (! m_c->selection_info()->model_object())
          return;
  
-+    // [ORCAPORT:PF-10-auto] Once the forced support preview has finished, classify and paint.
-+    if (m_auto_paint_pending && m_edit_state == state_ready) {
-+        m_auto_paint_pending = false;
-+        apply_auto_paint();
-+    }
-+
+-    // [ORCAPORT:PF-10-auto] Once the forced support preview has finished, classify and paint.
+-    if (m_auto_paint_pending && m_edit_state == state_ready) {
+-        m_auto_paint_pending = false;
+-        apply_auto_paint();
+-    }
+-
      float  scale       = m_parent.get_scale();
      #ifdef WIN32
          int dpi = get_dpi_for_window(wxGetApp().GetTopWindow());
-@@ -340,6 +348,17 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -350,17 +347,44 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
          }
      }
  
-+    // [ORCAPORT:PF-10-auto] Automatic painting: generate support for every overhang (respecting
-+    // painted blockers) and classify each contact region into a support type.
-+    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
-+    m_imgui->disabled_begin(m_print_instance.print_object == nullptr);
-+    if (m_imgui->button(m_desc.at("autopaint"))) {
-+        m_auto_paint_pending = true;
-+        invalid_support_volumes(true);
-+        update_support_volumes();
+-    // [ORCAPORT:PF-10-auto] Automatic painting: generate support for every overhang (respecting
+-    // painted blockers) and classify each contact region into a support type.
++    // [ORCAPORT:PF-10-auto] Automatic painting: a synchronous mesh analysis of the object's
++    // overhang regions, classified by the registry's scoring rules. The checkbox row chooses which
++    // support types automatic painting may select.
+     ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+-    m_imgui->disabled_begin(m_print_instance.print_object == nullptr);
+-    if (m_imgui->button(m_desc.at("autopaint"))) {
+-        m_auto_paint_pending = true;
+-        invalid_support_volumes(true);
+-        update_support_volumes();
+-    }
++    m_imgui->disabled_begin(m_c->selection_info()->model_object() == nullptr);
++    if (m_imgui->button(m_desc.at("autopaint")))
++        run_auto_paint();
+     m_imgui->disabled_end();
+ 
++    {
++        const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
++        if (!m_auto_paint_types_initialized) {
++            for (const Slic3r::OrcaExt::SupportPaintType &t : types)
++                if (!t.rules.empty() && t.auto_enabled_by_default)
++                    m_auto_paint_types.push_back(t.state);
++            m_auto_paint_types_initialized = true;
++        }
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("autopaint_types"));
++        bool first = true;
++        for (const Slic3r::OrcaExt::SupportPaintType &t : types) {
++            if (t.rules.empty())
++                continue;
++            if (!first)
++                ImGui::SameLine();
++            first = false;
++            auto it    = std::find(m_auto_paint_types.begin(), m_auto_paint_types.end(), t.state);
++            bool enabled = it != m_auto_paint_types.end();
++            if (m_imgui->bbl_checkbox(localized_support_label(t), enabled)) {
++                if (enabled)
++                    m_auto_paint_types.push_back(t.state);
++                else
++                    m_auto_paint_types.erase(std::remove(m_auto_paint_types.begin(), m_auto_paint_types.end(), t.state),
++                                             m_auto_paint_types.end());
++            }
++        }
 +    }
-+    m_imgui->disabled_end();
 +
      ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
  
      if (m_current_tool == ImGui::CircleButtonIcon) {
-@@ -839,7 +858,8 @@ void GLGizmoFdmSupports::update_support_volumes()
+@@ -860,8 +884,7 @@ void GLGizmoFdmSupports::update_support_volumes()
          return;
      }
  
--    if (m_volume_valid || !need_regenerate_support_volumes())
-+    // [ORCAPORT:PF-10-auto] An automatic-paint request always regenerates.
-+    if (m_volume_valid || (!m_auto_paint_pending && !need_regenerate_support_volumes()))
+-    // [ORCAPORT:PF-10-auto] An automatic-paint request always regenerates.
+-    if (m_volume_valid || (!m_auto_paint_pending && !need_regenerate_support_volumes()))
++    if (m_volume_valid || !need_regenerate_support_volumes())
      {
          BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
  
-@@ -850,9 +870,10 @@ void GLGizmoFdmSupports::update_support_volumes()
-         lck.unlock();
-         return;
+@@ -874,8 +897,6 @@ void GLGizmoFdmSupports::update_support_volumes()
      }
--
      //generate_support_preview in async mode
      std::unique_lock<std::mutex> lck(m_mutex);
-+    if (m_auto_paint_pending)
-+        m_edit_state = state_generating;
+-    if (m_auto_paint_pending)
+-        m_edit_state = state_generating;
      m_volume_ready = false;
      //destroy previous support volume
      if (m_support_volume)
-@@ -955,6 +976,39 @@ _finished:
+@@ -978,20 +999,61 @@ _finished:
      return;
  }
  
-+// [ORCAPORT:PF-10-auto] Classify the support contact regions and paint them. Runs on the UI
-+// thread once the forced preview finished. Blockers are never overwritten (and a blocked region
-+// produces no support contact in the first place, because support generation respects them).
-+void GLGizmoFdmSupports::apply_auto_paint()
-+{
-+    if (m_print_instance.print_object == nullptr)
-+        return;
-+
-+    const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
-+        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
-+    if (hits.empty())
-+        return;
-+
-+    bool painted = false;
-+    for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
-+        if (hit.volume_index >= m_triangle_selectors.size())
-+            continue;
-+        TriangleSelectorPatch *sel = dynamic_cast<TriangleSelectorPatch *>(m_triangle_selectors[hit.volume_index].get());
-+        if (sel == nullptr)
-+            continue;
-+        if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
-+            continue;
-+        sel->set_facet(int(hit.facet_index), hit.state);
-+        sel->request_update_render_data();
-+        painted = true;
-+    }
-+
-+    if (painted) {
-+        update_model_object();
-+        m_parent.set_as_dirty();
-+    }
-+}
-+
- void GLGizmoFdmSupports::generate_support_volume()
+-// [ORCAPORT:PF-10-auto] Classify the support contact regions and paint them. Runs on the UI
+-// thread once the forced preview finished. Blockers are never overwritten (and a blocked region
+-// produces no support contact in the first place, because support generation respects them).
+-void GLGizmoFdmSupports::apply_auto_paint()
++// [ORCAPORT:PF-10-auto] Mesh-driven automatic painting. Runs synchronously on the UI thread: the
++// object's overhang regions are measured (SupportAutoPaint) and scored against the registry's
++// rules, then the winning support type is painted on each region. Already painted facets and
++// blockers are excluded before clustering, so existing painting is never overwritten. Unclassified
++// regions are left unpainted and fall back to the object's own support style.
++void GLGizmoFdmSupports::run_auto_paint()
  {
-     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",before finalize_geometry";
+-    if (m_print_instance.print_object == nullptr)
++    if (!m_auto_paint_types_initialized) {
++        for (const Slic3r::OrcaExt::SupportPaintType &t : Slic3r::OrcaExt::support_paint_types())
++            if (!t.rules.empty() && t.auto_enabled_by_default)
++                m_auto_paint_types.push_back(t.state);
++        m_auto_paint_types_initialized = true;
++    }
++
++    const ModelObject *mo = m_c->selection_info()->model_object();
++    if (mo == nullptr)
++        return;
++
++    const int inst_idx = m_c->selection_info()->get_active_instance();
++    if (inst_idx < 0 || size_t(inst_idx) >= mo->instances.size())
++        return;
++    const Transform3d trafo = mo->instances[size_t(inst_idx)]->get_matrix();
++
++    // The selectors mirror the object's model-part volumes; keep them in sync if the object changed.
++    size_t model_parts = 0;
++    for (const ModelVolume *mv : mo->volumes)
++        if (mv->is_model_part())
++            ++model_parts;
++    if (m_triangle_selectors.size() != model_parts)
++        update_from_model_object(false);
++    if (m_triangle_selectors.size() != model_parts)
+         return;
+ 
++    std::vector<std::vector<uint8_t>> painted;
++    painted.reserve(m_triangle_selectors.size());
++    for (const std::unique_ptr<TriangleSelectorGUI> &sel : m_triangle_selectors) {
++        const TriangleSelectorPatch *tsp = dynamic_cast<const TriangleSelectorPatch *>(sel.get());
++        painted.push_back(tsp != nullptr ? tsp->painted_facet_mask() : std::vector<uint8_t>{});
++    }
++
++    Slic3r::OrcaExt::SupportAutoPaintParams params;
++    params.overhang_angle_deg = m_highlight_by_angle_threshold_deg;
++    params.overhangs_only     = m_paint_on_overhangs_only;
++    params.enabled_types      = m_auto_paint_types;
++
+     const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
+-        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
+-    if (hits.empty())
++        Slic3r::OrcaExt::classify_support_paint(*mo, trafo, painted, params);
++    if (hits.empty()) {
++        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", no overhang region matched a support type";
+         return;
++    }
++
++    Plater::TakeSnapshot snapshot(wxGetApp().plater(), "Automatic support painting", UndoRedo::SnapshotType::GizmoAction);
+ 
+-    bool painted = false;
++    bool painted_any = false;
+     for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
+         if (hit.volume_index >= m_triangle_selectors.size())
+             continue;
+@@ -1001,11 +1063,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
+         if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
+             continue;
+         sel->set_facet(int(hit.facet_index), hit.state);
+-        sel->request_update_render_data();
+-        painted = true;
++        sel->request_update_render_data(true); // true = paint changed, forces the geometry rebuild
++        painted_any = true;
+     }
+ 
+-    if (painted) {
++    if (painted_any) {
+         update_model_object();
+         m_parent.set_as_dirty();
+     }
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
-index 51a5ce1b46..ac47bec491 100644
+index ac47bec491..079aed1350 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
-@@ -70,6 +70,11 @@ private:
+@@ -70,10 +70,12 @@ private:
      // generic enforcer by default, so existing painted projects behave unchanged.
      EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
  
-+    // [ORCAPORT:PF-10-auto] Automatic painting: after a forced support preview finishes, classify
-+    // the support contact regions and paint them.
-+    bool m_auto_paint_pending = false;
-+    void apply_auto_paint();
-+
+-    // [ORCAPORT:PF-10-auto] Automatic painting: after a forced support preview finishes, classify
+-    // the support contact regions and paint them.
+-    bool m_auto_paint_pending = false;
+-    void apply_auto_paint();
++    // [ORCAPORT:PF-10-auto] Automatic painting: a synchronous mesh analysis of the object's
++    // overhang regions. m_auto_paint_types holds the states the user allowed (the per-type
++    // checkboxes); it is seeded from the registry on first use.
++    std::vector<EnforcerBlockerType> m_auto_paint_types;
++    bool m_auto_paint_types_initialized = false;
++    void run_auto_paint();
+ 
      //BBS: add support preview logic
      void init_print_instance();
-     void update_support_volumes();
+diff --git a/tests/libslic3r/CMakeLists.txt b/tests/libslic3r/CMakeLists.txt
+index 5c10ab1496..9d6b13886c 100644
+--- a/tests/libslic3r/CMakeLists.txt
++++ b/tests/libslic3r/CMakeLists.txt
+@@ -34,6 +34,7 @@ add_executable(${_TEST_NAME}_tests
+     test_step.cpp
+     test_stl.cpp
+     test_triangle_selector.cpp
++    test_orca_support_paint.cpp
+     test_meshboolean.cpp
+     test_marchingsquares.cpp
+     test_model.cpp
+diff --git a/tests/libslic3r/test_orca_support_paint.cpp b/tests/libslic3r/test_orca_support_paint.cpp
+new file mode 100644
+index 0000000000..c7d0a9d555
+--- /dev/null
++++ b/tests/libslic3r/test_orca_support_paint.cpp
+@@ -0,0 +1,142 @@
++#include <catch2/catch_all.hpp>
++
++#include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
++
++#include <string>
++#include <vector>
++
++using namespace Slic3r;
++using namespace Slic3r::OrcaExt;
++
++namespace {
++
++EnforcerBlockerType state_of(const char *label)
++{
++    for (const SupportPaintType &t : support_paint_types())
++        if (t.label != nullptr && label == std::string(t.label))
++            return t.state;
++    return EnforcerBlockerType::NONE;
++}
++
++// Mirrors the gizmo seeding: every auto-selectable type enabled by default.
++std::vector<EnforcerBlockerType> default_enabled()
++{
++    std::vector<EnforcerBlockerType> v;
++    for (const SupportPaintType &t : support_paint_types())
++        if (!t.rules.empty() && t.auto_enabled_by_default)
++            v.push_back(t.state);
++    return v;
++}
++
++} // namespace
++
++TEST_CASE("A large low flat overhang is painted as grid", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 1000.;
++    f.span_mm        = 100.;
++    f.height_mm      = 10.;
++    f.wall_angle_deg = 85.;
++    f.curvature      = 0.05;
++    f.gap_below_mm   = 1000.;
++
++    // NeoWave is off by default, so Grid competes against Snug/Organic only.
++    CHECK(support_paint_classify(f, default_enabled()) == state_of("Grid"));
++}
++
++TEST_CASE("A small elevated overhang is painted as organic", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 15.;
++    f.span_mm        = 10.;
++    f.height_mm      = 40.;
++    f.wall_angle_deg = 80.;
++    f.curvature      = 0.1;
++    f.gap_below_mm   = 1000.;
++
++    CHECK(support_paint_classify(f, default_enabled()) == state_of("Organic"));
++}
++
++TEST_CASE("A wide elevated curved overhang is painted as organic", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 200.;
++    f.span_mm        = 30.;
++    f.height_mm      = 60.;
++    f.wall_angle_deg = 40.;
++    f.curvature      = 0.7;
++    f.gap_below_mm   = 1000.;
++
++    CHECK(support_paint_classify(f, default_enabled()) == state_of("Organic"));
++}
++
++TEST_CASE("A near-horizontal hard ceiling is painted as NeoWave when enabled", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 300.;
++    f.span_mm        = 50.;
++    f.height_mm      = 100.;
++    f.wall_angle_deg = 88.;
++    f.curvature      = 0.1;
++    f.gap_below_mm   = 0.8;
++
++    std::vector<EnforcerBlockerType> enabled = default_enabled();
++    enabled.push_back(state_of("NeoWave"));
++
++    CHECK(support_paint_classify(f, enabled) == state_of("NeoWave"));
++}
++
++TEST_CASE("NeoWave is never chosen when its type is disabled", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 300.;
++    f.span_mm        = 50.;
++    f.height_mm      = 100.;
++    f.wall_angle_deg = 88.;
++    f.curvature      = 0.1;
++    f.gap_below_mm   = 0.8;
++
++    CHECK(support_paint_classify(f, default_enabled()) != state_of("NeoWave"));
++}
++
++TEST_CASE("A region that matches no rule is left unpainted", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 10.;
++    f.span_mm        = 5.;
++    f.height_mm      = 2.;
++    f.wall_angle_deg = 50.;
++    f.curvature      = 0.;
++    f.gap_below_mm   = 1000.;
++
++    CHECK(support_paint_classify(f, default_enabled()) == EnforcerBlockerType::NONE);
++}
++
++TEST_CASE("Clause membership decays outside the preferred window", "[OrcaSupportPaint]")
++{
++    SupportPaintRule::Term t;
++    t.feature  = SupportFeature::GapBelow;
++    t.min_val  = 0.;
++    t.max_val  = 2.;
++    t.soft_min = 0.;
++    t.soft_max = 6.;
++
++    CHECK(support_term_membership(t, 1.0) == 1.0);
++    CHECK(support_term_membership(t, 4.0) == 0.5);
++    CHECK(support_term_membership(t, 6.0) == 0.0);
++    CHECK(support_term_membership(t, 100.0) == 0.0);
++}
++
++TEST_CASE("A hard term rejects a clause outside its window", "[OrcaSupportPaint]")
++{
++    SupportPaintRule rule;
++    rule.terms.push_back(SupportPaintRule::Term{SupportFeature::Area, 0., 30., 0., 0., 1., true});
++
++    SupportRegionFeatures inside;
++    inside.area_mm2 = 20.;
++    CHECK(support_rule_score(rule, inside) == 1.0);
++
++    SupportRegionFeatures outside;
++    outside.area_mm2 = 200.;
++    CHECK(support_rule_score(rule, outside) == 0.0);
++}

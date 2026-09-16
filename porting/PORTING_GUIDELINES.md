@@ -272,7 +272,9 @@ depend on another feature's patch unless ordered in the manifest.
 - Do not commit `build/`, `deps/build/`, or editor files with product code. Commit the
   `OrcaSlicer/porting/` folder deliberately (it is the port definition and must be pushed),
   in its own commit rather than mixed into a product-code commit.
-- Do not commit or push without explicit instruction.
+- **Always commit a completed change** on its port branch (product commit, then a separate
+  `port:` docs+patch commit). Do not merge into `port/integration` or push until the user has
+  tested the build and explicitly asks - the merge is the user's gate.
 
 ---
 

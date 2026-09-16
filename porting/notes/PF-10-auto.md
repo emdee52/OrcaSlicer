@@ -1,77 +1,112 @@
 # PF-10-auto - automatic support painting
 
 - Source: preFlight v1.3.0 (`github.com/oozebot/preFlight`), "Automatic painting" (fork sha
-  `f74dc69`), **reimplemented Orca-native** - preFlight's version is disabled.
-- Branch: `port/PF-10-auto`, based on `port/integration` @ `a0cd6f0832` (PF-10-paint merged).
-- Category: B/D. Status: **ported, build clean; runtime pending.**
+  `f74dc69`), **reimplemented Orca-native** - preFlight's version paints every support spot as a
+  generic enforcer and its button is disabled. Our version classifies overhang regions into the
+  registered support styles.
+- Branch: `port/PF-10-auto-fix`, based on `port/integration` (PF-10-auto already merged).
+- Category: B/D. Status: **reimplemented (mesh-driven), build clean; runtime pending.**
 
-## Why this is a reimplementation
+## Why the first port did not work
 
-preFlight's `auto_generate()` painted `ENFORCER` facets around `SupportSpotsGenerator` support
-points via `TriangleSelectorWrapper::enforce_spot`, but the button is **commented out** because the
-support-spots search is skipped when support is enabled. Orca has no `TriangleSelectorWrapper` and
-its `generated_support_points` is never populated (`SupportPoint` is commented out); Orca's
-`SupportSpotsGenerator` only fills `Layer::curled_lines`. So there is no support-points backend to
-reuse.
+The first PF-10-auto classifier was support-preview-driven (`PrintObject::generate_support_preview`
+on a background thread, then `SupportLayer::support_islands` + upward raycasts). It never painted:
 
-## Data source (U1: support-preview-driven)
+- `support_islands` is written only by the classic engine (`SupportCommon.cpp:2023`); tree/organic
+  supports leave it empty, so `classify_support_paint` returned `{}` and the button did nothing.
+- Support layers were walked bottom-up with a first-hit dedupe, so regions were measured at the
+  support **base**, not the contact patch; `support_height_mm` was ~one layer, so the height gates
+  never fired.
+- `get_facet_state` returns `NONE` for split triangles and `set_facet` calls `undivide_triangle`, so
+  an auto-paint could overwrite a painted blocker.
+- The gizmo highlight angle and "on highlighted overhangs only" were ignored.
+- The button was wired to the BBS preview thread; a skipped/cancelled preview left it looking dead.
+- No per-type control, no undo snapshot.
 
-The auto-painter runs the existing support preview (`PrintObject::generate_support_preview()`), then
-reads the generated **top-contact support islands** and projects them up onto the object mesh
-(`OrcaExt/SupportAutoPaint`):
+## New design (mesh-driven, synchronous)
 
-- For each support layer island, sample its contour + centroid, raycast up against each model-part
-  volume's AABB tree, and take the nearest **downward-facing** facet.
-- `contact_area` = island area (mm²); `support_height` = number of stacked support layers below the
-  sample, in mm.
-- Classify with `support_paint_classify(area, height)` (registry-driven, fixed defaults).
-- A facet already painted (any non-NONE state) is skipped. Because support generation already
-  respects painted blockers and blocker volumes, a blocked region produces no support contact - so
-  the auto-paint inherently **follows blockers**.
+`classify_support_paint(ModelObject, instance_trafo, painted_masks, params)`:
 
-## Classifier (data-driven, `SupportPaintTypes.hpp`)
+1. For each model-part volume, a facet is a **candidate** when its normal is within
+   `overhang_angle_deg` of straight down - the exact predicate of
+   `GLGizmoFdmSupports::select_facets_by_angle`, so candidates equal the highlighted overhangs.
+   When `overhangs_only` is false the angle is 90 deg (every downward facet). Facets already painted
+   (any state, including blockers) are excluded using `TriangleSelector::painted_facet_mask()`,
+   which is split-safe (each triangle keeps its `source_triangle`).
+2. Candidates are clustered into regions by facet adjacency (`its_face_neighbors`, union-find).
+3. Each region is measured: `area_mm2`, `span_mm` (max XY extent), `height_mm` (lowest point above
+   the plate), `wall_angle_deg` (0 = vertical wall, 90 = horizontal ceiling, from the max
+   facet severity), `curvature` (1 - |area-weighted mean world normal|), and `gap_below_mm` (one
+   downward ray to the next model surface).
+4. The feature vector is scored against the registry's per-type rules (below); the winning state is
+   painted on every facet of the region. No rule matches => left unpainted (object's own style).
 
-Per-region, first highest-priority match wins:
+Runs synchronously on the UI thread; no slicing, no support preview, no thread.
 
-| Type | Rule | Priority |
-|------|------|----------|
-| Organic | area <= 25 mm² and height >= 3 mm (small tall overhang; tree routes around) | 20 |
-| NeoWave | area >= 100 mm² and height >= 3 mm (wide flat overhang on a tall support; wave roof eases removal) | 15 |
-| Snug | area >= 50 mm² (broad flat; best interface) | 10 |
-| Grid | fallback | 1 |
+## Extensible scoring registry (`SupportPaintTypes`)
 
-Baobab's rule is added with its engine in `PF-10`. Thresholds are fixed defaults in one table.
+The single extension point is the registry. A **new support type is one row** (`SupportPaintType`),
+including its `rules`; the classifier, gizmo and slicer dispatcher all iterate the registry and need
+no changes. Adding a new *feature* is one `SupportFeature` value plus its computation in
+`SupportAutoPaint`, after which every type can weigh against it.
 
-## Implementation
+- `SupportPaintRule::Term` = a ranged preference over one feature: full credit inside
+  `[min_val,max_val]`, linear decay to `[soft_min,soft_max]`, `weight`, and `hard` (outside the
+  window rejects the clause).
+- A rule is a conjunction of terms; a type may carry several rules (OR) and keeps its best score.
+- `support_type_score = best_rule_score * priority`; a type wins when `score >= min_score`, highest
+  score first. `priority` is the hook for future strength/material weighting UI.
 
-- New `src/libslic3r/OrcaExt/SupportAutoPaint.{hpp,cpp}` (`[ORCAPORT FILE]`):
-  `classify_support_paint(const PrintObject&) -> std::vector<SupportAutoPaintHit>`.
-- `SupportPaintTypes.{hpp,cpp}`: `SupportPaintClassify` per entry + `support_paint_classify()`.
-- `TriangleSelector`: `get_facet_state(int)` so the painter can skip already-painted facets.
-- `GLGizmoFdmSupports`: "Automatic painting" button; forces a support preview (reusing the existing
-  worker thread), then paints the classified facets on the UI thread when it finishes.
+Default rules (all thresholds live in this one table):
+
+| Type | Rules | min_score | priority | auto default |
+|------|-------|-----------|----------|--------------|
+| Snug | `Area >= 50` | 0.5 | 1 | on |
+| Grid | `Area >= 400 && Span >= 40 && Height <= 50` | 0.9 | 2 | on |
+| Organic | (`Area <= 30 && Height >= 4`) OR (`Curvature >= 0.5 && Height >= 10`) | 0.6 | 3 | on |
+| NeoWave | `WallAngle >= 70 && GapBelow ~<= 4` OR `WallAngle >= 78` | 0.5 | 3 | **off** |
+
+`Default` (the legacy generic `ENFORCER`) has no rules and is never auto-selected; it is chosen by
+the left brush when a region should keep the object's own style.
+
+## Gizmo
+
+- "Automatic painting" runs the analysis synchronously and paints; `TakeSnapshot` is taken first.
+- Plus a per-type checkbox row ("Automatic types") seeded from `auto_enabled_by_default`; NeoWave is
+  off until checked. The enabled set is passed to the classifier (`enabled_types`).
+- Uses the existing "Highlight overhangs" angle and "On highlighted overhangs only" checkbox.
+- The old preview/thread hooks (`m_auto_paint_pending`) were removed; `update_support_volumes`
+  returns to its stock form.
 
 ## Behavior-neutral at defaults
 
-Nothing runs until the button is pressed; no config keys, no change to normal painting/slicing.
+Nothing runs until the button is pressed. No config keys, no change to normal painting or slicing.
+Unclassified regions are not painted; a re-run is additive (painted facets are excluded), so
+"Erase all" gives a clean run.
 
 ## Deviations / gaps
 
-- The preview is generated with the object's current support config, so the contact footprint (not
-  the support style) is what drives classification - intended.
-- Painting is additive: existing enforcers are left in place (a re-run adds; "Erase all" clears).
-- Runtime/quality of the thresholds is unverified; the table is the tuning point.
+- Classification granularity is the original mesh facet; connected components are not split by
+  normal, so a strongly curved region is one patch (tune later if over-merging shows up).
+- `overhangs_only == false` uses every downward facet (90 deg); documented interpretation.
+- The thresholds are fixed defaults (weighting UI deferred by user decision).
+- `test_orca_support_paint.cpp` covers scoring; the mesh region extraction is exercised manually.
 
 ## Verification
 
-- Build: `build_win.bat -s -j 8` (new files) -> 0 errors; `OrcaSlicer.dll` linked 2026-09-15.
-- Manual (pending): press Automatic painting -> a progress preview runs, then overhangs are painted
-  with a mix of Snug/Grid/Organic/NeoWave; a painted blocker stays unassisted; re-running is stable.
+- Build: `build_win.bat -s --no-configure -j 8` -> 0 errors; `OrcaSlicer.dll` linked 2026-09-16.
+- Tests: `build_win.bat -s --run-tests` -> **100% of 807 tests passed**, including the eight
+  `[OrcaSupportPaint]` cases in `tests/libslic3r/test_orca_support_paint.cpp` (Grid/Snug/Organic/
+  NeoWave selection, NeoWave opt-in gating, leave-unpainted, hard/soft term membership).
+- Manual (pending): press Automatic painting -> overhangs are painted immediately with a mix of
+  Snug/Grid/Organic (and NeoWave when checked); painted/blocker regions untouched; re-run is stable;
+  "Erase all" clears; undo restores.
 
 ## Files
 
-- New: `src/libslic3r/OrcaExt/SupportAutoPaint.{hpp,cpp}`
-- Modified: `src/libslic3r/CMakeLists.txt`, `src/libslic3r/TriangleSelector.hpp`,
-  `src/libslic3r/OrcaExt/SupportPaintTypes.{hpp,cpp}`,
-  `src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.{hpp,cpp}`
-- Patch: `porting/patches/20_PF-10-auto.patch`
+- Modified: `src/libslic3r/OrcaExt/SupportAutoPaint.{hpp,cpp}` (rewritten),
+  `src/libslic3r/OrcaExt/SupportPaintTypes.{hpp,cpp}` (scoring registry),
+  `src/libslic3r/TriangleSelector.{hpp,cpp}` (`painted_facet_mask`),
+  `src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.{hpp,cpp}`,
+  `tests/libslic3r/CMakeLists.txt`, `tests/libslic3r/test_orca_support_paint.cpp` (new).
+- Patch: `porting/patches/20_PF-10-auto.patch` (regenerated).
