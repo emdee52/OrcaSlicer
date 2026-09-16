@@ -21,8 +21,11 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`b1a23c6e19`** "Merge port/PF-9: print-friendly interlocking
-  bead width". PF-6 and PF-9 are ported and PF-9 is runtime/visual-verified; PF-3/4/5/7/8 excluded.
+- Latest integration commit at handoff: **`e0d43bbb95`** "Merge port/PF-10-multisupport: multi-pass
+  support collision avoidance" (on top of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint,
+  PF-10-auto, PF-10-multisupport and PF-10-paint-qol are merged into `port/integration` and pushed;
+  the user runtime-verified auto-painting (region scoring, build-plate-only tree fallback,
+  min-area/facet split, gizmo QOL) and multi-pass collision avoidance. PF-3/4/5/7/8 excluded.
 - Two sources: `OrcaFS-NeotkoCM/` (Snapmaker/Neotko Orca) and `preFlight/` (PrusaSlicer fork).
   Both are outside `OrcaSlicer/`; only selected features are ported.
 
@@ -68,28 +71,27 @@ port intent onto Orca's pipelines.
 | PF-7 | Manual fan controls | excluded (user) | - | - |
 | PF-8 | Serpentine | excluded (user) | - | - |
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
-| PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (runtime pending) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
-| PF-10-auto | Automatic support painting (mesh-driven region scoring, respects blockers, per-type opt-in) | ported (build+tests clean, runtime pending) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
-| PF-10-multisupport | Multi-pass support collision avoidance (later passes avoid earlier supports) | ported (build clean; runtime pending) | notes/PF-10-multisupport.md | 21_PF-10-multisupport.patch |
-| PF-10-paint-qol | Support painter QOL: grouped layout, colour swatches, remap support types | ported (build clean; runtime pending) | notes/PF-10-paint.md | 22_PF-10-paint-qol.patch |
+| PF-10-paint | Per-style support painting gizmo + multi-pass dispatch (extensible registry; NeoWave hardcoded recipe) | ported (user-verified) | notes/PF-10-paint.md | 19_PF-10-paint.patch |
+| PF-10-auto | Automatic support painting (mesh-driven region scoring, respects blockers, per-type opt-in) | ported (user-verified) | notes/PF-10-auto.md | 20_PF-10-auto.patch |
+| PF-10-multisupport | Multi-pass support collision avoidance (later passes avoid earlier supports) | ported (user-verified) | notes/PF-10-multisupport.md | 21_PF-10-multisupport.patch |
+| PF-10-paint-qol | Support painter QOL: grouped layout, colour swatches, remap support types | ported (user-verified) | notes/PF-10-paint.md | 22_PF-10-paint-qol.patch |
 | PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
 ## What to do next
 
-**PF-10-paint** (per-style support painting + multi-pass dispatch) is ported on `port/PF-10-paint`
-and merged into `port/integration` (build clean, runtime pending). It adds an extensible
-`OrcaExt/SupportPaintTypes` registry (a new support = one row), extends the support gizmo with
-Default/Snug/Grid/Organic/NeoWave, and runs one classic pass + one enforcer-only tree pass then
-merges them, so different support engines coexist on one object. **PF-10-auto** (Automatic painting
-button) was **rewritten on `port/PF-10-auto-fix`**: the support-preview-driven version did nothing at
-runtime, so it is now a synchronous mesh analysis that scores each overhang region
-(area/span/height/wall-angle/curvature/gap-below) against the registry's per-type rules, honours the
-highlight angle / on-overhangs-only, never overwrites painted/blocker facets (split-safe
-`TriangleSelector::painted_facet_mask`), and has per-type checkboxes + undo. Build clean and
-`ctest` 807/807; runtime pending. **PF-10 Baobab was abandoned by user decision**
-(attempted across 4 rounds, then fully removed: code, keys, paint row, `port/PF-10` branch;
-`port/integration` reset to `c1e9289f6c`). Do not re-attempt unless the user asks. PF-3/4/5/7/8 were
-excluded; PF-6 and PF-9 are ported (PF-9 runtime-verified).
+**PF-10-paint / PF-10-auto / PF-10-multisupport / PF-10-paint-qol are DONE and merged into
+`port/integration` (user-verified).** `port/PF-10-auto-fix` and `port/PF-10-multisupport` are pushed
+to `origin` and merged (`--no-ff`). Summary: an extensible `OrcaExt/SupportPaintTypes` scoring
+registry (a new support = one row), a synchronous mesh-driven auto-painter that scores each overhang
+region (area/span/height/wall-angle/curvature/gap-below), honours the highlight angle /
+on-overhangs-only, never overwrites painted/blocker facets (split-safe
+`TriangleSelector::painted_facet_mask`), splits regions by normal and by per-facet part-below for the
+build-plate-only tree fallback, has a min-overhang-area cut, per-type checkboxes, undo, colour
+swatches, a remap-types panel and a grouped layout; multi-pass supports avoid each other via a
+per-pass occupancy channel. **PF-10 Baobab was abandoned by user decision**
+(attempted across 4 rounds, then fully removed: code, keys, paint row, `port/PF-10` branch). Do not
+re-attempt unless the user asks. PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported
+(PF-9 runtime-verified).
 
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
