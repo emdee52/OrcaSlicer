@@ -74,9 +74,22 @@ the left brush when a region should keep the object's own style.
 - "Automatic painting" runs the analysis synchronously and paints; `TakeSnapshot` is taken first.
 - Plus a per-type checkbox row ("Automatic types") seeded from `auto_enabled_by_default`; NeoWave is
   off until checked. The enabled set is passed to the classifier (`enabled_types`).
+- A "Min overhang area" slider (default 4 mm^2, 0 = off) skips overhang regions too small to hold a
+  support tip, so the tree engine is not sent branches at unsupportable slivers.
 - Uses the existing "Highlight overhangs" angle and "On highlighted overhangs only" checkbox.
 - The old preview/thread hooks (`m_auto_paint_pending`) were removed; `update_support_volumes`
   returns to its stock form.
+
+## Region clustering (updated)
+
+Candidates are grouped by facet adjacency **and** normal similarity
+(`region_split_angle_deg`, default 30 deg): two adjacent overhang facets merge only if their world
+normals are within that angle. This keeps a large flat overhang and a thin curved strip next to it
+as separate regions, so they can be classified (and coloured) independently instead of the whole
+highlighted set becoming one style. Regions below `min_region_area_mm2` are dropped before
+classification.
+
+The "Default" painter colour is now amber; the old light green was too close to Organic (tree).
 
 ## Behavior-neutral at defaults
 
@@ -86,8 +99,12 @@ Unclassified regions are not painted; a re-run is additive (painted facets are e
 
 ## Deviations / gaps
 
-- Classification granularity is the original mesh facet; connected components are not split by
-  normal, so a strongly curved region is one patch (tune later if over-merging shows up).
+- Classification granularity is the original mesh facet. Regions are split at sharp normal changes,
+  but a smoothly curved region stays one patch (its adjacent normals differ by less than the split
+  angle); tune `region_split_angle_deg` if over-merging shows up.
+- The overhang highlight itself is Orca's upstream slope shader (normal angle only, no area), so the
+  min-area filter cannot remove small red highlight patches; it only stops the auto-painter from
+  painting them. Making the highlight area-aware would mean replacing the shader overlay.
 - `overhangs_only == false` uses every downward facet (90 deg); documented interpretation.
 - The thresholds are fixed defaults (weighting UI deferred by user decision).
 - `test_orca_support_paint.cpp` covers scoring; the mesh region extraction is exercised manually.

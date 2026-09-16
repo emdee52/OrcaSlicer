@@ -1,5 +1,5 @@
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
-index e64c3b86cf..ba61bfeb9b 100644
+index e64c3b86cf..9cabff62ca 100644
 --- a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 @@ -4,12 +4,11 @@
@@ -17,7 +17,7 @@ index e64c3b86cf..ba61bfeb9b 100644
  #include "../TriangleMesh.hpp"
  #include "../libslic3r.h"
  #include "SupportPaintTypes.hpp"
-@@ -19,141 +18,206 @@ namespace OrcaExt {
+@@ -19,141 +18,219 @@ namespace OrcaExt {
  
  namespace {
  
@@ -82,7 +82,8 @@ index e64c3b86cf..ba61bfeb9b 100644
 +        parent.resize(n);
 +        for (size_t i = 0; i < n; ++i)
 +            parent[i] = int(i);
-+    }
+     }
+-    return height;
 +    int find(int x)
 +    {
 +        while (parent[x] != x) {
@@ -121,8 +122,7 @@ index e64c3b86cf..ba61bfeb9b 100644
 +            if (dist > 1.0e-6 && dist < best)
 +                best = dist;
 +        }
-     }
--    return height;
++    }
 +    return best;
  }
  
@@ -201,9 +201,7 @@ index e64c3b86cf..ba61bfeb9b 100644
 +
 +        const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
 +        const std::vector<Vec3f>   normals   = its_face_normals(its);
- 
--        for (const ExPolygon &island : sl->support_islands) {
--            if (island.contour.points.empty())
++
 +        // Local frame of the highlight predicate.
 +        Eigen::Matrix3d inv_lin = vd.world.linear().inverse();
 +        Vec3d           down    = (inv_lin * (-Vec3d::UnitZ())).normalized();
@@ -215,12 +213,32 @@ index e64c3b86cf..ba61bfeb9b 100644
 +        for (size_t i = 0; i < its.vertices.size(); ++i)
 +            wv[i] = vd.world * its.vertices[i].cast<double>();
 +
++        // World facet normals, used for region splitting and curvature.
++        std::vector<Vec3d> wn(nfacets);
++        for (size_t f = 0; f < nfacets; ++f)
++            wn[f] = (vd.world.linear() * normals[f].cast<double>()).normalized();
++
 +        const std::vector<uint8_t> *painted_mask =
 +            vi < painted.size() && painted[vi].size() == nfacets ? &painted[vi] : nullptr;
 +
 +        std::vector<uint8_t> candidate(nfacets, 0);
 +        for (size_t f = 0; f < nfacets; ++f) {
 +            if (painted_mask != nullptr && (*painted_mask)[f] != 0)
++                continue;
++            if (normals[f].cast<double>().dot(down) > dot_limit)
++                candidate[f] = 1;
++        }
++
++        // Only merge facets whose world normals are close, so a flat face and an adjacent curved or
++        // skewed sliver stay separate regions (and can get different support styles / colours).
++        const double split_cos = std::cos(std::clamp(double(params.region_split_angle_deg), 1.0, 179.0) * PI / 180.);
+ 
+-        for (const ExPolygon &island : sl->support_islands) {
+-            if (island.contour.points.empty())
++        DSU dsu;
++        dsu.reset(nfacets);
++        for (size_t f = 0; f < nfacets; ++f) {
++            if (!candidate[f])
                  continue;
 -            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
 -
@@ -239,17 +257,8 @@ index e64c3b86cf..ba61bfeb9b 100644
 -                        volume_index = vi;
 -                        found        = true;
 -                        break;
-+            if (normals[f].cast<double>().dot(down) > dot_limit)
-+                candidate[f] = 1;
-+        }
-+
-+        DSU dsu;
-+        dsu.reset(nfacets);
-+        for (size_t f = 0; f < nfacets; ++f) {
-+            if (!candidate[f])
-+                continue;
 +            for (int n : neighbors[f])
-+                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)])
++                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos)
 +                    dsu.unite(int(f), n);
 +        }
 +
@@ -272,8 +281,7 @@ index e64c3b86cf..ba61bfeb9b 100644
 +                const Vec3i32 &tri = its.indices[f];
 +                const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
 +                area_sum += a;
-+                const Vec3d nw = (vd.world.linear() * normals[f].cast<double>()).normalized();
-+                normal_sum += nw * a;
++                normal_sum += wn[f] * a;
 +                best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
 +                for (int k = 0; k < 3; ++k)
 +                    for (int axis = 0; axis < 3; ++axis) {
@@ -291,6 +299,11 @@ index e64c3b86cf..ba61bfeb9b 100644
 -                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
 -                if (state == EnforcerBlockerType::NONE)
 -                    continue;
++            // Tiny overhang slivers cannot hold a support tip/interface; painting them only makes
++            // the tree engine aim branches at an unsupportable spot.
++            if (params.min_region_area_mm2 > 0. && area_sum < params.min_region_area_mm2)
++                continue;
+ 
 +            feat.area_mm2 = area_sum;
 +            feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
 +            feat.height_mm = bb_min.z();
@@ -308,7 +321,7 @@ index e64c3b86cf..ba61bfeb9b 100644
 +            const EnforcerBlockerType state = support_paint_classify(feat, params.enabled_types);
 +            if (state == EnforcerBlockerType::NONE)
 +                continue;
- 
++
 +            hits.reserve(hits.size() + facets.size());
 +            for (size_t f : facets) {
                  SupportAutoPaintHit hit;
@@ -330,10 +343,10 @@ index e64c3b86cf..ba61bfeb9b 100644
  }
  
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-index 40625095b5..64af77fccc 100644
+index 40625095b5..727144e3a5 100644
 --- a/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.hpp
-@@ -4,36 +4,57 @@
+@@ -4,36 +4,65 @@
  #define slic3r_OrcaExt_SupportAutoPaint_hpp_
  
  #include <cstddef>
@@ -363,6 +376,14 @@ index 40625095b5..64af77fccc 100644
 +    // States the user allowed automatic painting to choose (the per-type checkboxes). An empty
 +    // vector means every auto-selectable registry type is eligible.
 +    std::vector<EnforcerBlockerType> enabled_types;
++    // Regions smaller than this are never painted: a tiny overhang sliver cannot hold a support
++    // tip/interface, so painting it only makes the tree engine aim branches at an unsupportable
++    // spot. 0 disables the filter.
++    double min_region_area_mm2{4.0};
++    // Adjacent candidate facets merge into one region only when their normals differ by at most
++    // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
++    // regions, so they can be classified (and coloured) independently.
++    float region_split_angle_deg{30.f};
 +};
 +
 +// One model facet the auto-painter wants to paint, plus the region measurements that selected it.
@@ -404,7 +425,7 @@ index 40625095b5..64af77fccc 100644
 -#endif
 +#endif // slic3r_OrcaExt_SupportAutoPaint_hpp_
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
-index 5b0d72e3c7..cc520ca0a5 100644
+index 5b0d72e3c7..d0dbdd9d4d 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 @@ -2,6 +2,9 @@
@@ -417,7 +438,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
  #include "../Model.hpp"
  #include "../Print.hpp"
  
-@@ -17,11 +20,42 @@ inline constexpr EnforcerBlockerType st_grid    = static_cast<EnforcerBlockerTyp
+@@ -17,23 +20,55 @@ inline constexpr EnforcerBlockerType st_grid    = static_cast<EnforcerBlockerTyp
  inline constexpr EnforcerBlockerType st_organic = static_cast<EnforcerBlockerType>(5);
  inline constexpr EnforcerBlockerType st_neowave = static_cast<EnforcerBlockerType>(6);
  
@@ -460,7 +481,10 @@ index 5b0d72e3c7..cc520ca0a5 100644
      {
          SupportPaintType t;
          t.state = SUPPORT_PAINT_DEFAULT;
-@@ -30,10 +64,10 @@ std::vector<SupportPaintType> make_default_registry()
+         t.label = "Default";
+-        t.color[0] = 0.5f; t.color[1] = 1.f;  t.color[2] = 0.5f; t.color[3] = 1.f;
++        // Amber: the legacy light green was too close to Organic (tree) in the painter palette.
++        t.color[0] = 1.f; t.color[1] = 0.65f; t.color[2] = 0.f; t.color[3] = 1.f;
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsDefault;
@@ -473,7 +497,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
      {
          SupportPaintType t;
          t.state = st_snug;
-@@ -42,10 +76,13 @@ std::vector<SupportPaintType> make_default_registry()
+@@ -42,10 +77,13 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsSnug;
@@ -489,7 +513,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
      {
          SupportPaintType t;
          t.state = st_grid;
-@@ -54,10 +91,17 @@ std::vector<SupportPaintType> make_default_registry()
+@@ -54,10 +92,17 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = false;
          t.support_type = stNormalAuto;
          t.support_style = smsGrid;
@@ -509,7 +533,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
      {
          SupportPaintType t;
          t.state = st_organic;
-@@ -66,12 +110,18 @@ std::vector<SupportPaintType> make_default_registry()
+@@ -66,12 +111,18 @@ std::vector<SupportPaintType> make_default_registry()
          t.is_tree = true;
          t.support_type = stTreeAuto;
          t.support_style = smsTreeOrganic;
@@ -532,7 +556,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
      {
          SupportPaintType t;
          t.state = st_neowave;
-@@ -85,8 +135,14 @@ std::vector<SupportPaintType> make_default_registry()
+@@ -85,8 +136,14 @@ std::vector<SupportPaintType> make_default_registry()
          t.overrides.force_wave_roof_pattern = true; t.overrides.wave_roof_pattern = smwrpWave;
          t.overrides.force_wave_roof_order   = true; t.overrides.wave_roof_order   = smwroSmart;
          t.overrides.force_wave_wall_loops   = true; t.overrides.wave_wall_loops   = 1;
@@ -549,7 +573,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
          v.emplace_back(t);
      }
      return v;
-@@ -100,6 +156,93 @@ std::vector<SupportPaintType> &registry()
+@@ -100,6 +157,93 @@ std::vector<SupportPaintType> &registry()
  
  } // namespace
  
@@ -643,7 +667,7 @@ index 5b0d72e3c7..cc520ca0a5 100644
  const std::vector<SupportPaintType> &support_paint_types()
  {
      return registry();
-@@ -134,22 +277,6 @@ bool has_painted_support_styles(const PrintObject &object)
+@@ -134,22 +278,6 @@ bool has_painted_support_styles(const PrintObject &object)
      return false;
  }
  
@@ -833,7 +857,7 @@ index 59f8afafa6..2ada914e41 100644
      void reset();
  
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-index a338cb8e0d..f105d5f3cf 100644
+index a338cb8e0d..584a0718a4 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 @@ -20,6 +20,8 @@
@@ -845,15 +869,16 @@ index a338cb8e0d..f105d5f3cf 100644
  #include <boost/log/trivial.hpp>
  
  namespace Slic3r::GUI {
-@@ -104,6 +106,7 @@ bool GLGizmoFdmSupports::on_init()
+@@ -104,6 +106,8 @@ bool GLGizmoFdmSupports::on_init()
      m_desc["tool_type"]          = _L("Tool type");
      m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
      m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
 +    m_desc["autopaint_types"]    = _L("Automatic types");    // [ORCAPORT:PF-10-auto]
++    m_desc["autopaint_min_area"] = _L("Min overhang area");  // [ORCAPORT:PF-10-auto]
      m_desc["gap_fill"]           = _L("Gap fill");
      m_desc["reset_direction"]    = _L("Reset direction");
      m_desc["clipping_of_view"]   = _L("Section view");
-@@ -210,12 +213,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -210,12 +214,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
      if (! m_c->selection_info()->model_object())
          return;
  
@@ -866,7 +891,7 @@ index a338cb8e0d..f105d5f3cf 100644
      float  scale       = m_parent.get_scale();
      #ifdef WIN32
          int dpi = get_dpi_for_window(wxGetApp().GetTopWindow());
-@@ -350,17 +347,44 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -350,17 +348,53 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
          }
      }
  
@@ -914,12 +939,21 @@ index a338cb8e0d..f105d5f3cf 100644
 +                                             m_auto_paint_types.end());
 +            }
 +        }
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("autopaint_min_area"));
++        ImGui::SameLine(sliders_left_width);
++        ImGui::PushItemWidth(sliders_width);
++        m_imgui->bbl_slider_float_style("##autopaint_min_area", &m_auto_paint_min_area, 0.f, 100.f, "%.1f", 1.0f, true);
++        if (ImGui::IsItemHovered())
++            m_imgui->tooltip(_L("Overhang regions smaller than this area, in square millimeters, are left "
++                                "unpainted; a tiny sliver cannot hold a support tip."),
++                             max_tooltip_width);
 +    }
 +
      ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
  
      if (m_current_tool == ImGui::CircleButtonIcon) {
-@@ -860,8 +884,7 @@ void GLGizmoFdmSupports::update_support_volumes()
+@@ -860,8 +894,7 @@ void GLGizmoFdmSupports::update_support_volumes()
          return;
      }
  
@@ -929,7 +963,7 @@ index a338cb8e0d..f105d5f3cf 100644
      {
          BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ",no need to regenerate support volume, return directly";
  
-@@ -874,8 +897,6 @@ void GLGizmoFdmSupports::update_support_volumes()
+@@ -874,8 +907,6 @@ void GLGizmoFdmSupports::update_support_volumes()
      }
      //generate_support_preview in async mode
      std::unique_lock<std::mutex> lck(m_mutex);
@@ -938,7 +972,7 @@ index a338cb8e0d..f105d5f3cf 100644
      m_volume_ready = false;
      //destroy previous support volume
      if (m_support_volume)
-@@ -978,20 +999,61 @@ _finished:
+@@ -978,20 +1009,62 @@ _finished:
      return;
  }
  
@@ -991,6 +1025,7 @@ index a338cb8e0d..f105d5f3cf 100644
 +    params.overhang_angle_deg = m_highlight_by_angle_threshold_deg;
 +    params.overhangs_only     = m_paint_on_overhangs_only;
 +    params.enabled_types      = m_auto_paint_types;
++    params.min_region_area_mm2 = m_auto_paint_min_area;
 +
      const std::vector<Slic3r::OrcaExt::SupportAutoPaintHit> hits =
 -        Slic3r::OrcaExt::classify_support_paint(*m_print_instance.print_object);
@@ -1008,7 +1043,7 @@ index a338cb8e0d..f105d5f3cf 100644
      for (const Slic3r::OrcaExt::SupportAutoPaintHit &hit : hits) {
          if (hit.volume_index >= m_triangle_selectors.size())
              continue;
-@@ -1001,11 +1063,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
+@@ -1001,11 +1074,11 @@ void GLGizmoFdmSupports::apply_auto_paint()
          if (sel->get_facet_state(int(hit.facet_index)) != EnforcerBlockerType::NONE)
              continue;
          sel->set_facet(int(hit.facet_index), hit.state);
@@ -1024,10 +1059,10 @@ index a338cb8e0d..f105d5f3cf 100644
          m_parent.set_as_dirty();
      }
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
-index ac47bec491..079aed1350 100644
+index ac47bec491..35eac84196 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp
-@@ -70,10 +70,12 @@ private:
+@@ -70,10 +70,15 @@ private:
      // generic enforcer by default, so existing painted projects behave unchanged.
      EnforcerBlockerType m_enforcer_type = EnforcerBlockerType::ENFORCER;
  
@@ -1040,6 +1075,9 @@ index ac47bec491..079aed1350 100644
 +    // checkboxes); it is seeded from the registry on first use.
 +    std::vector<EnforcerBlockerType> m_auto_paint_types;
 +    bool m_auto_paint_types_initialized = false;
++    // Minimum overhang region area (mm^2) automatic painting will consider; smaller slivers are
++    // left unpainted. 0 disables the filter.
++    float m_auto_paint_min_area = 4.f;
 +    void run_auto_paint();
  
      //BBS: add support preview logic
