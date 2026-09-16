@@ -3908,12 +3908,12 @@ index 0000000000..ef74d41193
 +        double max_horizontal = std::max(obj_size.x(), obj_size.y());
 +        double diagonal = std::sqrt(max_horizontal * max_horizontal + obj_size.z() * obj_size.z());
 +
-+        // Camera distance: ~2.5x the diagonal for good framing at 45┬░ angle
++        // Camera distance: ~2.5x the diagonal for good framing at 45° angle
 +        radius = diagonal * 2.5;
 +        // Ensure minimum distance for very small objects
 +        radius = std::max(radius, 80.0);
 +
-+        // Height proportional to object height, maintaining ~40┬░ elevation angle
++        // Height proportional to object height, maintaining ~40° elevation angle
 +        height = target.z() + radius * 0.7;
 +    } else {
 +        // Fallback to plate center if no objects
@@ -3931,10 +3931,10 @@ index 0000000000..ef74d41193
 +    double angle_step = 360.0 / view_count;
 +
 +    // View names for cardinal directions (camera position relative to plate)
-+    // 0┬░ = camera at +X looking toward center = "Front" view
-+    // 90┬░ = camera at +Y = "Right" view
-+    // 180┬░ = camera at -X = "Back" view
-+    // 270┬░ = camera at -Y = "Left" view
++    // 0° = camera at +X looking toward center = "Front" view
++    // 90° = camera at +Y = "Right" view
++    // 180° = camera at -X = "Back" view
++    // 270° = camera at -Y = "Left" view
 +    std::vector<std::string> view_names_4 = {"Front", "Right", "Back", "Left"};
 +    std::vector<std::string> view_names_8 = {"Front", "Front-Right", "Right", "Back-Right",
 +                                              "Back", "Back-Left", "Left", "Front-Left"};
@@ -4032,13 +4032,13 @@ index 0000000000..ef74d41193
 +    wxFont edge_font(edge_font_size, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL);
 +
 +    // Cardinal directions: which edge label appears where based on camera angle
-+    // For camera at angle i*90┬░, the directions rotate
++    // For camera at angle i*90°, the directions rotate
 +    // Index 0=near(bottom), 1=far(top), 2=left, 3=right
 +    std::vector<std::vector<std::string>> edge_labels_by_view = {
-+        {"Front", "Back", "Left", "Right"},   // 0┬░ Front view
-+        {"Right", "Left", "Front", "Back"},   // 90┬░ Right view
-+        {"Back", "Front", "Right", "Left"},   // 180┬░ Back view
-+        {"Left", "Right", "Back", "Front"}    // 270┬░ Left view
++        {"Front", "Back", "Left", "Right"},   // 0° Front view
++        {"Right", "Left", "Front", "Back"},   // 90° Right view
++        {"Back", "Front", "Right", "Left"},   // 180° Back view
++        {"Left", "Right", "Back", "Front"}    // 270° Left view
 +    };
 +
 +    for (int i = 0; i < view_count && i < (int)angles.size(); ++i) {
@@ -4048,7 +4048,7 @@ index 0000000000..ef74d41193
 +        int y_offset = title_height + row * resolution;
 +        int padding = std::max(4, resolution / 32);
 +
-+        // Draw view label (e.g., "0┬░ Front View")
++        // Draw view label (e.g., "0° Front View")
 +        dc.SetFont(font);
 +        wxString view_label;
 +        if (i < (int)view_names.size() && !view_names[i].empty()) {
