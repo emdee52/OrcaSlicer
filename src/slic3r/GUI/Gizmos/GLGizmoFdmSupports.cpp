@@ -105,7 +105,7 @@ bool GLGizmoFdmSupports::on_init()
     m_desc["highlight_by_angle"] = _L("Highlight overhangs");
     m_desc["tool_type"]          = _L("Tool type");
     m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
-    m_desc["autopaint"]          = _L("Automatic painting"); // [ORCAPORT:PF-10-auto]
+    m_desc["autopaint"]          = _L("Auto paint");         // [ORCAPORT:PF-10-auto]
     m_desc["autopaint_types"]    = _L("Automatic types");    // [ORCAPORT:PF-10-auto]
     m_desc["autopaint_min_area"] = _L("Min overhang area");  // [ORCAPORT:PF-10-auto]
     m_desc["perform_remap"]      = _L("Remap support types"); // [ORCAPORT:PF-10-paint]
@@ -435,18 +435,23 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     m_imgui->text(m_desc.at("support_type"));
     {
         const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
+        // Swatch sized to the text line and pinned to its top, so its centre matches the radio's.
+        const float row_y  = ImGui::GetCursorPosY();
+        const float swatch = ImGui::GetTextLineHeight();
         for (size_t i = 0; i < types.size(); ++i) {
             if (i != 0)
                 ImGui::SameLine();
             ImGui::PushID(int(i));
+            ImGui::SetCursorPosY(row_y);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f * scale);
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.f);
             ImGui::ColorButton("##swatch",
                                ImVec4(types[i].color[0], types[i].color[1], types[i].color[2], types[i].color[3]),
                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_NoAlpha,
-                               ImVec2(14.f * scale, 14.f * scale));
+                               ImVec2(swatch, swatch));
             ImGui::PopStyleVar(2);
             ImGui::SameLine();
+            ImGui::SetCursorPosY(row_y);
             if (m_imgui->radio_button(localized_support_label(types[i]), m_enforcer_type == types[i].state) &&
                 m_enforcer_type != types[i].state) {
                 m_enforcer_type = types[i].state;
@@ -456,6 +461,15 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
                 }
             }
             ImGui::PopID();
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
+
+        // [ORCAPORT:PF-10-paint] Swap one painted support type for another across the object.
+        if (ImGui::TreeNodeEx(m_desc.at("perform_remap").c_str(),
+                              ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding)) {
+            render_support_remap_ui(scale);
+            ImGui::TreePop();
         }
     }
 
@@ -499,8 +513,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
         }
     }
 
-    ImGui::Separator();
-
     {
         ImGui::AlignTextToFramePadding();
         m_imgui->text(m_desc.at("autopaint_min_area"));
@@ -515,23 +527,6 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
                                 "unpainted; a tiny sliver cannot hold a support tip."),
                              max_tooltip_width);
     }
-
-    ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
-
-    // [ORCAPORT:PF-10-paint] Swap one painted support type for another across the object.
-    if (ImGui::TreeNodeEx(m_desc.at("perform_remap").c_str(),
-                          ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding)) {
-        render_support_remap_ui(scale);
-        ImGui::TreePop();
-    }
-
-    if (m_current_tool != ImGui::GapFillIcon) {
-        m_imgui->bbl_checkbox(m_desc["on_overhangs_only"], m_paint_on_overhangs_only);
-        if (ImGui::IsItemHovered())
-            m_imgui->tooltip(format_wxstr(_L("Allows painting only on facets selected by: \"%1%\""), m_desc["highlight_by_angle"]),
-                             max_tooltip_width);
-    }
-
 
     ImGui::Separator();
     float position_before_text_y = ImGui::GetCursorPos().y;
@@ -570,6 +565,13 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     ImGui::SameLine(drag_left_width + sliders_left_width);
     ImGui::PushItemWidth(1.5 * slider_icon_width);
     ImGui::BBLDragFloat("##angle_threshold_deg_input", &m_highlight_by_angle_threshold_deg, 0.05f, 0.0f, 0.0f, "%.2f");
+
+    if (m_current_tool != ImGui::GapFillIcon) {
+        m_imgui->bbl_checkbox(m_desc["on_overhangs_only"], m_paint_on_overhangs_only);
+        if (ImGui::IsItemHovered())
+            m_imgui->tooltip(format_wxstr(_L("Allows painting only on facets selected by: \"%1%\""), m_desc["highlight_by_angle"]),
+                             max_tooltip_width);
+    }
 
     ImGui::Separator();
     if (m_c->object_clipper()->get_position() == 0.f) {
