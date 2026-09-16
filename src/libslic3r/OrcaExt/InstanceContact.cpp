@@ -31,13 +31,53 @@ bool cross_object_active(const PrintObject &object)
         && print->config().print_sequence == PrintSequence::ByLayer;
 }
 
+// [ORCAPORT:PF-10-multisupport] See header.
+std::vector<Polygons> support_layers_occupancy(const PrintObject &object, const std::vector<SupportLayer *> &layers)
+{
+    const size_t          num_layers = object.layer_count();
+    std::vector<Polygons> occupancy(num_layers);
+    if (num_layers == 0 || layers.empty())
+        return occupancy;
+
+    size_t jb = 0;
+    for (size_t ia = 0; ia < num_layers; ++ia) {
+        const Layer *la       = object.get_layer(int(ia));
+        const double a_bottom = la->bottom_z();
+        const double a_top    = la->print_z;
+        while (jb < layers.size() && layers[jb]->print_z <= a_bottom + EPSILON)
+            ++jb;
+        Polygons geo;
+        for (size_t j = jb; j < layers.size(); ++j) {
+            if (layers[j]->bottom_z() >= a_top - EPSILON)
+                break;
+            const SupportLayer *sl = layers[j];
+            polygons_append(geo, to_polygons(sl->support_islands));
+            polygons_append(geo, to_polygons(sl->base_areas));
+            polygons_append(geo, to_polygons(sl->tree_roof_areas()));
+            polygons_append(geo, to_polygons(sl->tree_roof_1st_layer()));
+            polygons_append(geo, to_polygons(sl->tree_floor_areas()));
+        }
+        if (!geo.empty())
+            occupancy[ia] = union_(geo);
+    }
+    return occupancy;
+}
+
 std::vector<Polygons> neighbor_occupancy(const PrintObject &object)
 {
+    // [ORCAPORT:PF-10-multisupport] Earlier passes' supports are obstacles for every later pass too,
+    // independent of the PerObject Support toggle.
+    std::vector<Polygons> occupancy = object.support_pass_obstacles();
+    bool                  any       = false;
+    for (Polygons &polys : occupancy)
+        if (!polys.empty()) {
+            polys = union_(polys);
+            any   = true;
+        }
+
     const Print *print = object.print();
     if (print == nullptr || object.layer_count() == 0)
-        return {};
-    if (!cross_object_active(object))
-        return {};
+        return occupancy;
 
     // 2D bbox of an object's local geometry, accumulated once from the per-island bboxes.
     auto object_bbox = [](const PrintObject &po) {
@@ -49,13 +89,13 @@ std::vector<Polygons> neighbor_occupancy(const PrintObject &object)
     };
 
     const BoundingBox a_bbox = object_bbox(object);
-    if (!a_bbox.defined)
-        return {}; // all layers empty - nothing to protect
+    if (!cross_object_active(object) || !a_bbox.defined)
+        return any ? occupancy : std::vector<Polygons>{};
     const coord_t margin = scale_(XOBJ_PRUNE_MARGIN_MM);
 
-    const size_t          num_layers = object.layer_count();
-    std::vector<Polygons> occupancy(num_layers);
-    bool                  any = false;
+    const size_t num_layers = object.layer_count();
+    if (occupancy.size() < num_layers)
+        occupancy.resize(num_layers);
 
     for (const PrintObject *other : print->objects()) {
         if (other == &object || other->layer_count() == 0)

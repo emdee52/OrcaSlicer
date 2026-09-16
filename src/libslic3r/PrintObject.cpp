@@ -16,6 +16,7 @@
 #include "Support/SupportSpotsGenerator.hpp"
 #include "Support/TreeSupport.hpp"
 #include "OrcaExt/SupportPaintTypes.hpp" // [ORCAPORT:PF-10-paint]
+#include "OrcaExt/InstanceContact.hpp"   // [ORCAPORT:PF-10-multisupport] prior-pass support occupancy
 #include "Surface.hpp"
 #include "Slicing.hpp"
 #include "Tesselate.hpp"
@@ -4712,6 +4713,7 @@ void PrintObject::_generate_support_material()
         this->set_painted_support_state(EnforcerBlockerType::NONE);
         this->set_painted_support_blockers({});
         this->set_support_pass_appends(false);
+        this->set_support_pass_obstacles({}); // [ORCAPORT:PF-10-multisupport]
     };
 
     auto apply_overrides = [&](const OrcaExt::SupportPaintOverrides &ov) {
@@ -4748,6 +4750,11 @@ void PrintObject::_generate_support_material()
         this->set_painted_support_state(enforcer);
         this->set_painted_support_blockers(std::move(blockers));
 
+        // [ORCAPORT:PF-10-multisupport] Publish the supports already built by earlier passes as
+        // obstacles for this pass, so different painted styles (and the default pass) do not
+        // generate inside each other. The engines read this through OrcaExt::neighbor_occupancy().
+        this->set_support_pass_obstacles(OrcaExt::support_layers_occupancy(*this, this->support_layers()));
+
         // [ORCAPORT:PF-10-paint] Run this pass against an EMPTY support-layer set. Both engines
         // assume `support_layer_count() == 0` while generating (e.g. the classic descent walks
         // `*object.get_layer(i)` up to `total_layer_count()-2`, which sums object AND support
@@ -4778,11 +4785,10 @@ void PrintObject::_generate_support_material()
     };
 
     try {
-        // 1) Default pass: the object's own type/style over the unpainted overhangs and the legacy
-        //    generic enforcer, excluding every explicitly painted region.
-        run_pass(is_tree(old_type), old_type, old_style, nullptr, EnforcerBlockerType::NONE, all_states);
-
-        // 2) One enforcer-only pass per painted type. Classic styles first, tree styles last.
+        // 1) One enforcer-only pass per painted type. Classic styles first, tree styles last.
+        //    [ORCAPORT:PF-10-multisupport] Explicitly painted regions are authoritative, so they run
+        //    before the default pass: the default's automatic supports then build around them, not
+        //    over them, and every later pass avoids the supports earlier passes already generated.
         for (int tree_round = 0; tree_round < 2; ++tree_round) {
             for (const OrcaExt::SupportPaintType *t : painted) {
                 if (t->is_tree != (tree_round == 1))
@@ -4791,14 +4797,18 @@ void PrintObject::_generate_support_material()
                 for (const OrcaExt::SupportPaintType *other : painted)
                     if (other != t)
                         blockers.push_back(other->state);
-                // The default pass owns the legacy generic-enforcer facets; do not also build
-                // this style under them.
+                // The default pass owns the legacy generic-enforcer facets; do not also build this
+                // style under them.
                 blockers.push_back(EnforcerBlockerType::ENFORCER);
 
                 const SupportType type = t->is_tree ? stTree : stNormal;
                 run_pass(t->is_tree, type, t->support_style, &t->overrides, t->state, std::move(blockers));
             }
         }
+
+        // 2) Default pass: the object's own type/style over the unpainted overhangs and the legacy
+        //    generic enforcer, excluding every explicitly painted region.
+        run_pass(is_tree(old_type), old_type, old_style, nullptr, EnforcerBlockerType::NONE, all_states);
     } catch (...) {
         restore();
         throw;
