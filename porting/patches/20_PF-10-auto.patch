@@ -1,5 +1,5 @@
 diff --git a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
-index e64c3b86cf..ba0615388f 100644
+index e64c3b86cf..157b0f10e1 100644
 --- a/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 +++ b/src/libslic3r/OrcaExt/SupportAutoPaint.cpp
 @@ -4,12 +4,11 @@
@@ -17,7 +17,7 @@ index e64c3b86cf..ba0615388f 100644
  #include "../TriangleMesh.hpp"
  #include "../libslic3r.h"
  #include "SupportPaintTypes.hpp"
-@@ -19,141 +18,220 @@ namespace OrcaExt {
+@@ -19,141 +18,240 @@ namespace OrcaExt {
  
  namespace {
  
@@ -82,8 +82,7 @@ index e64c3b86cf..ba0615388f 100644
 +        parent.resize(n);
 +        for (size_t i = 0; i < n; ++i)
 +            parent[i] = int(i);
-     }
--    return height;
++    }
 +    int find(int x)
 +    {
 +        while (parent[x] != x) {
@@ -122,7 +121,8 @@ index e64c3b86cf..ba0615388f 100644
 +            if (dist > 1.0e-6 && dist < best)
 +                best = dist;
 +        }
-+    }
+     }
+-    return height;
 +    return best;
  }
  
@@ -220,25 +220,12 @@ index e64c3b86cf..ba0615388f 100644
 +
 +        const std::vector<uint8_t> *painted_mask =
 +            vi < painted.size() && painted[vi].size() == nfacets ? &painted[vi] : nullptr;
-+
-+        std::vector<uint8_t> candidate(nfacets, 0);
-+        for (size_t f = 0; f < nfacets; ++f) {
-+            if (painted_mask != nullptr && (*painted_mask)[f] != 0)
-+                continue;
-+            if (normals[f].cast<double>().dot(down) > dot_limit)
-+                candidate[f] = 1;
-+        }
-+
-+        // Only merge facets whose world normals are close, so a flat face and an adjacent curved or
-+        // skewed sliver stay separate regions (and can get different support styles / colours).
-+        const double split_cos = std::cos(std::clamp(double(params.region_split_angle_deg), 1.0, 179.0) * PI / 180.);
  
 -        for (const ExPolygon &island : sl->support_islands) {
 -            if (island.contour.points.empty())
-+        DSU dsu;
-+        dsu.reset(nfacets);
++        std::vector<uint8_t> candidate(nfacets, 0);
 +        for (size_t f = 0; f < nfacets; ++f) {
-+            if (!candidate[f])
++            if (painted_mask != nullptr && (*painted_mask)[f] != 0)
                  continue;
 -            const double contact_area = area(island) * SCALING_FACTOR * SCALING_FACTOR;
 -
@@ -257,8 +244,47 @@ index e64c3b86cf..ba0615388f 100644
 -                        volume_index = vi;
 -                        found        = true;
 -                        break;
+-                    }
+-                }
+-                if (!found)
+-                    continue;
+-                if (!seen.emplace(volume_index, facet).second)
+-                    continue;
++            if (normals[f].cast<double>().dot(down) > dot_limit)
++                candidate[f] = 1;
++        }
+ 
+-                const double height = support_height_below(slayers, li, p, object_print_z_min);
+-                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
+-                if (state == EnforcerBlockerType::NONE)
++        // [ORCAPORT:PF-10-auto] With build-plate-only, a facet whose vertical drop lands on the model
++        // cannot be served by a normal column (it would be dropped), so it needs a tree. Measure
++        // this per facet so a region can be split between its part-backed ends and its plate-backed
++        // middle instead of being decided by a single centroid sample.
++        std::vector<uint8_t> part_below(nfacets, 0);
++        if (params.build_plate_only) {
++            for (size_t f = 0; f < nfacets; ++f) {
++                if (!candidate[f])
+                     continue;
++                const Vec3i32 &tri = its.indices[f];
++                const Vec3d    c   = (wv[tri[0]] + wv[tri[1]] + wv[tri[2]]) / 3.;
++                if (ray_down_to_next_surface(Vec3d(c.x(), c.y(), c.z() - 0.01), vdatas) < 1.0e29)
++                    part_below[f] = 1;
++            }
++        }
++
++        // Only merge facets whose world normals are close, so a flat face and an adjacent curved or
++        // skewed sliver stay separate regions (and can get different support styles / colours).
++        const double split_cos = std::cos(std::clamp(double(params.region_split_angle_deg), 1.0, 179.0) * PI / 180.);
++
++        DSU dsu;
++        dsu.reset(nfacets);
++        for (size_t f = 0; f < nfacets; ++f) {
++            if (!candidate[f])
++                continue;
 +            for (int n : neighbors[f])
-+                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos)
++                if (n >= 0 && size_t(n) < nfacets && candidate[size_t(n)] && wn[f].dot(wn[size_t(n)]) >= split_cos &&
++                    part_below[f] == part_below[size_t(n)])
 +                    dsu.unite(int(f), n);
 +        }
 +
@@ -269,10 +295,11 @@ index e64c3b86cf..ba0615388f 100644
 +
 +        for (const auto &entry : components) {
 +            const std::vector<size_t> &facets = entry.second;
-+
+ 
 +            SupportRegionFeatures feat;
 +            double                area_sum  = 0.;
 +            double                best_sev  = -2.;
++            bool                  region_part_below = false;
 +            Vec3d                 normal_sum = Vec3d::Zero();
 +            Vec3d                 bb_min(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
 +            Vec3d                 bb_max(-std::numeric_limits<double>::max(), -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max());
@@ -282,31 +309,24 @@ index e64c3b86cf..ba0615388f 100644
 +                const double   a   = 0.5 * ((wv[tri[1]] - wv[tri[0]]).cross(wv[tri[2]] - wv[tri[0]])).norm();
 +                area_sum += a;
 +                normal_sum += wn[f] * a;
++                region_part_below = region_part_below || (part_below[f] != 0);
 +                best_sev = std::max(best_sev, normals[f].cast<double>().dot(down));
 +                for (int k = 0; k < 3; ++k)
 +                    for (int axis = 0; axis < 3; ++axis) {
 +                        bb_min(axis) = std::min(bb_min(axis), wv[tri[k]](axis));
 +                        bb_max(axis) = std::max(bb_max(axis), wv[tri[k]](axis));
-                     }
--                }
--                if (!found)
--                    continue;
--                if (!seen.emplace(volume_index, facet).second)
--                    continue;
++                    }
 +            }
- 
--                const double height = support_height_below(slayers, li, p, object_print_z_min);
--                const EnforcerBlockerType state = support_paint_classify(contact_area, height);
--                if (state == EnforcerBlockerType::NONE)
--                    continue;
++
 +            // Tiny overhang slivers cannot hold a support tip/interface; painting them only makes
 +            // the tree engine aim branches at an unsupportable spot.
 +            if (params.min_region_area_mm2 > 0. && area_sum < params.min_region_area_mm2)
 +                continue;
- 
-+            feat.area_mm2 = area_sum;
-+            feat.span_mm  = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
-+            feat.height_mm = bb_min.z();
++
++            feat.area_mm2   = area_sum;
++            feat.span_mm    = std::max(bb_max.x() - bb_min.x(), bb_max.y() - bb_min.y());
++            feat.height_mm  = bb_min.z();
++            feat.part_below = region_part_below;
 +            feat.curvature = area_sum > 0.
 +                                 ? std::clamp(1. - normal_sum.norm() / area_sum, 0., 1.)
 +                                 : 0.;
@@ -430,7 +450,7 @@ index 40625095b5..2e8554a1a7 100644
 -#endif
 +#endif // slic3r_OrcaExt_SupportAutoPaint_hpp_
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
-index 5b0d72e3c7..d5d5ccda3e 100644
+index 5b0d72e3c7..83b9fb1448 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
 @@ -2,6 +2,9 @@
@@ -578,7 +598,7 @@ index 5b0d72e3c7..d5d5ccda3e 100644
          v.emplace_back(t);
      }
      return v;
-@@ -100,6 +157,113 @@ std::vector<SupportPaintType> &registry()
+@@ -100,6 +157,114 @@ std::vector<SupportPaintType> &registry()
  
  } // namespace
  
@@ -655,9 +675,10 @@ index 5b0d72e3c7..d5d5ccda3e 100644
 +    double                  best_score      = 0.;
 +    double                  best_tree_score = 0.;
 +
-+    // "Model geometry below" = the downward ray hit a surface, i.e. a normal support column would
-+    // rest on the part rather than reach the plate.
-+    const bool part_below = features.gap_below_mm < 1.0e29;
++    // "Model geometry below" = a downward ray hit a surface, i.e. a normal support column would
++    // rest on the part rather than reach the plate. `part_below` is the per-region flag set by the
++    // automatic painter; the gap test is the fallback for callers that only fill the metrics.
++    const bool part_below = features.part_below || features.gap_below_mm < 1.0e29;
 +
 +    for (const SupportPaintType &t : registry()) {
 +        if (t.rules.empty())
@@ -692,7 +713,7 @@ index 5b0d72e3c7..d5d5ccda3e 100644
  const std::vector<SupportPaintType> &support_paint_types()
  {
      return registry();
-@@ -134,22 +298,6 @@ bool has_painted_support_styles(const PrintObject &object)
+@@ -134,22 +299,6 @@ bool has_painted_support_styles(const PrintObject &object)
      return false;
  }
  
@@ -716,10 +737,10 @@ index 5b0d72e3c7..d5d5ccda3e 100644
  {
      const ModelObject *mo = object.model_object();
 diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
-index f5da71d194..d0844358b8 100644
+index f5da71d194..caf77e7e06 100644
 --- a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
 +++ b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
-@@ -16,10 +16,51 @@ class ModelObject;
+@@ -16,10 +16,56 @@ class ModelObject;
  
  namespace OrcaExt {
  
@@ -741,6 +762,11 @@ index f5da71d194..d0844358b8 100644
 +    double wall_angle_deg{0.};  // 0 = vertical wall, 90 = horizontal ceiling
 +    double curvature{0.};       // 0 = flat, 1 = highly curved
 +    double gap_below_mm{1.0e30}; // distance from the region down to the next model surface (inf = none)
++    // True when any facet of the region has model geometry directly below it, so a normal support
++    // column would rest on the model rather than reach the plate. Set per facet by the automatic
++    // painter (which also splits regions on it); the classifier uses it for the build-plate-only
++    // tree override.
++    bool   part_below{false};
 +};
 +
 +enum class SupportFeature { Area, Span, Height, WallAngle, Curvature, GapBelow, Count };
@@ -772,7 +798,7 @@ index f5da71d194..d0844358b8 100644
  struct SupportPaintOverrides
  {
      bool   force_base_pattern{false};
-@@ -38,18 +79,6 @@ struct SupportPaintOverrides
+@@ -38,18 +84,6 @@ struct SupportPaintOverrides
      int    wave_wall_loops{1};
  };
  
@@ -791,7 +817,7 @@ index f5da71d194..d0844358b8 100644
  struct SupportPaintType
  {
      // Paint state stored in ModelVolume::supported_facets. Support painting and MMU painting use
-@@ -66,13 +95,40 @@ struct SupportPaintType
+@@ -66,13 +100,40 @@ struct SupportPaintType
      SupportMaterialStyle support_style{smsDefault};
      // Forced object-config overrides applied only to this painted region's engine pass.
      SupportPaintOverrides overrides;
@@ -1137,10 +1163,10 @@ index 5c10ab1496..9d6b13886c 100644
      test_model.cpp
 diff --git a/tests/libslic3r/test_orca_support_paint.cpp b/tests/libslic3r/test_orca_support_paint.cpp
 new file mode 100644
-index 0000000000..600aee0083
+index 0000000000..24da2008d3
 --- /dev/null
 +++ b/tests/libslic3r/test_orca_support_paint.cpp
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,200 @@
 +#include <catch2/catch_all.hpp>
 +
 +#include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
@@ -1256,6 +1282,20 @@ index 0000000000..600aee0083
 +    CHECK(support_paint_classify(f, default_enabled()) == state_of("Grid"));
 +    // But a build-plate-only restriction would drop a normal column resting on the model, so the
 +    // tree type is preferred.
++    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
++}
++
++TEST_CASE("Build-plate-only uses tree from the part-below flag even when gap looks open", "[OrcaSupportPaint]")
++{
++    SupportRegionFeatures f;
++    f.area_mm2       = 40.;
++    f.span_mm        = 10.;
++    f.height_mm      = 10.;
++    f.wall_angle_deg = 85.;
++    f.curvature      = 0.05;
++    f.gap_below_mm   = 1.0e30; // centroid ray missed, but some facets have the model below
++    f.part_below     = true;
++
 +    CHECK(support_paint_classify(f, default_enabled(), true) == state_of("Organic"));
 +}
 +

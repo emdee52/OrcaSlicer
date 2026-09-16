@@ -78,11 +78,15 @@ the left brush when a region should keep the object's own style.
   regions too small to hold a support tip, so the tree engine is not sent branches at slivers.
 - Uses the existing "Highlight overhangs" angle and "On highlighted overhangs only" checkbox.
 - **Build-plate-only aware:** when the object has `support_on_build_plate_only`, a region with model
-  geometry directly below it (finite `gap_below_mm`) is classified as a tree type if any tree type
-  is enabled. A normal/grid column there would rest on the model and be dropped by the restriction,
-  whereas a tree can branch down to the plate. The tree type is preferred even if its own scoring
-  rules did not match (a large flat overhang is still better off on a tree here). If no tree type is
-  enabled, the normal result is kept.
+  geometry directly below it is classified as a tree type if any tree type is enabled. A normal/grid
+  column there would rest on the model and be dropped by the restriction, whereas a tree can branch
+  down to the plate. The tree type is preferred even if its own scoring rules did not match (a large
+  flat overhang is still better off on a tree here). If no tree type is enabled, the normal result
+  is kept.
+- **Part-below is per facet.** A downward ray is cast from every candidate facet (only when
+  build-plate-only is on) and regions are split on that flag, so on a large overhang only the
+  part-backed ends become tree while the plate-backed middle stays Snug/Grid, instead of one centroid
+  sample deciding the whole region (`SupportRegionFeatures::part_below`).
 - The old preview/thread hooks (`m_auto_paint_pending`) were removed; `update_support_volumes`
   returns to its stock form.
 
