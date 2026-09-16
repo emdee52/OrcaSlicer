@@ -120,7 +120,8 @@ Orca-native) is tracked separately as `PF-10-auto`.
   tool selector. Dividers separate the sections; each section owns its controls:
   tool settings | support-type palette (+ "Remap support types") | automatic painting (button
   "Auto paint", per-type checkboxes, "Min overhang area") | highlight ("Highlight overhangs" +
-  "On highlighted overhangs only") | section view.
+  "On highlighted overhangs only") | section view. The support painter opens with
+  "On highlighted overhangs only" checked.
 - Each support-type radio shows a colour swatch of its prepare-view colour, sized to the text line
   so it is centred with the radio.
 - "Remap support types": a collapsible From/To pair (registry types + Blocker) that rewrites every

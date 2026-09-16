@@ -12,10 +12,18 @@ index 2e8554a1a7..2734e7e782 100644
      // this many degrees. Keeps a large flat overhang and a thin curved strip next to it as separate
      // regions, so they can be classified (and coloured) independently.
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-index c88f682677..77b962d386 100644
+index c88f682677..724815abaf 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
-@@ -105,9 +105,13 @@ bool GLGizmoFdmSupports::on_init()
+@@ -76,6 +76,7 @@ void GLGizmoFdmSupports::on_opening()
+ {
+     m_angle_threshold_deg = 40;
+     m_highlight_by_angle_threshold_deg = 30.f; // [ORCAPORT:PF-10-paint] default overhang highlight
++    m_paint_on_overhangs_only = true;          // [ORCAPORT:PF-10-paint] paint overhangs only by default
+     m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
+     if (! m_parent.is_using_slope()) {
+         m_parent.use_slope(true);
+@@ -105,9 +106,13 @@ bool GLGizmoFdmSupports::on_init()
      m_desc["highlight_by_angle"] = _L("Highlight overhangs");
      m_desc["tool_type"]          = _L("Tool type");
      m_desc["support_type"]       = _L("Support type"); // [ORCAPORT:PF-10-paint]
@@ -30,7 +38,7 @@ index c88f682677..77b962d386 100644
      m_desc["gap_fill"]           = _L("Gap fill");
      m_desc["reset_direction"]    = _L("Reset direction");
      m_desc["clipping_of_view"]   = _L("Section view");
-@@ -327,79 +331,7 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -327,79 +332,7 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
  
      ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.1));
  
@@ -111,7 +119,7 @@ index c88f682677..77b962d386 100644
      if (m_current_tool == ImGui::CircleButtonIcon) {
          m_cursor_type = TriangleSelector::CursorType::CIRCLE;
          m_tool_type = ToolType::BRUSH;
-@@ -494,14 +426,108 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -494,14 +427,106 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
          }
      }
  
@@ -126,14 +134,13 @@ index c88f682677..77b962d386 100644
 +    m_imgui->text(m_desc.at("support_type"));
 +    {
 +        const std::vector<Slic3r::OrcaExt::SupportPaintType> &types = Slic3r::OrcaExt::support_paint_types();
-+        // Swatch sized to the text line and pinned to its top, so its centre matches the radio's.
-+        const float row_y  = ImGui::GetCursorPosY();
-+        const float swatch = ImGui::GetTextLineHeight();
++        // The radio circle is drawn with diameter GetFrameHeight() (text + frame padding), centred
++        // on the row, so a swatch of the same size on the same row lines up with it exactly.
++        const float swatch = ImGui::GetFrameHeight();
 +        for (size_t i = 0; i < types.size(); ++i) {
 +            if (i != 0)
 +                ImGui::SameLine();
 +            ImGui::PushID(int(i));
-+            ImGui::SetCursorPosY(row_y);
 +            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f * scale);
 +            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.f);
 +            ImGui::ColorButton("##swatch",
@@ -142,7 +149,6 @@ index c88f682677..77b962d386 100644
 +                               ImVec2(swatch, swatch));
 +            ImGui::PopStyleVar(2);
 +            ImGui::SameLine();
-+            ImGui::SetCursorPosY(row_y);
 +            if (m_imgui->radio_button(localized_support_label(types[i]), m_enforcer_type == types[i].state) &&
 +                m_enforcer_type != types[i].state) {
 +                m_enforcer_type = types[i].state;
@@ -224,7 +230,7 @@ index c88f682677..77b962d386 100644
      ImGui::Separator();
      float position_before_text_y = ImGui::GetCursorPos().y;
      ImGui::AlignTextToFramePadding();
-@@ -540,6 +566,13 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+@@ -540,6 +565,13 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
      ImGui::PushItemWidth(1.5 * slider_icon_width);
      ImGui::BBLDragFloat("##angle_threshold_deg_input", &m_highlight_by_angle_threshold_deg, 0.05f, 0.0f, 0.0f, "%.2f");
  
@@ -238,7 +244,7 @@ index c88f682677..77b962d386 100644
      ImGui::Separator();
      if (m_c->object_clipper()->get_position() == 0.f) {
          ImGui::AlignTextToFramePadding();
-@@ -1096,6 +1129,113 @@ void GLGizmoFdmSupports::run_auto_paint()
+@@ -1096,6 +1128,113 @@ void GLGizmoFdmSupports::run_auto_paint()
      }
  }
  
