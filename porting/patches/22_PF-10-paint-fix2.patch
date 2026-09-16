@@ -1,0 +1,122 @@
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index b444153cc0..94e4766654 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -4687,6 +4687,11 @@ void PrintObject::_generate_support_material()
+         return;
+     }
+ 
++    // Shared objects share the support-layer pointers with their source; composing passes here
++    // would double-free. The shared source already generated the painted support.
++    if (m_shared_object != nullptr)
++        return;
++
+     // Scoped override of the object config plus the pass transients.
+     const SupportType                     old_type   = m_config.support_type.value;
+     const SupportMaterialStyle            old_style  = m_config.support_style.value;
+@@ -4742,15 +4747,34 @@ void PrintObject::_generate_support_material()
+             apply_overrides(*ov);
+         this->set_painted_support_state(enforcer);
+         this->set_painted_support_blockers(std::move(blockers));
+-        this->set_support_pass_appends(!this->support_layers().empty());
+-        if (is_tree_pass) {
+-            TreeSupport tree_support(*this, m_slicing_params);
+-            tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
+-            tree_support.generate();
+-        } else {
+-            PrintObjectSupportMaterial support_material(this, m_slicing_params);
+-            support_material.generate(*this);
++
++        // [ORCAPORT:PF-10-paint] Run this pass against an EMPTY support-layer set. Both engines
++        // assume `support_layer_count() == 0` while generating (e.g. the classic descent walks
++        // `*object.get_layer(i)` up to `total_layer_count()-2`, which sums object AND support
++        // layers). Layers from earlier passes are set aside and composed afterwards.
++        SupportLayerPtrs prior_layers = std::move(this->support_layers());
++        this->set_support_pass_appends(false);
++        try {
++            if (is_tree_pass) {
++                TreeSupport tree_support(*this, m_slicing_params);
++                tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
++                tree_support.generate();
++            } else {
++                PrintObjectSupportMaterial support_material(this, m_slicing_params);
++                support_material.generate(*this);
++            }
++        } catch (...) {
++            SupportLayerPtrs fresh = std::move(this->support_layers());
++            this->support_layers() = std::move(prior_layers);
++            for (SupportLayer *l : fresh)
++                this->support_layers().push_back(l);
++            throw;
+         }
++        // Compose: earlier passes' layers first (merge keeps them as the base at equal print_z).
++        SupportLayerPtrs fresh_layers = std::move(this->support_layers());
++        this->support_layers() = std::move(prior_layers);
++        for (SupportLayer *l : fresh_layers)
++            this->support_layers().push_back(l);
+     };
+ 
+     try {
+diff --git a/src/libslic3r/Support/SupportMaterial.cpp b/src/libslic3r/Support/SupportMaterial.cpp
+index 79c5189c91..7ab1e21911 100644
+--- a/src/libslic3r/Support/SupportMaterial.cpp
++++ b/src/libslic3r/Support/SupportMaterial.cpp
+@@ -1370,7 +1370,10 @@ struct SupportAnnotations
+                        float roof_expand) :
+         enforcers_layers(object.slice_support_enforcers()),
+         blockers_layers(object.slice_support_blockers()),
+-        buildplate_covered(buildplate_covered)
++        buildplate_covered(buildplate_covered),
++        // [ORCAPORT:PF-10-paint] A painted per-region pass also trims its enforcers by "build
++        // plate only"; the legacy generic enforcer keeps its historical exemption.
++        painted_pass(object.painted_support_state() != EnforcerBlockerType::NONE)
+     {
+         // NEOTKO_SUPPORTZONES_TAG s300e — EL ENFORCER AGARRA DONDE EL BLOQUE EMPIEZA, NO POR DONDE PASA.
+         //
+@@ -1477,6 +1480,7 @@ struct SupportAnnotations
+     std::vector<Polygons>         roof_only_layers;
+     std::vector<Polygons>         blockers_layers;
+     const std::vector<Polygons>&  buildplate_covered;
++    bool                          painted_pass { false }; // [ORCAPORT:PF-10-paint]
+ };
+ 
+ struct SlicesMarginCache
+@@ -1796,7 +1800,13 @@ static inline std::tuple<Polygons, Polygons, double> detect_contacts(
+                 if (!enforcer_polygons.empty()) {
+                     polygons_append(overhang_polygons, enforcer_polygons);
+                     slices_margin_update(std::min(lower_layer_offset, float(scale_(gap_xy))), no_interface_offset);
+-                    polygons_append(contact_polygons, diff(enforcer_polygons, slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons));
++                    // [ORCAPORT:PF-10-paint] A painted per-region pass honors "on build plate only"
++                    // for its enforcers too (the legacy generic enforcer keeps its exemption).
++                    const Polygons &enforcer_trim =
++                        (annotations.painted_pass && buildplate_only)
++                            ? slices_margin.polygons
++                            : (slices_margin.all_polygons.empty() ? slices_margin.polygons : slices_margin.all_polygons);
++                    polygons_append(contact_polygons, diff(enforcer_polygons, enforcer_trim));
+                 }
+             }
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
+index 1f6569760b..a338cb8e0d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoFdmSupports.cpp
+@@ -73,7 +73,8 @@ void GLGizmoFdmSupports::on_shutdown()
+ void GLGizmoFdmSupports::on_opening()
+ {
+     m_angle_threshold_deg = 40;
+-    m_parent.set_slope_normal_angle(90.f - m_angle_threshold_deg);
++    m_highlight_by_angle_threshold_deg = 30.f; // [ORCAPORT:PF-10-paint] default overhang highlight
++    m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
+     if (! m_parent.is_using_slope()) {
+         m_parent.use_slope(true);
+         m_parent.set_as_dirty();
+@@ -227,7 +228,8 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
+     int support_threshold_angle = get_selection_support_threshold_angle();
+     // when support painting tool is on, reset highlight threshold angle
+     if (m_support_threshold_angle == -1) {
+-        m_highlight_by_angle_threshold_deg = support_threshold_angle;
++        // [ORCAPORT:PF-10-paint] Default the overhang highlight to 30 deg when the gizmo opens.
++        m_highlight_by_angle_threshold_deg = 30.f;
+         m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
+     }
+     m_support_threshold_angle = support_threshold_angle;
