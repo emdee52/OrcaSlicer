@@ -73,7 +73,8 @@ void GLGizmoFdmSupports::on_shutdown()
 void GLGizmoFdmSupports::on_opening()
 {
     m_angle_threshold_deg = 40;
-    m_parent.set_slope_normal_angle(90.f - m_angle_threshold_deg);
+    m_highlight_by_angle_threshold_deg = 30.f; // [ORCAPORT:PF-10-paint] default overhang highlight
+    m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
     if (! m_parent.is_using_slope()) {
         m_parent.use_slope(true);
         m_parent.set_as_dirty();
@@ -227,7 +228,8 @@ void GLGizmoFdmSupports::on_render_input_window(float x, float y, float bottom_l
     int support_threshold_angle = get_selection_support_threshold_angle();
     // when support painting tool is on, reset highlight threshold angle
     if (m_support_threshold_angle == -1) {
-        m_highlight_by_angle_threshold_deg = support_threshold_angle;
+        // [ORCAPORT:PF-10-paint] Default the overhang highlight to 30 deg when the gizmo opens.
+        m_highlight_by_angle_threshold_deg = 30.f;
         m_parent.set_slope_normal_angle(90.f - m_highlight_by_angle_threshold_deg);
     }
     m_support_threshold_angle = support_threshold_angle;
