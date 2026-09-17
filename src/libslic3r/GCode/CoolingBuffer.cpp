@@ -730,11 +730,16 @@ std::string CoolingBuffer::apply_layer_cooldown(
     int  supp_interface_fan_speed = 0;
     bool ironing_fan_control= false; // ORCA: Add support for ironing fan speed control
     int  ironing_fan_speed   = 0; // ORCA: Add support for ironing fan speed control
+    // [ORCAPORT:SU-8] Forced part-cooling fan for a transition layer. The G-code generator emits
+    // a ";SU8_FAN <percent>" marker on such a layer; -1 means no override.
+    int  transition_fan = -1;
+    if (const size_t p = gcode.rfind(";SU8_FAN "); p != std::string::npos)
+        transition_fan = int(std::atoi(gcode.c_str() + p + 9));
     auto change_extruder_set_fan = [ this, layer_id, layer_time, &new_gcode, part_cooling_fan_min_pwm,
         &overhang_fan_control, &overhang_fan_speed,
         &internal_bridge_fan_control, &internal_bridge_fan_speed,
         &supp_interface_fan_control, &supp_interface_fan_speed,
-        &ironing_fan_control, &ironing_fan_speed
+        &ironing_fan_control, &ironing_fan_speed, transition_fan
     ](bool immediately_apply) {
 #define EXTRUDER_CONFIG(OPT) m_config.OPT.get_at(m_current_extruder)
         float fan_min_speed = EXTRUDER_CONFIG(fan_min_speed);
@@ -843,6 +848,15 @@ std::string CoolingBuffer::apply_layer_cooldown(
             internal_bridge_fan_speed = 0; // ORCA: Add support for separate internal bridge fan speed control
             ironing_fan_control = false; // ORCA: Add support for ironing fan speed control
             ironing_fan_speed = 0; // ORCA: Add support for ironing fan speed control
+        }
+        // [ORCAPORT:SU-8] Transition-layer fan override wins over the computed layer fan and the
+        // role-based fan markers, so the requested speed is held for the whole layer.
+        if (transition_fan >= 0) {
+            fan_speed_new               = float(transition_fan);
+            overhang_fan_control        = false;
+            internal_bridge_fan_control = false;
+            supp_interface_fan_control  = false;
+            ironing_fan_control         = false;
         }
         // A tool change may keep the same configured base fan speed while the physical fan is
         // still running at the previous filament's overhang speed. Restore the base speed before

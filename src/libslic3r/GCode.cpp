@@ -5496,6 +5496,10 @@ LayerResult GCode::process_layer(
         layer_ptr = support_layer;
     const Layer& layer = *layer_ptr;
     m_cur_layer_idx = layer.id();
+    // [ORCAPORT:SU-8] Transition joint known before the toolchange, so the temperature delta can
+    // be applied. Use a tagged object layer if present, else the support layer's tag.
+    m_transition_joint = (object_layer && object_layer->transition_joint) ? object_layer->transition_joint
+                       : support_layer ? support_layer->transition_joint : 0;
     // A per-layer nozzle grouping can move the active filament to another variant column on a
     // layer boundary without a toolchange, so re-resolve the writer's config column here.
     if (Extruder *cur_filament = m_writer.filament())
@@ -5538,6 +5542,28 @@ LayerResult GCode::process_layer(
 
     std::string gcode;
     assert(is_decimal_separator_point()); // for the sprintfs
+
+    // [ORCAPORT:SU-8] Emit the transition-layer temperature delta once per layer, at the point the
+    // layer is actually extruded (the active tool is known here, unlike at toolchange time with a
+    // wipe tower). Multi-nozzle only.
+    bool transition_temp_done = false;
+    auto emit_transition_temp = [&]() {
+        if (transition_temp_done || m_transition_joint == 0 || m_config.nozzle_diameter.values.size() <= 1 || m_writer.filament() == nullptr)
+            return;
+        const int dt = m_transition_joint == 1 ? int(m_config.transition_interface_base_temp_delta.value)
+                     : m_transition_joint == 2 ? int(m_config.transition_object_interface_temp_delta.value)
+                     :                           int(m_config.transition_interface_object_temp_delta.value);
+        if (dt == 0)
+            return;
+        const int    fid  = int(m_writer.filament()->id());
+        const size_t fi   = get_filament_config_index(fid);
+        const int    base = this->on_first_layer() ? m_config.nozzle_temperature_initial_layer.get_at(fi)
+                                                   : m_config.nozzle_temperature.get_at(fi);
+        if (base > 0) {
+            gcode += m_writer.set_temperature(unsigned(std::max(1, base + dt)), true, fid);
+            transition_temp_done = true;
+        }
+    };
 
     // add tag for processor
     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Layer_Change) + "\n";
@@ -6482,6 +6508,14 @@ LayerResult GCode::process_layer(
                 m_object_layer_over_raft = object_layer_over_raft;
                 // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
                 m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
+                {
+                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                    if (tfan >= 0)
+                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                }
+                emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -6528,6 +6562,14 @@ LayerResult GCode::process_layer(
                     m_object_layer_over_raft = false;
                     // [ORCAPORT:SU-8] Interface-on-base / interface-on-object transition tag.
                     m_transition_joint = layers[instance_to_print.layer_id].support_layer->transition_joint;
+                    {
+                        const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                       : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                        if (tfan >= 0)
+                            gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                    }
+                    emit_transition_temp();
 
                     // When starting a new object, use the external motion planner for the first travel move.
                     const Point& offset = instance_to_print.print_object.instances()[instance_to_print.instance_id].shift;
@@ -6711,6 +6753,14 @@ LayerResult GCode::process_layer(
                 m_object_layer_over_raft = object_layer_over_raft;
                 // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
                 m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
+                {
+                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                    if (tfan >= 0)
+                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                }
+                emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
