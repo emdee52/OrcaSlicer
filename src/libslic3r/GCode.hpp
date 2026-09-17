@@ -203,6 +203,7 @@ public:
         m_layer(nullptr),
         m_object_layer_over_raft(false),
         m_transition_joint(0),
+        m_transition_temp_active(false),
         //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
@@ -701,6 +702,9 @@ private:
     // [ORCAPORT:SU-8] Transition joint of the layer currently being extruded
     // (0 = none, 1 = interface-on-base, 2 = object-on-interface, 3 = interface-on-object).
     int                                 m_transition_joint;
+    // [ORCAPORT:SU-8] Whether a transition-layer temperature delta is currently applied, so it can
+    // be restored once the transition layers have been printed.
+    bool                                m_transition_temp_active;
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;

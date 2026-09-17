@@ -5548,19 +5548,29 @@ LayerResult GCode::process_layer(
     // wipe tower). Multi-nozzle only.
     bool transition_temp_done = false;
     auto emit_transition_temp = [&]() {
-        if (transition_temp_done || m_transition_joint == 0 || m_config.nozzle_diameter.values.size() <= 1 || m_writer.filament() == nullptr)
+        if (transition_temp_done || m_config.nozzle_diameter.values.size() <= 1 || m_writer.filament() == nullptr)
             return;
         const int dt = m_transition_joint == 1 ? int(m_config.transition_interface_base_temp_delta.value)
                      : m_transition_joint == 2 ? int(m_config.transition_object_interface_temp_delta.value)
-                     :                           int(m_config.transition_interface_object_temp_delta.value);
-        if (dt == 0)
-            return;
+                     : m_transition_joint == 3 ? int(m_config.transition_interface_object_temp_delta.value)
+                     :                           0;
         const int    fid  = int(m_writer.filament()->id());
         const size_t fi   = get_filament_config_index(fid);
         const int    base = this->on_first_layer() ? m_config.nozzle_temperature_initial_layer.get_at(fi)
                                                    : m_config.nozzle_temperature.get_at(fi);
-        if (base > 0) {
-            gcode += m_writer.set_temperature(unsigned(std::max(1, base + dt)), true, fid);
+        if (base <= 0)
+            return;
+        if (dt != 0) {
+            if (! m_transition_temp_active) {
+                gcode += m_writer.set_temperature(unsigned(std::max(1, base + dt)), true, fid);
+                m_transition_temp_active = true;
+            }
+            transition_temp_done = true;
+        } else if (m_transition_temp_active) {
+            // First layer after the transition: restore the filament's normal temperature so the
+            // delta does not leak into the rest of the print.
+            gcode += m_writer.set_temperature(unsigned(base), true, fid);
+            m_transition_temp_active = false;
             transition_temp_done = true;
         }
     };
@@ -8156,8 +8166,17 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         }
     }
 
+    // [ORCAPORT:SU-8] Transition treatment applies only where the two materials meet, not the
+    // whole layer: the layer carries the footprint that touches the other material.
+    bool in_transition_area = m_transition_joint == 0 || m_layer == nullptr || m_layer->transition_area.empty();
+    if (! in_transition_area) {
+        const auto &fp = path.polyline.first_point();
+        const Point p2(coord_t(fp(0)), coord_t(fp(1)));
+        for (const ExPolygon &e : m_layer->transition_area)
+            if (e.contains(p2)) { in_transition_area = true; break; }
+    }
     // [ORCAPORT:SU-8] Transition-layer flow adjustment.
-    if (m_transition_joint != 0) {
+    if (m_transition_joint != 0 && in_transition_area) {
         const int fpct = m_transition_joint == 1 ? int(m_config.transition_interface_base_flow.value)
                        : m_transition_joint == 2 ? int(m_config.transition_object_interface_flow.value)
                        :                           int(m_config.transition_interface_object_flow.value);
@@ -8270,8 +8289,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         speed = skirt_speed;
     }
     // [ORCAPORT:SU-8] Transition-layer slowdown (relative factor <= 100%; applied before the
-    // volumetric cap, which can only reduce it further).
-    if (m_transition_joint != 0 && path.role() != erSkirt && path.role() != erBrim) {
+    // volumetric cap, which can only reduce it further). Only inside the touching footprint.
+    if (m_transition_joint != 0 && in_transition_area && path.role() != erSkirt && path.role() != erBrim) {
         const int spct = m_transition_joint == 1 ? int(m_config.transition_interface_base_speed.value)
                        : m_transition_joint == 2 ? int(m_config.transition_object_interface_speed.value)
                        :                           int(m_config.transition_interface_object_speed.value);

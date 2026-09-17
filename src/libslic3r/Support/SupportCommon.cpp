@@ -17,6 +17,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <map>
 #include <tbb/parallel_for.h>
 
 #include "SupportCommon.hpp"
@@ -1723,51 +1724,68 @@ void generate_support_toolpaths(
     }
 
     // [ORCAPORT:SU-8] Tag transition layers (1 = interface-on-base, 2 = object-on-interface,
-    // 3 = interface-on-object). Each joint marks its first layer plus the next `layers - 1`
-    // consecutive layers. Only runs when at least one joint is enabled, so defaults are inert.
+    // 3 = interface-on-object) and the footprint that actually touches the other material, so
+    // speed/flow only change where the two materials meet, not the whole layer. Each joint marks
+    // its first layer plus the next `layers - 1` consecutive layers. Inert at defaults.
     if (config.transition_interface_base_enable.value ||
         config.transition_object_interface_enable.value ||
         config.transition_interface_object_enable.value) {
-        auto mark_support = [&support_layers](size_t first, int n, int joint) {
-            for (int k = 0; k < n && first + size_t(k) < support_layers.size(); ++ k)
-                if (support_layers[first + k]->transition_joint == 0)
-                    support_layers[first + k]->transition_joint = joint;
+        std::map<coordf_t, Polygons> iface_at, bcontact_at;
+        for (const SupportGeneratorLayer *l : interface_layers)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface)
+                iface_at[l->print_z] = l->polygons;
+        for (const SupportGeneratorLayer *l : top_contacts)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
+                iface_at[l->print_z] = l->polygons;
+        for (const SupportGeneratorLayer *l : bottom_contacts)
+            if (l != nullptr && ! l->polygons.empty())
+                bcontact_at[l->print_z] = l->polygons;
+
+        auto area_at = [](const std::map<coordf_t, Polygons> &m, coordf_t z) -> ExPolygons {
+            const auto it = m.lower_bound(z - EPSILON);
+            return (it != m.end() && it->first <= z + EPSILON) ? union_ex(it->second) : ExPolygons();
+        };
+        auto mark_support = [&support_layers, &area_at](const std::map<coordf_t, Polygons> &polys, size_t first, int n, int joint) {
+            for (int k = 0; k < n && first + size_t(k) < support_layers.size(); ++ k) {
+                SupportLayer *sl = support_layers[first + k];
+                if (sl->transition_joint == 0) {
+                    sl->transition_joint = joint;
+                    sl->transition_area  = area_at(polys, sl->print_z);
+                }
+            }
         };
         // A: lowest top-interface layer above base, per contiguous interface stack.
         if (config.transition_interface_base_enable.value) {
             std::vector<coordf_t> zs;
-            for (const SupportGeneratorLayer *l : top_contacts)
-                if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
-                    zs.push_back(l->print_z);
-            for (const SupportGeneratorLayer *l : interface_layers)
-                if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface)
-                    zs.push_back(l->print_z);
+            for (const auto &kv : iface_at) zs.push_back(kv.first);
             std::sort(zs.begin(), zs.end());
             auto is_top = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
             for (size_t i = 0; i < support_layers.size(); ++ i)
                 if (is_top(support_layers[i]->print_z) && (i == 0 || ! is_top(support_layers[i - 1]->print_z)))
-                    mark_support(i, std::max(1, config.transition_interface_base_layers.value), 1);
+                    mark_support(iface_at, i, std::max(1, config.transition_interface_base_layers.value), 1);
         }
         // C: bottom-contact layer resting on the object.
         if (config.transition_interface_object_enable.value) {
             std::vector<coordf_t> zs;
-            for (const SupportGeneratorLayer *l : bottom_contacts)
-                if (l != nullptr && ! l->polygons.empty())
-                    zs.push_back(l->print_z);
+            for (const auto &kv : bcontact_at) zs.push_back(kv.first);
             std::sort(zs.begin(), zs.end());
             auto is_bc = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
             for (size_t i = 0; i < support_layers.size(); ++ i)
                 if (is_bc(support_layers[i]->print_z))
-                    mark_support(i, std::max(1, config.transition_interface_object_layers.value), 3);
+                    mark_support(bcontact_at, i, std::max(1, config.transition_interface_object_layers.value), 3);
         }
-        // B: object layer(s) directly above each top contact.
+        // B: object layer(s) directly above each top contact, restricted to the footprint that
+        // rests on the contact.
         if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
             const int n = std::max(1, config.transition_object_interface_layers.value);
             for (const SupportGeneratorLayer *l : top_contacts) {
                 if (l == nullptr || l->polygons.empty() || l->idx_object_layer_above == size_t(-1))
                     continue;
-                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k)
-                    object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)))->transition_joint = 2;
+                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k) {
+                    Layer *ol = object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)));
+                    ol->transition_joint = 2;
+                    ol->transition_area  = union_ex(intersection(ol->lslices, l->polygons));
+                }
             }
         }
     }
