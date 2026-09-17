@@ -7210,36 +7210,39 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(-1));
 
-    // [ORCAPORT:SU-7] Interface anchor pins: periodic base-filament pegs rising one layer into
-    // the bottom of the interface stack, so a non-bonding interface cannot slide off the support.
-    def = this->add("support_interface_anchor_pins", coBool);
-    def->label = L("Interface anchor pins");
+    // [ORCAPORT:SU-9] Woven interface: over the first few interface layers above the support base,
+    // alternate strips of base and interface material, rotating the strip direction 90 degrees on
+    // alternate layers. The crossing strips mechanically lock the (non-bonding) interface to the
+    // support. The contact surface (object side) is left solid for clean release.
+    def = this->add("support_interface_weave_enable", coBool);
+    def->label = L("Woven interface");
     def->category = L("Support");
-    def->tooltip = L("Print periodic pegs of the support-base filament up through the interface "
-        "layers below the contact, leaving matching holes in the interface. The pegs form columns "
-        "anchored in the support, so an interface that uses a different, non-bonding filament is "
-        "mechanically pinned and cannot be dragged away. Adds tool changes on the pinned layers.");
+    def->tooltip = L("Interlock the support interface with the support base by weaving alternating "
+        "strips of base and interface material over the first layers above the base, rotating the "
+        "strips 90 degrees on alternate layers. The interface cannot slide off a non-bonding base. "
+        "The contact surface under the object is left solid.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("support_interface_anchor_spacing", coFloat);
-    def->label = L("Interface anchor pin spacing");
+    def = this->add("support_interface_weave_layers", coInt);
+    def->label = L("Woven interface layers");
     def->category = L("Support");
-    def->tooltip = L("Distance between interface anchor pins, in mm. Smaller = more pins.");
-    def->sidetext = "mm";
-    def->mode = comAdvanced;
+    def->tooltip = L("Number of interface layers above the base that are woven (1-6).");
+    def->sidetext = L("layers");
     def->min = 1;
-    def->max = 50;
-    def->set_default_value(new ConfigOptionFloat(5));
+    def->max = 6;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(2));
 
-    def = this->add("support_interface_anchor_size", coFloat);
-    def->label = L("Interface anchor pin size");
+    def = this->add("support_interface_weave_pitch", coFloat);
+    def->label = L("Woven interface pitch");
     def->category = L("Support");
-    def->tooltip = L("Square side of each interface anchor pin, in mm.");
+    def->tooltip = L("Nominal width of each woven strip, in mm. Used as a target: each region is "
+        "split into an even number of strips based on its own width, with a minimum of two.");
     def->sidetext = "mm";
     def->mode = comAdvanced;
-    def->min = 0.4;
-    def->max = 10;
+    def->min = 0.5;
+    def->max = 20;
     def->set_default_value(new ConfigOptionFloat(2.0));
 
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three

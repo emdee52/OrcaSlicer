@@ -1210,11 +1210,12 @@ PRINT_CONFIG_CLASS_DEFINE(
     // [ORCAPORT:SU-6] Number of interface layers next to the support base reprinted with the
     // base filament to anchor the interface.
     ((ConfigOptionInt,                 support_interface_base_layers))
-    // [ORCAPORT:SU-7] Base-material pegs rising into the lowest interface layer to mechanically
-    // pin a non-bonding interface to the support.
-    ((ConfigOptionBool,                support_interface_anchor_pins))
-    ((ConfigOptionFloat,               support_interface_anchor_spacing))
-    ((ConfigOptionFloat,               support_interface_anchor_size))
+    // [ORCAPORT:SU-9] Woven interface: alternate base/interface strips over the first interface
+    // layers above the base, rotated 90 degrees on alternate layers, to mechanically interlock a
+    // non-bonding interface to the support base.
+    ((ConfigOptionBool,                support_interface_weave_enable))
+    ((ConfigOptionInt,                 support_interface_weave_layers))
+    ((ConfigOptionFloat,               support_interface_weave_pitch))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
     //   transition_interface_base   (A) first support interface deposited on base support
     //   transition_object_interface (B) first object layers deposited on the support interface

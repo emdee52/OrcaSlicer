@@ -1108,13 +1108,13 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
             toggle_line(el, have_support_material && neoweave_on);
     }
 
-    // [ORCAPORT:SU-7] Interface anchor pins: the master toggle follows "enable support"; the
-    // spacing and size appear only once pins are enabled.
+    // [ORCAPORT:SU-9] Woven interface: the master toggle follows "enable support"; the layer count
+    // and pitch appear only once it is enabled.
     {
-        const bool anchor_pins_on = config->has("support_interface_anchor_pins") && config->opt_bool("support_interface_anchor_pins");
-        toggle_line("support_interface_anchor_pins", have_support_material);
-        for (auto el : { "support_interface_anchor_spacing", "support_interface_anchor_size" })
-            toggle_line(el, have_support_material && anchor_pins_on);
+        const bool weave_on = config->has("support_interface_weave_enable") && config->opt_bool("support_interface_weave_enable");
+        toggle_line("support_interface_weave_enable", have_support_material);
+        for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch" })
+            toggle_line(el, have_support_material && weave_on);
     }
 
     // [ORCAPORT:SU-8] Transition-layer treatment: each joint's master follows "enable support";

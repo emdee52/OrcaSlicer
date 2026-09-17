@@ -1493,41 +1493,46 @@ static void split_support_fills_by_family(SupportLayer &support_layer, const std
     support_layer.support_fills_family = std::move(out_family);
 }
 
-// [ORCAPORT:SU-7] Interface anchor pins. Return a regular grid of solid square pins inside
-// `region`, inset from its boundary so a pin can never poke out of the support. The caller
-// prints these with the support-base filament and subtracts them from the interface layer, so
-// the interface is mechanically keyed to the (possibly non-bonding) support below.
-static Polygons generate_anchor_pins(const Polygons &region, coordf_t spacing, coordf_t size)
+// [ORCAPORT:SU-9] Woven interface: split an interface region into alternating strips of base and
+// interface material along `angle`. Each connected component is divided into its own even number of
+// strips based on its width (at least 2), so narrow spans still interlock instead of ending up with
+// no strip of one material. `base_strips` is printed with the support-base filament and forms the
+// mechanical key; `iface_strips` is the remaining interface region.
+static void split_weave_strips(const Polygons &region, double angle, coordf_t pitch,
+                               Polygons &base_strips, Polygons &iface_strips)
 {
-    Polygons pins;
-    if (region.empty() || spacing <= 0. || size <= 0.)
-        return pins;
-    // Keep pins away from the interface boundary by at least their own size.
-    Polygons interior = offset(region, -size, SUPPORT_SURFACES_OFFSET_PARAMETERS);
-    if (interior.empty())
-        return pins;
-    const BoundingBox bbox = get_extents(interior);
-    const coordf_t    half = 0.5 * size;
-    const coordf_t    full_area = size * size;
-    // Anchor the grid to global coordinates, not the layer's bbox, so pins in consecutive
-    // interface layers land on the same XY and form continuous vertical columns.
-    const coordf_t    x0 = spacing * std::floor(bbox.min.x() / spacing);
-    const coordf_t    y0 = spacing * std::floor(bbox.min.y() / spacing);
-    for (coordf_t x = x0; x <= bbox.max.x(); x += spacing)
-        for (coordf_t y = y0; y <= bbox.max.y(); y += spacing) {
-            Polygon sq;
-            sq.points = { Point(coord_t(x - half), coord_t(y - half)), Point(coord_t(x + half), coord_t(y - half)),
-                          Point(coord_t(x + half), coord_t(y + half)), Point(coord_t(x - half), coord_t(y + half)) };
-            // Keep only pins that fit entirely inside the region. A pin clipped by the boundary
-            // would be extruded as a sliver with full flow (often over the hole left in the layer
-            // below), so drop it instead: better no pin than a malformed one.
-            const Polygons one { sq };
-            const Polygons clipped = intersection(one, interior);
-            if (clipped.empty() || std::abs(area(clipped) - full_area) > full_area * 0.01)
-                continue;
-            pins.emplace_back(std::move(sq));
+    base_strips.clear();
+    iface_strips.clear();
+    if (region.empty() || pitch <= 0.) {
+        iface_strips = region;
+        return;
+    }
+    for (const ExPolygon &comp : union_ex(region)) {
+        Polygons rot = to_polygons(comp);
+        // Work in a frame where the strips are vertical (polygons_rotate takes radians).
+        polygons_rotate(rot, -angle);
+        const BoundingBox bb  = get_extents(rot);
+        const coordf_t   wdt = bb.max.x() - bb.min.x();
+        int n   = wdt > 0. ? int(std::round(wdt / pitch)) : 2;
+        if (n < 2) n = 2;
+        if (n % 2) ++n;
+        const coordf_t w = wdt / double(n);
+        Polygons mask;
+        for (int i = 0; i < n; i += 2) {
+            Polygon r;
+            r.points = { Point(coord_t(bb.min.x() + i * w),     coord_t(bb.min.y())),
+                         Point(coord_t(bb.min.x() + (i + 1) * w), coord_t(bb.min.y())),
+                         Point(coord_t(bb.min.x() + (i + 1) * w), coord_t(bb.max.y())),
+                         Point(coord_t(bb.min.x() + i * w),     coord_t(bb.max.y())) };
+            mask.emplace_back(std::move(r));
         }
-    return pins;
+        Polygons b = intersection(mask, rot);
+        Polygons f = diff(rot, mask);
+        polygons_rotate(b, angle);
+        polygons_rotate(f, angle);
+        polygons_append(base_strips, std::move(b));
+        polygons_append(iface_strips, std::move(f));
+    }
 }
 
 void generate_support_toolpaths(
@@ -1699,28 +1704,44 @@ void generate_support_toolpaths(
         }
     }
 
-    // [ORCAPORT:SU-7] Anchor pins climb the interface stack but stop two layers below its top:
-    // a top-interface layer is pinned only when at least two more top-interface layers sit above
-    // it. The top two interface layers stay pin-free so the pin tops never imprint on the object.
-    std::vector<char> pin_layer(support_layers.size(), 0);
-    if (config.support_interface_anchor_pins.value) {
-        std::vector<coordf_t> top_interface_zs;
+    // [ORCAPORT:SU-9] Mark the base-side interface layers that get the woven interlock: the lowest
+    // `weave_layers` interface layers above the base, per contiguous interface stack. The contact
+    // (object side) is never woven, so the release surface stays a clean interface.
+    std::vector<char> weave_layer(support_layers.size(), 0);
+    if (config.support_interface_weave_enable.value) {
+        std::vector<coordf_t> top_zs, iface_zs;
         for (const SupportGeneratorLayer *l : top_contacts)
             if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
-                top_interface_zs.push_back(l->print_z);
+                top_zs.push_back(l->print_z); // contact is part of the stack and is skipped below
         for (const SupportGeneratorLayer *l : interface_layers)
-            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface)
-                top_interface_zs.push_back(l->print_z);
-        std::sort(top_interface_zs.begin(), top_interface_zs.end());
-        auto is_top_interface = [&top_interface_zs](coordf_t z) {
-            const auto it = std::lower_bound(top_interface_zs.begin(), top_interface_zs.end(), z - EPSILON);
-            return it != top_interface_zs.end() && *it <= z + EPSILON;
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface) {
+                top_zs.push_back(l->print_z);
+                iface_zs.push_back(l->print_z);
+            }
+        std::sort(top_zs.begin(), top_zs.end());
+        auto is_stack = [&top_zs](coordf_t z) {
+            const auto it = std::lower_bound(top_zs.begin(), top_zs.end(), z - EPSILON);
+            return it != top_zs.end() && *it <= z + EPSILON;
         };
-        for (size_t i = 0; i + 2 < support_layers.size(); ++ i)
-            if (is_top_interface(support_layers[i]->print_z) &&
-                is_top_interface(support_layers[i + 1]->print_z) &&
-                is_top_interface(support_layers[i + 2]->print_z))
-                pin_layer[i] = 1;
+        const int max_woven = std::max(1, config.support_interface_weave_layers.value);
+        for (size_t i = 0; i < support_layers.size(); ++ i)
+            if (is_stack(support_layers[i]->print_z) && (i == 0 || ! is_stack(support_layers[i - 1]->print_z))) {
+                // Lowest layer of a stack: weave the interface layers above it, never the contact.
+                int marked = 0;
+                for (size_t j = i; j < support_layers.size() && marked < max_woven; ++ j) {
+                    const coordf_t z = support_layers[j]->print_z;
+                    if (j > i && ! is_stack(z))
+                        break;
+                    const auto it = std::lower_bound(iface_zs.begin(), iface_zs.end(), z - EPSILON);
+                    const bool is_iface = it != iface_zs.end() && *it <= z + EPSILON;
+                    // The contact is the topmost layer of the stack; skip it (keep release clean).
+                    const bool is_contact = j + 1 < support_layers.size() && ! is_stack(support_layers[j + 1]->print_z);
+                    if (is_iface && ! is_contact) {
+                        weave_layer[j] = 1;
+                        ++marked;
+                    }
+                }
+            }
     }
 
     // [ORCAPORT:SU-8] Tag transition layers (1 = interface-on-base, 2 = object-on-interface,
@@ -1792,7 +1813,7 @@ void generate_support_toolpaths(
 
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
         [&config, &slicing_params, &support_params, &support_layers, &bottom_contacts, &top_contacts, &intermediate_layers, &interface_layers, &base_interface_layers, &layer_caches, &loop_interface_processor,
-            &bbox_object, &angles, &interface_above, &pin_layer, n_raft_layers, link_max_length_factor]
+            &bbox_object, &angles, &interface_above, &weave_layer, n_raft_layers, link_max_length_factor]
             (const tbb::blocked_range<size_t>& range) {
         // Indices of the 1st layer in their respective container at the support layer height.
         size_t idx_layer_bottom_contact   = size_t(-1);
@@ -2027,54 +2048,31 @@ void generate_support_toolpaths(
                         interface_as_base ? ExtrusionRole::erSupportMaterial : ExtrusionRole::erSupportMaterialInterface, interface_flow);
                 }
             };
-            // [ORCAPORT:SU-7] Anchor pins: on each top-interface layer below the contact, print the
-            // same base-filament pegs and carve matching holes out of the interface, so the pegs
-            // form continuous columns keyed into every interface layer and anchored in the support
-            // base. The topmost interface layer stays solid and caps the columns. Must run before
-            // the interface layers are extruded (below).
-            if (pin_layer[support_layer_id]) {
-                SupportGeneratorLayerExtruded *pin_target =
-                    (! interface_layer.empty()    && interface_layer.layer->layer_type    == SupporLayerType::TopInterface) ? &interface_layer :
-                    (! top_contact_layer.empty()  && top_contact_layer.layer->layer_type  == SupporLayerType::TopContact) ? &top_contact_layer : nullptr;
-                if (pin_target != nullptr) {
-                    const coordf_t pin_spacing = scale_(config.support_interface_anchor_spacing.value);
-                    const coordf_t pin_size    = scale_(config.support_interface_anchor_size.value);
-                    const Polygons region      = pin_target->polygons_to_extrude();
-                    const Polygons pins        = generate_anchor_pins(region, pin_spacing, pin_size);
-                    if (! pins.empty()) {
-                        pin_target->set_polygons_to_extrude(diff(region, pins));
-                        // [ORCAPORT:SU-7] Fill every pin with a fixed, centred serpentine instead of
-                        // a fill-engine pattern: at pin size the fill patterns are phase-dependent
-                        // and either under-fill some pins or leave a hollow centre. This is solid
-                        // and identical for every pin.
-                        const Flow     pin_flow    = support_params.support_material_flow.with_height(float(pin_target->layer->height));
-                        // Note: the pin bbox is in scaled coordinates, so use the scaled accessors.
-                        const coordf_t pin_gap     = pin_flow.scaled_spacing();
-                        const coordf_t pin_width   = pin_flow.scaled_width();
-                        const coordf_t pin_half_w  = 0.5 * pin_width;
-                        Polylines      pin_lines;
-                        if (pin_gap > 0.) for (const Polygon &pin : pins) {
-                            const BoundingBox bb = get_extents(pin);
-                            const coordf_t x0 = bb.min.x() + pin_half_w;
-                            const coordf_t x1 = bb.max.x() - pin_half_w;
-                            if (x1 <= x0)
-                                continue;
-                            const coordf_t cy = 0.5 * (bb.min.y() + bb.max.y());
-                            const int n_lines = std::max(1, std::min(64, int(std::floor((bb.max.y() - bb.min.y() - pin_width) / pin_gap)) + 1));
-                            Polyline pl;
-                            pl.points.reserve(size_t(n_lines) * 2);
-                            for (int k = 0; k < n_lines; ++ k) {
-                                const coordf_t y = cy + (coordf_t(k) - 0.5 * coordf_t(n_lines - 1)) * pin_gap;
-                                if (k % 2 == 0) { pl.points.emplace_back(coord_t(x0), coord_t(y)); pl.points.emplace_back(coord_t(x1), coord_t(y)); }
-                                else            { pl.points.emplace_back(coord_t(x1), coord_t(y)); pl.points.emplace_back(coord_t(x0), coord_t(y)); }
-                            }
-                            pin_lines.emplace_back(std::move(pl));
-                        }
-                        if (! pin_lines.empty())
-                            extrusion_entities_append_paths(
-                                support_layer.support_fills.entities, std::move(pin_lines),
-                                ExtrusionRole::erSupportMaterial, pin_flow.mm3_per_mm(), pin_flow.width(), pin_flow.height());
-                    }
+            // [ORCAPORT:SU-9] Woven interface: on the base-side interface layers, split the region
+            // into alternating strips of base and interface material, rotated 90 deg on alternate
+            // layers. The base strips are printed with the base filament (anchored to the base
+            // below) and interlock the interface laterally; the contact layer is never woven. Must
+            // run before the interface layers are extruded (below).
+            if (weave_layer[support_layer_id] &&
+                ! interface_layer.empty() && interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
+                const double angle = support_params.base_angle + ((support_layer_id & 1) ? 0.5 * M_PI : 0.0);
+                const coordf_t pitch = scale_(config.support_interface_weave_pitch.value);
+                const Polygons region = interface_layer.polygons_to_extrude();
+                Polygons base_strips, iface_strips;
+                split_weave_strips(region, angle, pitch, base_strips, iface_strips);
+                if (! base_strips.empty()) {
+                    // Leave the interface strips as the interface fill; print the base strips now.
+                    interface_layer.set_polygons_to_extrude(std::move(iface_strips));
+                    auto filler_weave = std::unique_ptr<Fill>(Fill::new_from_type(ipRectilinear));
+                    filler_weave->set_bounding_box(bbox_object);
+                    filler_weave->angle           = angle;
+                    filler_weave->spacing         = support_params.support_material_flow.spacing();
+                    filler_weave->link_max_length = 0;
+                    const Flow weave_flow = support_params.support_material_flow.with_height(float(interface_layer.layer->height));
+                    fill_expolygons_generate_paths(
+                        support_layer.support_fills.entities,
+                        union_safety_offset_ex(base_strips),
+                        filler_weave.get(), 1.f, ExtrusionRole::erSupportMaterial, weave_flow);
                 }
             }
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
