@@ -2990,6 +2990,15 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_anchor_pins", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_anchor_spacing", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_anchor_size", "support_settings_advanced#interface-layers");
+        // [ORCAPORT:SU-8] Transition-layer treatment (one group per joint).
+        for (const char *key : {
+                "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed",
+                "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
+                "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed",
+                "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
+                "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed",
+                "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta" })
+            optgroup->append_single_option_line(key, "support_settings_advanced");
         optgroup->append_single_option_line("support_interface_pattern", "support_settings_advanced#interface-pattern");
         // [ORCAPORT:SU-4] NeoWave roof options (only meaningful for SupportType::NeoWave).
         optgroup->append_single_option_line("wavesupport_roof_pattern", "support_settings_advanced#interface-pattern");

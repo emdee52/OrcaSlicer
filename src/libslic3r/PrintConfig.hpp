@@ -1215,6 +1215,30 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                support_interface_anchor_pins))
     ((ConfigOptionFloat,               support_interface_anchor_spacing))
     ((ConfigOptionFloat,               support_interface_anchor_size))
+    // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
+    //   transition_interface_base   (A) first support interface deposited on base support
+    //   transition_object_interface (B) first object layers deposited on the support interface
+    //   transition_interface_object (C) first support interface deposited on the object (bottom contact)
+    // Each group: _enable / _layers (1..5) / _speed (%<=100) / _flow (%) / _fan (%, -1=off) /
+    // _temp_delta (degC, signed, multi-nozzle only).
+    ((ConfigOptionBool,                transition_interface_base_enable))
+    ((ConfigOptionInt,                 transition_interface_base_layers))
+    ((ConfigOptionInt,                 transition_interface_base_speed))
+    ((ConfigOptionInt,                 transition_interface_base_flow))
+    ((ConfigOptionInt,                 transition_interface_base_fan))
+    ((ConfigOptionInt,                 transition_interface_base_temp_delta))
+    ((ConfigOptionBool,                transition_object_interface_enable))
+    ((ConfigOptionInt,                 transition_object_interface_layers))
+    ((ConfigOptionInt,                 transition_object_interface_speed))
+    ((ConfigOptionInt,                 transition_object_interface_flow))
+    ((ConfigOptionInt,                 transition_object_interface_fan))
+    ((ConfigOptionInt,                 transition_object_interface_temp_delta))
+    ((ConfigOptionBool,                transition_interface_object_enable))
+    ((ConfigOptionInt,                 transition_interface_object_layers))
+    ((ConfigOptionInt,                 transition_interface_object_speed))
+    ((ConfigOptionInt,                 transition_interface_object_flow))
+    ((ConfigOptionInt,                 transition_interface_object_fan))
+    ((ConfigOptionInt,                 transition_interface_object_temp_delta))
     // Spacing between interface lines (the hatching distance). Set zero to get a solid interface.
     ((ConfigOptionFloat,               support_interface_spacing))
     ((ConfigOptionFloatsNullable,      support_interface_speed))

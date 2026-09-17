@@ -202,6 +202,7 @@ public:
         m_layer_index(-1),
         m_layer(nullptr),
         m_object_layer_over_raft(false),
+        m_transition_joint(0),
         //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
@@ -697,6 +698,9 @@ private:
     const Layer*                        m_layer;
     // m_layer is an object layer and it is being printed over raft surface.
     bool                                m_object_layer_over_raft;
+    // [ORCAPORT:SU-8] Transition joint of the layer currently being extruded
+    // (0 = none, 1 = interface-on-base, 2 = object-on-interface, 3 = interface-on-object).
+    int                                 m_transition_joint;
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;

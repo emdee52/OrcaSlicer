@@ -1541,7 +1541,8 @@ void generate_support_toolpaths(
     const SupportGeneratorLayersPtr     &interface_layers,
     const SupportGeneratorLayersPtr     &base_interface_layers,
     // [ORCAPORT:SU-5] optional: split the emitted support between per-zone families (zone materials).
-    const PrintObject                   *object_for_families)
+    // [ORCAPORT:SU-8] also used to tag the object layers that rest on a top contact.
+    PrintObject                         *object_for_families)
 {
     // loop_interface_processor with a given circle radius.
     LoopInterfaceProcessor loop_interface_processor(1.5 * support_params.support_material_interface_flow.scaled_width());
@@ -1719,6 +1720,56 @@ void generate_support_toolpaths(
                 is_top_interface(support_layers[i + 1]->print_z) &&
                 is_top_interface(support_layers[i + 2]->print_z))
                 pin_layer[i] = 1;
+    }
+
+    // [ORCAPORT:SU-8] Tag transition layers (1 = interface-on-base, 2 = object-on-interface,
+    // 3 = interface-on-object). Each joint marks its first layer plus the next `layers - 1`
+    // consecutive layers. Only runs when at least one joint is enabled, so defaults are inert.
+    if (config.transition_interface_base_enable.value ||
+        config.transition_object_interface_enable.value ||
+        config.transition_interface_object_enable.value) {
+        auto mark_support = [&support_layers](size_t first, int n, int joint) {
+            for (int k = 0; k < n && first + size_t(k) < support_layers.size(); ++ k)
+                if (support_layers[first + k]->transition_joint == 0)
+                    support_layers[first + k]->transition_joint = joint;
+        };
+        // A: lowest top-interface layer above base, per contiguous interface stack.
+        if (config.transition_interface_base_enable.value) {
+            std::vector<coordf_t> zs;
+            for (const SupportGeneratorLayer *l : top_contacts)
+                if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
+                    zs.push_back(l->print_z);
+            for (const SupportGeneratorLayer *l : interface_layers)
+                if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface)
+                    zs.push_back(l->print_z);
+            std::sort(zs.begin(), zs.end());
+            auto is_top = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
+            for (size_t i = 0; i < support_layers.size(); ++ i)
+                if (is_top(support_layers[i]->print_z) && (i == 0 || ! is_top(support_layers[i - 1]->print_z)))
+                    mark_support(i, std::max(1, config.transition_interface_base_layers.value), 1);
+        }
+        // C: bottom-contact layer resting on the object.
+        if (config.transition_interface_object_enable.value) {
+            std::vector<coordf_t> zs;
+            for (const SupportGeneratorLayer *l : bottom_contacts)
+                if (l != nullptr && ! l->polygons.empty())
+                    zs.push_back(l->print_z);
+            std::sort(zs.begin(), zs.end());
+            auto is_bc = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
+            for (size_t i = 0; i < support_layers.size(); ++ i)
+                if (is_bc(support_layers[i]->print_z))
+                    mark_support(i, std::max(1, config.transition_interface_object_layers.value), 3);
+        }
+        // B: object layer(s) directly above each top contact.
+        if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
+            const int n = std::max(1, config.transition_object_interface_layers.value);
+            for (const SupportGeneratorLayer *l : top_contacts) {
+                if (l == nullptr || l->polygons.empty() || l->idx_object_layer_above == size_t(-1))
+                    continue;
+                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k)
+                    object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)))->transition_joint = 2;
+            }
+        }
     }
 
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),

@@ -1117,6 +1117,22 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
             toggle_line(el, have_support_material && anchor_pins_on);
     }
 
+    // [ORCAPORT:SU-8] Transition-layer treatment: each joint's master follows "enable support";
+    // its knobs appear only once that joint is enabled.
+    {
+        const std::pair<const char *, const char *> joints[] = {
+            { "transition_interface_base_enable",   "transition_interface_base" },
+            { "transition_object_interface_enable", "transition_object_interface" },
+            { "transition_interface_object_enable", "transition_interface_object" },
+        };
+        for (const auto &j : joints) {
+            const bool on = config->has(j.first) && config->opt_bool(j.first);
+            toggle_line(j.first, have_support_material);
+            for (const std::string &suffix : { std::string("_layers"), std::string("_speed"), std::string("_flow"), std::string("_fan"), std::string("_temp_delta") })
+                toggle_line((std::string(j.second) + suffix).c_str(), have_support_material && on);
+        }
+    }
+
 //    see issue #10915
 //    bool have_skirt_height = have_skirt &&
 //    (config->opt_int("skirt_height") > 1 || config->opt_enum<DraftShield>("draft_shield") != dsEnabled);

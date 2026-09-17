@@ -3612,7 +3612,7 @@ static void generate_support_areas(Print &print, TreeSupport* tree_support, cons
         SupportLayerPtrs new_support_layers(print_object.support_layers().begin() + support_layer_base,
                                             print_object.support_layers().end());
         generate_support_toolpaths(new_support_layers, print_object.config(), support_params, print_object.slicing_parameters(),
-            raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers);
+            raft_layers, bottom_contacts, top_contacts, intermediate_layers, interface_layers, base_interface_layers, &print_object);
 
         auto t_end = std::chrono::high_resolution_clock::now();
         BOOST_LOG_TRIVIAL(info) << "Total time of organic tree support: " << 0.001 * std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_start).count() << " ms";

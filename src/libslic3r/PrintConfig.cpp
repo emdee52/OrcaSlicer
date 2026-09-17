@@ -7242,6 +7242,97 @@ void PrintConfigDef::init_fff_params()
     def->max = 10;
     def->set_default_value(new ConfigOptionFloat(2.0));
 
+    // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
+    // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
+    auto add_transition_group = [this, &def](const char *prefix,
+            const char *enable_label, const char *enable_tip,
+            const char *layers_tip, const char *speed_tip, const char *flow_tip,
+            const char *fan_tip, const char *temp_tip)
+    {
+        const std::string p(prefix);
+        def = this->add((p + "_enable").c_str(), coBool);
+        def->label = enable_label;
+        def->category = L("Support");
+        def->tooltip = enable_tip;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionBool(false));
+
+        def = this->add((p + "_layers").c_str(), coInt);
+        def->label = L("Transition layers");
+        def->category = L("Support");
+        def->tooltip = layers_tip;
+        def->sidetext = L("layers");
+        def->min = 1;
+        def->max = 5;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(1));
+
+        def = this->add((p + "_speed").c_str(), coInt);
+        def->label = L("Transition speed");
+        def->category = L("Support");
+        def->tooltip = speed_tip;
+        def->sidetext = "%";
+        def->min = 10;
+        def->max = 100;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(100));
+
+        def = this->add((p + "_flow").c_str(), coInt);
+        def->label = L("Transition flow");
+        def->category = L("Support");
+        def->tooltip = flow_tip;
+        def->sidetext = "%";
+        def->min = 1;
+        def->max = 200;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(100));
+
+        def = this->add((p + "_fan").c_str(), coInt);
+        def->label = L("Transition fan speed");
+        def->category = L("Support");
+        def->tooltip = fan_tip;
+        def->sidetext = "%";
+        def->min = -1;
+        def->max = 100;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(-1));
+
+        def = this->add((p + "_temp_delta").c_str(), coInt);
+        def->label = L("Transition temperature delta");
+        def->category = L("Support");
+        def->tooltip = temp_tip;
+        def->sidetext = "°C";
+        def->min = -50;
+        def->max = 50;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(0));
+    };
+
+    add_transition_group("transition_interface_base",
+        L("Interface-on-base transition"),
+        L("Treatment for the first support-interface layer deposited on the support base."),
+        L("Number of interface layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+    add_transition_group("transition_object_interface",
+        L("Object-on-interface transition"),
+        L("Treatment for the first object layers deposited on the support interface."),
+        L("Number of object layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+    add_transition_group("transition_interface_object",
+        L("Interface-on-object transition"),
+        L("Treatment for the first support-interface layer deposited on the object (bottom contact)."),
+        L("Number of interface layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+
     def = this->add("support_interface_spacing", coFloat);
     def->label = L("Top interface spacing");
     def->category = L("Support");

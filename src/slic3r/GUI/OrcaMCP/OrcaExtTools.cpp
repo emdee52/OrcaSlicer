@@ -113,6 +113,10 @@ const std::vector<std::string>& orcaext_config_keys()
         "support_interface_base_layers",
         // SU-7
         "support_interface_anchor_pins", "support_interface_anchor_spacing", "support_interface_anchor_size",
+        // SU-8
+        "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed", "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
+        "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed", "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
+        "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed", "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta",
         // MT-4
         "mmu_segmented_region_extra_walls",
         // PF-1 / PF-2 / PF-9

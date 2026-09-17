@@ -1343,6 +1343,10 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_anchor_pins" // [ORCAPORT:SU-7]
             || opt_key == "support_interface_anchor_spacing" // [ORCAPORT:SU-7]
             || opt_key == "support_interface_anchor_size" // [ORCAPORT:SU-7]
+            // [ORCAPORT:SU-8] transition-layer treatment
+            || opt_key == "transition_interface_base_enable" || opt_key == "transition_interface_base_layers" || opt_key == "transition_interface_base_speed" || opt_key == "transition_interface_base_flow" || opt_key == "transition_interface_base_fan" || opt_key == "transition_interface_base_temp_delta"
+            || opt_key == "transition_object_interface_enable" || opt_key == "transition_object_interface_layers" || opt_key == "transition_object_interface_speed" || opt_key == "transition_object_interface_flow" || opt_key == "transition_object_interface_fan" || opt_key == "transition_object_interface_temp_delta"
+            || opt_key == "transition_interface_object_enable" || opt_key == "transition_interface_object_layers" || opt_key == "transition_interface_object_speed" || opt_key == "transition_interface_object_flow" || opt_key == "transition_interface_object_fan" || opt_key == "transition_interface_object_temp_delta"
             || opt_key == "support_interface_spacing"
             || opt_key == "support_bottom_interface_spacing" //BBS
             || opt_key == "support_base_pattern"

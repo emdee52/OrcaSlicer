@@ -6480,6 +6480,8 @@ LayerResult GCode::process_layer(
                 m_config.apply(instance_to_print.print_object.config(), true);
                 m_layer = layer_to_print.layer();
                 m_object_layer_over_raft = object_layer_over_raft;
+                // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
+                m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -6524,6 +6526,8 @@ LayerResult GCode::process_layer(
                 if (visit.first_visit && instance_to_print.object_by_extruder.support != nullptr) {
                     m_layer = layers[instance_to_print.layer_id].support_layer;
                     m_object_layer_over_raft = false;
+                    // [ORCAPORT:SU-8] Interface-on-base / interface-on-object transition tag.
+                    m_transition_joint = layers[instance_to_print.layer_id].support_layer->transition_joint;
 
                     // When starting a new object, use the external motion planner for the first travel move.
                     const Point& offset = instance_to_print.print_object.instances()[instance_to_print.instance_id].shift;
@@ -6554,6 +6558,8 @@ LayerResult GCode::process_layer(
 
                     m_layer = layer_to_print.layer();
                     m_object_layer_over_raft = object_layer_over_raft;
+                    // [ORCAPORT:SU-8] Restore the object-on-interface tag after the support pass.
+                    m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
                 }
                 // Sequential tool path ordering of multiple parts within the same object, aka. perimeter tracking (#5511)
                 // Island print order. Use the islands the tour assigned to this visit; if none,
@@ -6703,6 +6709,8 @@ LayerResult GCode::process_layer(
                 m_config.apply(instance_to_print.print_object.config(), true);
                 m_layer = layer_to_print.layer();
                 m_object_layer_over_raft = object_layer_over_raft;
+                // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
+                m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -8098,6 +8106,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         }
     }
 
+    // [ORCAPORT:SU-8] Transition-layer flow adjustment.
+    if (m_transition_joint != 0) {
+        const int fpct = m_transition_joint == 1 ? int(m_config.transition_interface_base_flow.value)
+                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_flow.value)
+                       :                           int(m_config.transition_interface_object_flow.value);
+        if (fpct != 100)
+            _mm3_per_mm *= double(fpct) / 100.;
+    }
+
     // Mixed-color sublayer: this path belongs to one sub-layer of a split layer, so scale the
     // flow down to that sub-layer's share of the nominal layer height and report the sub-height
     // as the effective extrusion height. Inert (ratio == 0) outside the sublayer emission block.
@@ -8201,6 +8218,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         const double skirt_speed = m_config.get_abs_value("skirt_speed");
         if (skirt_speed > 0.0)
         speed = skirt_speed;
+    }
+    // [ORCAPORT:SU-8] Transition-layer slowdown (relative factor <= 100%; applied before the
+    // volumetric cap, which can only reduce it further).
+    if (m_transition_joint != 0 && path.role() != erSkirt && path.role() != erBrim) {
+        const int spct = m_transition_joint == 1 ? int(m_config.transition_interface_base_speed.value)
+                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_speed.value)
+                       :                           int(m_config.transition_interface_object_speed.value);
+        if (spct < 100)
+            speed *= double(spct) / 100.;
     }
     //BBS: remove this config
     //else if (this->object_layer_over_raft())
