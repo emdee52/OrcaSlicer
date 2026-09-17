@@ -1,6 +1,6 @@
 # MCP-1 - Embedded MCP server (port of okets/OrcaMCP)
 
-Status: in progress (core ported; build pending verification; filament tools deferred).
+Status: ported (core + filament/color tools + Preferences toggle). Build clean; runtime verified.
 
 ## Goal
 
@@ -35,11 +35,13 @@ MCP client (opencode)  --stdio-->  scripts/orcamcp-bridge.py  --HTTP/JSON-RPC-->
 ## Ported surface
 
 New (compiled):
-- `src/slic3r/GUI/OrcaMCP/OrcaMCPServer.{hpp,cpp}` - server + ~50 builtin tools.
+- `src/slic3r/GUI/OrcaMCP/OrcaMCPServer.{hpp,cpp}` - server + builtin tools.
 - `src/slic3r/GUI/OrcaMCP/OrcaMCPCommon.{hpp,cpp}` - dialog-suppression guard + warnings JSON.
 - `src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp` - key categories.
 - `src/slic3r/GUI/OrcaMCP/OrcaMCPPlateUtils.{hpp,cpp}` - scene/plate/preview render.
 - `src/slic3r/GUI/OrcaMCP/OrcaMCPPresetConfigUtils.{hpp,cpp}` - presets/config apply.
+- `src/slic3r/GUI/OrcaMCP/OrcaMCPFilamentTools.{hpp,cpp}` and `OrcaMCPFilamentUtils.{hpp,cpp}` -
+  filament/mixed-filament, colour-palette, flush-volume and toolchanger tools.
 
 New (scripts, not compiled):
 - `scripts/orcamcp-bridge.py`, `scripts/tools_schema.py`, `scripts/regen_tools_schema.py`
@@ -54,8 +56,13 @@ Modified upstream files (all `[ORCAPORT:MCP-1]` marked):
 - `src/slic3r/GUI/GUI.{hpp,cpp}` - MCP dialog-suppression state + `show_info` capture.
 - `src/slic3r/GUI/MsgDialog.{hpp,cpp}` - `ShowModal()` override returns a default under MCP.
 - `src/slic3r/GUI/NotificationManager.{hpp,cpp}` - `get_active_warnings()`.
-- `src/slic3r/GUI/Plater.{hpp,cpp}` - `export_gcode_to_file()`, `EVT_SCHEDULE_BACKGROUND_PROCESS`
-  declaration (definition already upstream).
+- `src/slic3r/GUI/Plater.{hpp,cpp}` - `export_gcode_to_file()`, the dialog-free
+  `Sidebar::apply_mixed_filament()` core (shared by the sidebar UI and MCP), and the
+  `EVT_SCHEDULE_BACKGROUND_PROCESS` declaration (definition already upstream).
+- `src/slic3r/GUI/Preferences.cpp` - "Enable MCP server" toggle (`orca_ext_mcp`); starts/stops
+  the HTTP server live.
+- `src/libslic3r/ColorDecomposeRecipe.{hpp,cpp}` - `color_decompose_delta_e()` used by the
+  colour tools.
 - `src/slic3r/CMakeLists.txt` - sources + `GUI/OrcaMCP` include dir.
 - `opencode.json` - `mcp.orca-slicer` local server entry.
 
@@ -66,9 +73,10 @@ tab, homepage "Connect AI" card, version/branding changes, AppConfig update-URL 
 
 Server starts only when **either** `ORCA_EXT_MCP` is set non-empty/non-"0" **or** app key
 `orca_ext_mcp` is true. A normal launch is unchanged (`start_http_server` still only runs for
-OAuth as before). The bridge sets `ORCA_EXT_MCP=1` when it launches the app.
+OAuth as before). The bridge sets `ORCA_EXT_MCP=1` when it launches the app; the Preferences
+checkbox toggles the app key and starts/stops the server immediately.
 
-## Tool surface (categories)
+## Tool surface (63 tools)
 
 Scene/project: `get_server_info`, `get_scene_info`, `new_project`, `load_project`,
 `save_project`, `export_3mf`. Presets/config: `get_presets`, `select_preset`, `apply_config`,
@@ -81,11 +89,10 @@ Objects: `get_object_info`, `rename_object`, `get_object_config`, `set_object_co
 `get_print_estimate`, `export_gcode`. Preview: `render_plate_view` (base64 or file).
 Printers: `get_printers`, `select_printer`, `send_to_printer`. History: `undo`, `redo`.
 
-Deferred: the ~10 filament/mixed-filament/color tools (`get_filaments`,
-`set_mixed_filament`, `set_object_filament`, `suggest_color_mix`, `get_color_palette`,
-flush-volume/toolchanger config tools). They depend on `Sidebar::apply_mixed_filament`, which
-requires porting OrcaMCP's dialog-free extraction in `Plater.cpp`. Files are present but
-excluded from CMake for the first build.
+Filament/colour group: `get_filaments`, `set_mixed_filament`, `delete_mixed_filament`,
+`set_object_filament`, `suggest_color_mix`, `get_color_palette`, `get_flush_volumes`,
+`set_flush_volumes`, `auto_calc_flush_volumes`, `get_toolchanger_config`. These use the ported
+`Sidebar::apply_mixed_filament()` dialog-free core and the new `color_decompose_delta_e()`.
 
 ## Checklist: OraExt features vs the generic tools
 
@@ -115,12 +122,20 @@ app-level prefs and per-volume custom annotations need dedicated tools (candidat
 
 ## Verification
 
-Planned: build with `.\OrcaSlicer\build_win.bat -s -j 8`; launch with `ORCA_EXT_MCP=1`; then
-`GET http://localhost:13618/mcp`, `POST` `tools/list`, and a load -> slice -> status ->
-export -> render loop. Evidence to be recorded here once run.
+Done (2026-09-16, Windows; `build_win.bat -s -j 8`, 0 errors):
+
+- `GET http://localhost:13618/mcp` -> server info JSON.
+- `tools/list` -> **63 tools**.
+- Core: `load_model` (`tests/data/20mm_cube.obj`) -> `slice_all` (surfaced a `ValidateWarning`)
+  -> `get_slicing_status` -> `export_gcode` (612 KB written).
+- Filament: `set_mixed_filament` (components `[1,2]` @ 50/50) created slot 5 with blended
+  colour `#021CBB`.
+- Colour: `get_color_palette` returned 6 mixes; `suggest_color_mix` for `#8A2BE2` returned a
+  recipe (`components [1,3]`, `#3303B7`) and `delta_e` (uses `color_decompose_delta_e`).
+- Bridge: stdio `initialize` + `tools/list` return `start_orca` + the tool set.
 
 ## Known gaps / follow-ups
 
-- Filament/color tools deferred (see above).
+- MCPClientConfig / "MCP Clients" auto-config tab not ported; opencode is configured directly.
 - `get_scene_info` `with_model_object_features` will not report OraExt per-volume annotations.
-- Preferences "MCP Clients" auto-config UI not ported; opencode is configured directly.
+- OraExt-specific tools (app prefs, Support Zones geometry) are candidate `MCP-2`.
