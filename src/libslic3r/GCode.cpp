@@ -5560,19 +5560,17 @@ LayerResult GCode::process_layer(
                                                    : m_config.nozzle_temperature.get_at(fi);
         if (base <= 0)
             return;
-        if (dt != 0) {
-            if (! m_transition_temp_active) {
-                gcode += m_writer.set_temperature(unsigned(std::max(1, base + dt)), true, fid);
-                m_transition_temp_active = true;
-            }
-            transition_temp_done = true;
-        } else if (m_transition_temp_active) {
-            // First layer after the transition: restore the filament's normal temperature so the
-            // delta does not leak into the rest of the print.
-            gcode += m_writer.set_temperature(unsigned(base), true, fid);
-            m_transition_temp_active = false;
-            transition_temp_done = true;
+        // A nozzle is shared by every object on the plate, so track the last commanded value per
+        // filament: emit only when this context wants something different. This keeps each
+        // object's own delta (or its absence) from leaking into another object's extrusion.
+        if (m_transition_temp_last.size() < m_config.nozzle_diameter.values.size())
+            m_transition_temp_last.resize(m_config.nozzle_diameter.values.size(), -1);
+        const int desired = std::max(1, base + dt);
+        if (fid >= 0 && size_t(fid) < m_transition_temp_last.size() && m_transition_temp_last[size_t(fid)] != desired) {
+            gcode += m_writer.set_temperature(unsigned(desired), true, fid);
+            m_transition_temp_last[size_t(fid)] = desired;
         }
+        transition_temp_done = true;
     };
 
     // add tag for processor
@@ -8170,10 +8168,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     // whole layer: the layer carries the footprint that touches the other material.
     bool in_transition_area = m_transition_joint == 0 || m_layer == nullptr || m_layer->transition_area.empty();
     if (! in_transition_area) {
-        const auto &fp = path.polyline.first_point();
-        const Point p2(coord_t(fp(0)), coord_t(fp(1)));
-        for (const ExPolygon &e : m_layer->transition_area)
-            if (e.contains(p2)) { in_transition_area = true; break; }
+        // Any point of the path inside the touching footprint qualifies, so a perimeter that is
+        // partly over the other material is slowed consistently instead of only where it starts.
+        for (const auto &fp : path.polyline.points) {
+            const Point p2(coord_t(fp(0)), coord_t(fp(1)));
+            for (const ExPolygon &e : m_layer->transition_area)
+                if (e.contains(p2)) { in_transition_area = true; break; }
+            if (in_transition_area)
+                break;
+        }
     }
     // [ORCAPORT:SU-8] Transition-layer flow adjustment.
     if (m_transition_joint != 0 && in_transition_area) {
