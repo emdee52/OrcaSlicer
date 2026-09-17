@@ -64,6 +64,8 @@ private:
     static void register_builtin_tools();
     // Filament and mixed-filament tools (OrcaMCPFilamentTools.cpp)
     static void register_filament_tools();
+    // [ORCAPORT:MCP-2] OraExt introspection tools (OrcaExtTools.cpp)
+    static void register_orcaext_tools();
 };
 
 }} // namespace Slic3r::GUI

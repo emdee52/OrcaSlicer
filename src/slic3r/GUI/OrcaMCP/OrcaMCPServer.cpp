@@ -4391,6 +4391,8 @@ void OrcaMCPServer::register_builtin_tools()
     });
 
     register_filament_tools();
+    // [ORCAPORT:MCP-2] OraExt introspection tools
+    register_orcaext_tools();
 
     BOOST_LOG_TRIVIAL(info) << "OrcaMCPServer: Registered " << s_tools.size() << " tools";
 }

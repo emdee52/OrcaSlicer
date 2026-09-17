@@ -430,6 +430,8 @@ GUI/Gizmos/GLGizmoCounterboreBridge.hpp
     GUI/OrcaMCP/OrcaMCPFilamentUtils.cpp
     GUI/OrcaMCP/OrcaMCPFilamentTools.cpp
     # [ORCAPORT:MCP-1] END
+    # [ORCAPORT:MCP-2] OraExt introspection tools
+    GUI/OrcaMCP/OrcaExtTools.cpp
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/ParamsDialog.cpp
