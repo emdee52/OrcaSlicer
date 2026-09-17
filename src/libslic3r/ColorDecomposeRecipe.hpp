@@ -43,6 +43,9 @@ struct ColorDecomposeRecipeResult {
 std::string color_decompose_rgb_to_hex(const ColorDecomposeRgb& rgb);
 bool color_decompose_hex_to_rgb(const std::string& hex, ColorDecomposeRgb& out);
 
+// [ORCAPORT:MCP-1] CIE76 perceptual distance (Lab) between two sRGB colors; used by the MCP color tools
+double color_decompose_delta_e(const ColorDecomposeRgb& a, const ColorDecomposeRgb& b);
+
 ColorDecomposeRecipeResult recommend_from_physical_filaments(
     const ColorDecomposeRgb& target,
     const std::vector<ColorDecomposePhysicalFilament>& physical_filaments,

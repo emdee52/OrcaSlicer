@@ -81,6 +81,8 @@ struct Camera;
 class GLToolbar;
 class PlaterPresetComboBox;
 class PartPlateList;
+// [ORCAPORT:MCP-1] forward declaration for the dialog-free mixed-filament API
+struct MixedFilamentResult;
 class SyncNozzleAndAmsDialog;
 class FinishSyncAmsDialog;
 using t_optgroups = std::vector <std::shared_ptr<ConfigOptionsGroup>>;
@@ -274,6 +276,10 @@ public:
     // Mixed-color filament sidebar section
     void add_mixed_filament();
     void edit_mixed_filament(size_t idx);
+    // [ORCAPORT:MCP-1] dialog-free core, also called by the MCP filament tools
+    int  apply_mixed_filament(const MixedFilamentResult& result, int edit_cfg_idx, std::string& error);
+    int  apply_mixed_filament(const MixedFilamentResult& result, int edit_cfg_idx,
+                              const std::vector<std::string>& physical_colors, std::string& error);
     void delete_mixed_filament_at(size_t idx);
     void decompose_filament_color(int filament_idx);
     void recalc_filament_scroll_sizes();

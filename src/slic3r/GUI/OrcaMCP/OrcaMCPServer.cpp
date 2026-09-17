@@ -4390,8 +4390,7 @@ void OrcaMCPServer::register_builtin_tools()
         }
     });
 
-    // [ORCAPORT:MCP-1] filament tools disabled until Sidebar::apply_mixed_filament is ported
-    // register_filament_tools();
+    register_filament_tools();
 
     BOOST_LOG_TRIVIAL(info) << "OrcaMCPServer: Registered " << s_tools.size() << " tools";
 }

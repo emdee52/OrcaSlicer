@@ -426,10 +426,9 @@ GUI/Gizmos/GLGizmoCounterboreBridge.hpp
     GUI/OrcaMCP/OrcaMCPPresetConfigUtils.hpp
     GUI/OrcaMCP/OrcaMCPPresetConfigUtils.cpp
     GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
-    # [ORCAPORT:MCP-1] filament tools excluded until Sidebar::apply_mixed_filament is ported
-    # GUI/OrcaMCP/OrcaMCPFilamentUtils.hpp
-    # GUI/OrcaMCP/OrcaMCPFilamentUtils.cpp
-    # GUI/OrcaMCP/OrcaMCPFilamentTools.cpp
+    GUI/OrcaMCP/OrcaMCPFilamentUtils.hpp
+    GUI/OrcaMCP/OrcaMCPFilamentUtils.cpp
+    GUI/OrcaMCP/OrcaMCPFilamentTools.cpp
     # [ORCAPORT:MCP-1] END
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
