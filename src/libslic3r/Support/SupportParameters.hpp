@@ -56,6 +56,14 @@ struct SupportParameters {
                 // Keep at least one configured layer on the interface filament.
                 this->num_bottom_base_interface_layers = different_support_interface_filament && num_bottom_interface_layers > 1 ? 1 : 0;
             }
+
+            // [ORCAPORT:SU-6] Explicit override of the base-material interface layer count.
+            // -1 keeps the automatic behaviour above; >= 0 sets it, later clamped to the number
+            // of printable interface layers.
+            if (object_config.support_interface_base_layers.value >= 0) {
+                this->num_top_base_interface_layers    = size_t(object_config.support_interface_base_layers.value);
+                this->num_bottom_base_interface_layers = size_t(object_config.support_interface_base_layers.value);
+            }
 	    }
         this->first_layer_flow = Slic3r::support_material_1st_layer_flow(&object, float(slicing_params.first_print_layer_height));
         this->support_material_flow = Slic3r::support_material_flow(&object, float(slicing_params.layer_height));

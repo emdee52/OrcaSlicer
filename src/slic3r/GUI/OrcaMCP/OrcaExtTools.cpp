@@ -109,6 +109,10 @@ const std::vector<std::string>& orcaext_config_keys()
         "support_zone_land_only",
         "support_neoweave_enabled", "support_neoweave_target", "support_neoweave_amplitude",
         "support_neoweave_period", "support_neoweave_max_z_speed",
+        // SU-6
+        "support_interface_base_layers",
+        // SU-7
+        "support_interface_anchor_pins", "support_interface_anchor_spacing", "support_interface_anchor_size",
         // MT-4
         "mmu_segmented_region_extra_walls",
         // PF-1 / PF-2 / PF-9

@@ -1207,6 +1207,14 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 support_interface_filament))
     ((ConfigOptionInt,                 support_interface_top_layers))
     ((ConfigOptionInt,                 support_interface_bottom_layers))
+    // [ORCAPORT:SU-6] Number of interface layers next to the support base reprinted with the
+    // base filament to anchor the interface.
+    ((ConfigOptionInt,                 support_interface_base_layers))
+    // [ORCAPORT:SU-7] Base-material pegs rising into the lowest interface layer to mechanically
+    // pin a non-bonding interface to the support.
+    ((ConfigOptionBool,                support_interface_anchor_pins))
+    ((ConfigOptionFloat,               support_interface_anchor_spacing))
+    ((ConfigOptionFloat,               support_interface_anchor_size))
     // Spacing between interface lines (the hatching distance). Set zero to get a solid interface.
     ((ConfigOptionFloat,               support_interface_spacing))
     ((ConfigOptionFloatsNullable,      support_interface_speed))

@@ -7195,6 +7195,53 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(0));
 
+    // [ORCAPORT:SU-6] Number of interface layers nearest the support base reprinted with the
+    // base filament, to anchor an interface that uses an incompatible filament to the support.
+    def = this->add("support_interface_base_layers", coInt);
+    def->label = L("Interface base layers");
+    def->category = L("Support");
+    def->tooltip = L("Number of interface layers nearest the support base that are printed with the "
+        "support-base filament, to anchor the interface to the support when the interface uses a "
+        "different, non-bonding filament. -1 = automatic (1 layer when the base and interface "
+        "filaments differ, otherwise 0). 0 disables it.");
+    def->sidetext = L("layers");
+    def->min = -1;
+    def->max = 3;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(-1));
+
+    // [ORCAPORT:SU-7] Interface anchor pins: periodic base-filament pegs rising one layer into
+    // the bottom of the interface stack, so a non-bonding interface cannot slide off the support.
+    def = this->add("support_interface_anchor_pins", coBool);
+    def->label = L("Interface anchor pins");
+    def->category = L("Support");
+    def->tooltip = L("Print periodic pegs of the support-base filament up through the interface "
+        "layers below the contact, leaving matching holes in the interface. The pegs form columns "
+        "anchored in the support, so an interface that uses a different, non-bonding filament is "
+        "mechanically pinned and cannot be dragged away. Adds tool changes on the pinned layers.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_interface_anchor_spacing", coFloat);
+    def->label = L("Interface anchor pin spacing");
+    def->category = L("Support");
+    def->tooltip = L("Distance between interface anchor pins, in mm. Smaller = more pins.");
+    def->sidetext = "mm";
+    def->mode = comAdvanced;
+    def->min = 1;
+    def->max = 50;
+    def->set_default_value(new ConfigOptionFloat(5));
+
+    def = this->add("support_interface_anchor_size", coFloat);
+    def->label = L("Interface anchor pin size");
+    def->category = L("Support");
+    def->tooltip = L("Square side of each interface anchor pin, in mm.");
+    def->sidetext = "mm";
+    def->mode = comAdvanced;
+    def->min = 0.4;
+    def->max = 10;
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
     def = this->add("support_interface_spacing", coFloat);
     def->label = L("Top interface spacing");
     def->category = L("Support");

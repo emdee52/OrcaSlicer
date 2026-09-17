@@ -1087,7 +1087,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("bridge_no_support", !support_is_tree);
     toggle_line("support_critical_regions_only", is_auto(support_type) && support_is_tree);
 
-    for (auto el : { "support_interface_filament",
+    for (auto el : { "support_interface_filament", "support_interface_base_layers",
         "support_interface_loop_pattern", "support_bottom_interface_spacing" })
         toggle_field(el, have_support_material && have_support_interface);
 
@@ -1106,6 +1106,15 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         toggle_line("support_neoweave_enabled", have_support_material);
         for (auto el : { "support_neoweave_target", "support_neoweave_amplitude", "support_neoweave_period", "support_neoweave_max_z_speed" })
             toggle_line(el, have_support_material && neoweave_on);
+    }
+
+    // [ORCAPORT:SU-7] Interface anchor pins: the master toggle follows "enable support"; the
+    // spacing and size appear only once pins are enabled.
+    {
+        const bool anchor_pins_on = config->has("support_interface_anchor_pins") && config->opt_bool("support_interface_anchor_pins");
+        toggle_line("support_interface_anchor_pins", have_support_material);
+        for (auto el : { "support_interface_anchor_spacing", "support_interface_anchor_size" })
+            toggle_line(el, have_support_material && anchor_pins_on);
     }
 
 //    see issue #10915

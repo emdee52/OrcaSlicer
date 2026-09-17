@@ -1339,6 +1339,10 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_loop_pattern"
             || opt_key == "support_interface_filament"
             || opt_key == "support_interface_not_for_body"
+            || opt_key == "support_interface_base_layers" // [ORCAPORT:SU-6]
+            || opt_key == "support_interface_anchor_pins" // [ORCAPORT:SU-7]
+            || opt_key == "support_interface_anchor_spacing" // [ORCAPORT:SU-7]
+            || opt_key == "support_interface_anchor_size" // [ORCAPORT:SU-7]
             || opt_key == "support_interface_spacing"
             || opt_key == "support_bottom_interface_spacing" //BBS
             || opt_key == "support_base_pattern"
