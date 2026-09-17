@@ -96,6 +96,13 @@ re-attempt unless the user asks. PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are p
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
 
+**Pending user test (2026-09-16):** branch `port/SU-4-fix` (from `port/integration` f9b08708d6),
+product `a499db16a4` + docs `14196ca94d`. Fixes the NeoWave wave roof printing over air on curved
+overhangs (`baloondog test.3mf` layers ~715/~991): the base layer directly under an interface stack
+is now filled with the normal base pattern (floor), plus a thin-sliver fallback. Verified by slicing
+via MCP; the residual float also occurs with stock `normal(auto)` support. Not merged/pushed - the
+user tests first. See `notes/SU-4.md` "Fix" and patch `26_SU-4-fix.patch`.
+
 Also queued as known gaps (do if the user asks):
 - **PF-1b**: Nip/Tuck inner-perimeter trim. v1 only notches the external perimeter; preFlight also
   trims/splits the first inner wall. Needs cross-loop pairing, which `GCode::extrude_loop` lacks.
