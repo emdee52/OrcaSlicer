@@ -416,6 +416,20 @@ GUI/Gizmos/GLGizmoCounterboreBridge.hpp
     GUI/OG_CustomCtrl.hpp
     GUI/OpenGLManager.cpp
     GUI/OpenGLManager.hpp
+    # [ORCAPORT:MCP-1] BEGIN - embedded MCP server sources
+    GUI/OrcaMCP/OrcaMCPCommon.hpp
+    GUI/OrcaMCP/OrcaMCPCommon.cpp
+    GUI/OrcaMCP/OrcaMCPServer.hpp
+    GUI/OrcaMCP/OrcaMCPServer.cpp
+    GUI/OrcaMCP/OrcaMCPPlateUtils.hpp
+    GUI/OrcaMCP/OrcaMCPPlateUtils.cpp
+    GUI/OrcaMCP/OrcaMCPPresetConfigUtils.hpp
+    GUI/OrcaMCP/OrcaMCPPresetConfigUtils.cpp
+    GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
+    GUI/OrcaMCP/OrcaMCPFilamentUtils.hpp
+    GUI/OrcaMCP/OrcaMCPFilamentUtils.cpp
+    GUI/OrcaMCP/OrcaMCPFilamentTools.cpp
+    # [ORCAPORT:MCP-1] END
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/ParamsDialog.cpp
@@ -851,7 +865,7 @@ if (WIN32)
 else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES})
 endif ()
-target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR} GUI/OrcaMCP) # [ORCAPORT:MCP-1]
 
 if (WIN32)
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../deps/WebView2/include)

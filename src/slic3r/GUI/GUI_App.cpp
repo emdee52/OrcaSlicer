@@ -149,6 +149,9 @@
 #include "ModelMall.hpp"
 #include "HintNotification.hpp"
 
+// [ORCAPORT:MCP-1] embedded MCP server
+#include "OrcaMCP/OrcaMCPServer.hpp"
+
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
@@ -1056,6 +1059,18 @@ void GUI_App::post_init()
     CallAfter([this] {
             mainframe->refresh_plugin_tips();
         });
+
+    // [ORCAPORT:MCP-1] BEGIN - start the MCP endpoint only when explicitly enabled (env ORCA_EXT_MCP or app key orca_ext_mcp)
+    {
+        bool mcp_enabled = false;
+        if (const char* env = std::getenv("ORCA_EXT_MCP"); env != nullptr && *env != '\0' && std::string(env) != "0")
+            mcp_enabled = true;
+        else if (app_config != nullptr && app_config->get_bool("orca_ext_mcp"))
+            mcp_enabled = true;
+        if (mcp_enabled)
+            start_http_server();
+    }
+    // [ORCAPORT:MCP-1] END
 
     // remove old log files over LOG_FILES_MAX_NUM
     std::string log_addr = data_dir();
@@ -7750,7 +7765,12 @@ void GUI_App::on_stealth_mode_enter()
 
 void GUI_App::start_http_server(const std::string& provider)
 {
-    m_http_server.set_request_handler([provider](const std::string& url) {
+    // [ORCAPORT:MCP-1] route /mcp to the MCP server; everything else to provider-specific auth
+    m_http_server.set_request_handler([provider](const std::string& method, const std::string& url, const std::string& body)
+        -> std::shared_ptr<HttpServer::Response> {
+        if (url.find("/mcp") != std::string::npos) {
+            return OrcaMCPServer::handle_request(method, url, body);
+        }
         return HttpServer::auth_handle_request(url, provider);
     });
 
@@ -7765,7 +7785,12 @@ void GUI_App::start_http_server(int port, const std::string& provider)
         return;
     }
 
-    m_http_server.set_request_handler([provider](const std::string& url) {
+    // [ORCAPORT:MCP-1] keep the /mcp route when the OAuth flow (re)configures the server on a fixed port
+    m_http_server.set_request_handler([provider](const std::string& method, const std::string& url, const std::string& body)
+        -> std::shared_ptr<HttpServer::Response> {
+        if (url.find("/mcp") != std::string::npos) {
+            return OrcaMCPServer::handle_request(method, url, body);
+        }
         return HttpServer::auth_handle_request(url, provider);
     });
 

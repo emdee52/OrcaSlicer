@@ -1,4 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["FEATURE_AGENT.md"]
+  "instructions": ["FEATURE_AGENT.md"],
+  "mcp": {
+    "orca-slicer": {
+      "type": "local",
+      "command": ["python", "scripts/orcamcp-bridge.py"],
+      "enabled": true
+    }
+  }
 }

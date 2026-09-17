@@ -1,6 +1,10 @@
 #ifndef slic3r_Http_App_hpp_
 #define slic3r_Http_App_hpp_
 
+// [ORCAPORT:MCP-1] BEGIN - algorithm/cctype for header normalization
+#include <algorithm>
+#include <cctype>
+// [ORCAPORT:MCP-1] END
 #include <iostream>
 #include <mutex>
 #include <stack>
@@ -33,6 +37,8 @@ class http_headers
     friend class session;
 public:
     std::string get_url() { return url; }
+    // [ORCAPORT:MCP-1] expose the request method to the MCP handler
+    std::string get_method() { return method; }
 
     int content_length()
     {
@@ -54,8 +60,19 @@ public:
         std::string       headerName;
         std::getline(ssHeader, headerName, ':');
 
+        // [ORCAPORT:MCP-1] BEGIN - header names are case-insensitive; trim leading spaces
+        std::transform(headerName.begin(), headerName.end(), headerName.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        // [ORCAPORT:MCP-1] END
+
         std::string value;
         std::getline(ssHeader, value);
+        // [ORCAPORT:MCP-1] BEGIN
+        size_t start = value.find_first_not_of(" \t");
+        if (start != std::string::npos) {
+            value = value.substr(start);
+        }
+        // [ORCAPORT:MCP-1] END
         headers[headerName] = value;
     }
 
@@ -99,6 +116,19 @@ public:
         void write_response(std::stringstream& ssOut) override;
     };
 
+    // [ORCAPORT:MCP-1] BEGIN - JSON response with HTTP status code for the MCP endpoint
+    class ResponseJson : public Response
+    {
+        const std::string json_str;
+        int status_code;
+
+    public:
+        ResponseJson(const std::string& json, int status = 200) : json_str(json), status_code(status) {}
+        ~ResponseJson() override = default;
+        void write_response(std::stringstream& ssOut) override;
+    };
+    // [ORCAPORT:MCP-1] END
+
     class ResponseHtml : public Response
     {
         const std::string html;
@@ -120,9 +150,15 @@ public:
     void stop();
     void set_port(boost::asio::ip::port_type new_port) { port = new_port; }
     boost::asio::ip::port_type get_port() const { return port; }
+
+    // [ORCAPORT:MCP-1] BEGIN - full (method,url,body) handler; URL-only overload kept for OAuth callers
+    using RequestHandlerFn = std::function<std::shared_ptr<Response>(const std::string& method, const std::string& url, const std::string& body)>;
+    void set_request_handler(const RequestHandlerFn& m_request_handler);
+    // [ORCAPORT:MCP-1] END
     void set_request_handler(const std::function<std::shared_ptr<Response>(const std::string&)>& m_request_handler);
 
-    static std::shared_ptr<Response> bbl_auth_handle_request(const std::string& url);
+    // [ORCAPORT:MCP-1] method/body added to the default BBL auth handler
+    static std::shared_ptr<Response> bbl_auth_handle_request(const std::string& method, const std::string& url, const std::string& body);
     static std::shared_ptr<Response> auth_handle_request(const std::string& url, const std::string& provider);
 
 private:
@@ -146,7 +182,8 @@ private:
 
     std::unique_ptr<IOServer> server_{nullptr};
 
-    std::function<std::shared_ptr<Response>(const std::string&)> m_request_handler{&HttpServer::bbl_auth_handle_request};
+    // [ORCAPORT:MCP-1] full-signature default handler
+    RequestHandlerFn m_request_handler{&HttpServer::bbl_auth_handle_request};
 };
 
 class session : public std::enable_shared_from_this<session>
@@ -156,10 +193,14 @@ class session : public std::enable_shared_from_this<session>
 
     boost::asio::streambuf buff;
     http_headers headers;
+    // [ORCAPORT:MCP-1] captured request body
+    std::string body;
 
     void read_first_line();
     void read_next_line();
     void read_body();
+    // [ORCAPORT:MCP-1] shared request processing (runs once the body is available)
+    void process_request();
 
 public:
     session(HttpServer::IOServer& server, boost::asio::ip::tcp::socket socket) : server(server), socket(std::move(socket)) {}

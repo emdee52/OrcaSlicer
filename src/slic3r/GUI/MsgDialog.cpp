@@ -37,6 +37,9 @@ MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &he
 	, content_sizer(new wxBoxSizer(wxVERTICAL))
     , btn_sizer(new wxBoxSizer(wxHORIZONTAL))
     , m_forward_str(forward_str)
+    // [ORCAPORT:MCP-1] remember style/message for MCP suppression
+    , m_style(style)
+    , m_mcp_message(title + ": " + headline)
 {
 	boldfont.SetWeight(wxFONTWEIGHT_BOLD);
     SetBackgroundColour(0xFFFFFF);
@@ -75,9 +78,31 @@ MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &he
 }
 
  MsgDialog::~MsgDialog()
+ {
+     for (auto mb : m_buttons) { delete mb.second->buttondata ; delete mb.second; }
+ }
+
+// [ORCAPORT:MCP-1] BEGIN - when MCP is driving, capture the message and return a sane default instead of blocking on the modal
+int MsgDialog::ShowModal()
 {
-    for (auto mb : m_buttons) { delete mb.second->buttondata ; delete mb.second; }
+    if (is_mcp_dialog_suppression_enabled()) {
+        std::string msg = m_mcp_message.ToUTF8().data();
+        add_mcp_suppressed_message(msg);
+
+        // Yes/No dialogs default to YES (safer for scale operations); everything else to OK.
+        if (m_style & wxYES_NO) {
+            return wxID_YES;
+        }
+        if (m_style & wxCANCEL) {
+            return wxID_OK;
+        }
+        return wxID_OK;
+    }
+
+    return DPIDialog::ShowModal();
 }
+// [ORCAPORT:MCP-1] END
+
 
 void MsgDialog::show_dsa_button(wxString const &title)
 {
@@ -488,6 +513,8 @@ MessageDialog::MessageDialog(wxWindow* parent,
     std::function<void(const wxString &)> link_callback /* = nullptr*/)
     : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_FULL_NAME) : caption, wxEmptyString, style, wxBitmap(),forward_str)
 {
+    // [ORCAPORT:MCP-1] store the real message (base ctor only receives the caption)
+    m_mcp_message = (caption.IsEmpty() ? "" : caption + ": ") + message;
     add_msg_content(this, content_sizer, message, false, false, link_text, link_callback);
     SetMaxSize(MSG_DLG_MAX_SIZE);
     finalize();
@@ -502,6 +529,8 @@ RichMessageDialog::RichMessageDialog(wxWindow* parent,
     long style/* = wxOK*/)
     : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_FULL_NAME) : caption, wxEmptyString, style)
 {
+    // [ORCAPORT:MCP-1] store the real message for MCP suppression
+    m_mcp_message = (caption.IsEmpty() ? "" : caption + ": ") + message;
     add_msg_content(this, content_sizer, message);
     finalize();
 }

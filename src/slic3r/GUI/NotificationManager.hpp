@@ -220,6 +220,14 @@ public:
 		ErrorNotificationLevel,
 	};
 
+	// [ORCAPORT:MCP-1] BEGIN - active warning info exposed to the MCP API
+	struct ActiveWarning {
+		std::string level;   // "warning", "serious_warning", "error"
+		std::string message;
+		std::string type;    // notification type name
+	};
+	// [ORCAPORT:MCP-1] END
+
 	NotificationManager(wxEvtHandler* evt_handler);
 	~NotificationManager(){}
 
@@ -369,6 +377,8 @@ public:
 	bool update_notifications(GLCanvas3D& canvas);
 	// returns number of all notifications shown
 	size_t get_notification_count() const;
+	// [ORCAPORT:MCP-1] active warnings/errors for the MCP API
+	std::vector<ActiveWarning> get_active_warnings() const;
 
 
 	//BBS Notice

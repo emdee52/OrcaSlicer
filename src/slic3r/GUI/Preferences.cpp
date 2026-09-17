@@ -1687,6 +1687,27 @@ void PreferencesDialog::create_items()
         g_sizer->Add(item_sizer);
     }
 
+    // [ORCAPORT:MCP-1] Embedded MCP server toggle (http://localhost:13618/mcp).
+    {
+        wxBoxSizer* item_sizer = create_item_label(_L("Enable MCP server"),
+            _L("Expose OrcaSlicer's backend over the Model Context Protocol at localhost:13618/mcp so AI agents "
+               "can load models, change settings, slice, export G-code and read warnings. Takes effect immediately."));
+        auto* checkbox = new ::CheckBox(m_parent);
+        checkbox->SetValue(app_config->get_bool("orca_ext_mcp"));
+        checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox](wxCommandEvent& e) {
+            const bool on = checkbox->GetValue();
+            wxGetApp().app_config->set_bool("orca_ext_mcp", on);
+            wxGetApp().app_config->save();
+            if (on)
+                wxGetApp().start_http_server();
+            else
+                wxGetApp().stop_http_server();
+            e.Skip();
+        });
+        item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
+        g_sizer->Add(item_sizer);
+    }
+
 #ifdef __linux__
     auto item_window_button_pos  = create_item_checkbox(_L("Use window buttons on left side"), "", "window_buttons_on_left", _L("(Requires restart)"));
     g_sizer->Add(item_window_button_pos);

@@ -81,6 +81,8 @@ struct Camera;
 class GLToolbar;
 class PlaterPresetComboBox;
 class PartPlateList;
+// [ORCAPORT:MCP-1] forward declaration for the dialog-free mixed-filament API
+struct MixedFilamentResult;
 class SyncNozzleAndAmsDialog;
 class FinishSyncAmsDialog;
 using t_optgroups = std::vector <std::shared_ptr<ConfigOptionsGroup>>;
@@ -96,6 +98,8 @@ inline constexpr int kSidebarContextMenuFilamentId = -2;
 #define EVT_PUBLISHING_STOP         2
 
 //BBS: add EVT_SLICING_UPDATE declare here
+// [ORCAPORT:MCP-1] declare the background-process refresh event so the MCP helpers can post it (defined in Plater.cpp)
+wxDECLARE_EVENT(EVT_SCHEDULE_BACKGROUND_PROCESS, SimpleEvent);
 wxDECLARE_EVENT(EVT_SLICING_UPDATE, Slic3r::SlicingStatusEvent);
 wxDECLARE_EVENT(EVT_PUBLISH,        wxCommandEvent);
 wxDECLARE_EVENT(EVT_OPEN_PLATESETTINGSDIALOG,        wxCommandEvent);
@@ -272,6 +276,10 @@ public:
     // Mixed-color filament sidebar section
     void add_mixed_filament();
     void edit_mixed_filament(size_t idx);
+    // [ORCAPORT:MCP-1] dialog-free core, also called by the MCP filament tools
+    int  apply_mixed_filament(const MixedFilamentResult& result, int edit_cfg_idx, std::string& error);
+    int  apply_mixed_filament(const MixedFilamentResult& result, int edit_cfg_idx,
+                              const std::vector<std::string>& physical_colors, std::string& error);
     void delete_mixed_filament_at(size_t idx);
     void decompose_filament_color(int filament_idx);
     void recalc_filament_scroll_sizes();
@@ -515,6 +523,8 @@ public:
 
     void send_to_printer(bool isall = false);
     void export_gcode(bool prefer_removable);
+    // [ORCAPORT:MCP-1] silent G-code export to an explicit path (used by the MCP export_gcode tool)
+    bool export_gcode_to_file(const std::string& output_path);
     void export_gcode_3mf(bool export_all = false);
     void send_gcode_finish(wxString name);
     void export_core_3mf();
