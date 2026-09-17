@@ -61,10 +61,47 @@ All inserted code tagged `[ORCAPORT:SU-4]`; the new file pair carries the `[ORCA
 - Manual (pending): select Support Type = NeoWave -> base/interface lock to Hollow/Wave; a wave roof
   is emitted over flat overhang footprints; `wavesupport_wall_loops` produces a hollow walled body;
   roof shape/order/reverse change the toolpath; Normal/Tree support unchanged.
+## Fix: wave roof over air on curved overhangs (2026-09-16, `26_SU-4-fix.patch`)
+
+Symptom (user, `baloondog test.3mf`): the interface/roof + support sections at layers
+~715 (`z≈64.4`) and ~991 (`z≈100.8`) print floating in the air. Reproduced and
+diagnosed by slicing the project through the MCP server and dumping the G-code.
+
+Root cause: the NeoWave hollow body only draws the perimeter of `base_polys` (the
+base region at that layer). The base region is the projection of *all* contacts above,
+so on a curved overhang a given roof/interface is an **interior island** of that
+region. Its edges are nowhere near the region boundary wall, so it is not anchored.
+This is not the thin-sliver case: at `z≈98.9–100.1` the base is a normal-sized region
+whose walls sit ~9 mm from the roof edge (confirmed: `wavesupport_wall_loops=0` prints
+a base line at the same XY, `=1` prints nothing there).
+
+Fix (in `Support/SupportCommon.cpp::generate_support_toolpaths`, `[ORCAPORT:SU-4]`):
+
+- Precompute `interface_above[i]`: support layer `i`'s next layer up (`i+1`) carries a
+  top-contact/interface polygon (matched by `print_z`, so it is independent of the
+  container indexing). If so, the base layer `i` — the "floor" directly under an
+  interface stack — is printed with the **normal base pattern** instead of hollow
+  walls, so the roof always rests on a floor that spans the base region and is
+  anchored at its own boundary walls.
+- Safety net: if an inset wall produces no path for a base region (region narrower
+  than ~one bead width), that sliver is filled with the normal base pattern instead of
+  being dropped. (`thin_parts` via a per-component opening test.)
+
+Behavior-neutral when NeoWave is off / `wavesupport_wall_loops == 0`. Slightly more
+material at each interface stack.
+
+Verification (2026-09-16, Windows; `build_win.bat -s --no-configure`, 0 errors):
+
+- baloondog `(144, 79)` column: before, interface at `z≈100.76` had no base below it;
+  after, base `z=100.446` is present and the interface is anchored. Material +0.3%.
+- Total G-code "interface with a >5 mm void below it" points 618 → 482. The residual
+  floats are also present with stock `normal(auto)` support (they are not NeoWave
+  regressions).
 
 ## Files
+
 - `src/libslic3r/Fill/FillWaveRoof.{hpp,cpp}` (new)
 - `src/libslic3r/PrintConfig.{hpp,cpp}`, `Preset.cpp`, `src/libslic3r/CMakeLists.txt`,
   `Support/SupportCommon.cpp`, `Support/SupportMaterial.cpp`,
   `src/slic3r/GUI/Tab.cpp`, `src/slic3r/GUI/ConfigManipulation.cpp`
-- Patch: `porting/patches/10_SU-4.patch`.
+- Patch: `porting/patches/10_SU-4.patch`, fix in `porting/patches/26_SU-4-fix.patch`.

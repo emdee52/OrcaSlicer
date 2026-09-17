@@ -1,0 +1,84 @@
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index 9da6882dba..d070dfad36 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -1633,9 +1633,36 @@ void generate_support_toolpaths(
+     };
+     std::vector<LayerCache>             layer_caches(support_layers.size());
+ 
++    // [ORCAPORT:SU-4] Support layers whose next layer up is a top contact / interface (the
++    // "floor" directly under an interface stack). Those floors must be printed with the normal
++    // base pattern: a hollow perimeter wall only follows the base region boundary, which on a
++    // curved overhang does not reach an interior roof island, so the interface above it would
++    // print over air. Detected by print_z so it does not depend on container indexing.
++    std::vector<char> interface_above(support_layers.size(), 0);
++    {
++        std::vector<coordf_t> interface_zs;
++        auto collect = [&interface_zs](const SupportGeneratorLayersPtr &layers) {
++            for (const SupportGeneratorLayer *l : layers)
++                if (l != nullptr && ! l->polygons.empty())
++                    interface_zs.push_back(l->print_z);
++        };
++        collect(top_contacts);
++        collect(interface_layers);
++        collect(base_interface_layers);
++        if (! interface_zs.empty()) {
++            std::sort(interface_zs.begin(), interface_zs.end());
++            for (size_t i = 0; i + 1 < support_layers.size(); ++ i) {
++                const coordf_t pz = support_layers[i + 1]->print_z;
++                auto            it = std::lower_bound(interface_zs.begin(), interface_zs.end(), pz - EPSILON);
++                if (it != interface_zs.end() && *it <= pz + EPSILON)
++                    interface_above[i] = 1;
++            }
++        }
++    }
++
+     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
+         [&config, &slicing_params, &support_params, &support_layers, &bottom_contacts, &top_contacts, &intermediate_layers, &interface_layers, &base_interface_layers, &layer_caches, &loop_interface_processor,
+-            &bbox_object, &angles, n_raft_layers, link_max_length_factor]
++            &bbox_object, &angles, &interface_above, n_raft_layers, link_max_length_factor]
+             (const tbb::blocked_range<size_t>& range) {
+         // Indices of the 1st layer in their respective container at the support layer height.
+         size_t idx_layer_bottom_contact   = size_t(-1);
+@@ -1929,19 +1956,39 @@ void generate_support_toolpaths(
+                 // 1st-layer flange stays solid for bed adhesion.
+                 // [ORCAPORT:PF-10-paint] Same decoupling for the hollow body.
+                 if (config.wavesupport_wall_loops.value > 0 &&
+-                    base_layer.layer->bottom_z >= EPSILON) {
++                    base_layer.layer->bottom_z >= EPSILON &&
++                    ! interface_above[support_layer_id]) {
+                     const int    walls        = config.wavesupport_wall_loops.value;
+                     auto         wall_flow    = support_params.support_material_flow.with_height(float(base_layer.layer->height));
+                     const double wall_spacing = wall_flow.scaled_spacing();
+                     const double clip_length  = wall_spacing * 0.15;
++                    ExPolygons   base_polys   = union_ex(base_layer.polygons_to_extrude());
+                     for (int w = 0; w < walls; ++w) {
+-                        ExPolygons loops = offset_ex(union_ex(base_layer.polygons_to_extrude()), - (float(w) + 0.5f) * float(wall_spacing));
++                        ExPolygons loops = offset_ex(base_polys, - (float(w) + 0.5f) * float(wall_spacing));
+                         if (loops.empty())
+                             break;
+                         for (ExPolygon &loop : loops)
+                             extrusion_entities_append_paths(base_layer.extrusions, draw_perimeters(loop, clip_length),
+                                 ExtrusionRole::erSupportMaterial, wall_flow.mm3_per_mm(), wall_flow.width(), wall_flow.height());
+                     }
++                    // [ORCAPORT:SU-4] Safety net: an inset perimeter needs about one bead width, so
++                    // base regions narrower than that (thin knife-edge slivers that appear under
++                    // curved overhangs) emit no wall at all and would be dropped entirely, leaving
++                    // the wave roof above printing over air. Fill those slivers with the normal base
++                    // pattern; components wide enough to hold a wall stay hollow.
++                    const float wall_inset = 0.5f * float(wall_spacing);
++                    ExPolygons  thin_parts;
++                    for (const ExPolygon &comp : base_polys) {
++                        Polygons   comp_polys = to_polygons(comp);
++                        ExPolygons core       = offset_ex(offset_ex(comp_polys, -wall_inset), wall_inset);
++                        if (core.empty())
++                            thin_parts.emplace_back(comp);
++                    }
++                    if (! thin_parts.empty())
++                        fill_expolygons_with_sheath_generate_paths(
++                            base_layer.extrusions, to_polygons(thin_parts), filler, density,
++                            ExtrusionRole::erSupportMaterial, flow, support_params,
++                            /*with_sheath*/ false, /*no_sort*/ false);
+                     done = true;
+                 } else if (base_layer.layer->bottom_z < EPSILON) {
+                     // Base flange (the 1st layer).
