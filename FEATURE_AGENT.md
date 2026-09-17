@@ -51,6 +51,35 @@ $env:CMAKE_TLS_VERIFY = "0"   # mandatory here: Schannel revocation checking is 
 The binary is `build/src/Release/orca-slicer.exe`. Kill a running slicer before rebuilding
 (it holds the DLL and causes `LNK1104`). `build_win.bat -h` documents every flag.
 
+## MCP server - live backend access (69 tools)
+
+This fork ships an embedded MCP server (ported as `MCP-1`, extended by `MCP-2`) so you can
+drive and inspect the *running* slicer instead of guessing from screenshots - load/slice/
+export, read and write config, read warnings and logs, and read this fork's own feature state.
+
+- `opencode.json` registers it as the `orca-slicer` MCP server via
+  `scripts/orcamcp-bridge.py`. A session started in `OrcaSlicer/` gets the tools
+  automatically; `start_orca` launches the app with `ORCA_EXT_MCP=1`. Restart opencode after
+  changing the config.
+- Opt-in: app key `orca_ext_mcp` (Preferences -> "Enable MCP server") or env `ORCA_EXT_MCP=1`.
+  Off by default, so a normal launch is unchanged.
+- Endpoint `http://localhost:13618/mcp` (JSON-RPC 2.0). The app must be running (the bridge can
+  start it); slicing runs inside the app, so the UI is busy while a slice is in progress.
+
+Use it while building features:
+
+- **Inspect:** `get_scene_info`, `get_object_info`, `get_object_config`, `get_filaments`,
+  `get_print_estimate`, `get_valid_config_keys`.
+- **Drive a slice:** `load_model` -> `arrange_objects` -> `apply_config` / `set_object_config`
+  -> `slice_all` -> `get_slicing_status` -> `export_gcode` -> `render_plate_view`.
+- **Debug:** `active_warnings` (on most responses), `get_log_tail`, `get_suppressed_dialogs`.
+- **This fork's features:** `list_orcaext_keys` (every OraExt key with current + default value),
+  `get_object_features` (per-volume paint flags and Support Zones), `get_app_preferences` /
+  `set_app_preference`.
+
+It is a verification aid, not a substitute for tests - for behavior changes still add/run a
+Catch2 test per the rules above.
+
 ## Branch model
 
 - `main` - untouched upstream mirror; the rebase target. Never commit feature work here.
