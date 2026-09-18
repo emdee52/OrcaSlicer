@@ -5502,6 +5502,8 @@ LayerResult GCode::process_layer(
                        : support_layer ? support_layer->transition_joint : 0;
     // [ORCAPORT:SU-9] Woven interface layers need one speed for both roles.
     m_weave_layer = support_layer != nullptr && support_layer->support_weave;
+    // [ORCAPORT:SU-10] Interface contact layer (touches the object).
+    m_support_contact = support_layer != nullptr && support_layer->support_contact;
     // A per-layer nozzle grouping can move the active filament to another variant column on a
     // layer boundary without a toolchange, so re-resolve the writer's config column here.
     if (Extruder *cur_filament = m_writer.filament())
@@ -8247,6 +8249,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     // role speeds. Force one speed (the interface speed) so the interlock is uniform.
     if (m_weave_layer && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface))
         speed = NOZZLE_CONFIG(support_interface_speed);
+    // [ORCAPORT:SU-10] Absolute speed for the interface contact layer (touches the object).
+    if (m_support_contact && is_support(path.role()) && m_config.support_interface_contact_speed.value > 0)
+        speed = float(m_config.support_interface_contact_speed.value);
     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
     double filament_max_volumetric_speed = FILAMENT_CONFIG(filament_max_volumetric_speed);
     if (FILAMENT_CONFIG(filament_adaptive_volumetric_speed)){

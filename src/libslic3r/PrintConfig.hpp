@@ -1217,6 +1217,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 support_interface_weave_layers))
     ((ConfigOptionFloat,               support_interface_weave_pitch))
     ((ConfigOptionBool,                support_interface_weave_flush))
+    // [ORCAPORT:SU-10] Interface contact controls (the interface layer touching the object) and
+    // bridging orientation of the first interface layer over the support base.
+    ((ConfigOptionFloat,               support_interface_contact_speed))
+    ((ConfigOptionFloatOrPercent,      support_interface_contact_line_width))
+    ((ConfigOptionBool,                support_interface_base_perpendicular))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
     //   transition_interface_base   (A) first support interface deposited on base support
     //   transition_object_interface (B) first object layers deposited on the support interface

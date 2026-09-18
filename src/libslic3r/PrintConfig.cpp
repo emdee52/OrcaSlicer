@@ -7254,6 +7254,40 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // [ORCAPORT:SU-10] The interface layer that touches the object (top contact for support under
+    // the object, bottom contact for support on top of it) can be printed at its own absolute speed
+    // and line width. The first interface layer over the base can be forced perpendicular to the
+    // support so it bridges across the sparse base instead of dropping into the gaps.
+    def = this->add("support_interface_contact_speed", coFloat);
+    def->label = L("Contact interface speed");
+    def->category = L("Support");
+    def->tooltip = L("Absolute print speed (mm/s) for the support interface layer that touches the "
+        "object. 0 = use the normal support interface speed.");
+    def->sidetext = L("mm/s");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("support_interface_contact_line_width", coFloatOrPercent);
+    def->label = L("Contact interface line width");
+    def->category = L("Support");
+    def->tooltip = L("Line width for the support interface layer that touches the object. "
+        "0 = use the default support interface line width.");
+    def->sidetext = L("mm");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+
+    def = this->add("support_interface_base_perpendicular", coBool);
+    def->label = L("Bridge first interface layer");
+    def->category = L("Support");
+    def->tooltip = L("Print the first interface layer over the support base perpendicular to the "
+        "support base pattern, so it bridges across the sparse base instead of dropping into the "
+        "gaps between the base lines.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
     // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
     auto add_transition_group = [this, &def](const char *prefix,

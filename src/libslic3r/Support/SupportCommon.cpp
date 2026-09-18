@@ -1997,6 +1997,15 @@ void generate_support_toolpaths(
                         (raft_contact ? &support_params.raft_interface_flow :
                          interface_as_base ? &support_params.support_material_flow : &support_params.support_material_interface_flow)
                             ->with_height(float(layer_ex.layer->height));
+                    // [ORCAPORT:SU-10] Contact interface line-width override.
+                    const bool contact_layer = interface_layer_type == InterfaceLayerType::TopContact ||
+                                               interface_layer_type == InterfaceLayerType::BottomContact;
+                    if (contact_layer && config.support_interface_contact_line_width.value > 0) {
+                        const double w = config.support_interface_contact_line_width.get_abs_value(
+                            support_params.support_material_interface_flow.nozzle_diameter());
+                        if (w > 0)
+                            interface_flow = interface_flow.with_width(float(w));
+                    }
                     filler->angle = interface_as_base ?
                             // If zero interface layers are configured, use the same angle as for the base layers.
                             angles[support_layer_id % angles.size()] :
@@ -2010,6 +2019,9 @@ void generate_support_toolpaths(
                         bottom_interface ? support_params.bottom_interface_density : support_params.top_interface_density;
                     filler->spacing = raft_contact ? support_params.raft_interface_flow.spacing() :
                         interface_as_base ? support_params.support_material_flow.spacing() : support_params.support_material_interface_flow.spacing();
+                    // [ORCAPORT:SU-10] Match the fill spacing to the overridden contact width.
+                    if (contact_layer && config.support_interface_contact_line_width.value > 0)
+                        filler->spacing = interface_flow.spacing();
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / density));
                     // [ORCAPORT:SU-4] NeoWave roof (wave-roof half): fill the roof (top contact +
                     // interface stack) with the Wave-Huygens pattern when the object is NeoWave and
@@ -2100,6 +2112,10 @@ void generate_support_toolpaths(
                     }
                 }
             }
+            // [ORCAPORT:SU-10] The interface contact is the layer that touches the object (top
+            // contact for support under it, bottom contact for support on top of it).
+            if (! top_contact_layer.empty() || ! bottom_contact_layer.empty())
+                support_layer.support_contact = true;
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
             // [ORCAPORT:SU-4b] NeoWave contact (support side): wave the top-contact interface so
             // only the wave peaks touch the part above, reducing bonding. Downward-only, so it can
@@ -2125,7 +2141,10 @@ void generate_support_toolpaths(
                 // the bridging flow does not quite apply. Reduce the flow to area of an ellipse? (A = pi * a * b)
                 assert(! base_interface_layer.layer->bridging);
                 Flow interface_flow = support_params.support_material_flow.with_height(float(base_interface_layer.layer->height));
-                filler->angle   = support_interface_angle;
+                // [ORCAPORT:SU-10] Bridge the first interface layer over the base: orient it
+                // perpendicular to the support base pattern so it spans the sparse base gaps.
+                filler->angle   = config.support_interface_base_perpendicular.value
+                                    ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
                 filler->spacing = support_params.support_material_interface_flow.spacing();
                 filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
                 fill_expolygons_generate_paths(
