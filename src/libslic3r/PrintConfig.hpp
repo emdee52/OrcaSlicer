@@ -1221,7 +1221,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     // bridging orientation of the first interface layer over the support base.
     ((ConfigOptionFloat,               support_interface_contact_speed))
     ((ConfigOptionFloatOrPercent,      support_interface_contact_line_width))
-    ((ConfigOptionBool,                support_interface_base_perpendicular))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
     //   transition_interface_base   (A) first support interface deposited on base support
     //   transition_object_interface (B) first object layers deposited on the support interface

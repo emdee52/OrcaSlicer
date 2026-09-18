@@ -1346,7 +1346,6 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_weave_flush" // [ORCAPORT:SU-9]
             || opt_key == "support_interface_contact_speed" // [ORCAPORT:SU-10]
             || opt_key == "support_interface_contact_line_width" // [ORCAPORT:SU-10]
-            || opt_key == "support_interface_base_perpendicular" // [ORCAPORT:SU-10]
             // [ORCAPORT:SU-8] transition-layer treatment
             || opt_key == "transition_interface_base_enable" || opt_key == "transition_interface_base_layers" || opt_key == "transition_interface_base_speed" || opt_key == "transition_interface_base_flow" || opt_key == "transition_interface_base_fan" || opt_key == "transition_interface_base_temp_delta"
             || opt_key == "transition_object_interface_enable" || opt_key == "transition_object_interface_layers" || opt_key == "transition_object_interface_speed" || opt_key == "transition_object_interface_flow" || opt_key == "transition_object_interface_fan" || opt_key == "transition_object_interface_temp_delta"

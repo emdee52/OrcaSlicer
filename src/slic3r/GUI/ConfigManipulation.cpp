@@ -1118,7 +1118,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     }
 
     // [ORCAPORT:SU-10] Contact interface layer speed/width and base bridging orientation.
-    for (auto el : { "support_interface_contact_speed", "support_interface_contact_line_width", "support_interface_base_perpendicular" })
+    for (auto el : { "support_interface_contact_speed", "support_interface_contact_line_width" })
         toggle_line(el, have_support_material);
 
     // [ORCAPORT:SU-8] Transition-layer treatment: each joint's master follows "enable support";

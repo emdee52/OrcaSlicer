@@ -7279,15 +7279,6 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
-    def = this->add("support_interface_base_perpendicular", coBool);
-    def->label = L("Bridge first interface layer");
-    def->category = L("Support");
-    def->tooltip = L("Print the first interface layer over the support base perpendicular to the "
-        "support base pattern, so it bridges across the sparse base instead of dropping into the "
-        "gaps between the base lines.");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
-
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
     // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
     auto add_transition_group = [this, &def](const char *prefix,

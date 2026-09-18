@@ -114,7 +114,7 @@ const std::vector<std::string>& orcaext_config_keys()
         // SU-9
         "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush",
         // SU-10
-        "support_interface_contact_speed", "support_interface_contact_line_width", "support_interface_base_perpendicular",
+        "support_interface_contact_speed", "support_interface_contact_line_width",
         // SU-8
         "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed", "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
         "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed", "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
