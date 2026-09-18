@@ -2994,6 +2994,7 @@ void TabPrint::build()
         // [ORCAPORT:SU-10] Contact interface layer.
         optgroup->append_single_option_line("support_interface_contact_speed", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_contact_line_width", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_base_line_width", "support_settings_advanced#interface-layers");
         // [ORCAPORT:SU-11] Interface edge bridging.
         optgroup->append_single_option_line("support_interface_serpentine", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_base_bridge", "support_settings_advanced#interface-layers");

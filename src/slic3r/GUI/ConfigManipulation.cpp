@@ -1119,6 +1119,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
 
     // [ORCAPORT:SU-10] Contact interface layer speed/width and base bridging orientation.
     for (auto el : { "support_interface_contact_speed", "support_interface_contact_line_width",
+                     "support_interface_base_line_width",
                      "support_interface_serpentine", "support_interface_base_bridge", "support_interface_perimeter" })
         toggle_line(el, have_support_material);
 

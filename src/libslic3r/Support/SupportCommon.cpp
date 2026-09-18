@@ -2220,6 +2220,15 @@ void generate_support_toolpaths(
                 filler->angle   = config.support_interface_base_bridge.value
                                     ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
                 filler->spacing = support_params.support_material_interface_flow.spacing();
+                // [ORCAPORT:SU-12] Base-interface line-width override (mm or % of nozzle).
+                if (config.support_interface_base_line_width.value > 0) {
+                    const double w = config.support_interface_base_line_width.get_abs_value(
+                        support_params.support_material_flow.nozzle_diameter());
+                    if (w > 0) {
+                        interface_flow  = interface_flow.with_width(float(w));
+                        filler->spacing = interface_flow.spacing();
+                    }
+                }
                 filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
                 fill_expolygons_generate_paths(
                     // Destination

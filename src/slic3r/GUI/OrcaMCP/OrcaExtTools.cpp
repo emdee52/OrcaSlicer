@@ -117,6 +117,8 @@ const std::vector<std::string>& orcaext_config_keys()
         "support_interface_contact_speed", "support_interface_contact_line_width",
         // SU-11
         "support_interface_serpentine", "support_interface_base_bridge", "support_interface_perimeter",
+        // SU-12
+        "support_interface_base_line_width",
         // SU-8
         "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed", "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
         "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed", "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",

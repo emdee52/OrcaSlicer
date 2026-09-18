@@ -7306,6 +7306,16 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
+    def = this->add("support_interface_base_line_width", coFloatOrPercent);
+    def->label = L("Base interface line width");
+    def->category = L("Support");
+    def->tooltip = L("Line width for the base-material interface layer that sits under the weave "
+        "(absolute mm, or a percentage of the nozzle diameter). 0 = use the default line width.");
+    def->sidetext = L("mm");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
     // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
     auto add_transition_group = [this, &def](const char *prefix,
