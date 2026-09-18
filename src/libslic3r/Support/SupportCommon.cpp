@@ -1539,13 +1539,15 @@ static void split_weave_strips(const Polygons &region, double angle, coordf_t pi
 // the lines (the strip's long axis), `spacing` the spacing across the strip, and `inner_y_ref` the
 // Y coordinate (in the line frame) of the region centre. Lines are ordered from the side nearest
 // that reference outward, so the last line printed is the one closest to the boundary.
-static void emit_strip_serpentine(ExtrusionEntitiesPtr &dst, const Polygons &strip, double line_angle,
+static void emit_strip_serpentine(ExtrusionEntitiesPtr &dst, const ExPolygon &strip, double line_angle,
                                   coordf_t spacing, coordf_t inner_y_ref, ExtrusionRole role, const Flow &flow)
 {
-    if (strip.empty() || spacing <= 0.)
+    if (strip.contour.points.size() < 3 || spacing <= 0.)
         return;
-    Polygons rot = strip;
-    polygons_rotate(rot, -line_angle);
+    ExPolygon rot = strip;
+    rot.contour.rotate(-line_angle);
+    for (Polygon &hole : rot.holes)
+        hole.rotate(-line_angle);
     const BoundingBox bb = get_extents(rot);
     if (bb.max.x() - bb.min.x() <= 0. || bb.max.y() - bb.min.y() <= 0.)
         return;
@@ -2127,9 +2129,15 @@ void generate_support_toolpaths(
             // layer keeps its own interface fill; the base-interface layer keeps its own base fill.
             // Must run before either layer is extruded below.
             if (weave_layer[support_layer_id]) {
-                const double angle = support_params.base_angle + ((support_layer_id & 1) ? 0.5 * M_PI : 0.0);
+                // [ORCAPORT:SU-11] With straight base bridging the layer below runs perpendicular
+                // to the base, so shift the weave 90 degrees: the woven threads then cross the
+                // base-interface layer instead of running parallel to it (better grip).
+                const double weave_base = config.support_interface_base_bridge.value
+                    ? support_params.base_angle + 0.5 * M_PI : support_params.base_angle;
+                const double angle = weave_base + ((support_layer_id & 1) ? 0.5 * M_PI : 0.0);
                 const coordf_t pitch = scale_(config.support_interface_weave_pitch.value);
                 const bool flush = config.support_interface_weave_flush.value;
+                const bool perim = config.support_interface_perimeter.value;
                 auto emit_weave_strips = [&](const Polygons &strips, ExtrusionRole role, const Flow &flow) {
                     if (strips.empty())
                         return;
@@ -2151,23 +2159,30 @@ void generate_support_toolpaths(
                     // below the interface top surface instead of telegraphing through it.
                     const Flow  strip_flow = flush ? base_flow.with_height(h * 0.9f) : base_flow;
                     const Polygons region = interface_layer.polygons_to_extrude();
+                    // Reserve the perimeter ring so the loop never overlaps the strips.
+                    const Polygons strip_region = perim
+                        ? offset(region, -float(support_params.support_material_interface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS)
+                        : region;
                     Polygons base_strips, iface_strips;
-                    split_weave_strips(region, angle, pitch, base_strips, iface_strips);
+                    split_weave_strips(strip_region, angle, pitch, base_strips, iface_strips);
                     if (config.support_interface_serpentine.value) {
-                        // [ORCAPORT:SU-11] Serpentines along each strip (both materials), ordered
-                        // from the inner side outward. The generic interface fill is skipped.
+                        // [ORCAPORT:SU-11] One serpentine per strip (per connected component) along
+                        // its long axis, ordered inner->outer, so a connector never crosses the
+                        // other material's strips. The generic interface fill is skipped.
                         const Point  rc  = get_extents(region).center();
                         const double la  = angle + 0.5 * M_PI; // line direction = strip long axis
                         const double cy  = std::cos(la), sy = std::sin(la);
                         const coordf_t inner_y = coordf_t(-double(rc.x()) * sy + double(rc.y()) * cy);
-                        emit_strip_serpentine(support_layer.support_fills.entities, base_strips,  la, strip_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterial,          strip_flow);
-                        emit_strip_serpentine(support_layer.support_fills.entities, iface_strips, la, iface_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterialInterface, iface_flow);
+                        for (const ExPolygon &e : union_ex(base_strips))
+                            emit_strip_serpentine(support_layer.support_fills.entities, e, la, strip_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterial, strip_flow);
+                        for (const ExPolygon &e : union_ex(iface_strips))
+                            emit_strip_serpentine(support_layer.support_fills.entities, e, la, iface_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterialInterface, iface_flow);
                         interface_layer.set_polygons_to_extrude(Polygons());
                     } else if (! base_strips.empty()) {
                         interface_layer.set_polygons_to_extrude(std::move(iface_strips));
                         emit_weave_strips(base_strips, ExtrusionRole::erSupportMaterial, strip_flow);
                     }
-                    if (config.support_interface_perimeter.value)
+                    if (perim)
                         emit_region_perimeter(support_layer.support_fills.entities, region, iface_flow, ExtrusionRole::erSupportMaterialInterface);
                 }
             }
