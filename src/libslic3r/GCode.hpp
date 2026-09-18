@@ -203,6 +203,7 @@ public:
         m_layer(nullptr),
         m_object_layer_over_raft(false),
         m_transition_joint(0),
+        m_weave_layer(false),
         //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
@@ -705,6 +706,9 @@ private:
     // id. A nozzle is shared between objects on the plate, so the desired temperature is computed
     // per extrusion context and only re-emitted when it differs from what was last set.
     std::vector<int>                    m_transition_temp_last;
+    // [ORCAPORT:SU-9] Current support layer is a woven interface layer: its base and interface
+    // strips must print at the same speed.
+    bool                                m_weave_layer;
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;

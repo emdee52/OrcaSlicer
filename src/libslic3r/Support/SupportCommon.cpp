@@ -1738,6 +1738,7 @@ void generate_support_toolpaths(
                     const bool is_contact = j + 1 < support_layers.size() && ! is_stack(support_layers[j + 1]->print_z);
                     if (is_iface && ! is_contact) {
                         weave_layer[j] = 1;
+                        support_layers[j]->support_weave = true;
                         ++marked;
                     }
                 }

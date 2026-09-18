@@ -5500,6 +5500,8 @@ LayerResult GCode::process_layer(
     // be applied. Use a tagged object layer if present, else the support layer's tag.
     m_transition_joint = (object_layer && object_layer->transition_joint) ? object_layer->transition_joint
                        : support_layer ? support_layer->transition_joint : 0;
+    // [ORCAPORT:SU-9] Woven interface layers need one speed for both roles.
+    m_weave_layer = support_layer != nullptr && support_layer->support_weave;
     // A per-layer nozzle grouping can move the active filament to another variant column on a
     // layer boundary without a toolchange, so re-resolve the writer's config column here.
     if (Extruder *cur_filament = m_writer.filament())
@@ -8240,6 +8242,11 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             throw Slic3r::InvalidArgument("Invalid speed");
         }
     }
+    // [ORCAPORT:SU-9] On a woven interface layer the base strips (erSupportMaterial) and the
+    // interface strips (erSupportMaterialInterface) would otherwise print at two different
+    // role speeds. Force one speed (the interface speed) so the interlock is uniform.
+    if (m_weave_layer && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface))
+        speed = NOZZLE_CONFIG(support_interface_speed);
     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
     double filament_max_volumetric_speed = FILAMENT_CONFIG(filament_max_volumetric_speed);
     if (FILAMENT_CONFIG(filament_adaptive_volumetric_speed)){
