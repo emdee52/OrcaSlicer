@@ -1216,6 +1216,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                support_interface_weave_enable))
     ((ConfigOptionInt,                 support_interface_weave_layers))
     ((ConfigOptionFloat,               support_interface_weave_pitch))
+    ((ConfigOptionBool,                support_interface_weave_flush))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
     //   transition_interface_base   (A) first support interface deposited on base support
     //   transition_object_interface (B) first object layers deposited on the support interface

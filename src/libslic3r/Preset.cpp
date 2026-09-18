@@ -1149,7 +1149,7 @@ static std::vector<std::string> s_Preset_print_options{
     "support_neoweave_enabled", "support_neoweave_target", "support_neoweave_amplitude", "support_neoweave_period", "support_neoweave_max_z_speed", // [ORCAPORT:SU-4b]
     "support_interface_spacing",
     "support_interface_base_layers", // [ORCAPORT:SU-6]
-    "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", // [ORCAPORT:SU-9]
+    "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush", // [ORCAPORT:SU-9]
     // [ORCAPORT:SU-8] transition-layer treatment (interface-on-base / object-on-interface / interface-on-object)
     "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed", "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
     "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed", "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",

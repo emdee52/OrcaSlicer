@@ -2990,6 +2990,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_weave_enable", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_pitch", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_weave_flush", "support_settings_advanced#interface-layers");
         // [ORCAPORT:SU-8] Transition-layer treatment (one group per joint).
         for (const char *key : {
                 "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed",

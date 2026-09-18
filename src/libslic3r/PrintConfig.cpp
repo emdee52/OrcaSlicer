@@ -7245,6 +7245,15 @@ void PrintConfigDef::init_fff_params()
     def->max = 20;
     def->set_default_value(new ConfigOptionFloat(2.0));
 
+    def = this->add("support_interface_weave_flush", coBool);
+    def->label = L("Flush woven interface");
+    def->category = L("Support");
+    def->tooltip = L("Print both woven materials at the interface flow/line width so every woven "
+        "layer has a uniform, flush top surface. Reduces telegraphing of the base material through "
+        "the layers above, at the cost of the base strips not using the support base line width.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
     // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
     auto add_transition_group = [this, &def](const char *prefix,

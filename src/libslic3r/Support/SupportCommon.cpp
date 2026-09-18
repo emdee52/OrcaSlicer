@@ -1704,45 +1704,50 @@ void generate_support_toolpaths(
         }
     }
 
-    // [ORCAPORT:SU-9] Mark the base-side interface layers that get the woven interlock: the lowest
-    // `weave_layers` interface layers above the base, per contiguous interface stack. The contact
-    // (object side) is never woven, so the release surface stays a clean interface.
+    // [ORCAPORT:SU-9] Mark the interface-stack layers that get the woven interlock. The stack
+    // includes the base-interface (base-material) layer and the top-interface layers; the contact
+    // is never woven. The top two layers of each stack (contact + one solid interface) are left
+    // solid so a woven layer is never adjacent to the object and its material cannot telegraph
+    // through. Inert at defaults.
     std::vector<char> weave_layer(support_layers.size(), 0);
     if (config.support_interface_weave_enable.value) {
-        std::vector<coordf_t> top_zs, iface_zs;
-        for (const SupportGeneratorLayer *l : top_contacts)
-            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
-                top_zs.push_back(l->print_z); // contact is part of the stack and is skipped below
+        std::vector<coordf_t> stack_zs, weavable_zs;
+        for (const SupportGeneratorLayer *l : base_interface_layers)
+            if (l != nullptr && ! l->polygons.empty()) {
+                stack_zs.push_back(l->print_z);
+                weavable_zs.push_back(l->print_z); // base side: woven by inserting interface strips
+            }
         for (const SupportGeneratorLayer *l : interface_layers)
             if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface) {
-                top_zs.push_back(l->print_z);
-                iface_zs.push_back(l->print_z);
+                stack_zs.push_back(l->print_z);
+                weavable_zs.push_back(l->print_z);
             }
-        std::sort(top_zs.begin(), top_zs.end());
-        auto is_stack = [&top_zs](coordf_t z) {
-            const auto it = std::lower_bound(top_zs.begin(), top_zs.end(), z - EPSILON);
-            return it != top_zs.end() && *it <= z + EPSILON;
+        for (const SupportGeneratorLayer *l : top_contacts)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
+                stack_zs.push_back(l->print_z); // contact is part of the stack, never woven
+        std::sort(stack_zs.begin(), stack_zs.end());
+        std::sort(weavable_zs.begin(), weavable_zs.end());
+        auto in_zs = [](const std::vector<coordf_t> &v, coordf_t z) {
+            const auto it = std::lower_bound(v.begin(), v.end(), z - EPSILON);
+            return it != v.end() && *it <= z + EPSILON;
         };
         const int max_woven = std::max(1, config.support_interface_weave_layers.value);
-        for (size_t i = 0; i < support_layers.size(); ++ i)
-            if (is_stack(support_layers[i]->print_z) && (i == 0 || ! is_stack(support_layers[i - 1]->print_z))) {
-                // Lowest layer of a stack: weave the interface layers above it, never the contact.
-                int marked = 0;
-                for (size_t j = i; j < support_layers.size() && marked < max_woven; ++ j) {
-                    const coordf_t z = support_layers[j]->print_z;
-                    if (j > i && ! is_stack(z))
-                        break;
-                    const auto it = std::lower_bound(iface_zs.begin(), iface_zs.end(), z - EPSILON);
-                    const bool is_iface = it != iface_zs.end() && *it <= z + EPSILON;
-                    // The contact is the topmost layer of the stack; skip it (keep release clean).
-                    const bool is_contact = j + 1 < support_layers.size() && ! is_stack(support_layers[j + 1]->print_z);
-                    if (is_iface && ! is_contact) {
-                        weave_layer[j] = 1;
-                        support_layers[j]->support_weave = true;
-                        ++marked;
-                    }
+        for (size_t i = 0; i < support_layers.size(); ++ i) {
+            if (! in_zs(stack_zs, support_layers[i]->print_z) || (i > 0 && in_zs(stack_zs, support_layers[i - 1]->print_z)))
+                continue;
+            // Lowest layer of a stack: weave its lowest (run - 2) layers, never the top two.
+            size_t run_end = i;
+            while (run_end < support_layers.size() && in_zs(stack_zs, support_layers[run_end]->print_z))
+                ++ run_end;
+            const int n_weave = std::min(max_woven, int(run_end - i) - 2);
+            int marked = 0;
+            for (size_t j = i; j < run_end && marked < n_weave; ++ j)
+                if (in_zs(weavable_zs, support_layers[j]->print_z)) {
+                    weave_layer[j] = 1;
+                    support_layers[j]->support_weave = true;
+                    ++ marked;
                 }
-            }
+        }
     }
 
     // [ORCAPORT:SU-8] Tag transition layers (1 = interface-on-base, 2 = object-on-interface,
@@ -2049,31 +2054,50 @@ void generate_support_toolpaths(
                         interface_as_base ? ExtrusionRole::erSupportMaterial : ExtrusionRole::erSupportMaterialInterface, interface_flow);
                 }
             };
-            // [ORCAPORT:SU-9] Woven interface: on the base-side interface layers, split the region
-            // into alternating strips of base and interface material, rotated 90 deg on alternate
-            // layers. The base strips are printed with the base filament (anchored to the base
-            // below) and interlock the interface laterally; the contact layer is never woven. Must
-            // run before the interface layers are extruded (below).
-            if (weave_layer[support_layer_id] &&
-                ! interface_layer.empty() && interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
+            // [ORCAPORT:SU-9] Woven interface: split the marked interface-stack layers into
+            // alternating strips of base and interface material, rotated 90 deg on alternate
+            // layers. The strip of the other material is inserted as a solid key. The top-interface
+            // layer keeps its own interface fill; the base-interface layer keeps its own base fill.
+            // Must run before either layer is extruded below.
+            if (weave_layer[support_layer_id]) {
                 const double angle = support_params.base_angle + ((support_layer_id & 1) ? 0.5 * M_PI : 0.0);
                 const coordf_t pitch = scale_(config.support_interface_weave_pitch.value);
-                const Polygons region = interface_layer.polygons_to_extrude();
-                Polygons base_strips, iface_strips;
-                split_weave_strips(region, angle, pitch, base_strips, iface_strips);
-                if (! base_strips.empty()) {
-                    // Leave the interface strips as the interface fill; print the base strips now.
-                    interface_layer.set_polygons_to_extrude(std::move(iface_strips));
-                    auto filler_weave = std::unique_ptr<Fill>(Fill::new_from_type(ipRectilinear));
-                    filler_weave->set_bounding_box(bbox_object);
-                    filler_weave->angle           = angle;
-                    filler_weave->spacing         = support_params.support_material_flow.spacing();
-                    filler_weave->link_max_length = 0;
-                    const Flow weave_flow = support_params.support_material_flow.with_height(float(interface_layer.layer->height));
+                const bool flush = config.support_interface_weave_flush.value;
+                auto emit_weave_strips = [&](const Polygons &strips, ExtrusionRole role, const Flow &flow) {
+                    if (strips.empty())
+                        return;
+                    auto filler = std::unique_ptr<Fill>(Fill::new_from_type(ipRectilinear));
+                    filler->set_bounding_box(bbox_object);
+                    filler->angle           = angle;
+                    filler->spacing         = flow.spacing();
+                    filler->link_max_length = 0;
                     fill_expolygons_generate_paths(
-                        support_layer.support_fills.entities,
-                        union_safety_offset_ex(base_strips),
-                        filler_weave.get(), 1.f, ExtrusionRole::erSupportMaterial, weave_flow);
+                        support_layer.support_fills.entities, union_safety_offset_ex(strips),
+                        filler.get(), 1.f, role, flow);
+                };
+                // Top-interface layer: insert base-material strips, keep the rest as interface.
+                if (! interface_layer.empty() && interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
+                    const Flow base_flow      = support_params.support_material_flow.with_height(float(interface_layer.layer->height));
+                    const Flow interface_flow = support_params.support_material_interface_flow.with_height(float(interface_layer.layer->height));
+                    Polygons base_strips, iface_strips;
+                    split_weave_strips(interface_layer.polygons_to_extrude(), angle, pitch, base_strips, iface_strips);
+                    if (! base_strips.empty()) {
+                        interface_layer.set_polygons_to_extrude(std::move(iface_strips));
+                        emit_weave_strips(base_strips, ExtrusionRole::erSupportMaterial, flush ? interface_flow : base_flow);
+                    }
+                }
+                // Base-interface layer (base material): insert interface-material strips, keep the
+                // rest as base. This is the layer that meets the support base, so the interlock
+                // crosses the base/interface boundary here.
+                if (! base_interface_layer.empty() && base_interface_layer.layer->layer_type == SupporLayerType::Base) {
+                    const Flow base_flow      = support_params.support_material_flow.with_height(float(base_interface_layer.layer->height));
+                    const Flow interface_flow = support_params.support_material_interface_flow.with_height(float(base_interface_layer.layer->height));
+                    Polygons base_strips, iface_strips;
+                    split_weave_strips(base_interface_layer.polygons_to_extrude(), angle, pitch, base_strips, iface_strips);
+                    if (! iface_strips.empty()) {
+                        base_interface_layer.set_polygons_to_extrude(std::move(base_strips));
+                        emit_weave_strips(iface_strips, ExtrusionRole::erSupportMaterialInterface, flush ? base_flow : interface_flow);
+                    }
                 }
             }
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);

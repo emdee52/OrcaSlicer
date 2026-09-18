@@ -1113,7 +1113,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     {
         const bool weave_on = config->has("support_interface_weave_enable") && config->opt_bool("support_interface_weave_enable");
         toggle_line("support_interface_weave_enable", have_support_material);
-        for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch" })
+        for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush" })
             toggle_line(el, have_support_material && weave_on);
     }
 
