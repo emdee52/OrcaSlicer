@@ -1217,6 +1217,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 support_interface_weave_layers))
     ((ConfigOptionFloat,               support_interface_weave_pitch))
     ((ConfigOptionBool,                support_interface_weave_flush))
+    // [ORCAPORT:SU-11] Interface edge bridging: serpentine woven fill, straight perpendicular
+    // base-interface bridging, and a perimeter loop around woven layers.
+    ((ConfigOptionBool,                support_interface_serpentine))
+    ((ConfigOptionBool,                support_interface_base_bridge))
+    ((ConfigOptionBool,                support_interface_perimeter))
     // [ORCAPORT:SU-10] Interface contact controls (the interface layer touching the object) and
     // bridging orientation of the first interface layer over the support base.
     ((ConfigOptionFloat,               support_interface_contact_speed))

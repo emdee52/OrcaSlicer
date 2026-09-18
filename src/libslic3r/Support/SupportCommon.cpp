@@ -1535,6 +1535,68 @@ static void split_weave_strips(const Polygons &region, double angle, coordf_t pi
     }
 }
 
+// [ORCAPORT:SU-11] Emit a boustrophedon along a strip's long axis. `line_angle` is the direction of
+// the lines (the strip's long axis), `spacing` the spacing across the strip, and `inner_y_ref` the
+// Y coordinate (in the line frame) of the region centre. Lines are ordered from the side nearest
+// that reference outward, so the last line printed is the one closest to the boundary.
+static void emit_strip_serpentine(ExtrusionEntitiesPtr &dst, const Polygons &strip, double line_angle,
+                                  coordf_t spacing, coordf_t inner_y_ref, ExtrusionRole role, const Flow &flow)
+{
+    if (strip.empty() || spacing <= 0.)
+        return;
+    Polygons rot = strip;
+    polygons_rotate(rot, -line_angle);
+    const BoundingBox bb = get_extents(rot);
+    if (bb.max.x() - bb.min.x() <= 0. || bb.max.y() - bb.min.y() <= 0.)
+        return;
+    const coordf_t half = 0.5 * spacing;
+    const bool     up   = inner_y_ref <= 0.5 * (bb.min.y() + bb.max.y());
+    Polyline  path;
+    bool      have = false;
+    auto append_seg = [&](const Polyline &seg_in) {
+        if (seg_in.points.size() < 2)
+            return;
+        Polyline seg = seg_in;
+        if (have && ! path.points.empty()) {
+            const Point &a = path.points.back();
+            const double df = double(a.x() - seg.points.front().x()) * double(a.x() - seg.points.front().x()) + double(a.y() - seg.points.front().y()) * double(a.y() - seg.points.front().y());
+            const double db = double(a.x() - seg.points.back().x())  * double(a.x() - seg.points.back().x())  + double(a.y() - seg.points.back().y())  * double(a.y() - seg.points.back().y());
+            if (db < df)
+                seg.reverse();
+            for (const Point &p : seg.points)
+                if (p != path.points.back())
+                    path.points.push_back(p);
+        } else {
+            path = seg;
+            have = true;
+        }
+    };
+    const coordf_t y0 = up ? bb.min.y() + half : bb.max.y() - half;
+    const coordf_t ye = up ? bb.max.y() : bb.min.y();
+    const coordf_t dy = up ? spacing : -spacing;
+    for (coordf_t y = y0; up ? y <= ye : y >= ye; y += dy) {
+        Polyline ray;
+        ray.points = { Point(bb.min.x() - 1, coord_t(y)), Point(bb.max.x() + 1, coord_t(y)) };
+        for (const Polyline &pl : intersection_pl(Polylines{ ray }, rot))
+            append_seg(pl);
+    }
+    if (! have || path.points.size() < 2)
+        return;
+    path.rotate(line_angle);
+    Polylines out;
+    out.emplace_back(std::move(path));
+    extrusion_entities_append_paths(dst, std::move(out), role, flow.mm3_per_mm(), flow.width(), flow.height());
+}
+
+// [ORCAPORT:SU-11] Emit a closed perimeter loop around an interface region.
+static void emit_region_perimeter(ExtrusionEntitiesPtr &dst, const Polygons &region, const Flow &flow, ExtrusionRole role)
+{
+    if (region.empty())
+        return;
+    for (const ExPolygon &e : offset_ex(region, -0.5f * flow.scaled_width(), SUPPORT_SURFACES_OFFSET_PARAMETERS))
+        extrusion_entities_append_paths(dst, draw_perimeters(e, 0.), role, flow.mm3_per_mm(), flow.width(), flow.height());
+}
+
 void generate_support_toolpaths(
     SupportLayerPtrs                    &support_layers,
     const PrintObjectConfig             &config,
@@ -2082,18 +2144,31 @@ void generate_support_toolpaths(
                 };
                 // Top-interface layer: insert base-material strips, keep the rest as interface.
                 if (! interface_layer.empty() && interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
+                    const float h = float(interface_layer.layer->height);
+                    const Flow  base_flow      = support_params.support_material_flow.with_height(h);
+                    const Flow  iface_flow     = support_params.support_material_interface_flow.with_height(h);
+                    // Flush: extrude the base strips a little thinner (0.9x height) so they sit
+                    // below the interface top surface instead of telegraphing through it.
+                    const Flow  strip_flow = flush ? base_flow.with_height(h * 0.9f) : base_flow;
+                    const Polygons region = interface_layer.polygons_to_extrude();
                     Polygons base_strips, iface_strips;
-                    split_weave_strips(interface_layer.polygons_to_extrude(), angle, pitch, base_strips, iface_strips);
-                    if (! base_strips.empty()) {
+                    split_weave_strips(region, angle, pitch, base_strips, iface_strips);
+                    if (config.support_interface_serpentine.value) {
+                        // [ORCAPORT:SU-11] Serpentines along each strip (both materials), ordered
+                        // from the inner side outward. The generic interface fill is skipped.
+                        const Point  rc  = get_extents(region).center();
+                        const double la  = angle + 0.5 * M_PI; // line direction = strip long axis
+                        const double cy  = std::cos(la), sy = std::sin(la);
+                        const coordf_t inner_y = coordf_t(-double(rc.x()) * sy + double(rc.y()) * cy);
+                        emit_strip_serpentine(support_layer.support_fills.entities, base_strips,  la, strip_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterial,          strip_flow);
+                        emit_strip_serpentine(support_layer.support_fills.entities, iface_strips, la, iface_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterialInterface, iface_flow);
+                        interface_layer.set_polygons_to_extrude(Polygons());
+                    } else if (! base_strips.empty()) {
                         interface_layer.set_polygons_to_extrude(std::move(iface_strips));
-                        // Flush: extrude the base strips a little thinner (0.9x height) so they sit
-                        // below the interface top surface instead of telegraphing through it.
-                        const float h = float(interface_layer.layer->height);
-                        const Flow  strip_flow = flush
-                            ? support_params.support_material_flow.with_height(h * 0.9f)
-                            : support_params.support_material_flow.with_height(h);
                         emit_weave_strips(base_strips, ExtrusionRole::erSupportMaterial, strip_flow);
                     }
+                    if (config.support_interface_perimeter.value)
+                        emit_region_perimeter(support_layer.support_fills.entities, region, iface_flow, ExtrusionRole::erSupportMaterialInterface);
                 }
             }
             // [ORCAPORT:SU-10] The interface contact is the layer that touches the object (top
@@ -2125,7 +2200,10 @@ void generate_support_toolpaths(
                 // the bridging flow does not quite apply. Reduce the flow to area of an ellipse? (A = pi * a * b)
                 assert(! base_interface_layer.layer->bridging);
                 Flow interface_flow = support_params.support_material_flow.with_height(float(base_interface_layer.layer->height));
-                filler->angle   = support_interface_angle;
+                // [ORCAPORT:SU-11] Straight bridging: run the base-interface layer perpendicular to
+                // the support base pattern instead of diagonally across it.
+                filler->angle   = config.support_interface_base_bridge.value
+                                    ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
                 filler->spacing = support_params.support_material_interface_flow.spacing();
                 filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
                 fill_expolygons_generate_paths(

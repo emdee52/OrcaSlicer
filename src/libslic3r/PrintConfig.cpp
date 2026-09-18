@@ -7258,6 +7258,33 @@ void PrintConfigDef::init_fff_params()
     // the object, bottom contact for support on top of it) can be printed at its own absolute speed
     // and line width. The first interface layer over the base can be forced perpendicular to the
     // support so it bridges across the sparse base instead of dropping into the gaps.
+    // [ORCAPORT:SU-11] Interface edge bridging.
+    def = this->add("support_interface_serpentine", coBool);
+    def->label = L("Serpentine woven interface");
+    def->category = L("Support");
+    def->tooltip = L("Fill the woven interface layer with top-to-bottom serpentines along each strip "
+        "(both materials), starting from the inner side and finishing at the outer edge, instead of "
+        "the generic fill. Keeps the edge threads connected and anchored.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_interface_base_bridge", coBool);
+    def->label = L("Straight base interface bridging");
+    def->category = L("Support");
+    def->tooltip = L("Print the base-interface layer that sits under the weave with straight lines "
+        "perpendicular to the support base pattern, so it bridges the sparse base instead of crossing "
+        "it diagonally.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_interface_perimeter", coBool);
+    def->label = L("Woven interface perimeter");
+    def->category = L("Support");
+    def->tooltip = L("Draw a closed perimeter loop around each woven interface layer, so the interior "
+        "threads terminate on the loop instead of at a free edge.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("support_interface_contact_speed", coFloat);
     def->label = L("Contact interface speed");
     def->category = L("Support");
