@@ -511,3 +511,27 @@ TEST_CASE("Woven bottom interface puts both materials in the base-interface laye
     REQUIRE_FALSE(support_layers_with_both_roles(on).empty()); // the woven host carries both
 }
 
+// [ORCAPORT:SU-13] Only the contact layer is reserved, so the top weave can sit directly under the
+// contact. Three top interface layers are contact + one interface (the base-material layer is
+// separate), and that single interface layer still gets woven.
+TEST_CASE("Woven interface can sit one layer below the top contact", "[SupportMaterial]")
+{
+    auto config = [](int weave) {
+        return multifilament_config(2, {
+            { "enable_support",                  1 },
+            { "layer_height",                    0.2 },
+            { "support_interface_top_layers",    3 },
+            { "support_interface_bottom_layers", 0 },
+            { "support_filament",                1 },
+            { "support_interface_filament",      2 },
+            { "support_interface_weave_enable",  weave },
+            { "support_interface_weave_layers",  1 },
+        });
+    };
+    const std::string off = slice({ support_capital() }, config(0));
+    const std::string on  = slice({ support_capital() }, config(1));
+    REQUIRE(support_interface_layer_count(off) > 0);           // interface actually formed
+    REQUIRE(support_layers_with_both_roles(off).empty());      // roles stay on their own layers
+    REQUIRE_FALSE(support_layers_with_both_roles(on).empty()); // the short stack still weaves
+}
+

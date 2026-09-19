@@ -7212,7 +7212,7 @@ void PrintConfigDef::init_fff_params()
     def->min = 1;
     def->max = 6;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInt(2));
+    def->set_default_value(new ConfigOptionInt(1));
 
     def = this->add("support_interface_weave_pitch", coFloat);
     def->label = L("Woven interface pitch");

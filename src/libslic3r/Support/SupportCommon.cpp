@@ -1798,11 +1798,12 @@ void generate_support_toolpaths(
         for (size_t i = 0; i < support_layers.size(); ++ i) {
             if (! z_in(stack_zs, support_layers[i]->print_z) || (i > 0 && z_in(stack_zs, support_layers[i - 1]->print_z)))
                 continue;
-            // Lowest layer of a stack: weave its lowest (run - 2) layers, never the top two.
+            // Lowest layer of a stack: weave its lowest layers, reserving only the contact, so the
+            // woven layer may sit directly under the contact if the layer count allows.
             size_t run_end = i;
             while (run_end < support_layers.size() && z_in(stack_zs, support_layers[run_end]->print_z))
                 ++ run_end;
-            const int n_weave = std::min(max_woven, int(run_end - i) - 2);
+            const int n_weave = std::min(max_woven, int(run_end - i) - 1);
             int marked = 0;
             for (size_t j = i; j < run_end && marked < n_weave; ++ j)
                 if (z_in(weavable_zs, support_layers[j]->print_z)) {
@@ -2201,9 +2202,9 @@ void generate_support_toolpaths(
                     const float h = float(interface_layer.layer->height);
                     const Flow  base_flow      = support_params.support_material_flow.with_height(h);
                     const Flow  iface_flow     = support_params.support_material_interface_flow.with_height(h);
-                    // Flush: extrude the base strips a little thinner (0.9x height) so they sit
+                    // Flush: extrude the base strips a little thinner (0.8x height) so they sit
                     // below the interface top surface instead of telegraphing through it.
-                    const Flow  strip_flow = flush ? base_flow.with_height(h * 0.9f) : base_flow;
+                    const Flow  strip_flow = flush ? base_flow.with_height(h * 0.8f) : base_flow;
                     const Polygons region = interface_layer.polygons_to_extrude();
                     // Reserve the perimeter ring so the loop never overlaps the strips.
                     const Polygons strip_region = offset(region, -float(support_params.support_material_interface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
