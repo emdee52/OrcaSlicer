@@ -1339,7 +1339,6 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_loop_pattern"
             || opt_key == "support_interface_filament"
             || opt_key == "support_interface_not_for_body"
-            || opt_key == "support_interface_base_layers" // [ORCAPORT:SU-6]
             || opt_key == "support_interface_weave_enable" // [ORCAPORT:SU-9]
             || opt_key == "support_interface_weave_layers" // [ORCAPORT:SU-9]
             || opt_key == "support_interface_weave_pitch" // [ORCAPORT:SU-9]

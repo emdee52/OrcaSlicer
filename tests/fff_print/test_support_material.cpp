@@ -498,7 +498,6 @@ TEST_CASE("Woven bottom interface puts both materials in the base-interface laye
             { "layer_height",                          0.2 },
             { "support_interface_top_layers",          0 },
             { "support_interface_bottom_layers",       2 },
-            { "support_interface_base_layers",         1 },
             { "support_filament",                      1 },
             { "support_interface_filament",            2 },
             { "support_interface_bottom_weave_enable", weave },

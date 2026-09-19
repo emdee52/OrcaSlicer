@@ -283,12 +283,6 @@ enum SupportMaterialWaveRoofOrder {
     smwroSmart, smwroZigZag, smwroMonotonic
 };
 
-// [ORCAPORT:SU-4b] Which side of the part/support interface carries the contact Z-wave.
-enum NeoWaveContactTarget {
-    nwctPartBottom, // wave the object's bridge fill (upward-only) - fork behaviour
-    nwctSupportTop  // wave the support's top-contact interface (downward-only)
-};
-
 // BBS
 enum SupportType {
     stNormalAuto, stTreeAuto, stNormal, stTree,
@@ -722,7 +716,6 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialInterfacePattern)
 // [ORCAPORT:SU-4]
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
-CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NeoWaveContactTarget) // [ORCAPORT:SU-4b]
 // BBS
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamPosition)
@@ -1207,9 +1200,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 support_interface_filament))
     ((ConfigOptionInt,                 support_interface_top_layers))
     ((ConfigOptionInt,                 support_interface_bottom_layers))
-    // [ORCAPORT:SU-6] Number of interface layers next to the support base reprinted with the
-    // base filament to anchor the interface.
-    ((ConfigOptionInt,                 support_interface_base_layers))
     // [ORCAPORT:SU-9] Woven interface: alternate base/interface strips over the first interface
     // layers above the base, rotated 90 degrees on alternate layers, to mechanically interlock a
     // non-bonding interface to the support base.
@@ -1262,14 +1252,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionEnum<SupportMaterialWaveRoofOrder>,   wavesupport_roof_order))
     ((ConfigOptionBool,                wavesupport_roof_reverse))
     ((ConfigOptionInt,                 wavesupport_wall_loops))
-    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2): Z-wave the interface between the
-    // part and its support roof so only the wave peaks touch, reducing bonding. Independent of
-    // painting; the printed colour/pattern is untouched, only Z moves.
-    ((ConfigOptionBool,                support_neoweave_enabled))
-    ((ConfigOptionEnum<NeoWaveContactTarget>, support_neoweave_target))
-    ((ConfigOptionFloat,               support_neoweave_amplitude))
-    ((ConfigOptionFloat,               support_neoweave_period))
-    ((ConfigOptionFloat,               support_neoweave_max_z_speed))
     // Spacing between support material lines (the hatching distance).
     ((ConfigOptionFloat,               support_base_pattern_spacing))
     ((ConfigOptionFloat,               support_expansion))

@@ -102,15 +102,11 @@ const std::vector<std::string>& orcaext_config_keys()
         "hybrid_min_bead_width_pct", "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct",
         "hybrid_keep_short_tails", "hybrid_pin_outer_width", "hybrid_bead_count_hysteresis_pct",
         "hybrid_transition_filter_dist_mm",
-        // SU-1 / SU-4 / SU-5 / SU-4b
+        // SU-1 / SU-4 / SU-5
         "support_cross_object_avoidance",
         "wavesupport_roof_pattern", "wavesupport_roof_order", "wavesupport_roof_reverse", "wavesupport_wall_loops",
         "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only", "support_zone_solid",
         "support_zone_land_only",
-        "support_neoweave_enabled", "support_neoweave_target", "support_neoweave_amplitude",
-        "support_neoweave_period", "support_neoweave_max_z_speed",
-        // SU-6
-        "support_interface_base_layers",
         // SU-9
         "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush",
         "support_interface_bottom_weave_enable", // SU-13

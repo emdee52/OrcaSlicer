@@ -2091,8 +2091,8 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         }
     }
 
-    // [ORCAPORT:SU-13] A woven bottom interface needs a solid, zero-gap bottom contact and a
-    // base-material interface layer to host the weave. Set those when the toggle is turned on.
+    // [ORCAPORT:SU-13] A woven bottom interface needs a solid, zero-gap bottom contact. Set those
+    // when the toggle is turned on (the base-interface host comes from the automatic 1-layer rule).
     if (opt_key == "support_interface_bottom_weave_enable" && m_config->has("support_interface_bottom_weave_enable") &&
         m_config->opt_bool("support_interface_bottom_weave_enable")) {
         DynamicPrintConfig new_conf = *m_config;
@@ -2103,10 +2103,6 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         }
         if (m_config->opt_float("support_bottom_z_distance") != 0) {
             new_conf.set_key_value("support_bottom_z_distance", new ConfigOptionFloat(0));
-            changed = true;
-        }
-        if (m_config->opt_int("support_interface_base_layers") == 0) {
-            new_conf.set_key_value("support_interface_base_layers", new ConfigOptionInt(1));
             changed = true;
         }
         if (changed)
@@ -2992,17 +2988,16 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_filament", "support_settings_filament#interface");
         optgroup->append_single_option_line("support_interface_not_for_body", "support_settings_filament#avoid-interface-filament-for-base");
 
-        // [ORCAPORT:SU-6..SU-13] Multi-material support. The group is only shown when the support
+        // [ORCAPORT:SU-9..SU-13] Multi-material support. The group is only shown when the support
         // base and interface use two different filament types; the visibility of every line in it
         // is gated in ConfigManipulation::toggle_print_fff_options, so the whole group collapses
         // when the condition is not met.
         optgroup = page->new_optgroup(L("Multi material"), L"param_support");
-        optgroup->append_single_option_line("support_interface_base_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_enable", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_bottom_weave_enable", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_pitch", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_flush", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_bottom_weave_enable", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_base_line_width", "support_settings_advanced#interface-layers");
 
         // [ORCAPORT:SU-8] Transition-layer treatment, multi-material only.
@@ -3045,13 +3040,6 @@ void TabPrint::build()
         optgroup->append_single_option_line("wavesupport_roof_order", "support_settings_advanced#interface-pattern");
         optgroup->append_single_option_line("wavesupport_roof_reverse", "support_settings_advanced#interface-pattern");
         optgroup->append_single_option_line("wavesupport_wall_loops", "support_settings_advanced#support-wall-loops");
-        // [ORCAPORT:SU-4b] NeoWave contact layer (toggle + target + wave params). Visibility is
-        // handled in toggle_options(): master when support is on, the rest when it is enabled.
-        optgroup->append_single_option_line("support_neoweave_enabled", "support_settings_advanced");
-        optgroup->append_single_option_line("support_neoweave_target", "support_settings_advanced");
-        optgroup->append_single_option_line("support_neoweave_amplitude", "support_settings_advanced");
-        optgroup->append_single_option_line("support_neoweave_period", "support_settings_advanced");
-        optgroup->append_single_option_line("support_neoweave_max_z_speed", "support_settings_advanced");
         optgroup->append_single_option_line("support_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_bottom_interface_spacing", "support_settings_advanced#interface-spacing");
         optgroup->append_single_option_line("support_expansion", "support_settings_advanced#normal-support-expansion");

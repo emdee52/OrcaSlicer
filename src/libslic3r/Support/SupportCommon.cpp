@@ -7,7 +7,6 @@
 #include "../Fill/FillWaveRoof.hpp" // [ORCAPORT:SU-4] NeoWave roof pattern
 #include "../MutablePolygon.hpp"
 #include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object clamp
-#include "../OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b] support-side contact wave
 #include "../Geometry.hpp"
 #include "../Point.hpp"
 #include "clipper/clipper_z.hpp"
@@ -2249,18 +2248,6 @@ void generate_support_toolpaths(
             if (! bottom_contact_layer.empty())
                 support_layer.support_contact_bottom = true;
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
-            // [ORCAPORT:SU-4b] NeoWave contact (support side): wave the top-contact interface so
-            // only the wave peaks touch the part above, reducing bonding. Downward-only, so it can
-            // never grow into the part. The part's own bridge fill is left flat.
-            if (config.support_neoweave_enabled.value
-                && config.support_neoweave_target.value == nwctSupportTop
-                && config.support_neoweave_amplitude.value > 1e-9
-                && top_contact_layer.layer != nullptr
-                && top_contact_layer.layer->layer_type == SupporLayerType::TopContact) {
-                OrcaExt::NeoWaveContact::apply_support_wave(
-                    top_contact_layer.extrusions, config.support_neoweave_amplitude.value,
-                    config.support_neoweave_period.value);
-            }
             if (!organic_tree)
                 extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
             const bool interface_layer_enabled = !interface_layer.empty() &&

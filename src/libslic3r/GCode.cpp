@@ -17,7 +17,6 @@
 #include "ShortestPath.hpp"
 #include "GCode/OrderingStrategies.hpp"
 #include "Print.hpp"
-#include "OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b]
 #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
@@ -5571,9 +5570,15 @@ LayerResult GCode::process_layer(
         if (m_transition_temp_last.size() < m_config.nozzle_diameter.values.size())
             m_transition_temp_last.resize(m_config.nozzle_diameter.values.size(), -1);
         const int desired = std::max(1, base + dt);
-        if (fid >= 0 && size_t(fid) < m_transition_temp_last.size() && m_transition_temp_last[size_t(fid)] != desired) {
-            gcode += m_writer.set_temperature(unsigned(desired), true, fid);
-            m_transition_temp_last[size_t(fid)] = desired;
+        // Emit only when this layer carries a transition delta, or when reverting a delta applied
+        // on an earlier layer. With no transition ever applied the nozzle setpoint is left alone,
+        // so multi-nozzle output stays byte-identical to stock at defaults.
+        if (fid >= 0 && size_t(fid) < m_transition_temp_last.size()) {
+            const int last = m_transition_temp_last[size_t(fid)];
+            if ((m_transition_joint != 0 || last >= 0) && last != desired) {
+                gcode += m_writer.set_temperature(unsigned(desired), true, fid);
+                m_transition_temp_last[size_t(fid)] = desired;
+            }
         }
         transition_temp_done = true;
     };
@@ -8452,18 +8457,6 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             }
     }
 
-    // [ORCAPORT:SU-4b] Support-side NeoWave contact: apply_support_wave() marked the top-contact
-    // support paths z_contoured. Cap the XY speed so the implied wave Z speed stays within
-    // support_neoweave_max_z_speed.
-    if (path.z_contoured && is_support(path.role())
-        && m_config.support_neoweave_enabled.value
-        && m_config.support_neoweave_target.value == nwctSupportTop) {
-        const double cap = OrcaExt::NeoWaveContact::xy_feedrate_cap(
-            m_config.support_neoweave_period.value, m_config.support_neoweave_amplitude.value,
-            m_config.support_neoweave_max_z_speed.value, coord_t(path.width));
-        speed = std::min(speed, cap / 60.0); // cap is mm/min, speed is mm/s
-    }
-
     double F = speed * 60;  // convert mm/sec to mm/min
     
     // Orca: Dynamic PA
@@ -8767,26 +8760,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
 
                 apply_role_based_fan_speed();
             }
-            // [ORCAPORT:SU-4b] Part-bottom NeoWave contact: wave the object's own bridge fill
-            // (the first layer resting on a support roof). Upward-only by construction, so it never
-            // digs into the roof. Arc fitting cannot carry the per-segment Z, so this replaces the
-            // normal emission below.
-            const bool neoweave_part = sloped == nullptr && !path.z_contoured
-                && m_config.support_neoweave_enabled.value
-                && m_config.support_neoweave_target.value == nwctPartBottom
-                && path.role() == erBridgeInfill && m_layer_index > 0
-                && m_config.support_neoweave_amplitude.value > 1e-9;
-            if (neoweave_part) {
-                gcode += OrcaExt::NeoWaveContact::emit_part_wave(
-                    path, m_writer, m_nominal_z, F, e_per_mm, path.is_force_no_extrusion(),
-                    [this](const Point &p) { return this->point_to_gcode(p); },
-                    m_config.support_neoweave_amplitude.value, m_config.support_neoweave_period.value,
-                    m_config.support_neoweave_max_z_speed.value);
-                gcode += OrcaExt::NeoWaveContact::restore_z(m_writer, m_nominal_z);
-            }
             // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped extrusion
             // Attention: G2 and G3 is not supported in spiral_mode mode
-            else if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
+            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
                 double path_length = 0.;
                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
                 double saved_z      = m_writer.get_position().z();
