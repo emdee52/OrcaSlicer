@@ -811,7 +811,8 @@ void ConfigManipulation::apply_null_fff_config(DynamicPrintConfig *config, std::
     }
 }
 
-void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, int variant_index, const bool is_global_config)
+void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, int variant_index, const bool is_global_config,
+                                                  const bool multi_material_support)
 {
     PresetBundle *preset_bundle  = wxGetApp().preset_bundle;
 
@@ -1087,7 +1088,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("bridge_no_support", !support_is_tree);
     toggle_line("support_critical_regions_only", is_auto(support_type) && support_is_tree);
 
-    for (auto el : { "support_interface_filament", "support_interface_base_layers",
+    for (auto el : { "support_interface_filament",
         "support_interface_loop_pattern", "support_bottom_interface_spacing" })
         toggle_field(el, have_support_material && have_support_interface);
 
@@ -1108,25 +1109,33 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
             toggle_line(el, have_support_material && neoweave_on);
     }
 
-    // [ORCAPORT:SU-9] Woven interface: the master toggle follows "enable support"; the layer count
-    // and pitch appear only once it is enabled.
+    // [ORCAPORT:SU-9/SU-13] Woven interface (the "Multi material" section). Every line here is
+    // gated on different support base/interface filaments, so the whole group collapses when they
+    // are the same material. The toggles follow "enable support"; the shared layer count and pitch
+    // appear once either weave is on; flush is top-only.
     {
-        const bool weave_on = config->has("support_interface_weave_enable") && config->opt_bool("support_interface_weave_enable");
-        toggle_line("support_interface_weave_enable", have_support_material);
-        for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush" })
-            toggle_line(el, have_support_material && weave_on);
+        const bool mm = have_support_material && multi_material_support;
+        const bool top_weave    = config->has("support_interface_weave_enable") && config->opt_bool("support_interface_weave_enable");
+        const bool bottom_weave = config->has("support_interface_bottom_weave_enable") && config->opt_bool("support_interface_bottom_weave_enable");
+        toggle_line("support_interface_weave_enable", mm);
+        toggle_line("support_interface_bottom_weave_enable", mm);
+        for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch" })
+            toggle_line(el, mm && (top_weave || bottom_weave));
+        toggle_line("support_interface_weave_flush", mm && top_weave);
+        // [ORCAPORT:SU-6/SU-12] Base-material interface host and line width.
+        toggle_line("support_interface_base_layers", mm);
+        toggle_line("support_interface_base_line_width", mm);
     }
 
-    // [ORCAPORT:SU-10] Contact interface layer speed/width and base bridging orientation.
+    // [ORCAPORT:SU-10] Contact interface layer speed/width (kept available to all support users).
     for (auto el : { "support_interface_contact_speed", "support_interface_contact_line_width",
-                     "support_interface_bottom_contact_speed", "support_interface_bottom_contact_line_width",
-                     "support_interface_base_line_width",
-                     "support_interface_serpentine", "support_interface_base_bridge", "support_interface_perimeter" })
+                     "support_interface_bottom_contact_speed", "support_interface_bottom_contact_line_width" })
         toggle_line(el, have_support_material);
 
-    // [ORCAPORT:SU-8] Transition-layer treatment: each joint's master follows "enable support";
-    // its knobs appear only once that joint is enabled.
+    // [ORCAPORT:SU-8] Transition-layer treatment (the "Transition layers" section, multi-material
+    // only). Each joint's master follows "enable support"; its knobs appear once that joint is on.
     {
+        const bool mm = have_support_material && multi_material_support;
         const std::pair<const char *, const char *> joints[] = {
             { "transition_interface_base_enable",   "transition_interface_base" },
             { "transition_object_interface_enable", "transition_object_interface" },
@@ -1134,9 +1143,9 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         };
         for (const auto &j : joints) {
             const bool on = config->has(j.first) && config->opt_bool(j.first);
-            toggle_line(j.first, have_support_material);
+            toggle_line(j.first, mm);
             for (const std::string &suffix : { std::string("_layers"), std::string("_speed"), std::string("_flow"), std::string("_fan"), std::string("_temp_delta") })
-                toggle_line((std::string(j.second) + suffix).c_str(), have_support_material && on);
+                toggle_line((std::string(j.second) + suffix).c_str(), mm && on);
         }
     }
 

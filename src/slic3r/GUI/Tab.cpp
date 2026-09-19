@@ -2054,17 +2054,18 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         int filament_id           = m_config->opt_int("support_filament") - 1;
         int interface_filament_id = m_config->opt_int("support_interface_filament") - 1; // the displayed id is based from 1, while internal id is based from 0
         if ((is_support_filament(interface_filament_id, false) &&
-             !(m_config->opt_float("support_top_z_distance") == 0 && m_config->opt_float("support_interface_spacing") == 0 &&
+             !(m_config->opt_float("support_top_z_distance") == 0 && m_config->opt_float("support_bottom_z_distance") == 0 &&
+               m_config->opt_float("support_interface_spacing") == 0 && m_config->opt_float("support_bottom_interface_spacing") == 0 &&
                m_config->opt_enum<SupportMaterialInterfacePattern>("support_interface_pattern") == SupportMaterialInterfacePattern::smipRectilinearInterlaced)) ||
             (is_soluble_filament(interface_filament_id) && !is_soluble_filament(filament_id))) {
             wxString msg_text;
             if (!is_soluble_filament(interface_filament_id)) {
                 msg_text = _L("When using support material for the support interface, we recommend the following settings:\n"
-                              "0 top Z distance, 0 interface spacing, interlaced rectilinear pattern and disable independent support layer height.");
+                              "0 top and bottom Z distance, 0 interface spacing, interlaced rectilinear pattern and disable independent support layer height.");
                 msg_text += "\n\n" + _L("Change these settings automatically\?\nYes - Change these settings automatically.\nNo  - Do not change these settings for me.");
             } else {
                 msg_text = _L("When using soluble material for the support interface, we recommend the following settings:\n"
-                              "0 top Z distance, 0 interface spacing, interlaced rectilinear pattern, disable independent support layer height\n"
+                              "0 top and bottom Z distance, 0 interface spacing, interlaced rectilinear pattern, disable independent support layer height\n"
                               "and use soluble materials for both support interface and support base.");
                 msg_text += "\n\n" + _L("Change these settings automatically\?\nYes - Change these settings automatically.\nNo  - Do not change these settings for me.");
             }
@@ -2077,7 +2078,9 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
                 std::string     filament_type    = filament->config.option<ConfigOptionStrings>("filament_type")->values[0];
 
                 new_conf.set_key_value("support_top_z_distance", new ConfigOptionFloat(0));
+                new_conf.set_key_value("support_bottom_z_distance", new ConfigOptionFloat(0));
                 new_conf.set_key_value("support_interface_spacing", new ConfigOptionFloat(0));
+                new_conf.set_key_value("support_bottom_interface_spacing", new ConfigOptionFloat(0));
                 new_conf.set_key_value("support_interface_pattern", new ConfigOptionEnum<SupportMaterialInterfacePattern>(SupportMaterialInterfacePattern::smipRectilinearInterlaced));
                 new_conf.set_key_value("independent_support_layer_height", new ConfigOptionBool(false));
                 if ((filament_type == "PLA" && has_filaments({"TPU", "TPU-AMS"})) || (is_soluble_filament(interface_filament_id) && !is_soluble_filament(filament_id)))
@@ -2086,6 +2089,29 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
             }
             wxGetApp().plater()->update();
         }
+    }
+
+    // [ORCAPORT:SU-13] A woven bottom interface needs a solid, zero-gap bottom contact and a
+    // base-material interface layer to host the weave. Set those when the toggle is turned on.
+    if (opt_key == "support_interface_bottom_weave_enable" && m_config->has("support_interface_bottom_weave_enable") &&
+        m_config->opt_bool("support_interface_bottom_weave_enable")) {
+        DynamicPrintConfig new_conf = *m_config;
+        bool changed = false;
+        if (m_config->opt_float("support_bottom_interface_spacing") != 0) {
+            new_conf.set_key_value("support_bottom_interface_spacing", new ConfigOptionFloat(0));
+            changed = true;
+        }
+        if (m_config->opt_float("support_bottom_z_distance") != 0) {
+            new_conf.set_key_value("support_bottom_z_distance", new ConfigOptionFloat(0));
+            changed = true;
+        }
+        if (m_config->opt_int("support_interface_base_layers") == 0) {
+            new_conf.set_key_value("support_interface_base_layers", new ConfigOptionInt(1));
+            changed = true;
+        }
+        if (changed)
+            m_config_manipulation.apply(m_config, &new_conf);
+        wxGetApp().plater()->update();
     }
 
     if(opt_key == "make_overhang_printable"){
@@ -2966,6 +2992,30 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_filament", "support_settings_filament#interface");
         optgroup->append_single_option_line("support_interface_not_for_body", "support_settings_filament#avoid-interface-filament-for-base");
 
+        // [ORCAPORT:SU-6..SU-13] Multi-material support. The group is only shown when the support
+        // base and interface use two different filament types; the visibility of every line in it
+        // is gated in ConfigManipulation::toggle_print_fff_options, so the whole group collapses
+        // when the condition is not met.
+        optgroup = page->new_optgroup(L("Multi material"), L"param_support");
+        optgroup->append_single_option_line("support_interface_base_layers", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_weave_enable", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_weave_layers", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_weave_pitch", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_weave_flush", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_bottom_weave_enable", "support_settings_advanced#interface-layers");
+        optgroup->append_single_option_line("support_interface_base_line_width", "support_settings_advanced#interface-layers");
+
+        // [ORCAPORT:SU-8] Transition-layer treatment, multi-material only.
+        optgroup = page->new_optgroup(L("Transition layers"), L"param_support");
+        for (const char *key : {
+                "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed",
+                "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
+                "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed",
+                "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
+                "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed",
+                "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta" })
+            optgroup->append_single_option_line(key, "support_settings_advanced");
+
         optgroup = page->new_optgroup(L("Support ironing"), L"param_ironing");
         optgroup->append_single_option_line("support_ironing", "support_settings_ironing");
         optgroup->append_single_option_line("support_ironing_pattern", "support_settings_ironing#pattern");
@@ -2984,32 +3034,11 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_angle", "support_settings_advanced#pattern-angle");
         optgroup->append_single_option_line("support_interface_top_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_bottom_layers", "support_settings_advanced#interface-layers");
-        // [ORCAPORT:SU-6] Base-material interface layers.
-        optgroup->append_single_option_line("support_interface_base_layers", "support_settings_advanced#interface-layers");
-        // [ORCAPORT:SU-9] Woven interface (base-side interlock).
-        optgroup->append_single_option_line("support_interface_weave_enable", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_weave_layers", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_weave_pitch", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_weave_flush", "support_settings_advanced#interface-layers");
         // [ORCAPORT:SU-10] Contact interface layer.
         optgroup->append_single_option_line("support_interface_contact_speed", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_contact_line_width", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_bottom_contact_speed", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_bottom_contact_line_width", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_base_line_width", "support_settings_advanced#interface-layers");
-        // [ORCAPORT:SU-11] Interface edge bridging.
-        optgroup->append_single_option_line("support_interface_serpentine", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_base_bridge", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_perimeter", "support_settings_advanced#interface-layers");
-        // [ORCAPORT:SU-8] Transition-layer treatment (one group per joint).
-        for (const char *key : {
-                "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed",
-                "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
-                "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed",
-                "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
-                "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed",
-                "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta" })
-            optgroup->append_single_option_line(key, "support_settings_advanced");
         optgroup->append_single_option_line("support_interface_pattern", "support_settings_advanced#interface-pattern");
         // [ORCAPORT:SU-4] NeoWave roof options (only meaningful for SupportType::NeoWave).
         optgroup->append_single_option_line("wavesupport_roof_pattern", "support_settings_advanced#interface-pattern");
@@ -3251,7 +3280,36 @@ void TabPrint::toggle_options()
         m_config_manipulation.set_is_BBL_Printer(is_BBL_printer);
     }
 
-    m_config_manipulation.toggle_print_fff_options(m_config, int(intptr_t(m_extruder_switch->GetClientData())), m_type < Preset::TYPE_COUNT);
+    // [ORCAPORT:SU-13] The multi-material support sections are only relevant when the support base
+    // and interface use two different filament types. Resolve both types from the preset bundle,
+    // the same way the support-interface suggestion popup does.
+    bool multi_material_support = false;
+    {
+        const int base_filament  = m_config->opt_int("support_filament");
+        const int iface_filament = m_config->opt_int("support_interface_filament");
+        if (base_filament > 0 && iface_filament > 0 && base_filament != iface_filament) {
+            auto &filament_presets = wxGetApp().preset_bundle->filament_presets;
+            auto &filaments        = wxGetApp().preset_bundle->filaments;
+            auto filament_type_of  = [&filament_presets, &filaments](int slot) -> std::string {
+                if (slot < 1 || slot > int(filament_presets.size()))
+                    return {};
+                Preset *filament = filaments.find_preset(filament_presets[slot - 1]);
+                if (filament == nullptr || filament->config.option("filament_type") == nullptr)
+                    return {};
+                return filament->config.option<ConfigOptionStrings>("filament_type")->values[0];
+            };
+            const std::string base_type  = filament_type_of(base_filament);
+            const std::string iface_type = filament_type_of(iface_filament);
+            multi_material_support = !base_type.empty() && !iface_type.empty() && base_type != iface_type;
+        }
+    }
+
+    m_config_manipulation.toggle_print_fff_options(m_config, int(intptr_t(m_extruder_switch->GetClientData())), m_type < Preset::TYPE_COUNT,
+                                                   multi_material_support);
+    // Apply the line/group visibility that toggle_print_fff_options just set, so the gated
+    // multi-material sections collapse/expand immediately.
+    if (m_active_page)
+        m_active_page->update_visibility(m_mode, true);
 
     Field *field = m_active_page->get_field("support_style");
     auto   support_type = m_config->opt_enum<SupportType>("support_type");

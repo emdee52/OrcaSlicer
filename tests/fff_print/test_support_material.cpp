@@ -40,6 +40,27 @@ static size_t support_base_layer_count(const std::string &gcode)
     return layers.size();
 }
 
+// Distinct layer Z heights carrying both support-base and support-interface extrusion. Only a woven
+// layer deposits both materials on the same layer.
+static std::set<double> support_layers_with_both_roles(const std::string &gcode)
+{
+    std::map<double, std::set<std::string>> roles;
+    GCodeReader parser;
+    parser.parse_buffer(gcode, [&roles](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        if (! line.extruding(self)) return;
+        const std::string_view comment = line.comment();
+        if (comment.find("support material interface") != std::string_view::npos)
+            roles[self.z()].insert("interface");
+        else if (comment.find("support material") != std::string_view::npos)
+            roles[self.z()].insert("base");
+    });
+    std::set<double> out;
+    for (const auto &kv : roles)
+        if (kv.second.size() == 2)
+            out.insert(kv.first);
+    return out;
+}
+
 // Dominant support-interface fill direction per interface layer, in radians [0, pi). Uses the
 // length-weighted axial mean (each segment angle doubled so a line and its reverse agree, then
 // halved): the parallel infill lines reinforce while the surrounding perimeter cancels.
@@ -463,5 +484,31 @@ TEST_CASE("Bottom-only support interface keeps the dense interface density", "[S
     });
     SupportParameters sp(*print.objects().front());
     REQUIRE(sp.bottom_interface_density > sp.support_density);
+}
+
+// [ORCAPORT:SU-13] A woven bottom interface inserts interface-material strips into the
+// base-material interface layer directly above a bottom contact. That host layer is the only one
+// that can carry both materials; with the weave off the base and interface roles stay on their own
+// layers.
+TEST_CASE("Woven bottom interface puts both materials in the base-interface layer", "[SupportMaterial]")
+{
+    auto config = [](int weave) {
+        return multifilament_config(2, {
+            { "enable_support",                        1 },
+            { "layer_height",                          0.2 },
+            { "support_interface_top_layers",          0 },
+            { "support_interface_bottom_layers",       2 },
+            { "support_interface_base_layers",         1 },
+            { "support_filament",                      1 },
+            { "support_interface_filament",            2 },
+            { "support_interface_bottom_weave_enable", weave },
+        });
+    };
+    const std::string off = slice({ support_capital() }, config(0));
+    const std::string on  = slice({ support_capital() }, config(1));
+    REQUIRE(support_base_layer_count(off) > 0);           // support actually formed
+    REQUIRE(support_interface_layer_count(off) > 0);      // bottom interface actually formed
+    REQUIRE(support_layers_with_both_roles(off).empty()); // roles stay on their own layers
+    REQUIRE_FALSE(support_layers_with_both_roles(on).empty()); // the woven host carries both
 }
 

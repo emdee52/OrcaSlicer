@@ -1150,7 +1150,7 @@ static std::vector<std::string> s_Preset_print_options{
     "support_interface_spacing",
     "support_interface_base_layers", // [ORCAPORT:SU-6]
     "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush", // [ORCAPORT:SU-9]
-    "support_interface_serpentine", "support_interface_base_bridge", "support_interface_perimeter", // [ORCAPORT:SU-11]
+    "support_interface_bottom_weave_enable", // [ORCAPORT:SU-13]
     "support_interface_contact_speed", "support_interface_contact_line_width", // [ORCAPORT:SU-10]
     "support_interface_bottom_contact_speed", "support_interface_bottom_contact_line_width", // [ORCAPORT:SU-10]
     "support_interface_base_line_width", // [ORCAPORT:SU-12]
