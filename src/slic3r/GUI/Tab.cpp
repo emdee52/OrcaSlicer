@@ -2998,17 +2998,17 @@ void TabPrint::build()
         optgroup->append_single_option_line("support_interface_weave_layers", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_pitch", "support_settings_advanced#interface-layers");
         optgroup->append_single_option_line("support_interface_weave_flush", "support_settings_advanced#interface-layers");
-        optgroup->append_single_option_line("support_interface_base_line_width", "support_settings_advanced#interface-layers");
 
-        // [ORCAPORT:SU-8] Transition-layer treatment, multi-material only.
+        // [ORCAPORT:SU-8] Transition-layer treatment, multi-material only. Order: interface-on-base,
+        // interface-on-object, then object-on-interface.
         optgroup = page->new_optgroup(L("Transition layers"), L"param_support");
         for (const char *key : {
                 "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed",
                 "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
-                "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed",
-                "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
                 "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed",
-                "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta" })
+                "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta",
+                "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed",
+                "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta" })
             optgroup->append_single_option_line(key, "support_settings_advanced");
 
         optgroup = page->new_optgroup(L("Support ironing"), L"param_ironing");

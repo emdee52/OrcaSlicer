@@ -1216,8 +1216,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatOrPercent,      support_interface_contact_line_width))
     ((ConfigOptionFloat,               support_interface_bottom_contact_speed))
     ((ConfigOptionFloatOrPercent,      support_interface_bottom_contact_line_width))
-    // [ORCAPORT:SU-12] Line width for the base-material interface layer under the weave.
-    ((ConfigOptionFloatOrPercent,      support_interface_base_line_width))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
     //   transition_interface_base   (A) first support interface deposited on base support
     //   transition_object_interface (B) first object layers deposited on the support interface

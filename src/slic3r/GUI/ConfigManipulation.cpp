@@ -1113,8 +1113,6 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         for (auto el : { "support_interface_weave_layers", "support_interface_weave_pitch" })
             toggle_line(el, mm && (top_weave || bottom_weave));
         toggle_line("support_interface_weave_flush", mm && top_weave);
-        // [ORCAPORT:SU-12] Base-interface line width.
-        toggle_line("support_interface_base_line_width", mm);
     }
 
     // [ORCAPORT:SU-10] Contact interface layer speed/width (kept available to all support users).

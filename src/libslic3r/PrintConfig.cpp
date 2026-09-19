@@ -7228,9 +7228,9 @@ void PrintConfigDef::init_fff_params()
     def = this->add("support_interface_weave_flush", coBool);
     def->label = L("Flush woven interface");
     def->category = L("Support");
-    def->tooltip = L("Print both woven materials at the interface flow/line width so every woven "
-        "layer has a uniform, flush top surface. Reduces telegraphing of the base material through "
-        "the layers above, at the cost of the base strips not using the support base line width.");
+    def->tooltip = L("Print the woven base threads wider and thinner — 1.25x the nozzle diameter at "
+        "0.8x layer height — so their sag or ridges stay below the interface surface. Fixes a ridged "
+        "or sagging weave that would otherwise be carried into the interface layers above.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
@@ -7267,10 +7267,14 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Top contact interface line width");
     def->category = L("Support");
     def->tooltip = L("Line width for the top contact interface layer — the layer under the object "
-        "when the object rests on support. 0 = use the default support interface line width.");
-    def->sidetext = L("mm");
+        "when the object rests on support. If expressed as a %, it is computed over the nozzle "
+        "diameter. 0 = use the default support interface line width.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
     def->mode = comAdvanced;
     def->min = 0;
+    def->max = 1000;
+    def->max_literal = 10;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
     def = this->add("support_interface_bottom_contact_speed", coFloat);
@@ -7289,20 +7293,14 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Bottom contact interface line width");
     def->category = L("Support");
     def->tooltip = L("Line width for the bottom contact interface layer — the layer on top of the "
-        "object when support rests on the object. 0 = use the default support interface line width.");
-    def->sidetext = L("mm");
+        "object when support rests on the object. If expressed as a %, it is computed over the "
+        "nozzle diameter. 0 = use the default support interface line width.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
     def->mode = comAdvanced;
     def->min = 0;
-    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
-
-    def = this->add("support_interface_base_line_width", coFloatOrPercent);
-    def->label = L("Base interface line width");
-    def->category = L("Support");
-    def->tooltip = L("Line width for the base-material interface layer that sits under the weave "
-        "(absolute mm, or a percentage of the nozzle diameter). 0 = use the default line width.");
-    def->sidetext = L("mm");
-    def->mode = comAdvanced;
-    def->min = 0;
+    def->max = 1000;
+    def->max_literal = 10;
     def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
 
     // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three

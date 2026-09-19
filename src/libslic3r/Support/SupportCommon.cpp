@@ -2225,9 +2225,14 @@ void generate_support_toolpaths(
                     const float h = float(interface_layer.layer->height);
                     const Flow  base_flow      = support_params.support_material_flow.with_height(h);
                     const Flow  iface_flow     = support_params.support_material_interface_flow.with_height(h);
-                    // Flush (top weave only): extrude the base strips a little thinner (0.8x height)
-                    // so they sit below the interface top surface instead of telegraphing through.
-                    const Flow  strip_flow = (flush && iface_host_top) ? base_flow.with_height(h * 0.8f) : base_flow;
+                    // Flush (top weave only): widen the woven base threads to 1.25x the nozzle and
+                    // drop them to 0.8x height, so their sag or ridges stay below the interface
+                    // surface and are not carried into the other interface layers.
+                    Flow strip_flow = base_flow;
+                    if (flush && iface_host_top) {
+                        const float nozzle = support_params.support_material_flow.nozzle_diameter();
+                        strip_flow = base_flow.with_width(1.25f * nozzle).with_height(h * 0.8f);
+                    }
                     const Polygons region = interface_layer.polygons_to_extrude();
                     // Reserve the perimeter ring so the loop never overlaps the strips.
                     const Polygons strip_region = offset(region, -float(support_params.support_material_interface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
@@ -2245,15 +2250,8 @@ void generate_support_toolpaths(
                 else if (! base_interface_layer.empty() && base_interface_layer.layer->is_bottom_base_interface &&
                          ! base_interface_layer.polygons_to_extrude().empty()) {
                     const float h = float(base_interface_layer.layer->height);
-                    Flow        base_flow  = support_params.support_material_flow.with_height(h);
+                    const Flow  base_flow  = support_params.support_material_flow.with_height(h);
                     const Flow  iface_flow = support_params.support_material_interface_flow.with_height(h);
-                    // [ORCAPORT:SU-12] Base-interface line-width override applies to the base strips.
-                    if (config.support_interface_base_line_width.value > 0) {
-                        const double w = config.support_interface_base_line_width.get_abs_value(
-                            support_params.support_material_flow.nozzle_diameter());
-                        if (w > 0)
-                            base_flow = base_flow.with_width(float(w));
-                    }
                     const Polygons region = base_interface_layer.polygons_to_extrude();
                     const Polygons strip_region = offset(region, -float(iface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
                     Polygons base_strips, iface_strips;
@@ -2284,13 +2282,7 @@ void generate_support_toolpaths(
                     // support. One serpentine whose lines cross the woven strips below, so the base
                     // support bonds to solid base material instead of landing on PLA strips.
                     const float h = float(base_interface_layer.layer->height);
-                    Flow        cap_flow = support_params.support_material_flow.with_height(h);
-                    if (config.support_interface_base_line_width.value > 0) {
-                        const double w = config.support_interface_base_line_width.get_abs_value(
-                            support_params.support_material_flow.nozzle_diameter());
-                        if (w > 0)
-                            cap_flow = cap_flow.with_width(float(w));
-                    }
+                    const Flow  cap_flow = support_params.support_material_flow.with_height(h);
                     const Polygons region = base_interface_layer.polygons_to_extrude();
                     // The woven host is the layer directly below; its strips run along angle + 90,
                     // so run the cap lines along the woven layer's `angle` to cross them.
@@ -2313,15 +2305,6 @@ void generate_support_toolpaths(
                     filler->angle   = config.support_interface_weave_enable.value
                                         ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
                     filler->spacing = support_params.support_material_interface_flow.spacing();
-                    // [ORCAPORT:SU-12] Base-interface line-width override (mm or % of nozzle).
-                    if (config.support_interface_base_line_width.value > 0) {
-                        const double w = config.support_interface_base_line_width.get_abs_value(
-                            support_params.support_material_flow.nozzle_diameter());
-                        if (w > 0) {
-                            interface_flow  = interface_flow.with_width(float(w));
-                            filler->spacing = interface_flow.spacing();
-                        }
-                    }
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
                     fill_expolygons_generate_paths(
                         // Destination
