@@ -160,7 +160,7 @@ T0/PETG (`Support`) and T3/PLA (`Support interface`) extrusion, the bottom conta
 | `port/SU-10` | `3712aad6f2`, `daae8f3454` |
 | `port/SU-11` | `26bb253519`, `791638257b` |
 | `port/SU-12` | `3bf873ff96` (SU-12), `feb198f139` (SU-10 top/bottom split) |
-| `port/SU-13` | `4addbe2c97` (SU-13 bottom weave + settings consolidation) |
+| `port/SU-13` | `4addbe2c97` (SU-13 bottom weave + settings consolidation), `4a1b13ba8a` (handoff), `cd6d2a85dc`+`fb71627e21` (remove SU-4b/SU-6, SU-8 temp fix), `a4d3bc0972` (handoff) |
 
 Branches are a linear chain (`SU-8` off `SU-6-7`, `SU-9` off `SU-8`, ..., `SU-13` off `SU-12`), so
 `port/SU-13` contains everything. All pushed to `origin`. Merge `--no-ff` into `port/integration`
