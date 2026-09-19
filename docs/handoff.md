@@ -38,11 +38,18 @@ G-code -> parse `;TYPE:` / `F` / `E` lines.
 
 ## 2. Features built this session
 
-### SU-6 — Base-interface layer count — `support_interface_base_layers`
-Number of interface layers nearest the base reprinted with the **base** filament. `-1` = automatic
-(1 when base/interface filaments differ), `0` disables. Implemented in
-`Support/SupportParameters.hpp` (overrides `num_top/bottom_base_interface_layers`).
-Status: verified, committed on `port/SU-6-7`.
+### SU-4b — NeoWave contact layer — REMOVED
+The `support_neoweave_*` contact layer (part-bottom bridge-fill wave + support-top interface wave,
+`OrcaExt/NeoWaveContact`, `NeoWaveContactTarget`) was removed completely on `port/SU-13` at the
+user's request; it was not useful. Note the unrelated SU-4 **wave roof** (`wavesupport_roof_*`,
+`FillWaveRoof`) remains. Existing files with the removed keys load fine (unknown keys are ignored).
+
+### SU-6 — Base-interface layer count — REMOVED (reverted to hardcoded)
+The `support_interface_base_layers` option was removed on `port/SU-13`: the base-material interface
+layer count is hardcoded again exactly as before SU-6 exposed it (auto 1 when base/interface
+filaments differ and there is more than one interface layer, otherwise 0; the soluble branch keeps
+its `min(n/2, 2)` rule in `Support/SupportParameters.hpp`). One layer is enough; the weave host and
+everything else rely on the automatic value.
 
 ### SU-7 — Anchor pins — REMOVED
 The fixed-pitch square pins (`support_interface_anchor_pins/_spacing/_size`) were scrapped: a pin had
@@ -117,10 +124,10 @@ contact is never woven; higher base-interface layers stay solid. Host detection 
 `SupportGeneratorLayer::is_bottom_base_interface` flag, set where the base-interface layer is
 projected from a bottom contact.
 
-When the toggle is enabled the UI forces `support_bottom_interface_spacing=0`,
-`support_bottom_z_distance=0`, and `support_interface_base_layers=1` if it was `0` (the weave needs
-a solid zero-gap host). The support-interface suggestion popup was extended to zero the bottom
-spacing/Z as well.
+When the toggle is enabled the UI forces `support_bottom_interface_spacing=0` and
+`support_bottom_z_distance=0` (the weave needs a solid zero-gap contact; the base-interface host
+comes from the automatic 1-layer rule). The support-interface suggestion popup was extended to zero
+the bottom spacing/Z as well. The bottom weave toggle sits directly under "Woven interface".
 
 **Settings consolidation (same branch):**
 - Removed `support_interface_serpentine`, `support_interface_base_bridge`,
@@ -128,9 +135,9 @@ spacing/Z as well.
   base-material perimeter are now implicit whenever weave is on. Straight bridging is applied only
   while weaving, so defaults stay byte-identical. Existing 3mf/preset files with the old keys load
   fine (unknown keys are ignored).
-- New **"Multi material"** section on the Support page (`support_interface_base_layers`,
-  `support_interface_weave_enable`, `_weave_layers`, `_weave_pitch`, `_weave_flush`,
-  `support_interface_bottom_weave_enable`, `support_interface_base_line_width`) and a
+- New **"Multi material"** section on the Support page (`support_interface_weave_enable`,
+  `support_interface_bottom_weave_enable`, `_weave_layers`, `_weave_pitch`, `_weave_flush`,
+  `support_interface_base_line_width`) and a
   **"Transition layers"** section (all 18 SU-8 keys). Both are shown only when `support_filament`
   and `support_interface_filament` are both explicitly set and resolve to different `filament_type`s.
   Contact speed/line width stay in Advanced so single-material users keep them.
