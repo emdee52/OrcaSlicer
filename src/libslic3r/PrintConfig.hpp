@@ -1222,10 +1222,12 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                support_interface_serpentine))
     ((ConfigOptionBool,                support_interface_base_bridge))
     ((ConfigOptionBool,                support_interface_perimeter))
-    // [ORCAPORT:SU-10] Interface contact controls (the interface layer touching the object) and
-    // bridging orientation of the first interface layer over the support base.
+    // [ORCAPORT:SU-10] Interface contact controls: top contact (support under the object) and
+    // bottom contact (support on top of an object) each have their own speed/line width.
     ((ConfigOptionFloat,               support_interface_contact_speed))
     ((ConfigOptionFloatOrPercent,      support_interface_contact_line_width))
+    ((ConfigOptionFloat,               support_interface_bottom_contact_speed))
+    ((ConfigOptionFloatOrPercent,      support_interface_bottom_contact_line_width))
     // [ORCAPORT:SU-12] Line width for the base-material interface layer under the weave.
     ((ConfigOptionFloatOrPercent,      support_interface_base_line_width))
     // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:

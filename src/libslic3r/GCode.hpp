@@ -204,7 +204,8 @@ public:
         m_object_layer_over_raft(false),
         m_transition_joint(0),
         m_weave_layer(false),
-        m_support_contact(false),
+        m_support_contact_top(false),
+        m_support_contact_bottom(false),
         //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
@@ -710,8 +711,9 @@ private:
     // [ORCAPORT:SU-9] Current support layer is a woven interface layer: its base and interface
     // strips must print at the same speed.
     bool                                m_weave_layer;
-    // [ORCAPORT:SU-10] Current support layer holds the interface contact (touches the object).
-    bool                                m_support_contact;
+    // [ORCAPORT:SU-10] Current support layer holds a contact that touches the object.
+    bool                                m_support_contact_top;
+    bool                                m_support_contact_bottom;
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;

@@ -2054,11 +2054,15 @@ void generate_support_toolpaths(
                         (raft_contact ? &support_params.raft_interface_flow :
                          interface_as_base ? &support_params.support_material_flow : &support_params.support_material_interface_flow)
                             ->with_height(float(layer_ex.layer->height));
-                    // [ORCAPORT:SU-10] Contact interface line-width override.
-                    const bool contact_layer = interface_layer_type == InterfaceLayerType::TopContact ||
-                                               interface_layer_type == InterfaceLayerType::BottomContact;
-                    if (contact_layer && config.support_interface_contact_line_width.value > 0) {
-                        const double w = config.support_interface_contact_line_width.get_abs_value(
+                    // [ORCAPORT:SU-10] Contact interface line-width overrides; top and bottom contact
+                    // have separate settings.
+                    const bool top_contact    = interface_layer_type == InterfaceLayerType::TopContact;
+                    const bool bottom_contact = interface_layer_type == InterfaceLayerType::BottomContact;
+                    const ConfigOptionFloatOrPercent *contact_width =
+                        top_contact    ? &config.support_interface_contact_line_width :
+                        bottom_contact ? &config.support_interface_bottom_contact_line_width : nullptr;
+                    if (contact_width != nullptr && contact_width->value > 0) {
+                        const double w = contact_width->get_abs_value(
                             support_params.support_material_interface_flow.nozzle_diameter());
                         if (w > 0)
                             interface_flow = interface_flow.with_width(float(w));
@@ -2077,7 +2081,7 @@ void generate_support_toolpaths(
                     filler->spacing = raft_contact ? support_params.raft_interface_flow.spacing() :
                         interface_as_base ? support_params.support_material_flow.spacing() : support_params.support_material_interface_flow.spacing();
                     // [ORCAPORT:SU-10] Match the fill spacing to the overridden contact width.
-                    if (contact_layer && config.support_interface_contact_line_width.value > 0)
+                    if (contact_width != nullptr && contact_width->value > 0)
                         filler->spacing = interface_flow.spacing();
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / density));
                     // [ORCAPORT:SU-4] NeoWave roof (wave-roof half): fill the roof (top contact +
@@ -2186,10 +2190,12 @@ void generate_support_toolpaths(
                         emit_region_perimeter(support_layer.support_fills.entities, region, iface_flow, ExtrusionRole::erSupportMaterialInterface);
                 }
             }
-            // [ORCAPORT:SU-10] The interface contact is the layer that touches the object (top
-            // contact for support under it, bottom contact for support on top of it).
-            if (! top_contact_layer.empty() || ! bottom_contact_layer.empty())
-                support_layer.support_contact = true;
+            // [ORCAPORT:SU-10] Contact layers that touch the object: top contact (support under the
+            // object) and bottom contact (support on top of an object). Each has its own override.
+            if (! top_contact_layer.empty())
+                support_layer.support_contact_top = true;
+            if (! bottom_contact_layer.empty())
+                support_layer.support_contact_bottom = true;
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
             // [ORCAPORT:SU-4b] NeoWave contact (support side): wave the top-contact interface so
             // only the wave peaks touch the part above, reducing bonding. Downward-only, so it can

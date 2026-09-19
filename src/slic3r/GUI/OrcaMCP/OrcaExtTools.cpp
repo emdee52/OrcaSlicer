@@ -115,6 +115,7 @@ const std::vector<std::string>& orcaext_config_keys()
         "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush",
         // SU-10
         "support_interface_contact_speed", "support_interface_contact_line_width",
+        "support_interface_bottom_contact_speed", "support_interface_bottom_contact_line_width",
         // SU-11
         "support_interface_serpentine", "support_interface_base_bridge", "support_interface_perimeter",
         // SU-12

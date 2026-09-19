@@ -1346,6 +1346,8 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_weave_flush" // [ORCAPORT:SU-9]
             || opt_key == "support_interface_contact_speed" // [ORCAPORT:SU-10]
             || opt_key == "support_interface_contact_line_width" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_bottom_contact_speed" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_bottom_contact_line_width" // [ORCAPORT:SU-10]
             || opt_key == "support_interface_base_line_width" // [ORCAPORT:SU-12]
             || opt_key == "support_interface_serpentine" // [ORCAPORT:SU-11]
             || opt_key == "support_interface_base_bridge" // [ORCAPORT:SU-11]

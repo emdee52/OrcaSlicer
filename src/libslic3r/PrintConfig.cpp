@@ -7286,10 +7286,11 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("support_interface_contact_speed", coFloat);
-    def->label = L("Contact interface speed");
+    def->label = L("Top contact interface speed");
     def->category = L("Support");
-    def->tooltip = L("Absolute print speed (mm/s) for the support interface layer that touches the "
-        "object. 0 = use the normal support interface speed.");
+    def->tooltip = L("Absolute print speed (mm/s) for the top contact interface layer — the layer "
+        "under the object when the object rests on support. 0 = use the normal support interface "
+        "speed.");
     def->sidetext = L("mm/s");
     def->mode = comAdvanced;
     def->min = 0;
@@ -7297,10 +7298,32 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionFloat(0));
 
     def = this->add("support_interface_contact_line_width", coFloatOrPercent);
-    def->label = L("Contact interface line width");
+    def->label = L("Top contact interface line width");
     def->category = L("Support");
-    def->tooltip = L("Line width for the support interface layer that touches the object. "
-        "0 = use the default support interface line width.");
+    def->tooltip = L("Line width for the top contact interface layer — the layer under the object "
+        "when the object rests on support. 0 = use the default support interface line width.");
+    def->sidetext = L("mm");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+
+    def = this->add("support_interface_bottom_contact_speed", coFloat);
+    def->label = L("Bottom contact interface speed");
+    def->category = L("Support");
+    def->tooltip = L("Absolute print speed (mm/s) for the bottom contact interface layer — the layer "
+        "on top of the object when support rests on the object. 0 = use the normal support interface "
+        "speed.");
+    def->sidetext = L("mm/s");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("support_interface_bottom_contact_line_width", coFloatOrPercent);
+    def->label = L("Bottom contact interface line width");
+    def->category = L("Support");
+    def->tooltip = L("Line width for the bottom contact interface layer — the layer on top of the "
+        "object when support rests on the object. 0 = use the default support interface line width.");
     def->sidetext = L("mm");
     def->mode = comAdvanced;
     def->min = 0;
