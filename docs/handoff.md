@@ -76,17 +76,18 @@ Slice-time tagging: `Layer::transition_joint` and `Layer::transition_area` set i
 ### SU-9 — Woven interface (`[ORCAPORT:SU-9]` on `port/SU-9`)
 Mechanical interlock for a non-bonding interface (PETG base / PLA interface). Options:
 - `support_interface_weave_enable` (bool, off)
-- `support_interface_weave_layers` (int 1-6, default 2)
+- `support_interface_weave_layers` (int 1-6, default **1**, changed on `port/SU-13`)
 - `support_interface_weave_pitch` (float mm, default 2.0)
-- `support_interface_weave_flush` (bool, off) — woven **base** strips printed at **0.9x height** so
-  they do not telegraph through.
+- `support_interface_weave_flush` (bool, off) — woven **base** strips printed at **0.8x height** so
+  they do not telegraph through (0.9x before `port/SU-13`).
 
-Mechanism (`SupportCommon.cpp`): on the first K **top-interface** layers above the base, each
+Mechanism (`SupportCommon.cpp`): on the lowest K **top-interface** layers above the base, each
 connected interface component is split into an even number of alternating base/interface strips sized
 from its own width (min 2). Base strips print with the base filament; the rest stays interface. The
 strip direction rotates 90° on alternate layers, so crossing strips lock laterally. Only
-top-interface layers are woven; base-material layers are untouched; the top 2 layers of each stack
-(contact + one solid interface) are reserved solid. Woven layers use one speed
+top-interface layers are woven; base-material layers are untouched; only the contact layer is
+reserved solid (before `port/SU-13` the contact plus one interface was reserved, so a stack of fewer
+than 3 interface layers could not weave at all). Woven layers use one speed
 (`support_interface_speed`) for both roles via `Layer::support_weave` -> `GCode::m_weave_layer`.
 
 ### SU-10 — Contact interface speed/line width (`[ORCAPORT:SU-10]`)
@@ -186,8 +187,9 @@ only when print-verified.
 - **Temperature is per physical nozzle.** Per-object `transition_*_temp_delta` values on objects that
   share a tool cannot be independent. Print temperature variants on **separate plates** (or different
   tools). Fan is likewise per-layer/global and cannot be spatially scoped.
-- **Weave band**: only top-interface layers are woven; the top 2 layers of each stack stay solid. A
-  4-layer interface stack therefore yields **1 woven layer**; add interface layers for more.
+- **Weave band**: only top-interface layers are woven; only the contact stays solid. The weave can
+  now sit directly under the contact, so a 3-layer top-interface stack yields 1 woven layer. The
+  `support_interface_weave_layers` default is 1; raise it to weave more of the stack.
 - **MCP bool quirk**: `apply_config` with JSON `true` stored `0`; pass `1`/`0` (integers).
 - New UI strings were added; `run_gettext.bat` runs during the build but localization catalogs were
   not updated/committed.
