@@ -1206,7 +1206,7 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
                 if (OrcaExt::Gui::GravitySnap::plate_icon_available()) {
                     if (hover_id == (int)SNAP_DRAG_HOVER_ID) {
                         render_icon_texture(m_snapdrag_icon.model, m_partplate_list->m_snapdrag_hovered_texture);
-                        show_tooltip(_u8L("Snap & Drag options"));
+                        set_hover_tooltip(_u8L("Snap & Drag options"));
                     } else
                         render_icon_texture(m_snapdrag_icon.model, m_partplate_list->m_snapdrag_texture);
                 }
