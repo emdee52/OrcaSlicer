@@ -535,3 +535,24 @@ TEST_CASE("Woven interface can sit one layer below the top contact", "[SupportMa
     REQUIRE_FALSE(support_layers_with_both_roles(on).empty()); // the short stack still weaves
 }
 
+
+// [ORCAPORT:SU-13] With three or more bottom interface layers the base-material layer under the
+// base support stays solid and the interface layer beneath it is woven instead, so the base support
+// lands on base material. This covers that branch and the solid cap serpentine.
+TEST_CASE("Bottom weave with three or more interface layers still weaves", "[SupportMaterial]")
+{
+    const int bottom_layers = GENERATE(3, 5, 6);
+    CAPTURE(bottom_layers);
+    const std::string g = slice({ support_capital() }, multifilament_config(2, {
+        { "enable_support",                        1 },
+        { "layer_height",                          0.2 },
+        { "support_interface_top_layers",          0 },
+        { "support_interface_bottom_layers",       bottom_layers },
+        { "support_filament",                      1 },
+        { "support_interface_filament",            2 },
+        { "support_interface_bottom_weave_enable", 1 },
+        { "support_interface_weave_layers",        1 },
+    }));
+    REQUIRE(support_interface_layer_count(g) > 0);
+    REQUIRE_FALSE(support_layers_with_both_roles(g).empty());
+}
