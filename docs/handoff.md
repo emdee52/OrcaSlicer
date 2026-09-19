@@ -78,9 +78,10 @@ Mechanical interlock for a non-bonding interface (PETG base / PLA interface). Op
 - `support_interface_weave_enable` (bool, off)
 - `support_interface_weave_layers` (int 1-6, default **1**, changed on `port/SU-13`)
 - `support_interface_weave_pitch` (float mm, default 2.0)
-- `support_interface_weave_flush` (bool, off) — woven **base** strips printed at **1.25x the nozzle
-  width and 0.8x height** so their sag/ridges stay below the interface surface and are not carried
-  into the interface layers above (0.9x height only before `port/SU-13`).
+- `support_interface_weave_flush` (bool, off) — the woven **base thread** is printed at **0.8x layer
+  height**, and the **solid base-interface layer** under the weave (top) or the solid base cap above
+  it (bottom) is widened to **1.25x the nozzle diameter**; the woven thread's own width is unchanged.
+  No effect on a two-layer bottom stack, which has no separate solid base layer.
 
 Mechanism (`SupportCommon.cpp`): on the lowest K **top-interface** layers above the base, each
 connected interface component is split into an even number of alternating base/interface strips sized
