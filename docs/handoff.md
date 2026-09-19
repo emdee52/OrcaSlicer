@@ -118,12 +118,19 @@ interface layer under the weave.
 
 ### SU-13 — Woven bottom interface + settings consolidation (`[ORCAPORT:SU-13]` on `port/SU-13`)
 Mirror of SU-9 for support resting on an object. `support_interface_bottom_weave_enable` (bool, off)
-weaves the **base-interface layer directly above a bottom contact** (the lowest base-interface layer
-of the stack) with interface-material strips, so the base support above is keyed to the object-side
-interface. Reuses the SU-9 `_weave_layers`/`_weave_pitch`; `_flush` does not apply. The bottom
-contact is never woven; higher base-interface layers stay solid. Host detection uses a new
-`SupportGeneratorLayer::is_bottom_base_interface` flag, set where the base-interface layer is
-projected from a bottom contact.
+weaves a bottom stack against the object-side interface. Reuses the SU-9 `_weave_layers`/`_weave_pitch`;
+`_flush` does not apply. The contact is never woven. Two shapes, chosen by the stack height:
+
+- **Two interface layers** (contact + one base-material layer): that single base-interface layer is
+  the weave host, with interface-material strips inserted; the base support lands on it.
+- **Three or more interface layers** (inverse sandwich): the base-material layer under the base
+  support stays **solid** — printed as one serpentine whose lines cross the weave below — and the
+  interface layer directly beneath it becomes the host, with **base-material** strips inserted. So
+  e.g. 5 bottom interface layers give `3x PLA -> 1 woven interface -> 1 solid base cap -> base
+  support`, and the base support always bonds to solid base material rather than PLA strips.
+
+Host detection uses `SupportGeneratorLayer::is_bottom_base_interface` and the `bottom_cap` /
+`bottom_iface_weave` markers set during toolpath generation.
 
 When the toggle is enabled the UI forces `support_bottom_interface_spacing=0` and
 `support_bottom_z_distance=0` (the weave needs a solid zero-gap contact; the base-interface host
