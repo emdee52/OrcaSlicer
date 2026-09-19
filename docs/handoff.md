@@ -78,8 +78,9 @@ Mechanical interlock for a non-bonding interface (PETG base / PLA interface). Op
 - `support_interface_weave_enable` (bool, off)
 - `support_interface_weave_layers` (int 1-6, default **1**, changed on `port/SU-13`)
 - `support_interface_weave_pitch` (float mm, default 2.0)
-- `support_interface_weave_flush` (bool, off) — woven **base** strips printed at **0.8x height** so
-  they do not telegraph through (0.9x before `port/SU-13`).
+- `support_interface_weave_flush` (bool, off) — woven **base** strips printed at **1.25x the nozzle
+  width and 0.8x height** so their sag/ridges stay below the interface surface and are not carried
+  into the interface layers above (0.9x height only before `port/SU-13`).
 
 Mechanism (`SupportCommon.cpp`): on the lowest K **top-interface** layers above the base, each
 connected interface component is split into an even number of alternating base/interface strips sized
@@ -112,9 +113,9 @@ The weave/base-interface edge threads had nothing to anchor to. Three opt-in che
 - `support_interface_perimeter` (off): closed perimeter loop around each woven layer; the strips are
   generated from a region inset by one line width so the loop does not collide with them.
 
-### SU-12 — Base interface line width (`[ORCAPORT:SU-12]` on `port/SU-12`)
-`support_interface_base_line_width` (mm or % of nozzle, 0 off): line width of the base-material
-interface layer under the weave.
+### SU-12 — Base interface line width — REMOVED
+`support_interface_base_line_width` was removed on `port/SU-13`; the flush option now owns the woven
+base-thread width (1.25x nozzle).
 
 ### SU-13 — Woven bottom interface + settings consolidation (`[ORCAPORT:SU-13]` on `port/SU-13`)
 Mirror of SU-9 for support resting on an object. `support_interface_bottom_weave_enable` (bool, off)
@@ -144,11 +145,12 @@ the bottom spacing/Z as well. The bottom weave toggle sits directly under "Woven
   while weaving, so defaults stay byte-identical. Existing 3mf/preset files with the old keys load
   fine (unknown keys are ignored).
 - New **"Multi material"** section on the Support page (`support_interface_weave_enable`,
-  `support_interface_bottom_weave_enable`, `_weave_layers`, `_weave_pitch`, `_weave_flush`,
-  `support_interface_base_line_width`) and a
+  `support_interface_bottom_weave_enable`, `_weave_layers`, `_weave_pitch`, `_weave_flush`) and a
   **"Transition layers"** section (all 18 SU-8 keys). Both are shown only when `support_filament`
   and `support_interface_filament` are both explicitly set and resolve to different `filament_type`s.
-  Contact speed/line width stay in Advanced so single-material users keep them.
+  Contact speed/line width stay in Advanced so single-material users keep them; both contact line
+  widths are `mm or % of nozzle`. In the Transition layers section the groups are ordered
+  interface-on-base, interface-on-object, object-on-interface.
 - The gate is computed in `TabPrint::toggle_options()` from the preset bundle; every line in the two
   groups is toggled together, so an all-hidden group collapses (title included).
 
@@ -206,9 +208,9 @@ only when print-verified.
 ## 6. Key code locations
 
 - `src/libslic3r/Support/SupportCommon.cpp` — `generate_support_toolpaths`: weave/transition tagging,
-  top weave host marking (SU-9), bottom weave host marking (SU-13, lowest base-interface layer of a
-  bottom stack), `split_weave_strips`, `emit_strip_serpentine`, `emit_region_perimeter`, and the
-  base-interface fill (SU-12 width).
+  top and bottom weave host marking (SU-9/SU-13), the bottom solid base cap (`bottom_cap`),
+  `split_weave_strips`, `emit_strip_serpentine`, `emit_region_perimeter`, and the base-interface fill
+  (flush width is applied in the weave block).
 - `src/libslic3r/Support/SupportLayer.hpp` — `SupportGeneratorLayer::is_bottom_base_interface`
   (SU-13), set in `SupportCommon.cpp::insert_layer`.
 - `src/libslic3r/GCode.cpp` — `process_layer` (sets `m_transition_joint`, `m_weave_layer`,
