@@ -30,6 +30,14 @@ All inserted code is tagged `[ORCAPORT:PQ-2]`.
 - The fork's `neotko_libre_mode` conjunct was dropped. Visibility now depends only on
   "Slow down for overhang".
 
+## Fix history
+- The visibility gating in `ConfigManipulation.cpp` was inert: the three rows were
+  registered with an explicit `, 0` index (`opt_id = key#0`), but `toggle_line` looks up
+  the plain key, so `OptionsGroup::get_line` never matched and the rows always showed
+  (main tab and object-settings dialog). Fixed by registering the scalar options without
+  the index; the existing `toggle_line` calls now hide the master unless "Slow down for
+  overhang" is on, and the two numbers unless the master is on.
+
 ## Verification
 - Compile/link: `build_win.bat -s --no-configure -j 8` -> 0 errors, binary produced.
 - Off-by-default: ratio 0 (toggle off) -> `overhang_shadow_shift` 0 -> stock path,
