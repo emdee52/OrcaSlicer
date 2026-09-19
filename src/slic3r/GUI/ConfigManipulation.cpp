@@ -848,7 +848,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     const bool interlock_on = config->opt_bool("interlock_perimeters_enabled") && interlock_classic;
     for (auto el : { "interlock_perimeter_count", "interlock_regular_perimeters", "interlock_solid_layers_top",
                      "interlock_solid_layers_bottom", "interlock_perimeter_strength", "interlock_perimeter_overlap" })
-        toggle_field(el, interlock_on);
+        toggle_line(el, interlock_on);
 
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament_id uses the same logic as in Print::extruders()
