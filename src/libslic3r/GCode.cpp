@@ -17,7 +17,6 @@
 #include "ShortestPath.hpp"
 #include "GCode/OrderingStrategies.hpp"
 #include "Print.hpp"
-#include "OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b]
 #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
@@ -5496,6 +5495,15 @@ LayerResult GCode::process_layer(
         layer_ptr = support_layer;
     const Layer& layer = *layer_ptr;
     m_cur_layer_idx = layer.id();
+    // [ORCAPORT:SU-8] Transition joint known before the toolchange, so the temperature delta can
+    // be applied. Use a tagged object layer if present, else the support layer's tag.
+    m_transition_joint = (object_layer && object_layer->transition_joint) ? object_layer->transition_joint
+                       : support_layer ? support_layer->transition_joint : 0;
+    // [ORCAPORT:SU-9] Woven interface layers need one speed for both roles.
+    m_weave_layer = support_layer != nullptr && support_layer->support_weave;
+    // [ORCAPORT:SU-10] Interface contact layers (touch the object): top and bottom.
+    m_support_contact_top    = support_layer != nullptr && support_layer->support_contact_top;
+    m_support_contact_bottom = support_layer != nullptr && support_layer->support_contact_bottom;
     // A per-layer nozzle grouping can move the active filament to another variant column on a
     // layer boundary without a toolchange, so re-resolve the writer's config column here.
     if (Extruder *cur_filament = m_writer.filament())
@@ -5538,6 +5546,42 @@ LayerResult GCode::process_layer(
 
     std::string gcode;
     assert(is_decimal_separator_point()); // for the sprintfs
+
+    // [ORCAPORT:SU-8] Emit the transition-layer temperature delta once per layer, at the point the
+    // layer is actually extruded (the active tool is known here, unlike at toolchange time with a
+    // wipe tower). Multi-nozzle only.
+    bool transition_temp_done = false;
+    auto emit_transition_temp = [&]() {
+        if (transition_temp_done || m_config.nozzle_diameter.values.size() <= 1 || m_writer.filament() == nullptr)
+            return;
+        const int dt = m_transition_joint == 1 ? int(m_config.transition_interface_base_temp_delta.value)
+                     : m_transition_joint == 2 ? int(m_config.transition_object_interface_temp_delta.value)
+                     : m_transition_joint == 3 ? int(m_config.transition_interface_object_temp_delta.value)
+                     :                           0;
+        const int    fid  = int(m_writer.filament()->id());
+        const size_t fi   = get_filament_config_index(fid);
+        const int    base = this->on_first_layer() ? m_config.nozzle_temperature_initial_layer.get_at(fi)
+                                                   : m_config.nozzle_temperature.get_at(fi);
+        if (base <= 0)
+            return;
+        // A nozzle is shared by every object on the plate, so track the last commanded value per
+        // filament: emit only when this context wants something different. This keeps each
+        // object's own delta (or its absence) from leaking into another object's extrusion.
+        if (m_transition_temp_last.size() < m_config.nozzle_diameter.values.size())
+            m_transition_temp_last.resize(m_config.nozzle_diameter.values.size(), -1);
+        const int desired = std::max(1, base + dt);
+        // Emit only when this layer carries a transition delta, or when reverting a delta applied
+        // on an earlier layer. With no transition ever applied the nozzle setpoint is left alone,
+        // so multi-nozzle output stays byte-identical to stock at defaults.
+        if (fid >= 0 && size_t(fid) < m_transition_temp_last.size()) {
+            const int last = m_transition_temp_last[size_t(fid)];
+            if ((m_transition_joint != 0 || last >= 0) && last != desired) {
+                gcode += m_writer.set_temperature(unsigned(desired), true, fid);
+                m_transition_temp_last[size_t(fid)] = desired;
+            }
+        }
+        transition_temp_done = true;
+    };
 
     // add tag for processor
     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Layer_Change) + "\n";
@@ -6480,6 +6524,16 @@ LayerResult GCode::process_layer(
                 m_config.apply(instance_to_print.print_object.config(), true);
                 m_layer = layer_to_print.layer();
                 m_object_layer_over_raft = object_layer_over_raft;
+                // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
+                m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
+                {
+                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                    if (tfan >= 0)
+                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                }
+                emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -6524,6 +6578,16 @@ LayerResult GCode::process_layer(
                 if (visit.first_visit && instance_to_print.object_by_extruder.support != nullptr) {
                     m_layer = layers[instance_to_print.layer_id].support_layer;
                     m_object_layer_over_raft = false;
+                    // [ORCAPORT:SU-8] Interface-on-base / interface-on-object transition tag.
+                    m_transition_joint = layers[instance_to_print.layer_id].support_layer->transition_joint;
+                    {
+                        const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                       : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                        if (tfan >= 0)
+                            gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                    }
+                    emit_transition_temp();
 
                     // When starting a new object, use the external motion planner for the first travel move.
                     const Point& offset = instance_to_print.print_object.instances()[instance_to_print.instance_id].shift;
@@ -6554,6 +6618,8 @@ LayerResult GCode::process_layer(
 
                     m_layer = layer_to_print.layer();
                     m_object_layer_over_raft = object_layer_over_raft;
+                    // [ORCAPORT:SU-8] Restore the object-on-interface tag after the support pass.
+                    m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
                 }
                 // Sequential tool path ordering of multiple parts within the same object, aka. perimeter tracking (#5511)
                 // Island print order. Use the islands the tour assigned to this visit; if none,
@@ -6703,6 +6769,16 @@ LayerResult GCode::process_layer(
                 m_config.apply(instance_to_print.print_object.config(), true);
                 m_layer = layer_to_print.layer();
                 m_object_layer_over_raft = object_layer_over_raft;
+                // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
+                m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
+                {
+                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+                    if (tfan >= 0)
+                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                }
+                emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -8098,6 +8174,29 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         }
     }
 
+    // [ORCAPORT:SU-8] Transition treatment applies only where the two materials meet, not the
+    // whole layer: the layer carries the footprint that touches the other material.
+    bool in_transition_area = m_transition_joint == 0 || m_layer == nullptr || m_layer->transition_area.empty();
+    if (! in_transition_area) {
+        // Any point of the path inside the touching footprint qualifies, so a perimeter that is
+        // partly over the other material is slowed consistently instead of only where it starts.
+        for (const auto &fp : path.polyline.points) {
+            const Point p2(coord_t(fp(0)), coord_t(fp(1)));
+            for (const ExPolygon &e : m_layer->transition_area)
+                if (e.contains(p2)) { in_transition_area = true; break; }
+            if (in_transition_area)
+                break;
+        }
+    }
+    // [ORCAPORT:SU-8] Transition-layer flow adjustment.
+    if (m_transition_joint != 0 && in_transition_area) {
+        const int fpct = m_transition_joint == 1 ? int(m_config.transition_interface_base_flow.value)
+                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_flow.value)
+                       :                           int(m_config.transition_interface_object_flow.value);
+        if (fpct != 100)
+            _mm3_per_mm *= double(fpct) / 100.;
+    }
+
     // Mixed-color sublayer: this path belongs to one sub-layer of a split layer, so scale the
     // flow down to that sub-layer's share of the nominal layer height and report the sub-height
     // as the effective extrusion height. Inert (ratio == 0) outside the sublayer emission block.
@@ -8151,6 +8250,18 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             throw Slic3r::InvalidArgument("Invalid speed");
         }
     }
+    // [ORCAPORT:SU-9] On a woven interface layer the base strips (erSupportMaterial) and the
+    // interface strips (erSupportMaterialInterface) would otherwise print at two different
+    // role speeds. Force one speed (the interface speed) so the interlock is uniform.
+    if (m_weave_layer && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface))
+        speed = NOZZLE_CONFIG(support_interface_speed);
+    // [ORCAPORT:SU-10] Absolute speeds for the interface contact layers (touch the object).
+    if (is_support(path.role())) {
+        if (m_support_contact_top && m_config.support_interface_contact_speed.value > 0)
+            speed = float(m_config.support_interface_contact_speed.value);
+        else if (m_support_contact_bottom && m_config.support_interface_bottom_contact_speed.value > 0)
+            speed = float(m_config.support_interface_bottom_contact_speed.value);
+    }
     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
     double filament_max_volumetric_speed = FILAMENT_CONFIG(filament_max_volumetric_speed);
     if (FILAMENT_CONFIG(filament_adaptive_volumetric_speed)){
@@ -8201,6 +8312,15 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         const double skirt_speed = m_config.get_abs_value("skirt_speed");
         if (skirt_speed > 0.0)
         speed = skirt_speed;
+    }
+    // [ORCAPORT:SU-8] Transition-layer slowdown (relative factor <= 100%; applied before the
+    // volumetric cap, which can only reduce it further). Only inside the touching footprint.
+    if (m_transition_joint != 0 && in_transition_area && path.role() != erSkirt && path.role() != erBrim) {
+        const int spct = m_transition_joint == 1 ? int(m_config.transition_interface_base_speed.value)
+                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_speed.value)
+                       :                           int(m_config.transition_interface_object_speed.value);
+        if (spct < 100)
+            speed *= double(spct) / 100.;
     }
     //BBS: remove this config
     //else if (this->object_layer_over_raft())
@@ -8335,18 +8455,6 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                         point.speed = speed;
                 variable_speed = new_points.size() > 1;
             }
-    }
-
-    // [ORCAPORT:SU-4b] Support-side NeoWave contact: apply_support_wave() marked the top-contact
-    // support paths z_contoured. Cap the XY speed so the implied wave Z speed stays within
-    // support_neoweave_max_z_speed.
-    if (path.z_contoured && is_support(path.role())
-        && m_config.support_neoweave_enabled.value
-        && m_config.support_neoweave_target.value == nwctSupportTop) {
-        const double cap = OrcaExt::NeoWaveContact::xy_feedrate_cap(
-            m_config.support_neoweave_period.value, m_config.support_neoweave_amplitude.value,
-            m_config.support_neoweave_max_z_speed.value, coord_t(path.width));
-        speed = std::min(speed, cap / 60.0); // cap is mm/min, speed is mm/s
     }
 
     double F = speed * 60;  // convert mm/sec to mm/min
@@ -8652,26 +8760,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
 
                 apply_role_based_fan_speed();
             }
-            // [ORCAPORT:SU-4b] Part-bottom NeoWave contact: wave the object's own bridge fill
-            // (the first layer resting on a support roof). Upward-only by construction, so it never
-            // digs into the roof. Arc fitting cannot carry the per-segment Z, so this replaces the
-            // normal emission below.
-            const bool neoweave_part = sloped == nullptr && !path.z_contoured
-                && m_config.support_neoweave_enabled.value
-                && m_config.support_neoweave_target.value == nwctPartBottom
-                && path.role() == erBridgeInfill && m_layer_index > 0
-                && m_config.support_neoweave_amplitude.value > 1e-9;
-            if (neoweave_part) {
-                gcode += OrcaExt::NeoWaveContact::emit_part_wave(
-                    path, m_writer, m_nominal_z, F, e_per_mm, path.is_force_no_extrusion(),
-                    [this](const Point &p) { return this->point_to_gcode(p); },
-                    m_config.support_neoweave_amplitude.value, m_config.support_neoweave_period.value,
-                    m_config.support_neoweave_max_z_speed.value);
-                gcode += OrcaExt::NeoWaveContact::restore_z(m_writer, m_nominal_z);
-            }
             // BBS: use G1 if not enable arc fitting or has no arc fitting result or in spiral_mode mode or we are doing sloped extrusion
             // Attention: G2 and G3 is not supported in spiral_mode mode
-            else if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
+            if (!m_config.enable_arc_fitting || path.polyline.fitting_result.empty() || m_config.spiral_mode || sloped != nullptr || path.z_contoured) {
                 double path_length = 0.;
                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
                 double saved_z      = m_writer.get_position().z();

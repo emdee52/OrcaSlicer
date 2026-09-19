@@ -362,10 +362,8 @@ set(lisbslic3r_sources
     OrcaExt/FreeZ.hpp
     OrcaExt/IdleToolPowerDown.cpp
     OrcaExt/IdleToolPowerDown.hpp
-OrcaExt/InstanceContact.cpp
-OrcaExt/InstanceContact.hpp
-OrcaExt/NeoWaveContact.cpp
-OrcaExt/NeoWaveContact.hpp
+    OrcaExt/InstanceContact.cpp
+    OrcaExt/InstanceContact.hpp
     OrcaExt/SeamNotch.cpp
     OrcaExt/SeamNotch.hpp
     OrcaExt/SupportPaintTypes.cpp

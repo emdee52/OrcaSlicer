@@ -102,13 +102,21 @@ const std::vector<std::string>& orcaext_config_keys()
         "hybrid_min_bead_width_pct", "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct",
         "hybrid_keep_short_tails", "hybrid_pin_outer_width", "hybrid_bead_count_hysteresis_pct",
         "hybrid_transition_filter_dist_mm",
-        // SU-1 / SU-4 / SU-5 / SU-4b
+        // SU-1 / SU-4 / SU-5
         "support_cross_object_avoidance",
         "wavesupport_roof_pattern", "wavesupport_roof_order", "wavesupport_roof_reverse", "wavesupport_wall_loops",
         "support_zone_gesture", "support_zone_lean_deg", "support_zone_roof_only", "support_zone_solid",
         "support_zone_land_only",
-        "support_neoweave_enabled", "support_neoweave_target", "support_neoweave_amplitude",
-        "support_neoweave_period", "support_neoweave_max_z_speed",
+        // SU-9
+        "support_interface_weave_enable", "support_interface_weave_layers", "support_interface_weave_pitch", "support_interface_weave_flush",
+        "support_interface_bottom_weave_enable", // SU-13
+        // SU-10
+        "support_interface_contact_speed", "support_interface_contact_line_width",
+        "support_interface_bottom_contact_speed", "support_interface_bottom_contact_line_width",
+        // SU-8
+        "transition_interface_base_enable", "transition_interface_base_layers", "transition_interface_base_speed", "transition_interface_base_flow", "transition_interface_base_fan", "transition_interface_base_temp_delta",
+        "transition_object_interface_enable", "transition_object_interface_layers", "transition_object_interface_speed", "transition_object_interface_flow", "transition_object_interface_fan", "transition_object_interface_temp_delta",
+        "transition_interface_object_enable", "transition_interface_object_layers", "transition_interface_object_speed", "transition_interface_object_flow", "transition_interface_object_fan", "transition_interface_object_temp_delta",
         // MT-4
         "mmu_segmented_region_extra_walls",
         // PF-1 / PF-2 / PF-9

@@ -393,13 +393,6 @@ static t_config_enum_values s_keys_map_SupportMaterialWaveRoofOrder {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
 
-// [ORCAPORT:SU-4b] NeoWave contact layer target.
-static t_config_enum_values s_keys_map_NeoWaveContactTarget {
-    { "part_bottom", nwctPartBottom },
-    { "support_top", nwctSupportTop }
-};
-CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(NeoWaveContactTarget)
-
 static t_config_enum_values s_keys_map_SupportType{
     { "normal(auto)",   stNormalAuto },
     { "tree(auto)", stTreeAuto },
@@ -7195,6 +7188,212 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInt(0));
 
+    // [ORCAPORT:SU-9] Woven interface: over the first few interface layers above the support base,
+    // alternate strips of base and interface material, rotating the strip direction 90 degrees on
+    // alternate layers. The crossing strips mechanically lock the (non-bonding) interface to the
+    // support. The contact surface (object side) is left solid for clean release.
+    def = this->add("support_interface_weave_enable", coBool);
+    def->label = L("Woven interface");
+    def->category = L("Support");
+    def->tooltip = L("Interlock the support interface with the support base by weaving alternating "
+        "strips of base and interface material over the first layers above the base, rotating the "
+        "strips 90 degrees on alternate layers. Each woven layer is filled with per-strip "
+        "serpentines and a perimeter loop, and the base-interface layer under it is printed straight "
+        "perpendicular to the base. The interface cannot slide off a non-bonding base. The contact "
+        "surface under the object is left solid.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("support_interface_weave_layers", coInt);
+    def->label = L("Woven interface layers");
+    def->category = L("Support");
+    def->tooltip = L("Number of interface layers above the base that are woven (1-6).");
+    def->sidetext = L("layers");
+    def->min = 1;
+    def->max = 6;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(1));
+
+    def = this->add("support_interface_weave_pitch", coFloat);
+    def->label = L("Woven interface pitch");
+    def->category = L("Support");
+    def->tooltip = L("Nominal width of each woven strip, in mm. Used as a target: each region is "
+        "split into an even number of strips based on its own width, with a minimum of two.");
+    def->sidetext = "mm";
+    def->mode = comAdvanced;
+    def->min = 0.5;
+    def->max = 20;
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("support_interface_weave_flush", coBool);
+    def->label = L("Flush woven interface");
+    def->category = L("Support");
+    def->tooltip = L("Print the woven base threads wider and thinner — 1.25x the nozzle diameter at "
+        "0.8x layer height — so their sag or ridges stay below the interface surface. Fixes a ridged "
+        "or sagging weave that would otherwise be carried into the interface layers above.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    // [ORCAPORT:SU-13] Woven bottom interface: weave the base-interface layer that sits directly
+    // above a bottom contact, inserting interface-material strips so the base support is keyed to
+    // the object-side interface. Reuses the SU-9 woven layer count/pitch; flush does not apply.
+    def = this->add("support_interface_bottom_weave_enable", coBool);
+    def->label = L("Woven bottom interface");
+    def->category = L("Support");
+    def->tooltip = L("Weave the base-material interface layer directly above a bottom contact "
+        "(support resting on an object), alternating base and interface strips so the base support "
+        "is mechanically keyed to the interface. Uses 'Woven interface layers' and 'Woven interface "
+        "pitch'. Enabling it forces 0 bottom interface spacing and 0 bottom Z distance so the strips "
+        "have a solid zero-gap contact. Requires at least two bottom interface layers.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    // [ORCAPORT:SU-10] The interface layer that touches the object (top contact for support under
+    // the object, bottom contact for support on top of it) can be printed at its own absolute speed
+    // and line width.
+    def = this->add("support_interface_contact_speed", coFloat);
+    def->label = L("Top contact interface speed");
+    def->category = L("Support");
+    def->tooltip = L("Absolute print speed (mm/s) for the top contact interface layer — the layer "
+        "under the object when the object rests on support. 0 = use the normal support interface "
+        "speed.");
+    def->sidetext = L("mm/s");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("support_interface_contact_line_width", coFloatOrPercent);
+    def->label = L("Top contact interface line width");
+    def->category = L("Support");
+    def->tooltip = L("Line width for the top contact interface layer — the layer under the object "
+        "when the object rests on support. If expressed as a %, it is computed over the nozzle "
+        "diameter. 0 = use the default support interface line width.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->max_literal = 10;
+    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+
+    def = this->add("support_interface_bottom_contact_speed", coFloat);
+    def->label = L("Bottom contact interface speed");
+    def->category = L("Support");
+    def->tooltip = L("Absolute print speed (mm/s) for the bottom contact interface layer — the layer "
+        "on top of the object when support rests on the object. 0 = use the normal support interface "
+        "speed.");
+    def->sidetext = L("mm/s");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    def = this->add("support_interface_bottom_contact_line_width", coFloatOrPercent);
+    def->label = L("Bottom contact interface line width");
+    def->category = L("Support");
+    def->tooltip = L("Line width for the bottom contact interface layer — the layer on top of the "
+        "object when support rests on the object. If expressed as a %, it is computed over the "
+        "nozzle diameter. 0 = use the default support interface line width.");
+    def->sidetext = L("mm or %");
+    def->ratio_over = "nozzle_diameter";
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = 1000;
+    def->max_literal = 10;
+    def->set_default_value(new ConfigOptionFloatOrPercent(0, false));
+
+    // [ORCAPORT:SU-8] Transition-layer treatment. One independent group per joint. The three
+    // joints are: interface-on-base (A), object-on-interface (B), interface-on-object (C).
+    auto add_transition_group = [this, &def](const char *prefix,
+            const char *enable_label, const char *enable_tip,
+            const char *layers_tip, const char *speed_tip, const char *flow_tip,
+            const char *fan_tip, const char *temp_tip)
+    {
+        const std::string p(prefix);
+        def = this->add((p + "_enable").c_str(), coBool);
+        def->label = enable_label;
+        def->category = L("Support");
+        def->tooltip = enable_tip;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionBool(false));
+
+        def = this->add((p + "_layers").c_str(), coInt);
+        def->label = L("Transition layers");
+        def->category = L("Support");
+        def->tooltip = layers_tip;
+        def->sidetext = L("layers");
+        def->min = 1;
+        def->max = 5;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(1));
+
+        def = this->add((p + "_speed").c_str(), coInt);
+        def->label = L("Transition speed");
+        def->category = L("Support");
+        def->tooltip = speed_tip;
+        def->sidetext = "%";
+        def->min = 10;
+        def->max = 100;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(100));
+
+        def = this->add((p + "_flow").c_str(), coInt);
+        def->label = L("Transition flow");
+        def->category = L("Support");
+        def->tooltip = flow_tip;
+        def->sidetext = "%";
+        def->min = 1;
+        def->max = 200;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(100));
+
+        def = this->add((p + "_fan").c_str(), coInt);
+        def->label = L("Transition fan speed");
+        def->category = L("Support");
+        def->tooltip = fan_tip;
+        def->sidetext = "%";
+        def->min = -1;
+        def->max = 100;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(-1));
+
+        def = this->add((p + "_temp_delta").c_str(), coInt);
+        def->label = L("Transition temperature delta");
+        def->category = L("Support");
+        def->tooltip = temp_tip;
+        def->sidetext = "°C";
+        def->min = -50;
+        def->max = 50;
+        def->mode = comAdvanced;
+        def->set_default_value(new ConfigOptionInt(0));
+    };
+
+    add_transition_group("transition_interface_base",
+        L("Interface-on-base transition"),
+        L("Treatment for the first support-interface layer deposited on the support base."),
+        L("Number of interface layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+    add_transition_group("transition_object_interface",
+        L("Object-on-interface transition"),
+        L("Treatment for the first object layers deposited on the support interface."),
+        L("Number of object layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+    add_transition_group("transition_interface_object",
+        L("Interface-on-object transition"),
+        L("Treatment for the first support-interface layer deposited on the object (bottom contact)."),
+        L("Number of interface layers at the transition that receive the treatment."),
+        L("Print speed factor for these layers, in percent (100 = unchanged, lower = slower)."),
+        L("Extrusion flow factor for these layers, in percent (100 = unchanged)."),
+        L("Absolute part-cooling fan speed for these layers, in percent (0 = off, -1 = disabled)."),
+        L("Signed nozzle temperature offset for these layers, in degrees C. Multi-nozzle only."));
+
     def = this->add("support_interface_spacing", coFloat);
     def->label = L("Top interface spacing");
     def->category = L("Support");
@@ -7314,68 +7513,6 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->max = 10;
     def->set_default_value(new ConfigOptionInt(0));
-
-    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2). Independent of painting: it only
-    // modulates Z on whichever side of the part/support interface is selected, so the printed
-    // colour/pattern is untouched.
-    def = this->add("support_neoweave_enabled", coBool);
-    def->label = L("NeoWave contact layer");
-    def->category = L("Support");
-    def->tooltip = L("Create intermittent contact between the part and its support roof by waving "
-        "the selected interface up and down in Z. Only the wave peaks touch, leaving microscopic "
-        "gaps that make the support easier to remove. The printed colour and pattern are untouched. "
-        "Turning this on does not require any painting.");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
-
-    def = this->add("support_neoweave_target", coEnum);
-    def->label = L("NeoWave contact side");
-    def->category = L("Support");
-    def->tooltip = L("Which side of the part/support interface carries the wave. \"Part bottom\" waves "
-        "the object's own bridge fill resting on the support (upward only). \"Support top\" keeps the "
-        "part flat and waves the support's top interface instead (downward only). Compare both.");
-    def->enum_keys_map = &ConfigOptionEnum<NeoWaveContactTarget>::get_enum_values();
-    def->enum_values.push_back("part_bottom");
-    def->enum_values.push_back("support_top");
-    def->enum_labels.push_back(L("Part bottom (bridge fill)"));
-    def->enum_labels.push_back(L("Support top (interface)"));
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionEnum<NeoWaveContactTarget>(nwctPartBottom));
-
-    def = this->add("support_neoweave_amplitude", coFloat);
-    def->label = L("NeoWave contact amplitude");
-    def->category = L("Support");
-    def->tooltip = L("Peak Z deviation of the contact wave, in mm. One-sided by construction, so it "
-        "never digs into the surface it rests on. Typical 0.05-0.2 mm; keep at or below half the "
-        "layer height.");
-    def->sidetext = "mm";
-    def->mode = comAdvanced;
-    def->min = 0;
-    def->max = 2.0;
-    def->set_default_value(new ConfigOptionFloat(0.1));
-
-    def = this->add("support_neoweave_period", coFloat);
-    def->label = L("NeoWave contact period");
-    def->category = L("Support");
-    def->tooltip = L("Distance between successive wave peaks along each printed line, in mm. Smaller "
-        "= finer wave. Floored internally to about one line width (a finer wave is unprintable). "
-        "0 = auto (line width).");
-    def->sidetext = "mm";
-    def->mode = comAdvanced;
-    def->min = 0;
-    def->max = 10.0;
-    def->set_default_value(new ConfigOptionFloat(0.6));
-
-    def = this->add("support_neoweave_max_z_speed", coFloat);
-    def->label = L("NeoWave contact max Z speed");
-    def->category = L("Support");
-    def->tooltip = L("Upper limit on the implied vertical speed of the wave, in mm/s. The slicer caps "
-        "the XY speed so the Z motion stays within this. Lower = gentler wave, slower print.");
-    def->sidetext = "mm/s";
-    def->mode = comAdvanced;
-    def->min = 1;
-    def->max = 100;
-    def->set_default_value(new ConfigOptionFloat(20.0));
 
     // [ORCAPORT:SU-5] Support Zones per-volume keys. Hidden (comDevelop); written by the gizmo,
     // read by the support engine.

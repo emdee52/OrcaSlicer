@@ -102,6 +102,10 @@ public:
 	size_t 	 idx_object_layer_below { size_t(-1) };
 	// Use a bridging flow when printing this support layer.
 	bool 	 bridging { false };
+	// [ORCAPORT:SU-13] True for a base-material interface layer that belongs to a bottom-contact
+	// stack (a dense base layer generated from a bottom contact), as opposed to an ordinary base
+	// support layer. Used to weave it against the interface material below.
+	bool     is_bottom_base_interface { false };
 
 	// Polygons to be filled by the support pattern.
 	Polygons polygons;

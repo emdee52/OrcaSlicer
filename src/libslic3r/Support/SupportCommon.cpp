@@ -7,7 +7,6 @@
 #include "../Fill/FillWaveRoof.hpp" // [ORCAPORT:SU-4] NeoWave roof pattern
 #include "../MutablePolygon.hpp"
 #include "../OrcaExt/InstanceContact.hpp" // [ORCAPORT:SU-1] cross-object clamp
-#include "../OrcaExt/NeoWaveContact.hpp" // [ORCAPORT:SU-4b] support-side contact wave
 #include "../Geometry.hpp"
 #include "../Point.hpp"
 #include "clipper/clipper_z.hpp"
@@ -17,6 +16,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <map>
 #include <tbb/parallel_for.h>
 
 #include "SupportCommon.hpp"
@@ -95,6 +95,9 @@ std::pair<SupportGeneratorLayersPtr, SupportGeneratorLayersPtr> generate_interfa
                 const Polygons *subtract, SupporLayerType type) -> SupportGeneratorLayer* {
             bool has_top_interface = top_interface_layer && ! top_interface_layer->polygons.empty();
             assert(! bottom.empty() || ! top.empty() || has_top_interface);
+            // [ORCAPORT:SU-13] Remember whether this layer was projected from a bottom contact,
+            // before `bottom` is consumed below.
+            const bool from_bottom = ! bottom.empty();
             // ORCA: regularize interfaces using the top/bottom radii.
             auto regularize = [&](Polygons polys, coordf_t minimum_island_radius) -> Polygons {
                 if (polys.empty())
@@ -124,6 +127,10 @@ std::pair<SupportGeneratorLayersPtr, SupportGeneratorLayersPtr> generate_interfa
                     layer_new.bottom_z   = intermediate_layer.bottom_z;
                     layer_new.height     = intermediate_layer.height;
                     layer_new.bridging   = intermediate_layer.bridging;
+                    // [ORCAPORT:SU-13] A base-material layer projected from a bottom contact is the
+                    // weave host for the bottom stack.
+                    if (type == SupporLayerType::Base && from_bottom)
+                        layer_new.is_bottom_base_interface = true;
                     // Subtract the interface from the base regions.
                     intermediate_layer.polygons = diff(intermediate_layer.polygons, layer_new.polygons);
                     if (subtract)
@@ -1492,6 +1499,112 @@ static void split_support_fills_by_family(SupportLayer &support_layer, const std
     support_layer.support_fills_family = std::move(out_family);
 }
 
+// [ORCAPORT:SU-9] Woven interface: split an interface region into alternating strips of base and
+// interface material along `angle`. Each connected component is divided into its own even number of
+// strips based on its width (at least 2), so narrow spans still interlock instead of ending up with
+// no strip of one material. `base_strips` is printed with the support-base filament and forms the
+// mechanical key; `iface_strips` is the remaining interface region.
+static void split_weave_strips(const Polygons &region, double angle, coordf_t pitch,
+                               Polygons &base_strips, Polygons &iface_strips)
+{
+    base_strips.clear();
+    iface_strips.clear();
+    if (region.empty() || pitch <= 0.) {
+        iface_strips = region;
+        return;
+    }
+    for (const ExPolygon &comp : union_ex(region)) {
+        Polygons rot = to_polygons(comp);
+        // Work in a frame where the strips are vertical (polygons_rotate takes radians).
+        polygons_rotate(rot, -angle);
+        const BoundingBox bb  = get_extents(rot);
+        const coordf_t   wdt = bb.max.x() - bb.min.x();
+        int n   = wdt > 0. ? int(std::round(wdt / pitch)) : 2;
+        if (n < 2) n = 2;
+        if (n % 2) ++n;
+        const coordf_t w = wdt / double(n);
+        Polygons mask;
+        for (int i = 0; i < n; i += 2) {
+            Polygon r;
+            r.points = { Point(coord_t(bb.min.x() + i * w),     coord_t(bb.min.y())),
+                         Point(coord_t(bb.min.x() + (i + 1) * w), coord_t(bb.min.y())),
+                         Point(coord_t(bb.min.x() + (i + 1) * w), coord_t(bb.max.y())),
+                         Point(coord_t(bb.min.x() + i * w),     coord_t(bb.max.y())) };
+            mask.emplace_back(std::move(r));
+        }
+        Polygons b = intersection(mask, rot);
+        Polygons f = diff(rot, mask);
+        polygons_rotate(b, angle);
+        polygons_rotate(f, angle);
+        polygons_append(base_strips, std::move(b));
+        polygons_append(iface_strips, std::move(f));
+    }
+}
+
+// [ORCAPORT:SU-11] Emit a boustrophedon along a strip's long axis. `line_angle` is the direction of
+// the lines (the strip's long axis), `spacing` the spacing across the strip, and `inner_y_ref` the
+// Y coordinate (in the line frame) of the region centre. Lines are ordered from the side nearest
+// that reference outward, so the last line printed is the one closest to the boundary.
+static void emit_strip_serpentine(ExtrusionEntitiesPtr &dst, const ExPolygon &strip, double line_angle,
+                                  coordf_t spacing, coordf_t inner_y_ref, ExtrusionRole role, const Flow &flow)
+{
+    if (strip.contour.points.size() < 3 || spacing <= 0.)
+        return;
+    ExPolygon rot = strip;
+    rot.contour.rotate(-line_angle);
+    for (Polygon &hole : rot.holes)
+        hole.rotate(-line_angle);
+    const BoundingBox bb = get_extents(rot);
+    if (bb.max.x() - bb.min.x() <= 0. || bb.max.y() - bb.min.y() <= 0.)
+        return;
+    const coordf_t half = 0.5 * spacing;
+    const bool     up   = inner_y_ref <= 0.5 * (bb.min.y() + bb.max.y());
+    Polyline  path;
+    bool      have = false;
+    auto append_seg = [&](const Polyline &seg_in) {
+        if (seg_in.points.size() < 2)
+            return;
+        Polyline seg = seg_in;
+        if (have && ! path.points.empty()) {
+            const Point &a = path.points.back();
+            const double df = double(a.x() - seg.points.front().x()) * double(a.x() - seg.points.front().x()) + double(a.y() - seg.points.front().y()) * double(a.y() - seg.points.front().y());
+            const double db = double(a.x() - seg.points.back().x())  * double(a.x() - seg.points.back().x())  + double(a.y() - seg.points.back().y())  * double(a.y() - seg.points.back().y());
+            if (db < df)
+                seg.reverse();
+            for (const Point &p : seg.points)
+                if (p != path.points.back())
+                    path.points.push_back(p);
+        } else {
+            path = seg;
+            have = true;
+        }
+    };
+    const coordf_t y0 = up ? bb.min.y() + half : bb.max.y() - half;
+    const coordf_t ye = up ? bb.max.y() : bb.min.y();
+    const coordf_t dy = up ? spacing : -spacing;
+    for (coordf_t y = y0; up ? y <= ye : y >= ye; y += dy) {
+        Polyline ray;
+        ray.points = { Point(bb.min.x() - 1, coord_t(y)), Point(bb.max.x() + 1, coord_t(y)) };
+        for (const Polyline &pl : intersection_pl(Polylines{ ray }, rot))
+            append_seg(pl);
+    }
+    if (! have || path.points.size() < 2)
+        return;
+    path.rotate(line_angle);
+    Polylines out;
+    out.emplace_back(std::move(path));
+    extrusion_entities_append_paths(dst, std::move(out), role, flow.mm3_per_mm(), flow.width(), flow.height());
+}
+
+// [ORCAPORT:SU-11] Emit a closed perimeter loop around an interface region.
+static void emit_region_perimeter(ExtrusionEntitiesPtr &dst, const Polygons &region, const Flow &flow, ExtrusionRole role)
+{
+    if (region.empty())
+        return;
+    for (const ExPolygon &e : offset_ex(region, -0.5f * flow.scaled_width(), SUPPORT_SURFACES_OFFSET_PARAMETERS))
+        extrusion_entities_append_paths(dst, draw_perimeters(e, 0.), role, flow.mm3_per_mm(), flow.width(), flow.height());
+}
+
 void generate_support_toolpaths(
     SupportLayerPtrs                    &support_layers,
     const PrintObjectConfig             &config,
@@ -1504,7 +1617,8 @@ void generate_support_toolpaths(
     const SupportGeneratorLayersPtr     &interface_layers,
     const SupportGeneratorLayersPtr     &base_interface_layers,
     // [ORCAPORT:SU-5] optional: split the emitted support between per-zone families (zone materials).
-    const PrintObject                   *object_for_families)
+    // [ORCAPORT:SU-8] also used to tag the object layers that rest on a top contact.
+    PrintObject                         *object_for_families)
 {
     // loop_interface_processor with a given circle radius.
     LoopInterfaceProcessor loop_interface_processor(1.5 * support_params.support_material_interface_flow.scaled_width());
@@ -1660,9 +1774,167 @@ void generate_support_toolpaths(
         }
     }
 
+    // [ORCAPORT:SU-9] Mark the base-side top-interface layers that get the woven interlock. Only
+    // interface layers are woven (base-material layers are left alone); the contact is never woven.
+    // The top two layers of each stack (contact + one solid interface) stay solid so a woven layer
+    // is never adjacent to the object. Inert at defaults.
+    std::vector<char> weave_layer(support_layers.size(), 0);
+    // [ORCAPORT:SU-13] Bottom-stack markers: a base-interface layer kept as the solid cap above the
+    // weave, and an interface layer used as the top-style weave host beneath that cap.
+    std::vector<char> bottom_cap(support_layers.size(), 0);
+    std::vector<char> bottom_iface_weave(support_layers.size(), 0);
+    auto z_in = [](const std::vector<coordf_t> &v, coordf_t z) {
+        const auto it = std::lower_bound(v.begin(), v.end(), z - EPSILON);
+        return it != v.end() && *it <= z + EPSILON;
+    };
+    if (config.support_interface_weave_enable.value) {
+        std::vector<coordf_t> stack_zs, weavable_zs;
+        for (const SupportGeneratorLayer *l : interface_layers)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface) {
+                stack_zs.push_back(l->print_z);
+                weavable_zs.push_back(l->print_z);
+            }
+        for (const SupportGeneratorLayer *l : top_contacts)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
+                stack_zs.push_back(l->print_z); // contact is part of the stack, never woven
+        std::sort(stack_zs.begin(), stack_zs.end());
+        const int max_woven = std::max(1, config.support_interface_weave_layers.value);
+        for (size_t i = 0; i < support_layers.size(); ++ i) {
+            if (! z_in(stack_zs, support_layers[i]->print_z) || (i > 0 && z_in(stack_zs, support_layers[i - 1]->print_z)))
+                continue;
+            // Lowest layer of a stack: weave its lowest layers, reserving only the contact, so the
+            // woven layer may sit directly under the contact if the layer count allows.
+            size_t run_end = i;
+            while (run_end < support_layers.size() && z_in(stack_zs, support_layers[run_end]->print_z))
+                ++ run_end;
+            const int n_weave = std::min(max_woven, int(run_end - i) - 1);
+            int marked = 0;
+            for (size_t j = i; j < run_end && marked < n_weave; ++ j)
+                if (z_in(weavable_zs, support_layers[j]->print_z)) {
+                    weave_layer[j] = 1;
+                    support_layers[j]->support_weave = true;
+                    ++ marked;
+                }
+        }
+    }
+
+    // [ORCAPORT:SU-13] Bottom-stack weave. The layer directly below the support base is the
+    // base-material interface layer. With exactly two interface layers that layer is itself the
+    // weave host (interface strips inserted). With three or more it stays a solid base cap, and the
+    // interface layer directly below it becomes the weave host (base strips inserted), so the base
+    // support always lands on solid base material. Inert at defaults.
+    if (config.support_interface_bottom_weave_enable.value) {
+        std::vector<coordf_t> bc_zs, bi_zs, basei_zs;
+        for (const SupportGeneratorLayer *l : bottom_contacts)
+            if (l != nullptr && ! l->polygons.empty())
+                bc_zs.push_back(l->print_z);
+        for (const SupportGeneratorLayer *l : interface_layers)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::BottomInterface)
+                bi_zs.push_back(l->print_z);
+        for (const SupportGeneratorLayer *l : base_interface_layers)
+            if (l != nullptr && ! l->polygons.empty())
+                basei_zs.push_back(l->print_z);
+        std::sort(bc_zs.begin(), bc_zs.end());
+        std::sort(bi_zs.begin(), bi_zs.end());
+        std::sort(basei_zs.begin(), basei_zs.end());
+        bool in_bottom = false;
+        for (size_t i = 0; i < support_layers.size(); ++ i) {
+            const coordf_t z = support_layers[i]->print_z;
+            if (z_in(bc_zs, z) || z_in(bi_zs, z)) {
+                in_bottom = true;
+                continue;
+            }
+            if (in_bottom && z_in(basei_zs, z)) {
+                const bool iface_below = i > 0 && z_in(bi_zs, support_layers[i - 1]->print_z);
+                if (iface_below) {
+                    // Three or more interface layers: keep the base-interface layer solid and weave
+                    // the interface layer directly below it.
+                    bottom_iface_weave[i - 1] = 1;
+                    weave_layer[i - 1]        = 1;
+                    support_layers[i - 1]->support_weave = true;
+                    bottom_cap[i]             = 1;
+                } else {
+                    // Two interface layers: the base-interface layer is the weave host.
+                    weave_layer[i] = 1;
+                    support_layers[i]->support_weave = true;
+                }
+                in_bottom = false;
+                continue;
+            }
+            in_bottom = false;
+        }
+    }
+
+    // [ORCAPORT:SU-8] Tag transition layers (1 = interface-on-base, 2 = object-on-interface,
+    // 3 = interface-on-object) and the footprint that actually touches the other material, so
+    // speed/flow only change where the two materials meet, not the whole layer. Each joint marks
+    // its first layer plus the next `layers - 1` consecutive layers. Inert at defaults.
+    if (config.transition_interface_base_enable.value ||
+        config.transition_object_interface_enable.value ||
+        config.transition_interface_object_enable.value) {
+        std::map<coordf_t, Polygons> iface_at, bcontact_at;
+        for (const SupportGeneratorLayer *l : interface_layers)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopInterface)
+                iface_at[l->print_z] = l->polygons;
+        for (const SupportGeneratorLayer *l : top_contacts)
+            if (l != nullptr && ! l->polygons.empty() && l->layer_type == SupporLayerType::TopContact)
+                iface_at[l->print_z] = l->polygons;
+        for (const SupportGeneratorLayer *l : bottom_contacts)
+            if (l != nullptr && ! l->polygons.empty())
+                bcontact_at[l->print_z] = l->polygons;
+
+        auto area_at = [](const std::map<coordf_t, Polygons> &m, coordf_t z) -> ExPolygons {
+            const auto it = m.lower_bound(z - EPSILON);
+            return (it != m.end() && it->first <= z + EPSILON) ? union_ex(it->second) : ExPolygons();
+        };
+        auto mark_support = [&support_layers, &area_at](const std::map<coordf_t, Polygons> &polys, size_t first, int n, int joint) {
+            for (int k = 0; k < n && first + size_t(k) < support_layers.size(); ++ k) {
+                SupportLayer *sl = support_layers[first + k];
+                if (sl->transition_joint == 0) {
+                    sl->transition_joint = joint;
+                    sl->transition_area  = area_at(polys, sl->print_z);
+                }
+            }
+        };
+        // A: lowest top-interface layer above base, per contiguous interface stack.
+        if (config.transition_interface_base_enable.value) {
+            std::vector<coordf_t> zs;
+            for (const auto &kv : iface_at) zs.push_back(kv.first);
+            std::sort(zs.begin(), zs.end());
+            auto is_top = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
+            for (size_t i = 0; i < support_layers.size(); ++ i)
+                if (is_top(support_layers[i]->print_z) && (i == 0 || ! is_top(support_layers[i - 1]->print_z)))
+                    mark_support(iface_at, i, std::max(1, config.transition_interface_base_layers.value), 1);
+        }
+        // C: bottom-contact layer resting on the object.
+        if (config.transition_interface_object_enable.value) {
+            std::vector<coordf_t> zs;
+            for (const auto &kv : bcontact_at) zs.push_back(kv.first);
+            std::sort(zs.begin(), zs.end());
+            auto is_bc = [&zs](coordf_t z) { const auto it = std::lower_bound(zs.begin(), zs.end(), z - EPSILON); return it != zs.end() && *it <= z + EPSILON; };
+            for (size_t i = 0; i < support_layers.size(); ++ i)
+                if (is_bc(support_layers[i]->print_z))
+                    mark_support(bcontact_at, i, std::max(1, config.transition_interface_object_layers.value), 3);
+        }
+        // B: object layer(s) directly above each top contact, restricted to the footprint that
+        // rests on the contact.
+        if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
+            const int n = std::max(1, config.transition_object_interface_layers.value);
+            for (const SupportGeneratorLayer *l : top_contacts) {
+                if (l == nullptr || l->polygons.empty() || l->idx_object_layer_above == size_t(-1))
+                    continue;
+                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k) {
+                    Layer *ol = object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)));
+                    ol->transition_joint = 2;
+                    ol->transition_area  = union_ex(intersection(ol->lslices, l->polygons));
+                }
+            }
+        }
+    }
+
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
         [&config, &slicing_params, &support_params, &support_layers, &bottom_contacts, &top_contacts, &intermediate_layers, &interface_layers, &base_interface_layers, &layer_caches, &loop_interface_processor,
-            &bbox_object, &angles, &interface_above, n_raft_layers, link_max_length_factor]
+            &bbox_object, &angles, &interface_above, &weave_layer, &bottom_cap, &bottom_iface_weave, n_raft_layers, link_max_length_factor]
             (const tbb::blocked_range<size_t>& range) {
         // Indices of the 1st layer in their respective container at the support layer height.
         size_t idx_layer_bottom_contact   = size_t(-1);
@@ -1840,6 +2112,19 @@ void generate_support_toolpaths(
                         (raft_contact ? &support_params.raft_interface_flow :
                          interface_as_base ? &support_params.support_material_flow : &support_params.support_material_interface_flow)
                             ->with_height(float(layer_ex.layer->height));
+                    // [ORCAPORT:SU-10] Contact interface line-width overrides; top and bottom contact
+                    // have separate settings.
+                    const bool top_contact    = interface_layer_type == InterfaceLayerType::TopContact;
+                    const bool bottom_contact = interface_layer_type == InterfaceLayerType::BottomContact;
+                    const ConfigOptionFloatOrPercent *contact_width =
+                        top_contact    ? &config.support_interface_contact_line_width :
+                        bottom_contact ? &config.support_interface_bottom_contact_line_width : nullptr;
+                    if (contact_width != nullptr && contact_width->value > 0) {
+                        const double w = contact_width->get_abs_value(
+                            support_params.support_material_interface_flow.nozzle_diameter());
+                        if (w > 0)
+                            interface_flow = interface_flow.with_width(float(w));
+                    }
                     filler->angle = interface_as_base ?
                             // If zero interface layers are configured, use the same angle as for the base layers.
                             angles[support_layer_id % angles.size()] :
@@ -1853,6 +2138,9 @@ void generate_support_toolpaths(
                         bottom_interface ? support_params.bottom_interface_density : support_params.top_interface_density;
                     filler->spacing = raft_contact ? support_params.raft_interface_flow.spacing() :
                         interface_as_base ? support_params.support_material_flow.spacing() : support_params.support_material_interface_flow.spacing();
+                    // [ORCAPORT:SU-10] Match the fill spacing to the overridden contact width.
+                    if (contact_width != nullptr && contact_width->value > 0)
+                        filler->spacing = interface_flow.spacing();
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / density));
                     // [ORCAPORT:SU-4] NeoWave roof (wave-roof half): fill the roof (top contact +
                     // interface stack) with the Wave-Huygens pattern when the object is NeoWave and
@@ -1897,19 +2185,91 @@ void generate_support_toolpaths(
                         interface_as_base ? ExtrusionRole::erSupportMaterial : ExtrusionRole::erSupportMaterialInterface, interface_flow);
                 }
             };
-            extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
-            // [ORCAPORT:SU-4b] NeoWave contact (support side): wave the top-contact interface so
-            // only the wave peaks touch the part above, reducing bonding. Downward-only, so it can
-            // never grow into the part. The part's own bridge fill is left flat.
-            if (config.support_neoweave_enabled.value
-                && config.support_neoweave_target.value == nwctSupportTop
-                && config.support_neoweave_amplitude.value > 1e-9
-                && top_contact_layer.layer != nullptr
-                && top_contact_layer.layer->layer_type == SupporLayerType::TopContact) {
-                OrcaExt::NeoWaveContact::apply_support_wave(
-                    top_contact_layer.extrusions, config.support_neoweave_amplitude.value,
-                    config.support_neoweave_period.value);
+            // [ORCAPORT:SU-9] Woven interface: split the marked interface-stack layers into
+            // alternating strips of base and interface material, rotated 90 deg on alternate
+            // layers. The strip of the other material is inserted as a solid key. The top-interface
+            // layer keeps its own interface fill; the base-interface layer keeps its own base fill.
+            // Must run before either layer is extruded below.
+            if (weave_layer[support_layer_id]) {
+                // [ORCAPORT:SU-11] Straight base bridging is now implicit while weaving: the layer
+                // under the weave runs perpendicular to the base, so shift the weave 90 degrees and
+                // the woven threads cross the base-interface layer instead of running parallel.
+                // Serpentine fill and the perimeter loop are implicit too (no separate toggles).
+                const double weave_base = support_params.base_angle + 0.5 * M_PI;
+                const double angle = weave_base + ((support_layer_id & 1) ? 0.5 * M_PI : 0.0);
+                const coordf_t pitch = scale_(config.support_interface_weave_pitch.value);
+                const bool flush = config.support_interface_weave_flush.value;
+                // One serpentine per strip (per connected component) along its long axis, ordered
+                // inner->outer, so a connector never crosses the other material's strips. The
+                // generic fill is skipped for the woven layer.
+                auto emit_serpentines = [&](const Polygons &region, const Polygons &base_strips,
+                                            const Polygons &iface_strips, const Flow &base_flow, const Flow &iface_flow) {
+                    const Point  rc = get_extents(region).center();
+                    const double la = angle + 0.5 * M_PI; // line direction = strip long axis
+                    const double cy = std::cos(la), sy = std::sin(la);
+                    const coordf_t inner_y = coordf_t(-double(rc.x()) * sy + double(rc.y()) * cy);
+                    for (const ExPolygon &e : union_ex(base_strips))
+                        emit_strip_serpentine(support_layer.support_fills.entities, e, la, base_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterial, base_flow);
+                    for (const ExPolygon &e : union_ex(iface_strips))
+                        emit_strip_serpentine(support_layer.support_fills.entities, e, la, iface_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterialInterface, iface_flow);
+                };
+                // Interface layer: insert base-material strips, keep the rest as interface. This is
+                // the top stack, or (with three or more bottom interface layers) the interface layer
+                // directly below the solid base cap of a bottom stack.
+                const bool iface_host_top = ! interface_layer.empty() &&
+                    interface_layer.layer->layer_type == SupporLayerType::TopInterface;
+                const bool iface_host_bottom = ! interface_layer.empty() &&
+                    interface_layer.layer->layer_type == SupporLayerType::BottomInterface &&
+                    bottom_iface_weave[support_layer_id];
+                if (iface_host_top || iface_host_bottom) {
+                    const float h = float(interface_layer.layer->height);
+                    const Flow  base_flow      = support_params.support_material_flow.with_height(h);
+                    const Flow  iface_flow     = support_params.support_material_interface_flow.with_height(h);
+                    // Flush (top weave only): widen the woven base threads to 1.25x the nozzle and
+                    // drop them to 0.8x height, so their sag or ridges stay below the interface
+                    // surface and are not carried into the other interface layers.
+                    Flow strip_flow = base_flow;
+                    if (flush && iface_host_top) {
+                        const float nozzle = support_params.support_material_flow.nozzle_diameter();
+                        strip_flow = base_flow.with_width(1.25f * nozzle).with_height(h * 0.8f);
+                    }
+                    const Polygons region = interface_layer.polygons_to_extrude();
+                    // Reserve the perimeter ring so the loop never overlaps the strips.
+                    const Polygons strip_region = offset(region, -float(support_params.support_material_interface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
+                    Polygons base_strips, iface_strips;
+                    split_weave_strips(strip_region, angle, pitch, base_strips, iface_strips);
+                    // If the region is too narrow to weave, leave the layer to the generic fill.
+                    if (! base_strips.empty() || ! iface_strips.empty()) {
+                        emit_serpentines(region, base_strips, iface_strips, strip_flow, iface_flow);
+                        interface_layer.set_polygons_to_extrude(Polygons());
+                        emit_region_perimeter(support_layer.support_fills.entities, region, iface_flow, ExtrusionRole::erSupportMaterialInterface);
+                    }
+                }
+                // [ORCAPORT:SU-13] Bottom base-interface layer: insert interface-material strips so
+                // the base support above is keyed to the interface material below.
+                else if (! base_interface_layer.empty() && base_interface_layer.layer->is_bottom_base_interface &&
+                         ! base_interface_layer.polygons_to_extrude().empty()) {
+                    const float h = float(base_interface_layer.layer->height);
+                    const Flow  base_flow  = support_params.support_material_flow.with_height(h);
+                    const Flow  iface_flow = support_params.support_material_interface_flow.with_height(h);
+                    const Polygons region = base_interface_layer.polygons_to_extrude();
+                    const Polygons strip_region = offset(region, -float(iface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
+                    Polygons base_strips, iface_strips;
+                    split_weave_strips(strip_region, angle, pitch, base_strips, iface_strips);
+                    if (! base_strips.empty() || ! iface_strips.empty()) {
+                        emit_serpentines(region, base_strips, iface_strips, base_flow, iface_flow);
+                        base_interface_layer.set_polygons_to_extrude(Polygons());
+                        emit_region_perimeter(support_layer.support_fills.entities, region, base_flow, ExtrusionRole::erSupportMaterial);
+                    }
+                }
             }
+            // [ORCAPORT:SU-10] Contact layers that touch the object: top contact (support under the
+            // object) and bottom contact (support on top of an object). Each has its own override.
+            if (! top_contact_layer.empty())
+                support_layer.support_contact_top = true;
+            if (! bottom_contact_layer.empty())
+                support_layer.support_contact_bottom = true;
+            extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
             if (!organic_tree)
                 extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
             const bool interface_layer_enabled = !interface_layer.empty() &&
@@ -1917,24 +2277,46 @@ void generate_support_toolpaths(
             extrude_interface(interface_layer,      interface_layer_enabled ? InterfaceLayerType::Interface : InterfaceLayerType::InterfaceAsBase);
             // Base interface layers under soluble interfaces
             if ( ! base_interface_layer.empty() && ! base_interface_layer.polygons_to_extrude().empty()) {
-                Fill *filler = filler_base_interface.get();
-                //FIXME Bottom interfaces are extruded with the briding flow. Some bridging layers have its height slightly reduced, therefore
-                // the bridging flow does not quite apply. Reduce the flow to area of an ellipse? (A = pi * a * b)
-                assert(! base_interface_layer.layer->bridging);
-                Flow interface_flow = support_params.support_material_flow.with_height(float(base_interface_layer.layer->height));
-                filler->angle   = support_interface_angle;
-                filler->spacing = support_params.support_material_interface_flow.spacing();
-                filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
-                fill_expolygons_generate_paths(
-                    // Destination
-                    base_interface_layer.extrusions,
-                    //base_layer_interface.extrusions,
-                    // Regions to fill
-                    union_safety_offset_ex(base_interface_layer.polygons_to_extrude()),
-                    // Filler and its parameters
-                    filler, float(base_interface_density),
-                    // Extrusion parameters
-                    ExtrusionRole::erSupportMaterial, interface_flow);
+                if (bottom_cap[support_layer_id]) {
+                    // [ORCAPORT:SU-13] Solid base-material cap between a bottom weave and the base
+                    // support. One serpentine whose lines cross the woven strips below, so the base
+                    // support bonds to solid base material instead of landing on PLA strips.
+                    const float h = float(base_interface_layer.layer->height);
+                    const Flow  cap_flow = support_params.support_material_flow.with_height(h);
+                    const Polygons region = base_interface_layer.polygons_to_extrude();
+                    // The woven host is the layer directly below; its strips run along angle + 90,
+                    // so run the cap lines along the woven layer's `angle` to cross them.
+                    const double weave_base  = support_params.base_angle + 0.5 * M_PI;
+                    const double line_angle  = weave_base + (((support_layer_id - 1) & 1) ? 0.5 * M_PI : 0.0);
+                    const Point  rc          = get_extents(region).center();
+                    const double cy = std::cos(line_angle), sy = std::sin(line_angle);
+                    const coordf_t inner_y = coordf_t(-double(rc.x()) * sy + double(rc.y()) * cy);
+                    for (const ExPolygon &e : union_ex(region))
+                        emit_strip_serpentine(base_interface_layer.extrusions, e, line_angle, cap_flow.scaled_spacing(), inner_y, ExtrusionRole::erSupportMaterial, cap_flow);
+                    base_interface_layer.set_polygons_to_extrude(Polygons());
+                } else {
+                    Fill *filler = filler_base_interface.get();
+                    //FIXME Bottom interfaces are extruded with the briding flow. Some bridging layers have its height slightly reduced, therefore
+                    // the bridging flow does not quite apply. Reduce the flow to area of an ellipse? (A = pi * a * b)
+                    assert(! base_interface_layer.layer->bridging);
+                    Flow interface_flow = support_params.support_material_flow.with_height(float(base_interface_layer.layer->height));
+                    // [ORCAPORT:SU-11] Straight bridging is implicit while weaving: run the
+                    // base-interface layer perpendicular to the support base pattern.
+                    filler->angle   = config.support_interface_weave_enable.value
+                                        ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
+                    filler->spacing = support_params.support_material_interface_flow.spacing();
+                    filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
+                    fill_expolygons_generate_paths(
+                        // Destination
+                        base_interface_layer.extrusions,
+                        //base_layer_interface.extrusions,
+                        // Regions to fill
+                        union_safety_offset_ex(base_interface_layer.polygons_to_extrude()),
+                        // Filler and its parameters
+                        filler, float(base_interface_density),
+                        // Extrusion parameters
+                        ExtrusionRole::erSupportMaterial, interface_flow);
+                }
             }
 
             // Base support or flange.

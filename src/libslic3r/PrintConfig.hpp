@@ -283,12 +283,6 @@ enum SupportMaterialWaveRoofOrder {
     smwroSmart, smwroZigZag, smwroMonotonic
 };
 
-// [ORCAPORT:SU-4b] Which side of the part/support interface carries the contact Z-wave.
-enum NeoWaveContactTarget {
-    nwctPartBottom, // wave the object's bridge fill (upward-only) - fork behaviour
-    nwctSupportTop  // wave the support's top-contact interface (downward-only)
-};
-
 // BBS
 enum SupportType {
     stNormalAuto, stTreeAuto, stNormal, stTree,
@@ -722,7 +716,6 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialInterfacePattern)
 // [ORCAPORT:SU-4]
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportMaterialWaveRoofOrder)
-CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NeoWaveContactTarget) // [ORCAPORT:SU-4b]
 // BBS
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SupportType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SeamPosition)
@@ -1207,6 +1200,46 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                 support_interface_filament))
     ((ConfigOptionInt,                 support_interface_top_layers))
     ((ConfigOptionInt,                 support_interface_bottom_layers))
+    // [ORCAPORT:SU-9] Woven interface: alternate base/interface strips over the first interface
+    // layers above the base, rotated 90 degrees on alternate layers, to mechanically interlock a
+    // non-bonding interface to the support base.
+    ((ConfigOptionBool,                support_interface_weave_enable))
+    ((ConfigOptionInt,                 support_interface_weave_layers))
+    ((ConfigOptionFloat,               support_interface_weave_pitch))
+    ((ConfigOptionBool,                support_interface_weave_flush))
+    // [ORCAPORT:SU-13] Woven bottom interface: weave the base-interface layer directly above a
+    // bottom contact. Uses the SU-9 weave layer count/pitch; flush does not apply.
+    ((ConfigOptionBool,                support_interface_bottom_weave_enable))
+    // [ORCAPORT:SU-10] Interface contact controls: top contact (support under the object) and
+    // bottom contact (support on top of an object) each have their own speed/line width.
+    ((ConfigOptionFloat,               support_interface_contact_speed))
+    ((ConfigOptionFloatOrPercent,      support_interface_contact_line_width))
+    ((ConfigOptionFloat,               support_interface_bottom_contact_speed))
+    ((ConfigOptionFloatOrPercent,      support_interface_bottom_contact_line_width))
+    // [ORCAPORT:SU-8] Transition-layer treatment. Three joints get independent groups:
+    //   transition_interface_base   (A) first support interface deposited on base support
+    //   transition_object_interface (B) first object layers deposited on the support interface
+    //   transition_interface_object (C) first support interface deposited on the object (bottom contact)
+    // Each group: _enable / _layers (1..5) / _speed (%<=100) / _flow (%) / _fan (%, -1=off) /
+    // _temp_delta (degC, signed, multi-nozzle only).
+    ((ConfigOptionBool,                transition_interface_base_enable))
+    ((ConfigOptionInt,                 transition_interface_base_layers))
+    ((ConfigOptionInt,                 transition_interface_base_speed))
+    ((ConfigOptionInt,                 transition_interface_base_flow))
+    ((ConfigOptionInt,                 transition_interface_base_fan))
+    ((ConfigOptionInt,                 transition_interface_base_temp_delta))
+    ((ConfigOptionBool,                transition_object_interface_enable))
+    ((ConfigOptionInt,                 transition_object_interface_layers))
+    ((ConfigOptionInt,                 transition_object_interface_speed))
+    ((ConfigOptionInt,                 transition_object_interface_flow))
+    ((ConfigOptionInt,                 transition_object_interface_fan))
+    ((ConfigOptionInt,                 transition_object_interface_temp_delta))
+    ((ConfigOptionBool,                transition_interface_object_enable))
+    ((ConfigOptionInt,                 transition_interface_object_layers))
+    ((ConfigOptionInt,                 transition_interface_object_speed))
+    ((ConfigOptionInt,                 transition_interface_object_flow))
+    ((ConfigOptionInt,                 transition_interface_object_fan))
+    ((ConfigOptionInt,                 transition_interface_object_temp_delta))
     // Spacing between interface lines (the hatching distance). Set zero to get a solid interface.
     ((ConfigOptionFloat,               support_interface_spacing))
     ((ConfigOptionFloatsNullable,      support_interface_speed))
@@ -1217,14 +1250,6 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionEnum<SupportMaterialWaveRoofOrder>,   wavesupport_roof_order))
     ((ConfigOptionBool,                wavesupport_roof_reverse))
     ((ConfigOptionInt,                 wavesupport_wall_loops))
-    // [ORCAPORT:SU-4b] NeoWave contact layer (Mecanismo 2): Z-wave the interface between the
-    // part and its support roof so only the wave peaks touch, reducing bonding. Independent of
-    // painting; the printed colour/pattern is untouched, only Z moves.
-    ((ConfigOptionBool,                support_neoweave_enabled))
-    ((ConfigOptionEnum<NeoWaveContactTarget>, support_neoweave_target))
-    ((ConfigOptionFloat,               support_neoweave_amplitude))
-    ((ConfigOptionFloat,               support_neoweave_period))
-    ((ConfigOptionFloat,               support_neoweave_max_z_speed))
     // Spacing between support material lines (the hatching distance).
     ((ConfigOptionFloat,               support_base_pattern_spacing))
     ((ConfigOptionFloat,               support_expansion))

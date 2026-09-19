@@ -1339,6 +1339,19 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_interface_loop_pattern"
             || opt_key == "support_interface_filament"
             || opt_key == "support_interface_not_for_body"
+            || opt_key == "support_interface_weave_enable" // [ORCAPORT:SU-9]
+            || opt_key == "support_interface_weave_layers" // [ORCAPORT:SU-9]
+            || opt_key == "support_interface_weave_pitch" // [ORCAPORT:SU-9]
+            || opt_key == "support_interface_weave_flush" // [ORCAPORT:SU-9]
+            || opt_key == "support_interface_contact_speed" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_contact_line_width" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_bottom_contact_speed" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_bottom_contact_line_width" // [ORCAPORT:SU-10]
+            || opt_key == "support_interface_bottom_weave_enable" // [ORCAPORT:SU-13]
+            // [ORCAPORT:SU-8] transition-layer treatment
+            || opt_key == "transition_interface_base_enable" || opt_key == "transition_interface_base_layers" || opt_key == "transition_interface_base_speed" || opt_key == "transition_interface_base_flow" || opt_key == "transition_interface_base_fan" || opt_key == "transition_interface_base_temp_delta"
+            || opt_key == "transition_object_interface_enable" || opt_key == "transition_object_interface_layers" || opt_key == "transition_object_interface_speed" || opt_key == "transition_object_interface_flow" || opt_key == "transition_object_interface_fan" || opt_key == "transition_object_interface_temp_delta"
+            || opt_key == "transition_interface_object_enable" || opt_key == "transition_interface_object_layers" || opt_key == "transition_interface_object_speed" || opt_key == "transition_interface_object_flow" || opt_key == "transition_interface_object_fan" || opt_key == "transition_interface_object_temp_delta"
             || opt_key == "support_interface_spacing"
             || opt_key == "support_bottom_interface_spacing" //BBS
             || opt_key == "support_base_pattern"

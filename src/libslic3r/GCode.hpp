@@ -202,6 +202,10 @@ public:
         m_layer_index(-1),
         m_layer(nullptr),
         m_object_layer_over_raft(false),
+        m_transition_joint(0),
+        m_weave_layer(false),
+        m_support_contact_top(false),
+        m_support_contact_bottom(false),
         //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
@@ -697,6 +701,19 @@ private:
     const Layer*                        m_layer;
     // m_layer is an object layer and it is being printed over raft surface.
     bool                                m_object_layer_over_raft;
+    // [ORCAPORT:SU-8] Transition joint of the layer currently being extruded
+    // (0 = none, 1 = interface-on-base, 2 = object-on-interface, 3 = interface-on-object).
+    int                                 m_transition_joint;
+    // [ORCAPORT:SU-8] Last nozzle temperature commanded by the transition treatment, per filament
+    // id. A nozzle is shared between objects on the plate, so the desired temperature is computed
+    // per extrusion context and only re-emitted when it differs from what was last set.
+    std::vector<int>                    m_transition_temp_last;
+    // [ORCAPORT:SU-9] Current support layer is a woven interface layer: its base and interface
+    // strips must print at the same speed.
+    bool                                m_weave_layer;
+    // [ORCAPORT:SU-10] Current support layer holds a contact that touches the object.
+    bool                                m_support_contact_top;
+    bool                                m_support_contact_bottom;
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;

@@ -17,10 +17,14 @@ Run the whole loop **with the user**, and agree the plan before writing code:
 3. **Build** locally on Windows (see below) until it is clean.
 4. **Test** with a targeted Catch2 test and/or a documented manual protocol; record the
    evidence.
-5. **Branch, commit, merge.** One feature per `feat/<id>` branch off `main`. Commit product
-   code first, then docs, and merge `--no-ff` into the integration branch only when the
-   feature is complete and verified. Never commit unverified work, build outputs or secrets.
-   Do not amend or force-push - fix and commit again.
+5. **Branch, commit, push, merge.** One feature per `port/<id>` branch off the integration
+   branch (off `main` only for upstream-only work). **Commit as each milestone is verified - do
+   not wait for the whole feature**; commit product code first, then docs. **Push the feature
+   branch** to `origin` after committing so progress is backed up. Merge `--no-ff` into the
+   integration branch only when the feature is complete and verified. Never commit unverified
+   work, build outputs or secrets. Do not amend or force-push - fix and commit again.
+   This is the authority for the feature workflow: the generic "do not commit unless asked"
+   rule elsewhere does not apply here - committing at verified milestones is expected.
 
 ## Feature rules
 
@@ -85,5 +89,6 @@ Catch2 test per the rules above.
 - `main` - untouched upstream mirror; the rebase target. Never commit feature work here.
 - Integration branch - where features are merged. `port/integration` today; the user may
   rename it.
-- `feat/<id>` - one branch per feature, branched from `main` or the integration branch,
-  merged back `--no-ff` when the feature is complete and verified.
+- `port/<id>` - one branch per feature (matching the existing `port/SU-*`, `port/PF-*` names),
+  branched from `main` or the integration branch, merged back `--no-ff` when the feature is
+  complete and verified. Commit and push at each verified milestone, not only at the end.
