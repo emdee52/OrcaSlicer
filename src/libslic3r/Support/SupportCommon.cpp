@@ -1783,6 +1783,10 @@ void generate_support_toolpaths(
     // weave, and an interface layer used as the top-style weave host beneath that cap.
     std::vector<char> bottom_cap(support_layers.size(), 0);
     std::vector<char> bottom_iface_weave(support_layers.size(), 0);
+    // [ORCAPORT:SU-13] Flush targets: the solid base-interface layer whose line width flush widens,
+    // and the woven layer(s) whose base thread flush lowers.
+    std::vector<char> solid_base_flush(support_layers.size(), 0);
+    std::vector<char> flush_thread(support_layers.size(), 0);
     auto z_in = [](const std::vector<coordf_t> &v, coordf_t z) {
         const auto it = std::lower_bound(v.begin(), v.end(), z - EPSILON);
         return it != v.end() && *it <= z + EPSILON;
@@ -1812,9 +1816,13 @@ void generate_support_toolpaths(
             for (size_t j = i; j < run_end && marked < n_weave; ++ j)
                 if (z_in(weavable_zs, support_layers[j]->print_z)) {
                     weave_layer[j] = 1;
+                    flush_thread[j] = 1;
                     support_layers[j]->support_weave = true;
                     ++ marked;
                 }
+            // The solid base-interface flush widens sits directly below this stack.
+            if (marked > 0 && i > 0)
+                solid_base_flush[i - 1] = 1;
         }
     }
 
@@ -1851,10 +1859,13 @@ void generate_support_toolpaths(
                     // the interface layer directly below it.
                     bottom_iface_weave[i - 1] = 1;
                     weave_layer[i - 1]        = 1;
+                    flush_thread[i - 1]       = 1;
                     support_layers[i - 1]->support_weave = true;
                     bottom_cap[i]             = 1;
+                    solid_base_flush[i]       = 1;
                 } else {
-                    // Two interface layers: the base-interface layer is the weave host.
+                    // Two interface layers: the base-interface layer is the weave host. There is no
+                    // separate solid base layer, so flush has no effect here.
                     weave_layer[i] = 1;
                     support_layers[i]->support_weave = true;
                 }
@@ -1934,7 +1945,8 @@ void generate_support_toolpaths(
 
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
         [&config, &slicing_params, &support_params, &support_layers, &bottom_contacts, &top_contacts, &intermediate_layers, &interface_layers, &base_interface_layers, &layer_caches, &loop_interface_processor,
-            &bbox_object, &angles, &interface_above, &weave_layer, &bottom_cap, &bottom_iface_weave, n_raft_layers, link_max_length_factor]
+            &bbox_object, &angles, &interface_above, &weave_layer, &bottom_cap, &bottom_iface_weave,
+            &solid_base_flush, &flush_thread, n_raft_layers, link_max_length_factor]
             (const tbb::blocked_range<size_t>& range) {
         // Indices of the 1st layer in their respective container at the support layer height.
         size_t idx_layer_bottom_contact   = size_t(-1);
@@ -2225,14 +2237,12 @@ void generate_support_toolpaths(
                     const float h = float(interface_layer.layer->height);
                     const Flow  base_flow      = support_params.support_material_flow.with_height(h);
                     const Flow  iface_flow     = support_params.support_material_interface_flow.with_height(h);
-                    // Flush (top weave only): widen the woven base threads to 1.25x the nozzle and
-                    // drop them to 0.8x height, so their sag or ridges stay below the interface
-                    // surface and are not carried into the other interface layers.
+                    // Flush lowers the woven base thread to 0.8x height so its sag or ridges stay
+                    // below the interface surface. The matching width change is applied to the solid
+                    // base-interface layer, not the thread (see solid_base_flush below).
                     Flow strip_flow = base_flow;
-                    if (flush && iface_host_top) {
-                        const float nozzle = support_params.support_material_flow.nozzle_diameter();
-                        strip_flow = base_flow.with_width(1.25f * nozzle).with_height(h * 0.8f);
-                    }
+                    if (flush && flush_thread[support_layer_id])
+                        strip_flow = base_flow.with_height(h * 0.8f);
                     const Polygons region = interface_layer.polygons_to_extrude();
                     // Reserve the perimeter ring so the loop never overlaps the strips.
                     const Polygons strip_region = offset(region, -float(support_params.support_material_interface_flow.scaled_width()), SUPPORT_SURFACES_OFFSET_PARAMETERS);
@@ -2282,7 +2292,12 @@ void generate_support_toolpaths(
                     // support. One serpentine whose lines cross the woven strips below, so the base
                     // support bonds to solid base material instead of landing on PLA strips.
                     const float h = float(base_interface_layer.layer->height);
-                    const Flow  cap_flow = support_params.support_material_flow.with_height(h);
+                    Flow        cap_flow = support_params.support_material_flow.with_height(h);
+                    // [ORCAPORT:SU-13] Flush widens this solid base layer to 1.25x the nozzle.
+                    if (config.support_interface_weave_flush.value && solid_base_flush[support_layer_id]) {
+                        const float nozzle = support_params.support_material_flow.nozzle_diameter();
+                        cap_flow = cap_flow.with_width(1.25f * nozzle);
+                    }
                     const Polygons region = base_interface_layer.polygons_to_extrude();
                     // The woven host is the layer directly below; its strips run along angle + 90,
                     // so run the cap lines along the woven layer's `angle` to cross them.
@@ -2305,6 +2320,13 @@ void generate_support_toolpaths(
                     filler->angle   = config.support_interface_weave_enable.value
                                         ? support_params.base_angle + float(0.5 * M_PI) : support_interface_angle;
                     filler->spacing = support_params.support_material_interface_flow.spacing();
+                    // [ORCAPORT:SU-13] Flush widens the solid base-interface under the weave to 1.25x
+                    // the nozzle, so the lowered woven base thread does not carry sag/ridges upward.
+                    if (config.support_interface_weave_flush.value && solid_base_flush[support_layer_id]) {
+                        const float nozzle = support_params.support_material_flow.nozzle_diameter();
+                        interface_flow  = interface_flow.with_width(1.25f * nozzle);
+                        filler->spacing = interface_flow.spacing();
+                    }
                     filler->link_max_length = coord_t(scale_(filler->spacing * link_max_length_factor / base_interface_density));
                     fill_expolygons_generate_paths(
                         // Destination

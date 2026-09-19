@@ -7228,9 +7228,10 @@ void PrintConfigDef::init_fff_params()
     def = this->add("support_interface_weave_flush", coBool);
     def->label = L("Flush woven interface");
     def->category = L("Support");
-    def->tooltip = L("Print the woven base threads wider and thinner — 1.25x the nozzle diameter at "
-        "0.8x layer height — so their sag or ridges stay below the interface surface. Fixes a ridged "
-        "or sagging weave that would otherwise be carried into the interface layers above.");
+    def->tooltip = L("Flush the woven interface: print the woven base thread at 0.8x layer height and "
+        "widen the solid base interface under or above the weave to 1.25x the nozzle diameter, so "
+        "the thread's sag or ridges are not carried into the next interface layer. Has no effect on "
+        "a two-layer bottom stack, which has no separate solid base layer.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
