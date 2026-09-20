@@ -929,7 +929,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
     const float sliders_width = m_imgui->scaled(7.0f);
-    const float left_width    = m_imgui->scaled(10.0f);
+    const float left_width    = m_imgui->calc_text_size(m_desc.at("true_dia")).x + m_imgui->scaled(1.0f);
 
     // Operation dropdown: Teardrop or Bore / pocket (which then reveals the category buttons).
     {
@@ -962,7 +962,8 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         // Category buttons (image buttons in Orca's toolbar style).
         const HoleCategory categories[] = {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet,
                                            HoleCategory::Insert, HoleCategory::Custom};
-        const float icon_sz = m_imgui->scaled(22.f);
+        // `scaled()` multiplies by the font size, so keep this a small factor (~1.5 line heights).
+        const float icon_sz = m_imgui->scaled(1.5f);
         for (HoleCategory cat : categories) {
             ImTextureID  tex = category_icon(cat);
             const bool   on  = (m_category == cat);
