@@ -2644,18 +2644,18 @@ bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
     return true;
 }
 
-// Grow a translucent patch over the coplanar facets around `facet` (a flat face fills completely,
-// a curved one yields a patch around the cursor), lifted slightly along the normals to beat
-// z-fighting. Modelled on GLGizmoAlignStack::build_mesh_face_model.
-void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
+// Facets coplanar with `facet`, reached by edge adjacency. Coplanarity uses the same
+// component-wise normal equality as the measure tool's plane grouping, so adjacent faces at even a
+// shallow angle are not merged.
+std::vector<int> GLGizmoCut3D::coplanar_region(const ModelVolume* mv, size_t facet)
 {
-    m_face_highlight.reset();
+    std::vector<int> region;
     if (mv == nullptr)
-        return;
-    const indexed_triangle_set& its       = mv->mesh().its;
-    const int                   n_facets  = int(its.indices.size());
+        return region;
+    const indexed_triangle_set& its      = mv->mesh().its;
+    const int                   n_facets = int(its.indices.size());
     if (facet >= size_t(n_facets))
-        return;
+        return region;
 
     if (m_hover_mv != mv) {
         m_hover_mv        = mv;
@@ -2663,13 +2663,14 @@ void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
         m_hover_neighbors = its_face_neighbors(its);
     }
     if (int(m_hover_normals.size()) != n_facets || int(m_hover_neighbors.size()) != n_facets)
-        return;
+        return region;
 
-    const float  cos_thresh = 0.94f; // ~20 degrees
     const size_t max_facets = 40000;
-    const Vec3f  seed_n     = m_hover_normals[facet].normalized();
+    const Vec3f  seed_n     = m_hover_normals[facet];
+    const auto   is_same_normal = [&seed_n](const Vec3f& n) {
+        return std::abs(n.x() - seed_n.x()) < 0.001f && std::abs(n.y() - seed_n.y()) < 0.001f && std::abs(n.z() - seed_n.z()) < 0.001f;
+    };
 
-    std::vector<int>  region;
     std::vector<char> visited(n_facets, 0);
     std::vector<int>  stack{ int(facet) };
     region.reserve(256);
@@ -2682,26 +2683,38 @@ void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
             const int nb = m_hover_neighbors[f][e];
             if (nb < 0 || nb >= n_facets || visited[nb])
                 continue;
-            if (m_hover_normals[nb].normalized().dot(seed_n) >= cos_thresh) {
+            if (is_same_normal(m_hover_normals[nb])) {
                 visited[nb] = 1;
                 stack.push_back(nb);
             }
         }
     }
+    return region;
+}
 
-    const float lift = 0.10f;
+// Build a translucent patch over the coplanar region, lifted slightly along the normals to beat
+// z-fighting.
+void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
+{
+    m_face_highlight.reset();
+    const std::vector<int> region = coplanar_region(mv, facet);
+    if (region.empty())
+        return;
+
+    const Vec3f seed_n = m_hover_normals[facet];
+    const float lift   = 0.10f;
     indexed_triangle_set highlight;
     highlight.vertices.reserve(region.size() * 3);
     highlight.indices.reserve(region.size());
     int base = 0;
     for (int f : region) {
-        const Vec3i32 tri = its.indices[f];
+        const Vec3i32 tri = mv->mesh().its.indices[f];
         Vec3f         n   = m_hover_normals[f];
         const float   nl  = n.norm();
         n = (nl > 1e-6f) ? (n / nl) : seed_n;
-        highlight.vertices.push_back(its.vertices[tri[0]] + n * lift);
-        highlight.vertices.push_back(its.vertices[tri[1]] + n * lift);
-        highlight.vertices.push_back(its.vertices[tri[2]] + n * lift);
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[0]] + n * lift);
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[1]] + n * lift);
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[2]] + n * lift);
         highlight.indices.emplace_back(base, base + 1, base + 2);
         base += 3;
     }
@@ -2709,6 +2722,21 @@ void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
         return;
     m_face_highlight.init_from(highlight);
     m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+}
+
+bool GLGizmoCut3D::gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal)
+{
+    const GLVolume*    volume = nullptr;
+    const ModelVolume* mv     = nullptr;
+    size_t             f      = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(screen_pos, volume, mv, f, hit))
+        return false;
+
+    facet         = int(f);
+    region_facets = int(coplanar_region(mv, f).size());
+    normal        = facet_normal_in_world(mv->mesh().its, facet, volume->world_matrix());
+    return true;
 }
 
 void GLGizmoCut3D::update_face_highlight()

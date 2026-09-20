@@ -277,6 +277,9 @@ public:
     bool   gizmo_pick_face_mode() const { return m_pick_face_mode; }
     // Aligns the cut plane to the face at a screen position (same path as the interactive pick).
     bool   gizmo_pick_face_at(const Vec2d& screen_pos) { return pick_face_at(screen_pos); }
+    // Introspection for the MCP tool: the face under a screen point and the size of its coplanar
+    // region (the hover highlight). Returns false if the ray missed the object.
+    bool   gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal);
 
     std::string get_tooltip() const override;
     bool unproject_on_cut_plane(const Vec2d& mouse_pos, Vec3d& pos, Vec3d& pos_world, bool respect_contours = true);
@@ -425,6 +428,9 @@ private:
     bool raycast_object_face(const Vec2d& mouse_position, const GLVolume*& volume, const ModelVolume*& mv, size_t& facet, Vec3d& hit_world);
     // Aligns the cut plane to the facet under the mouse. Returns false if the ray missed.
     bool pick_face_at(const Vec2d& mouse_position);
+    // Facets coplanar with `facet` (same component-wise normal as the measure tool's plane
+    // grouping), reached by edge adjacency. Caches the per-volume normals/adjacency.
+    std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet);
     // Hover highlight of the flat face under the cursor while in pick-face mode.
     void update_face_highlight();
     void build_face_highlight(const ModelVolume* mv, size_t facet);
