@@ -4,8 +4,10 @@
 #include "libslic3r/HoleShapes.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
+#include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
@@ -26,14 +28,16 @@ namespace GUI {
 
 namespace {
 
-// Name given to every negative volume this gizmo creates. It is the provenance marker used to
-// find, replace and remove teardrops across sessions.
+// Name given to every negative volume this gizmo creates; the provenance marker used to find,
+// replace and remove teardrops across sessions.
 constexpr const char *TEARDROP_NAME = "Teardrop";
-// |axis . up| below this marks a hole as horizontal (the top of the hole is an overhang).
+// |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
 constexpr double       HORIZONTAL_COS = 0.5;
-// Rendered preview colors: applied teardrops red, the hovered one green.
-const ColorRGBA        APPLIED_COLOR{0.90f, 0.25f, 0.25f, 0.55f};
-const ColorRGBA        HOVER_COLOR{0.30f, 0.85f, 0.35f, 0.55f};
+constexpr float        ANGLE_MIN = 10.f;
+constexpr float        ANGLE_MAX = 80.f;
+const ColorRGBA        ALL_COLOR{0.75f, 0.75f, 0.75f, 0.35f};
+const ColorRGBA        APPLIED_COLOR{0.90f, 0.25f, 0.25f, 0.60f};
+const ColorRGBA        HOVER_COLOR{0.30f, 0.85f, 0.35f, 0.70f};
 
 Vec3d mesh_centroid(const indexed_triangle_set &its)
 {
@@ -55,8 +59,8 @@ void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
         its_merge(dst, src);
 }
 
-// An oversized cylinder wall around a hole, used only for mouse picking. The pickers are drawn
-// on top of the scene, so a hole inside the solid is still reachable.
+// An oversized cylinder wall around a hole, used only for mouse picking. Right-handed frame so
+// the face normals point outward and SceneRaycaster accepts the hit.
 indexed_triangle_set make_pick_cylinder(const DetectedHole &h, const Vec3d &up)
 {
     const double         len = std::max(h.depth, 1.0);
@@ -65,7 +69,7 @@ indexed_triangle_set make_pick_cylinder(const DetectedHole &h, const Vec3d &up)
     const Vec3d a = h.axis.normalized();
     Vec3d       u = up - a * a.dot(up);
     u = (u.norm() < 1e-9) ? Vec3d::UnitY() : u.normalized();
-    const Vec3d r = a.cross(u).normalized();
+    const Vec3d r = u.cross(a).normalized();
 
     Eigen::Matrix3d R;
     R.col(0) = Eigen::Vector3d(r(0), r(1), r(2));
@@ -80,9 +84,31 @@ indexed_triangle_set make_pick_cylinder(const DetectedHole &h, const Vec3d &up)
     return its;
 }
 
+// The given volume-local facets, transformed into object coordinates.
+indexed_triangle_set facets_mesh(const ModelVolume &mv, const std::vector<int> &facets)
+{
+    indexed_triangle_set its;
+    const indexed_triangle_set &src = mv.mesh().its;
+    const Transform3d           m   = mv.get_matrix();
+    its.vertices.reserve(facets.size() * 3);
+    its.indices.reserve(facets.size());
+    for (int f : facets) {
+        if (f < 0 || f >= int(src.indices.size()))
+            continue;
+        const int base = int(its.vertices.size());
+        for (int k = 0; k < 3; ++k) {
+            const Vec3f &p = src.vertices[src.indices[f][k]];
+            const Vec3d  q = m * Vec3d(p(0), p(1), p(2));
+            its.vertices.emplace_back(float(q(0)), float(q(1)), float(q(2)));
+        }
+        its.indices.emplace_back(base, base + 1, base + 2);
+    }
+    return its;
+}
+
 } // namespace
 
-GLGizmoHorizontalHoles::GLGizmoHorizontalHoles(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id)
+GLGizmoHorizontalHoles::GLGizmoHorizontalHoles(GLCanvas3D &parent, const std::string& icon_filename, unsigned int sprite_id)
     : GLGizmoBase(parent, icon_filename, sprite_id)
 {}
 
@@ -90,13 +116,15 @@ bool GLGizmoHorizontalHoles::on_init()
 {
     m_shortcut_key = WXK_CONTROL_J;
 
-    m_desc["apex"]            = _L("Apex angle");
-    m_desc["holes"]           = _L("Horizontal holes");
-    m_desc["select_all"]      = _L("Teardrop all");
-    m_desc["clear"]           = _L("Clear");
+    m_desc["apex"]             = _L("Apex angle");
+    m_desc["holes"]            = _L("Horizontal holes");
+    m_desc["mode"]             = _L("Mode");
+    m_desc["mode_teardrop"]    = _L("Teardrop");
+    m_desc["mode_bridge"]      = _L("Partial bridge");
+    m_desc["all"]              = _L("Apply all");
+    m_desc["clear"]            = _L("Clear");
     m_desc["clipping_of_view"] = _L("Section view");
     m_desc["reset_direction"]  = _L("Reset direction");
-    m_desc["disabled"]         = _L("Select a single object to detect its holes.");
     return true;
 }
 
@@ -129,8 +157,6 @@ Vec3d GLGizmoHorizontalHoles::object_up() const
 
 double GLGizmoHorizontalHoles::teardrop_depth(const DetectedHole &hole) const
 {
-    // Through holes get a margin so the cut breaks out of both surfaces; a blind hole must not
-    // punch through its floor, so it uses the wall extent as-is.
     const double margin = hole.through ? std::max(0.5, 0.25 * hole.radius) : 0.0;
     return hole.depth + 2.0 * margin;
 }
@@ -140,6 +166,17 @@ indexed_triangle_set GLGizmoHorizontalHoles::teardrop_mesh(int idx) const
     if (idx < 0 || idx >= int(m_holes.size()))
         return {};
     return its_make_teardrop_for_hole(m_holes[idx].hole, teardrop_depth(m_holes[idx].hole), m_angle_deg, 48, object_up());
+}
+
+indexed_triangle_set GLGizmoHorizontalHoles::upper_arc_mesh(int idx) const
+{
+    if (idx < 0 || idx >= int(m_holes.size()))
+        return {};
+    const HoleView   &v  = m_holes[idx];
+    const ModelObject *mo = model_object();
+    if (mo == nullptr || v.volume_idx < 0 || v.volume_idx >= int(mo->volumes.size()))
+        return {};
+    return facets_mesh(*mo->volumes[v.volume_idx], v.upper_facets);
 }
 
 bool GLGizmoHorizontalHoles::on_is_activable() const
@@ -159,6 +196,7 @@ void GLGizmoHorizontalHoles::on_set_state()
         m_preview_dirty = true;
         set_dirty();
     } else {
+        m_preview_all.reset();
         m_preview_applied.reset();
         m_preview_hover.reset();
     }
@@ -169,16 +207,18 @@ void GLGizmoHorizontalHoles::data_changed(bool /*is_serializing*/)
     const ModelObject *mo = model_object();
     if (mo == nullptr) {
         m_holes.clear();
-        m_applied.clear();
+        m_teardrop.clear();
+        m_bridge.clear();
         m_pick_its.clear();
+        m_preview_all.reset();
         m_preview_applied.reset();
         m_preview_hover.reset();
         m_dirty = false;
         return;
     }
 
-    const int          n  = int(mo->volumes.size());
-    const Transform3d  im = instance_matrix();
+    const int         n  = int(mo->volumes.size());
+    const Transform3d im = instance_matrix();
     if (mo != m_old_model_object || n != m_old_volume_count || !im.isApprox(m_old_instance_matrix)) {
         m_dirty = true;
         set_dirty();
@@ -224,8 +264,10 @@ void GLGizmoHorizontalHoles::detect()
 {
     m_dirty = false;
     m_holes.clear();
-    m_applied.clear();
+    m_teardrop.clear();
+    m_bridge.clear();
     m_pick_its.clear();
+    m_preview_all.reset();
     m_preview_applied.reset();
     m_preview_hover.reset();
     m_old_model_object = nullptr;
@@ -239,22 +281,54 @@ void GLGizmoHorizontalHoles::detect()
     }
 
     wxBusyCursor wait;
-    TriangleMesh mesh = mo->raw_mesh();
-    std::vector<DetectedHole> holes = detect_holes(mesh.its);
+    const Vec3d  up_obj = object_up();
 
-    const Vec3d up = object_up();
-    m_holes.reserve(holes.size());
-    for (DetectedHole &h : holes) {
-        // Only horizontal holes need a teardrop; a vertical hole's wall is already supported.
-        if (std::abs(h.axis.dot(up)) >= HORIZONTAL_COS)
+    // Detect per model part so a hole's facets can be painted on the volume that owns them.
+    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
+        ModelVolume *mv = mo->volumes[vi];
+        if (mv == nullptr || !mv->is_model_part())
             continue;
-        HoleView view;
-        view.hole = std::move(h);
-        m_holes.push_back(std::move(view));
+        const Transform3d V        = mv->get_matrix();
+        const Vec3d       up_local = (V.linear().inverse() * up_obj).normalized();
+
+        std::vector<DetectedHole> local_holes = detect_holes(mv->mesh().its);
+        for (DetectedHole &lh : local_holes) {
+            const Vec3d axis_obj = (V.linear() * lh.axis).normalized();
+            if (std::abs(axis_obj.dot(up_obj)) >= HORIZONTAL_COS)
+                continue; // vertical: a teardrop / horizontal bridge has no meaning
+
+            HoleView v;
+            v.volume_idx = int(vi);
+            v.hole.axis       = axis_obj;
+            v.hole.center     = V * lh.center;
+            v.hole.radius     = lh.radius;
+            v.hole.depth      = lh.depth;
+            v.hole.through    = lh.through;
+            v.hole.confidence = lh.confidence;
+
+            // Upper arc = facets whose wall sits above the axis (the overhang to remedy).
+            const indexed_triangle_set &src = mv->mesh().its;
+            for (int f : lh.facets) {
+                if (f < 0 || f >= int(src.indices.size()))
+                    continue;
+                Vec3d c = Vec3d::Zero();
+                for (int k = 0; k < 3; ++k) {
+                    const Vec3f &p = src.vertices[src.indices[f][k]];
+                    c += Vec3d(p(0), p(1), p(2));
+                }
+                c /= 3.;
+                const Vec3d rel    = c - lh.center;
+                const Vec3d radial = rel - lh.axis * rel.dot(lh.axis);
+                if (radial.dot(up_local) > 0.)
+                    v.upper_facets.push_back(f);
+            }
+            m_holes.push_back(std::move(v));
+        }
     }
+
     m_pick_its.reserve(m_holes.size());
     for (const HoleView &v : m_holes)
-        m_pick_its.push_back(make_pick_cylinder(v.hole, up));
+        m_pick_its.push_back(make_pick_cylinder(v.hole, up_obj));
 
     refresh_applied();
     m_old_model_object    = mo;
@@ -267,11 +341,13 @@ void GLGizmoHorizontalHoles::detect()
 
 void GLGizmoHorizontalHoles::refresh_applied()
 {
-    m_applied.assign(m_holes.size(), 0);
+    m_teardrop.assign(m_holes.size(), 0);
+    m_bridge.assign(m_holes.size(), 0);
     const ModelObject *mo = model_object();
     if (mo == nullptr)
         return;
 
+    // Teardrops: negative volumes named TEARDROP_NAME near the hole axis.
     std::vector<Vec3d> centroids;
     for (const ModelVolume *v : mo->volumes) {
         if (v == nullptr || !v->is_negative_volume() || v->name.rfind(TEARDROP_NAME, 0) != 0)
@@ -282,30 +358,62 @@ void GLGizmoHorizontalHoles::refresh_applied()
         const double tol = std::max(0.5, m_holes[i].hole.radius);
         for (const Vec3d &c : centroids)
             if ((c - m_holes[i].hole.center).norm() < tol) {
-                m_applied[i] = 1;
+                m_teardrop[i] = 1;
                 break;
             }
+    }
+
+    // Partial bridges: one TriangleSelector per volume (not per hole).
+    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
+        bool any = false;
+        for (const HoleView &v : m_holes)
+            if (v.volume_idx == int(vi) && !v.upper_facets.empty()) {
+                any = true;
+                break;
+            }
+        if (!any)
+            continue;
+        const ModelVolume *mv = mo->volumes[vi];
+        TriangleSelector   sel(mv->mesh());
+        sel.deserialize(mv->counterbore_bridge_facets.get_data(), false);
+        for (size_t i = 0; i < m_holes.size(); ++i) {
+            const HoleView &v = m_holes[i];
+            if (v.volume_idx != int(vi) || m_bridge[i])
+                continue;
+            for (int f : v.upper_facets)
+                if (sel.get_facet_state(f) != EnforcerBlockerType::NONE) {
+                    m_bridge[i] = 1;
+                    break;
+                }
+        }
     }
 }
 
 void GLGizmoHorizontalHoles::rebuild_previews()
 {
     m_preview_dirty = false;
+    m_preview_all.reset();
     m_preview_applied.reset();
     m_preview_hover.reset();
 
-    const Vec3d up = object_up();
-    indexed_triangle_set applied_its, hover_its;
+    indexed_triangle_set all_its, applied_its, hover_its;
     for (size_t i = 0; i < m_holes.size(); ++i) {
-        const bool hovered = (int(i) == m_hover_id);
-        if (!m_applied[i] && !hovered)
+        indexed_triangle_set shape = m_bridge_mode ? upper_arc_mesh(int(i)) : teardrop_mesh(int(i));
+        if (shape.indices.empty())
             continue;
-        indexed_triangle_set td = its_make_teardrop_for_hole(m_holes[i].hole, teardrop_depth(m_holes[i].hole), m_angle_deg, 48, up);
-        if (td.indices.empty())
-            continue;
-        merge_into(m_applied[i] ? applied_its : hover_its, td);
+        merge_into(all_its, shape);
+
+        const bool applied = m_bridge_mode ? m_bridge[i] : m_teardrop[i];
+        if (applied)
+            merge_into(applied_its, shape);
+        else if (int(i) == m_hover_id)
+            merge_into(hover_its, shape);
     }
 
+    if (!all_its.indices.empty()) {
+        m_preview_all.model.init_from(all_its);
+        m_preview_all.model.set_color(ALL_COLOR);
+    }
     if (!applied_its.indices.empty()) {
         m_preview_applied.model.init_from(applied_its);
         m_preview_applied.model.set_color(APPLIED_COLOR);
@@ -336,6 +444,7 @@ void GLGizmoHorizontalHoles::on_render()
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    m_preview_all.model.render();
     m_preview_applied.model.render();
     m_preview_hover.model.render();
 
@@ -343,27 +452,156 @@ void GLGizmoHorizontalHoles::on_render()
     shader->stop_using();
 }
 
-void GLGizmoHorizontalHoles::add_teardrops(const std::vector<int> &idxs, const std::string &snapshot_name)
+// ---------------------------------------------------------------------------------------------
+// Model edits
+// ---------------------------------------------------------------------------------------------
+
+void GLGizmoHorizontalHoles::add_teardrop_volume(int idx, const std::string &snapshot_name)
+{
+    ModelObject *mo = model_object();
+    const int    oi = object_idx();
+    if (mo == nullptr || oi < 0)
+        return;
+    indexed_triangle_set its = teardrop_mesh(idx);
+    if (its.indices.empty())
+        return;
+
+    Plater *plater = wxGetApp().plater();
+    Plater::TakeSnapshot snapshot(plater, snapshot_name, UndoRedo::SnapshotType::GizmoAction);
+    ModelVolume *v = mo->add_volume(TriangleMesh(std::move(its)), ModelVolumeType::NEGATIVE_VOLUME, false);
+    v->name        = TEARDROP_NAME;
+    if (ObjectList *ol = wxGetApp().obj_list()) {
+        ol->add_volumes_to_object_in_list(oi);
+        ol->update_info_items(oi);
+    }
+    plater->update();
+}
+
+void GLGizmoHorizontalHoles::remove_teardrop_volume(int idx, const std::string &snapshot_name)
+{
+    ModelObject *mo = model_object();
+    const int    oi = object_idx();
+    if (mo == nullptr || oi < 0 || idx < 0 || idx >= int(m_holes.size()))
+        return;
+
+    const double tol = std::max(0.5, m_holes[idx].hole.radius);
+    std::vector<ItemForDelete> items;
+    std::vector<char>          marked(mo->volumes.size(), 0);
+    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
+        const ModelVolume *v = mo->volumes[vi];
+        if (!v->is_negative_volume() || v->name.rfind(TEARDROP_NAME, 0) != 0)
+            continue;
+        if (marked[vi] || (mesh_centroid(v->mesh().its) - m_holes[idx].hole.center).norm() >= tol)
+            continue;
+        marked[vi] = 1;
+        items.emplace_back(ItemType::itVolume, oi, int(vi));
+    }
+    if (items.empty())
+        return;
+
+    Plater *plater = wxGetApp().plater();
+    Plater::TakeSnapshot snapshot(plater, snapshot_name, UndoRedo::SnapshotType::GizmoAction);
+    if (ObjectList *ol = wxGetApp().obj_list())
+        ol->delete_from_model_and_list(items);
+}
+
+void GLGizmoHorizontalHoles::paint_bridge(int idx, bool on, const std::string &snapshot_name)
+{
+    ModelObject *mo = model_object();
+    const int    oi = object_idx();
+    if (mo == nullptr || oi < 0 || idx < 0 || idx >= int(m_holes.size()))
+        return;
+    const HoleView &v = m_holes[idx];
+    if (v.volume_idx < 0 || v.volume_idx >= int(mo->volumes.size()) || v.upper_facets.empty())
+        return;
+    ModelVolume *mv = mo->volumes[v.volume_idx];
+
+    Plater *plater = wxGetApp().plater();
+    Plater::TakeSnapshot snapshot(plater, snapshot_name, UndoRedo::SnapshotType::GizmoAction);
+
+    TriangleSelector sel(mv->mesh());
+    sel.deserialize(mv->counterbore_bridge_facets.get_data(), false);
+    const EnforcerBlockerType state = on ? EnforcerBlockerType::BLOCKER : EnforcerBlockerType::NONE;
+    for (int f : v.upper_facets)
+        sel.set_facet(f, state);
+    mv->counterbore_bridge_facets.set(sel);
+
+    if (ObjectList *ol = wxGetApp().obj_list())
+        ol->update_info_items(oi);
+    m_parent.post_event(SimpleEvent(EVT_GLCANVAS_SCHEDULE_BACKGROUND_PROCESS));
+    plater->update();
+}
+
+void GLGizmoHorizontalHoles::toggle_teardrop(int idx)
+{
+    if (m_teardrop[idx])
+        remove_teardrop_volume(idx, _u8L("Remove teardrop"));
+    else
+        add_teardrop_volume(idx, _u8L("Add teardrop"));
+}
+
+void GLGizmoHorizontalHoles::toggle_bridge(int idx)
+{
+    paint_bridge(idx, !m_bridge[idx], _u8L("Toggle partial bridge"));
+}
+
+void GLGizmoHorizontalHoles::clear_all()
 {
     ModelObject *mo = model_object();
     const int    oi = object_idx();
     if (mo == nullptr || oi < 0)
         return;
 
-    std::vector<indexed_triangle_set> meshes;
-    for (int i : idxs) {
-        if (i < 0 || i >= int(m_holes.size()) || m_applied[i])
-            continue;
-        indexed_triangle_set its = teardrop_mesh(i);
-        if (!its.indices.empty())
-            meshes.push_back(std::move(its));
+    // Teardrops: every negative volume this gizmo named.
+    std::vector<ItemForDelete> items;
+    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
+        const ModelVolume *v = mo->volumes[vi];
+        if (v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0)
+            items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
-    if (meshes.empty())
+    if (!items.empty()) {
+        Plater *plater = wxGetApp().plater();
+        Plater::TakeSnapshot snapshot(plater, _u8L("Remove teardrops"), UndoRedo::SnapshotType::GizmoAction);
+        if (ObjectList *ol = wxGetApp().obj_list())
+            ol->delete_from_model_and_list(items);
+    }
+
+    // Partial bridges: unpaint the upper arcs of the detected holes.
+    for (size_t i = 0; i < m_holes.size(); ++i)
+        if (m_bridge[i])
+            paint_bridge(int(i), false, _u8L("Clear partial bridge"));
+}
+
+void GLGizmoHorizontalHoles::reapply_teardrops()
+{
+    std::vector<int> applied;
+    for (size_t i = 0; i < m_holes.size(); ++i)
+        if (m_teardrop[i])
+            applied.push_back(int(i));
+
+    ModelObject *mo = model_object();
+    const int    oi = object_idx();
+    if (mo == nullptr || oi < 0)
+        return;
+
+    std::vector<ItemForDelete> items;
+    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
+        const ModelVolume *v = mo->volumes[vi];
+        if (v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0)
+            items.emplace_back(ItemType::itVolume, oi, int(vi));
+    }
+    if (applied.empty() && items.empty())
         return;
 
     Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, snapshot_name, UndoRedo::SnapshotType::GizmoAction);
-    for (indexed_triangle_set &its : meshes) {
+    Plater::TakeSnapshot snapshot(plater, _u8L("Update teardrops"), UndoRedo::SnapshotType::GizmoAction);
+    if (!items.empty())
+        if (ObjectList *ol = wxGetApp().obj_list())
+            ol->delete_from_model_and_list(items);
+    for (int i : applied) {
+        indexed_triangle_set its = teardrop_mesh(i);
+        if (its.indices.empty())
+            continue;
         ModelVolume *v = mo->add_volume(TriangleMesh(std::move(its)), ModelVolumeType::NEGATIVE_VOLUME, false);
         v->name        = TEARDROP_NAME;
     }
@@ -374,144 +612,109 @@ void GLGizmoHorizontalHoles::add_teardrops(const std::vector<int> &idxs, const s
     plater->update();
 }
 
-void GLGizmoHorizontalHoles::remove_teardrops(const std::vector<int> &idxs, const std::string &snapshot_name)
+// ---------------------------------------------------------------------------------------------
+// MCP control surface
+// ---------------------------------------------------------------------------------------------
+int GLGizmoHorizontalHoles::hole_count()
 {
-    ModelObject *mo = model_object();
-    const int    oi = object_idx();
-    if (mo == nullptr || oi < 0)
-        return;
-
-    std::vector<ItemForDelete> items;
-    std::vector<char>          marked(mo->volumes.size(), 0);
-    for (int i : idxs) {
-        if (i < 0 || i >= int(m_holes.size()))
-            continue;
-        const double tol = std::max(0.5, m_holes[i].hole.radius);
-        for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
-            const ModelVolume *v = mo->volumes[vi];
-            if (!v->is_negative_volume() || v->name.rfind(TEARDROP_NAME, 0) != 0)
-                continue;
-            if (marked[vi] || (mesh_centroid(v->mesh().its) - m_holes[i].hole.center).norm() >= tol)
-                continue;
-            marked[vi] = 1;
-            items.emplace_back(ItemType::itVolume, oi, int(vi));
-        }
-    }
-    if (items.empty())
-        return;
-
-    Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, snapshot_name, UndoRedo::SnapshotType::GizmoAction);
-    if (ObjectList *ol = wxGetApp().obj_list())
-        ol->delete_from_model_and_list(items);
+    if (m_dirty)
+        detect();
+    return int(m_holes.size());
 }
 
-void GLGizmoHorizontalHoles::toggle_hole(int idx)
+DetectedHole GLGizmoHorizontalHoles::hole(int idx) const
 {
     if (idx < 0 || idx >= int(m_holes.size()))
+        return {};
+    return m_holes[idx].hole;
+}
+
+bool GLGizmoHorizontalHoles::hole_has_teardrop(int idx) const
+{
+    return idx >= 0 && idx < int(m_teardrop.size()) && m_teardrop[idx] != 0;
+}
+
+bool GLGizmoHorizontalHoles::hole_has_bridge(int idx) const
+{
+    return idx >= 0 && idx < int(m_bridge.size()) && m_bridge[idx] != 0;
+}
+
+void GLGizmoHorizontalHoles::set_bridge_mode(bool on)
+{
+    if (m_bridge_mode == on)
         return;
-    if (m_applied[idx])
-        remove_teardrops({idx}, _u8L("Remove teardrop"));
+    m_bridge_mode   = on;
+    m_preview_dirty = true;
+    set_dirty();
+}
+
+void GLGizmoHorizontalHoles::set_angle(float deg)
+{
+    m_angle_deg     = std::clamp(deg, ANGLE_MIN, ANGLE_MAX);
+    m_angle_changed = true;
+    m_preview_dirty = true;
+    set_dirty();
+}
+
+void GLGizmoHorizontalHoles::gizmo_toggle_hole(int idx)
+{
+    if (m_dirty)
+        detect();
+    if (idx < 0 || idx >= int(m_holes.size()))
+        return;
+    if (m_bridge_mode)
+        toggle_bridge(idx);
     else
-        add_teardrops({idx}, _u8L("Add teardrop"));
+        toggle_teardrop(idx);
     refresh_applied();
     m_preview_dirty = true;
     set_dirty();
 }
 
-void GLGizmoHorizontalHoles::apply_all(bool applied)
+void GLGizmoHorizontalHoles::gizmo_apply_all()
 {
-    std::vector<int> idxs;
-    for (size_t i = 0; i < m_holes.size(); ++i)
-        if (bool(m_applied[i]) != applied)
-            idxs.push_back(int(i));
-    if (idxs.empty())
-        return;
-    if (applied)
-        add_teardrops(idxs, _u8L("Add teardrops"));
-    else
-        remove_teardrops(idxs, _u8L("Remove teardrops"));
+    if (m_dirty)
+        detect();
+    for (size_t i = 0; i < m_holes.size(); ++i) {
+        const bool applied = m_bridge_mode ? m_bridge[i] : m_teardrop[i];
+        if (applied)
+            continue;
+        if (m_bridge_mode)
+            toggle_bridge(int(i));
+        else
+            toggle_teardrop(int(i));
+    }
     refresh_applied();
     m_preview_dirty = true;
     set_dirty();
 }
 
-void GLGizmoHorizontalHoles::clear_all()
+void GLGizmoHorizontalHoles::gizmo_clear_all()
 {
-    ModelObject *mo = model_object();
-    const int    oi = object_idx();
-    if (mo == nullptr || oi < 0)
-        return;
-
-    std::vector<ItemForDelete> items;
-    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
-        const ModelVolume *v = mo->volumes[vi];
-        if (v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0)
-            items.emplace_back(ItemType::itVolume, oi, int(vi));
-    }
-    if (items.empty())
-        return;
-
-    Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, _u8L("Remove teardrops"), UndoRedo::SnapshotType::GizmoAction);
-    if (ObjectList *ol = wxGetApp().obj_list())
-        ol->delete_from_model_and_list(items);
+    if (m_dirty)
+        detect();
+    clear_all();
     refresh_applied();
     m_preview_dirty = true;
     set_dirty();
 }
 
-void GLGizmoHorizontalHoles::reapply_all()
+void GLGizmoHorizontalHoles::gizmo_refresh()
 {
-    std::vector<int> idxs;
-    for (size_t i = 0; i < m_holes.size(); ++i)
-        if (m_applied[i])
-            idxs.push_back(int(i));
-    if (idxs.empty())
-        return;
-
-    ModelObject *mo = model_object();
-    const int    oi = object_idx();
-    if (mo == nullptr || oi < 0)
-        return;
-
-    std::vector<indexed_triangle_set> meshes;
-    for (int i : idxs) {
-        indexed_triangle_set its = teardrop_mesh(i);
-        if (!its.indices.empty())
-            meshes.push_back(std::move(its));
-    }
-
-    Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, _u8L("Update teardrops"), UndoRedo::SnapshotType::GizmoAction);
-
-    std::vector<ItemForDelete> items;
-    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
-        const ModelVolume *v = mo->volumes[vi];
-        if (v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0)
-            items.emplace_back(ItemType::itVolume, oi, int(vi));
-    }
-    if (ObjectList *ol = wxGetApp().obj_list()) {
-        if (!items.empty())
-            ol->delete_from_model_and_list(items);
-        for (indexed_triangle_set &its : meshes) {
-            ModelVolume *v = mo->add_volume(TriangleMesh(std::move(its)), ModelVolumeType::NEGATIVE_VOLUME, false);
-            v->name        = TEARDROP_NAME;
-        }
-        ol->add_volumes_to_object_in_list(oi);
-        ol->update_info_items(oi);
-    }
-    plater->update();
-    refresh_applied();
+    m_dirty         = true;
     m_preview_dirty = true;
     set_dirty();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------------------------
 
 bool GLGizmoHorizontalHoles::on_mouse(const wxMouseEvent &mouse_event)
 {
     const bool on_hole = m_hover_id >= 0 && m_hover_id < int(m_holes.size());
     if (mouse_event.LeftDown() && on_hole) {
-        toggle_hole(m_hover_id);
+        gizmo_toggle_hole(m_hover_id);
         return true;
     }
     if (mouse_event.LeftUp() && on_hole)
@@ -525,6 +728,9 @@ void GLGizmoHorizontalHoles::on_render_input_window(float x, float y, float bott
     if (mo == nullptr)
         return;
 
+    if (m_dirty)
+        detect();
+
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
@@ -533,40 +739,51 @@ void GLGizmoHorizontalHoles::on_render_input_window(float x, float y, float bott
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
     const float sliders_width = m_imgui->scaled(7.0f);
-    const float left_width    = m_imgui->calc_text_size(m_desc.at("apex")).x + m_imgui->scaled(1.5f);
+    const float left_width    = m_imgui->scaled(9.0f);
 
-    // Apex angle.
+    // Mode: cut a teardrop, or partial-bridge the upper arc.
+    ImGui::AlignTextToFramePadding();
+    m_imgui->text(m_desc.at("mode"));
+    ImGui::SameLine(left_width);
+    if (m_imgui->button(m_desc.at("mode_teardrop")))
+        set_bridge_mode(false);
+    ImGui::SameLine();
+    if (m_imgui->button(m_desc.at("mode_bridge")))
+        set_bridge_mode(true);
+    ImGui::SameLine();
+    m_imgui->text(m_bridge_mode ? _L("(single bridge layer)") : _L("(self-supporting roof)"));
+
+    ImGui::Separator();
+
+    // Apex angle: slider plus a typed value, clamped to the sane range.
     ImGui::AlignTextToFramePadding();
     m_imgui->text(m_desc.at("apex"));
     ImGui::SameLine(left_width);
     ImGui::PushItemWidth(sliders_width);
     float angle = m_angle_deg;
-    if (m_imgui->bbl_slider_float_style("##apex", &angle, 10.f, 80.f, "%.0f", 1.0f, true)) {
-        m_angle_deg     = angle;
-        m_angle_changed = true;
-    }
+    if (m_imgui->bbl_slider_float_style("##apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
+        set_angle(angle);
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::PushItemWidth(m_imgui->scaled(4.0f));
+    if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
+        set_angle(angle);
     ImGui::PopItemWidth();
 
     ImGui::Separator();
 
-    m_imgui->text(wxString::Format("%s: %d", m_desc.at("holes").c_str(), int(m_holes.size())));
+    const int applied = int(std::count_if(m_bridge_mode ? m_bridge.begin() : m_teardrop.begin(),
+                                          m_bridge_mode ? m_bridge.end() : m_teardrop.end(),
+                                          [](char a) { return a != 0; }));
+    m_imgui->text(wxString::Format("%s: %d (%d applied)", m_desc.at("holes").c_str(), int(m_holes.size()), applied));
 
     m_imgui->disabled_begin(m_holes.empty());
-    if (m_imgui->button(m_desc.at("select_all")))
-        apply_all(true);
+    if (m_imgui->button(m_desc.at("all")))
+        gizmo_apply_all();
     m_imgui->disabled_end();
-    // Clear stays enabled even with no detected holes, so orphaned teardrops can be removed.
+    ImGui::SameLine();
     if (m_imgui->button(m_desc.at("clear")))
-        clear_all();
-
-    for (int i = 0; i < int(m_holes.size()); ++i) {
-        bool applied = m_applied[i] != 0;
-        char label[160];
-        std::snprintf(label, sizeof(label), "%s  D=%.1f mm##hole%d", m_holes[i].hole.through ? "through" : "blind",
-                      m_holes[i].hole.radius * 2., i);
-        if (ImGui::Checkbox(label, &applied))
-            toggle_hole(i);
-    }
+        gizmo_clear_all();
 
     ImGui::Separator();
 
@@ -592,13 +809,13 @@ void GLGizmoHorizontalHoles::on_render_input_window(float x, float y, float bott
     GizmoImguiEnd();
     ImGuiWrapper::pop_toolbar_style();
 
+    // Changing the angle re-cuts applied teardrops immediately; bridges are unaffected.
     if (m_angle_changed) {
         m_angle_changed = false;
-        const bool any_applied = std::any_of(m_applied.begin(), m_applied.end(), [](char a) { return a != 0; });
-        if (any_applied)
-            reapply_all();
-        else
-            m_preview_dirty = true;
+        if (!m_bridge_mode)
+            reapply_teardrops();
+        m_preview_dirty = true;
+        set_dirty();
     }
 }
 

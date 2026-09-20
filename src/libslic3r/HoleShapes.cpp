@@ -82,7 +82,7 @@ indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double
     if (up.norm() < 1e-6)
         return {}; // hole parallel to up: a teardrop has no meaning
     up.normalize();
-    const Vec3d right = a.cross(up).normalized();
+    const Vec3d right = up.cross(a).normalized(); // right x up == a, a proper rotation
 
     Eigen::Matrix3d R;
     R.col(0) = Eigen::Vector3d(right(0), right(1), right(2));

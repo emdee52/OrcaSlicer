@@ -2,9 +2,9 @@
 #define slic3r_GLGizmoHorizontalHoles_hpp_
 
 // [ORCAPORT:ME-1] Horizontal-hole picker. Detects cylindrical holes on the selected object
-// (HoleDetector) and cuts a teardrop negative (HoleShapes) into the ones the user picks, so
-// the top of a horizontal hole prints as a self-supporting ~45 degree roof instead of an
-// unsupported bridge. Works on the mesh directly - no CAD reconstruction.
+// (HoleDetector) and, per hole, either cuts a teardrop negative (HoleShapes) or paints the
+// hole's upper arc into the volume's counterbore-bridge annotation, so the slicer bridges over
+// it. Works on the mesh directly - no CAD reconstruction.
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
@@ -18,6 +18,7 @@
 
 namespace Slic3r {
 class ModelObject;
+class ModelVolume;
 
 namespace GUI {
 
@@ -28,6 +29,20 @@ public:
 
     void data_changed(bool is_serializing) override;
     bool on_mouse(const wxMouseEvent& mouse_event) override;
+
+    // --- control surface for the embedded MCP tools (see OrcaMCPGizmoTools.cpp) ---
+    int           hole_count();                 // runs detection if needed
+    DetectedHole  hole(int idx) const;          // object-space hole
+    bool          hole_has_teardrop(int idx) const;
+    bool          hole_has_bridge(int idx) const;
+    bool          bridge_mode() const { return m_bridge_mode; }
+    void          set_bridge_mode(bool on);
+    float         get_angle() const { return m_angle_deg; }
+    void          set_angle(float deg);
+    void          gizmo_toggle_hole(int idx);   // applies/removes the current mode
+    void          gizmo_apply_all();
+    void          gizmo_clear_all();
+    void          gizmo_refresh();
 
 protected:
     bool on_init() override;
@@ -44,7 +59,9 @@ protected:
 private:
     struct HoleView
     {
-        DetectedHole hole;
+        DetectedHole     hole;          // object coordinates (axis, center, radius, depth)
+        int              volume_idx{ -1 };
+        std::vector<int> upper_facets;  // facet indices in the volume's local mesh (upper arc)
     };
 
     ModelObject* model_object() const;
@@ -52,38 +69,43 @@ private:
     Transform3d  instance_matrix() const;
     Vec3d        object_up() const;
     double       teardrop_depth(const DetectedHole& hole) const;
-    indexed_triangle_set teardrop_mesh(int idx) const;
 
-    void detect();          // (re)detect holes and refresh the derived state
-    void refresh_applied(); // mark which holes already have a teardrop volume
+    void detect();
+    void refresh_applied();
     void rebuild_previews();
     void register_pickers();
 
-    void toggle_hole(int idx);
-    void apply_all(bool applied);
-    void clear_all();
-    void reapply_all();
+    indexed_triangle_set teardrop_mesh(int idx) const;
+    indexed_triangle_set upper_arc_mesh(int idx) const;
 
-    void add_teardrops(const std::vector<int>& idxs, const std::string& snapshot_name);
-    void remove_teardrops(const std::vector<int>& idxs, const std::string& snapshot_name);
+    void toggle_teardrop(int idx);
+    void toggle_bridge(int idx);
+    void clear_all();
+    void reapply_teardrops();
+
+    void add_teardrop_volume(int idx, const std::string& snapshot_name);
+    void remove_teardrop_volume(int idx, const std::string& snapshot_name);
+    void paint_bridge(int idx, bool on, const std::string& snapshot_name);
 
     std::vector<HoleView> m_holes;
-    std::vector<char>     m_applied;
+    std::vector<char>     m_teardrop;  // a teardrop negative matches this hole
+    std::vector<char>     m_bridge;    // the hole's upper arc is painted
+
     std::vector<indexed_triangle_set> m_pick_its;
 
     bool  m_dirty{ true };
     bool  m_preview_dirty{ true };
     bool  m_angle_changed{ false };
+    bool  m_bridge_mode{ false };
     float m_angle_deg{ 45.f };
 
+    PickingModel m_preview_all;
     PickingModel m_preview_applied;
     PickingModel m_preview_hover;
 
     std::vector<std::unique_ptr<MeshRaycaster>>      m_pick_raycasters;
     std::vector<std::shared_ptr<SceneRaycasterItem>> m_pick_items;
 
-    // Signature of the last detection, so data_changed() only marks the gizmo dirty when the
-    // geometry it depends on actually changed.
     const ModelObject* m_old_model_object{ nullptr };
     int                m_old_volume_count{ -1 };
     Transform3d        m_old_instance_matrix{ Transform3d::Identity() };

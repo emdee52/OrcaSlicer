@@ -144,3 +144,25 @@ TEST_CASE("A through hole cut from a plate is detected as through", "[HoleDetect
     CHECK(h->through);
     CHECK_THAT(radial_distance(*h, Vec3d(15., 15., 2.5)), WithinAbs(0., 0.1));
 }
+
+TEST_CASE("A counterbore reports both its bore and its through shaft", "[HoleDetector]")
+{
+    TriangleMesh plate = make_cube(30., 30., 6.);
+    TriangleMesh cbore = make_cylinder(4., 12., PI / 30.);
+    cbore.translate(Vec3f(15.f, 15.f, 3.f));  // blind from the top, floor at z = 3
+    TriangleMesh shaft = make_cylinder(2., 30., PI / 30.);
+    shaft.translate(Vec3f(15.f, 15.f, -3.f)); // through
+    MeshBoolean::cgal::minus(plate, cbore);
+    MeshBoolean::cgal::minus(plate, shaft);
+    its_merge_vertices(plate.its);
+
+    const auto holes = detect_holes(plate.its);
+    const DetectedHole *big   = hole_with_radius(holes, 4.);
+    const DetectedHole *small = hole_with_radius(holes, 2.);
+    REQUIRE(big != nullptr);
+    REQUIRE(small != nullptr);
+    CHECK_FALSE(big->through);   // the counterbore has a floor
+    CHECK(small->through);       // the shaft is open
+    CHECK(big->depth < small->depth);
+}
+

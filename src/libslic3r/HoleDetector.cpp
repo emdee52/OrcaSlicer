@@ -105,8 +105,10 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
     if (nf < params.min_facets || its.vertices.empty())
         return holes;
 
-    const std::vector<Vec3f>   normals   = its_face_normals(its);
-    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    const std::vector<Vec3f>   normals = its_face_normals(its);
+    // Patch growth uses vertex adjacency, not edge adjacency: a boolean/repair can leave a
+    // cylinder wall split across T-junctions, and edge neighbours then break it into arcs.
+    const VertexFaceIndex      vertex_faces(its);
     const double               cos_smooth = std::cos(params.smooth_angle_deg * PI / 180.);
 
     std::vector<char> visited(nf, 0);
@@ -132,15 +134,16 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             const int    f  = stack.back();
             stack.pop_back();
             const Vec3f &n0 = normals[f];
-            for (int e = 0; e < 3; ++e) {
-                const int g = neighbors[f][e];
-                if (g < 0 || visited[g])
-                    continue;
-                if (double(n0.dot(normals[g])) < cos_smooth)
-                    continue;
-                visited[g] = 1;
-                stack.push_back(g);
-                patch.push_back(g);
+            for (int k = 0; k < 3; ++k) {
+                for (size_t g : vertex_faces[its.indices[f][k]]) {
+                    if (int(g) == f || visited[g])
+                        continue;
+                    if (double(n0.dot(normals[g])) < cos_smooth)
+                        continue;
+                    visited[g] = 1;
+                    stack.push_back(int(g));
+                    patch.push_back(int(g));
+                }
             }
         }
         if (int(patch.size()) < params.min_facets)
@@ -238,38 +241,66 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
         const double cap_tol_t   = params.cap_end_tolerance * r;
         const double cap_max_rad = 1.3 * r + cap_tol_t;
         const double hole_area   = PI * r * r;
-        double       cap_min_area = 0., cap_max_area = 0.;
-        for (int f : patch) {
-            for (int e = 0; e < 3; ++e) {
-                const int g = neighbors[f][e];
-                if (g < 0 || in_patch[g])
-                    continue;
-                const Vec3f &n = normals[g];
-                if (std::abs(n(0) * frame.axis(0) + n(1) * frame.axis(1) + n(2) * frame.axis(2)) < 0.9)
-                    continue; // not a cap plane
 
-                double gt_min = std::numeric_limits<double>::max(), gt_max = -std::numeric_limits<double>::max();
-                double max_rad = 0.;
-                for (int k = 0; k < 3; ++k) {
-                    const Vec3f &p = its.vertices[its.indices[g][k]];
-                    const double t = p(0) * frame.axis(0) + p(1) * frame.axis(1) + p(2) * frame.axis(2);
-                    gt_min = std::min(gt_min, t);
-                    gt_max = std::max(gt_max, t);
-                    const double u = p(0) * frame.e1(0) + p(1) * frame.e1(1) + p(2) * frame.e1(2) - cu;
-                    const double v = p(0) * frame.e2(0) + p(1) * frame.e2(1) + p(2) * frame.e2(2) - cv;
-                    max_rad = std::max(max_rad, std::hypot(u, v));
+        // Which end of the wall a face closes, or -1. A cap face is parallel to the axis, lies at
+        // one end, and stays within the hole radius.
+        auto cap_end_of = [&](int g) -> int {
+            const Vec3f &n = normals[g];
+            if (std::abs(n(0) * frame.axis(0) + n(1) * frame.axis(1) + n(2) * frame.axis(2)) < 0.9)
+                return -1;
+            double gt_min = std::numeric_limits<double>::max(), gt_max = -std::numeric_limits<double>::max(), max_rad = 0.;
+            for (int k = 0; k < 3; ++k) {
+                const Vec3f &p = its.vertices[its.indices[g][k]];
+                const double t = p(0) * frame.axis(0) + p(1) * frame.axis(1) + p(2) * frame.axis(2);
+                gt_min = std::min(gt_min, t);
+                gt_max = std::max(gt_max, t);
+                const double u = p(0) * frame.e1(0) + p(1) * frame.e1(1) + p(2) * frame.e1(2) - cu;
+                const double v = p(0) * frame.e2(0) + p(1) * frame.e2(1) + p(2) * frame.e2(2) - cv;
+                max_rad = std::max(max_rad, std::hypot(u, v));
+            }
+            if (max_rad > cap_max_rad)
+                return -1;
+            if (std::abs(gt_min - t_min) < cap_tol_t && std::abs(gt_max - t_min) < cap_tol_t)
+                return 0;
+            if (std::abs(gt_min - t_max) < cap_tol_t && std::abs(gt_max - t_max) < cap_tol_t)
+                return 1;
+            return -1;
+        };
+
+        // Flood the whole cap surface from the wall rim: a floor can be triangulated so only part
+        // of it touches the wall, and counting just the adjacent faces would miss the cap.
+        std::vector<char> cap_seen(nf, 0);
+        double            cap_area[2] = {0., 0.};
+        std::vector<int>  cap_stack;
+        for (int f : patch) {
+            for (int k = 0; k < 3; ++k) {
+                for (size_t gg : vertex_faces[its.indices[f][k]]) {
+                    const int g = int(gg);
+                    if (in_patch[g] || cap_seen[g])
+                        continue;
+                    const int end = cap_end_of(g);
+                    if (end < 0)
+                        continue;
+                    cap_seen[g] = 1;
+                    cap_stack.assign(1, g);
+                    while (!cap_stack.empty()) {
+                        const int h = cap_stack.back();
+                        cap_stack.pop_back();
+                        cap_area[end] += its.facet_area(h);
+                        for (int kk = 0; kk < 3; ++kk)
+                            for (size_t qq : vertex_faces[its.indices[h][kk]]) {
+                                const int q = int(qq);
+                                if (in_patch[q] || cap_seen[q] || cap_end_of(q) != end)
+                                    continue;
+                                cap_seen[q] = 1;
+                                cap_stack.push_back(q);
+                            }
+                    }
                 }
-                if (max_rad > cap_max_rad)
-                    continue;
-                const double area = its.facet_area(g);
-                if (std::abs(gt_min - t_min) < cap_tol_t && std::abs(gt_max - t_min) < cap_tol_t)
-                    cap_min_area += area;
-                else if (std::abs(gt_min - t_max) < cap_tol_t && std::abs(gt_max - t_max) < cap_tol_t)
-                    cap_max_area += area;
             }
         }
-        const bool cap_min = cap_min_area >= params.cap_area_fraction * hole_area;
-        const bool cap_max = cap_max_area >= params.cap_area_fraction * hole_area;
+        const bool cap_min = cap_area[0] >= params.cap_area_fraction * hole_area;
+        const bool cap_max = cap_area[1] >= params.cap_area_fraction * hole_area;
         h.through = !cap_min && !cap_max;
 
         const double residual_score = std::clamp(1. - residual / (params.radial_tolerance * r), 0., 1.);

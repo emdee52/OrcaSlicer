@@ -434,6 +434,7 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     # [ORCAPORT:MCP-1] END
     # [ORCAPORT:MCP-2] OraExt introspection tools
     GUI/OrcaMCP/OrcaExtTools.cpp
+    GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
     GUI/OptionsGroup.cpp
     GUI/OptionsGroup.hpp
     GUI/ParamsDialog.cpp
