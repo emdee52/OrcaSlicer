@@ -26,6 +26,7 @@ namespace GUI {
 
 enum class HoleOperation { Teardrop, Bore };
 enum class BoreHead { None, Counterbore, Countersink };
+enum class ScrewFit { Free, Tap };
 
 class GLGizmoHoles : public GLGizmoBase
 {
@@ -55,12 +56,15 @@ public:
     void        set_standard(int idx);
     BoreHead    get_head() const { return m_head; }
     void        set_head(BoreHead h);
+    ScrewFit    get_screw_fit() const { return m_screw_fit; }
+    void        set_screw_fit(ScrewFit f);
     HoleFit     get_fit() const { return HoleFit(m_fit); }
     void        set_fit(HoleFit f);
     double      get_diameter() const { return m_diameter; }
     void        set_diameter(double d);
     double      get_tolerance() const { return m_tolerance; }
     void        set_tolerance(double t);
+    double      true_diameter() const { return bore_diameter(); }
     bool        get_through() const { return m_through; }
     void        set_through(bool t);
     bool        get_flip() const { return m_flip; }
@@ -117,10 +121,6 @@ private:
     void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
 
-    // The standard whose nominal diameter matches `d` (screw clearance, or pocket diameter for
-    // inserts/magnets), or -1. Used to relabel Custom <-> standard when the diameter is edited.
-    int matched_standard(double d) const;
-
     std::vector<HoleView>             m_holes;
     std::vector<char>                 m_teardrop; // a teardrop negative matches this hole
     std::vector<char>                 m_bore;     // a pocket/bore volume matches this hole
@@ -133,6 +133,7 @@ private:
     HoleOperation m_operation{ HoleOperation::Teardrop };
     int           m_standard{ -1 };   // -1 = Custom, else index into hole_standards()
     BoreHead      m_head{ BoreHead::None };
+    ScrewFit      m_screw_fit{ ScrewFit::Free };
     int           m_fit{ 1 };         // 0 tight, 1 slip, 2 epoxy
     double        m_diameter{ 5.0 };  // nominal diameter (editable)
     double        m_tolerance{ 0.0 }; // extra diameter; fit-derived and read-only for insert/magnet

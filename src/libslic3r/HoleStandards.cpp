@@ -16,11 +16,12 @@ const std::vector<HoleStandard> &standards_table()
     static const std::vector<HoleStandard> table = [] {
         std::vector<HoleStandard> t;
 
-        auto screw = [&](const char *desig, double clearance, double cbore_d, double cbore_depth, double csink_d) {
+        auto screw = [&](const char *desig, double clearance, double tap, double cbore_d, double cbore_depth, double csink_d) {
             HoleStandard s;
             s.designation   = desig;
             s.kind          = HoleStandardKind::Screw;
             s.clearance_d   = clearance;
+            s.tap_d         = tap;
             s.cbore_d       = cbore_d;
             s.cbore_depth   = cbore_depth;
             s.csink_d       = csink_d;
@@ -35,17 +36,22 @@ const std::vector<HoleStandard> &standards_table()
             t.push_back(s);
         };
 
-        screw("M3", 3.4, 6.0, 3.4, 6.3);
-        screw("M4", 4.5, 8.0, 4.4, 8.4);
-        screw("M5", 5.5, 10.0, 5.4, 10.4);
-        screw("M6", 6.6, 11.0, 6.8, 12.6);
-        screw("M8", 9.0, 15.0, 8.8, 17.3);
-        screw("M10", 11.0, 18.0, 11.0, 20.0);
-        screw("#6-32", 3.7, 8.8, 4.2, 8.7);
-        screw("#8-32", 4.4, 9.9, 5.1, 10.2);
-        screw("1/4-20", 6.9, 14.4, 7.2, 14.7);
-        screw("5/16-18", 8.8, 17.0, 8.2, 17.3);
-        screw("3/8-16", 10.5, 19.6, 9.5, 19.8);
+        // Tap-only sizes (too small for a free fit). Tap = lower 50%-thread steel drill.
+        screw("M2", 0.0, 1.70, 0.0, 0.0, 0.0);
+        screw("M2.2", 0.0, 1.90, 0.0, 0.0, 0.0);
+        screw("M2.5", 0.0, 2.20, 0.0, 0.0, 0.0);
+        // Free (clearance) and tap (plastic thread-forming) fits.
+        screw("M3", 3.4, 2.60, 6.0, 3.4, 6.3);
+        screw("M4", 4.5, 3.50, 8.0, 4.4, 8.4);
+        screw("M5", 5.5, 4.40, 10.0, 5.4, 10.4);
+        screw("M6", 6.6, 5.40, 11.0, 6.8, 12.6);
+        screw("M8", 9.0, 7.20, 15.0, 8.8, 17.3);
+        screw("M10", 11.0, 9.00, 18.0, 11.0, 20.0);
+        screw("#6-32", 3.7, 0.0, 8.8, 4.2, 8.7);
+        screw("#8-32", 4.4, 0.0, 9.9, 5.1, 10.2);
+        screw("1/4-20", 6.9, 0.0, 14.4, 7.2, 14.7);
+        screw("5/16-18", 8.8, 0.0, 17.0, 8.2, 17.3);
+        screw("3/8-16", 10.5, 0.0, 19.6, 9.5, 19.8);
 
         // Heat-set inserts (OD x length), Ruthex-style brass.
         pocket("M2 insert", HoleStandardKind::Insert, 3.2, 4.0);
@@ -97,6 +103,17 @@ double hole_fit_diameter_delta(HoleStandardKind kind, double nominal_d, HoleFit 
     case HoleFit::Epoxy: return 0.30 + rel * d;
     }
     return 0.20 + rel * d;
+}
+
+double screw_nominal_diameter(const HoleStandard &s, bool tap)
+{
+    if (s.kind != HoleStandardKind::Screw)
+        return 0.;
+    if (tap && s.tap_d > 0.)
+        return s.tap_d;
+    if (s.clearance_d > 0.)
+        return s.clearance_d;
+    return s.tap_d;
 }
 
 } // namespace Slic3r

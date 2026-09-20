@@ -18,8 +18,11 @@ struct HoleStandard {
     std::string      designation; // "M3", "#8-32", "M3 insert", "6x3 magnet"
     HoleStandardKind kind{ HoleStandardKind::Screw };
 
-    // Screw: through/blind clearance diameter.
+    // Screw: through/blind clearance diameter for a free (non-threaded) fit. 0 when the screw is
+    // only meant to be tapped into plastic.
     double clearance_d{ 0. };
+    // Screw: thread-forming (tap) diameter for plastic - the lower 50%-thread steel tap drill.
+    double tap_d{ 0. };
     // Screw: head features (0 when the standard carries none).
     double cbore_d{ 0. };
     double cbore_depth{ 0. };
@@ -43,6 +46,10 @@ enum class HoleFit { Tight, Slip, Epoxy };
 // Extra diameter (mm) for a pocket of nominal diameter `nominal_d` with the given fit. Scales
 // slightly with the diameter so larger pockets get proportionally more clearance.
 double hole_fit_diameter_delta(HoleStandardKind kind, double nominal_d, HoleFit fit);
+
+// A screw's nominal diameter for a free fit (tap == false) or a thread-forming tap fit
+// (tap == true); falls back to whichever exists. Returns 0 for non-screw standards.
+double screw_nominal_diameter(const HoleStandard &s, bool tap);
 
 } // namespace Slic3r
 

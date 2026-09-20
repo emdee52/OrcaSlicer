@@ -179,6 +179,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"standard_name", g.standard_name(g.get_standard() + 1)},
         {"diameter", g.get_diameter()},
         {"tolerance", g.get_tolerance()},
+        {"true_diameter", g.true_diameter()},
+        {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"holes", arr},
@@ -221,13 +223,14 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
                 {"head", {{"type", "string"}, {"description", "none | counterbore | countersink, for action=set_head."}}},
+                {"screw_fit", {{"type", "string"}, {"description", "free | tap, for action=set_screw_fit (screws only)."}}},
                 {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
                 {"diameter", {{"type", "number"}, {"description", "Nominal diameter mm, for action=set_diameter. Matching a standard's size selects it."}}},
                 {"tolerance", {{"type", "number"}, {"description", "Extra diameter mm, for action=set_tolerance (ignored for insert/magnet, which derive it from the fit)."}}},
@@ -278,6 +281,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 } else if (action == "set_head") {
                     const std::string h = params.value("head", std::string("none"));
                     g->set_head(h == "counterbore" ? BoreHead::Counterbore : (h == "countersink" ? BoreHead::Countersink : BoreHead::None));
+                } else if (action == "set_screw_fit") {
+                    g->set_screw_fit(params.value("screw_fit", std::string("free")) == "tap" ? ScrewFit::Tap : ScrewFit::Free);
                 } else if (action == "set_fit") {
                     const std::string f = params.value("fit", std::string("slip"));
                     g->set_fit(f == "tight" ? HoleFit::Tight : (f == "epoxy" ? HoleFit::Epoxy : HoleFit::Slip));

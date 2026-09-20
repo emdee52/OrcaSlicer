@@ -48,3 +48,26 @@ TEST_CASE("Pocket clearance grows with the fit and with the diameter", "[HoleSta
     CHECK(hole_fit_diameter_delta(HoleStandardKind::Magnet, 10.0, HoleFit::Slip) >
           hole_fit_diameter_delta(HoleStandardKind::Magnet, 3.0, HoleFit::Slip));
 }
+
+TEST_CASE("Screws carry both a free and a tap diameter", "[HoleStandards]")
+{
+    const HoleStandard *m3 = find_hole_standard("M3");
+    REQUIRE(m3 != nullptr);
+    CHECK_THAT(m3->clearance_d, WithinAbs(3.4, 1e-9));
+    CHECK_THAT(m3->tap_d, WithinAbs(2.6, 1e-9));
+    CHECK_THAT(screw_nominal_diameter(*m3, false), WithinAbs(3.4, 1e-9));
+    CHECK_THAT(screw_nominal_diameter(*m3, true), WithinAbs(2.6, 1e-9));
+}
+
+TEST_CASE("Small screws are tap-only", "[HoleStandards]")
+{
+    const HoleStandard *m2 = find_hole_standard("M2");
+    REQUIRE(m2 != nullptr);
+    CHECK(m2->kind == HoleStandardKind::Screw);
+    CHECK_THAT(m2->clearance_d, WithinAbs(0., 1e-9));
+    CHECK_THAT(m2->tap_d, WithinAbs(1.70, 1e-9));
+    // Free falls back to the tap diameter when there is no clearance fit.
+    CHECK_THAT(screw_nominal_diameter(*m2, false), WithinAbs(1.70, 1e-9));
+    CHECK_THAT(screw_nominal_diameter(*m2, true), WithinAbs(1.70, 1e-9));
+}
+

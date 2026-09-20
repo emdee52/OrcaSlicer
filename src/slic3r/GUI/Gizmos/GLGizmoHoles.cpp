@@ -116,6 +116,10 @@ bool GLGizmoHoles::on_init()
     m_desc["fit_tight"]        = _L("Tight");
     m_desc["fit_slip"]         = _L("Slip");
     m_desc["fit_epoxy"]        = _L("Epoxy");
+    m_desc["screw_fit"]        = _L("Fit");
+    m_desc["fit_free"]         = _L("Free");
+    m_desc["fit_tap"]          = _L("Tap");
+    m_desc["true_dia"]         = _L("True diameter");
     m_desc["diameter"]         = _L("Diameter");
     m_desc["tolerance"]        = _L("Tolerance");
     m_desc["through"]          = _L("Through");
@@ -200,17 +204,6 @@ double GLGizmoHoles::bore_diameter() const
                            ? hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit))
                            : m_tolerance;
     return std::max(0.1, m_diameter + tol);
-}
-
-int GLGizmoHoles::matched_standard(double d) const
-{
-    const std::vector<HoleStandard> &t = hole_standards();
-    for (size_t i = 0; i < t.size(); ++i) {
-        const double nominal = (t[i].kind == HoleStandardKind::Screw) ? t[i].clearance_d : t[i].pocket_d;
-        if (std::abs(nominal - d) <= 0.01)
-            return int(i);
-    }
-    return -1;
 }
 
 void GLGizmoHoles::feature_frame(int idx, Vec3d &dir, Vec3d &entry) const
@@ -670,7 +663,15 @@ void GLGizmoHoles::set_standard(int idx)
     m_standard = std::clamp(idx, 0, standard_count() - 1) - 1;
     if (m_standard >= 0) {
         const HoleStandard &s = hole_standards()[m_standard];
-        m_diameter            = (s.kind == HoleStandardKind::Screw) ? s.clearance_d : s.pocket_d;
+        if (s.kind == HoleStandardKind::Screw) {
+            if (m_screw_fit == ScrewFit::Tap && s.tap_d <= 0.)
+                m_screw_fit = ScrewFit::Free;
+            if (m_screw_fit == ScrewFit::Free && s.clearance_d <= 0.)
+                m_screw_fit = ScrewFit::Tap; // tap-only size
+            m_diameter = screw_nominal_diameter(s, m_screw_fit == ScrewFit::Tap);
+        } else {
+            m_diameter = s.pocket_d;
+        }
     }
     m_preview_dirty = true;
     m_parent.set_as_dirty();
@@ -679,6 +680,18 @@ void GLGizmoHoles::set_standard(int idx)
 void GLGizmoHoles::set_head(BoreHead h)
 {
     m_head          = h;
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_screw_fit(ScrewFit f)
+{
+    m_screw_fit = f;
+    if (m_standard >= 0 && m_standard < int(hole_standards().size())) {
+        const HoleStandard &s = hole_standards()[m_standard];
+        if (s.kind == HoleStandardKind::Screw)
+            m_diameter = screw_nominal_diameter(s, f == ScrewFit::Tap);
+    }
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -692,8 +705,27 @@ void GLGizmoHoles::set_fit(HoleFit f)
 
 void GLGizmoHoles::set_diameter(double d)
 {
-    m_diameter      = std::max(0.1, d);
-    m_standard      = matched_standard(m_diameter); // relabel Custom <-> a standard by diameter
+    m_diameter = std::max(0.1, d);
+    // Relabel Custom <-> a standard by diameter (screw free/tap or insert/magnet pocket).
+    m_standard = -1;
+    const std::vector<HoleStandard> &t = hole_standards();
+    for (size_t i = 0; i < t.size(); ++i) {
+        if (t[i].kind == HoleStandardKind::Screw) {
+            if (t[i].clearance_d > 0. && std::abs(t[i].clearance_d - m_diameter) <= 0.01) {
+                m_standard  = int(i);
+                m_screw_fit = ScrewFit::Free;
+                break;
+            }
+            if (t[i].tap_d > 0. && std::abs(t[i].tap_d - m_diameter) <= 0.01) {
+                m_standard  = int(i);
+                m_screw_fit = ScrewFit::Tap;
+                break;
+            }
+        } else if (std::abs(t[i].pocket_d - m_diameter) <= 0.01) {
+            m_standard = int(i);
+            break;
+        }
+    }
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -876,7 +908,32 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         }
         ImGui::PopItemWidth();
 
+        // Read-only effective diameter = diameter + tolerance.
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("true_dia"));
+        ImGui::SameLine(left_width);
+        m_imgui->disabled_begin(true);
+        ImGui::PushItemWidth(sliders_width);
+        float true_d = float(bore_diameter());
+        ImGui::InputFloat("##true_dia", &true_d, 0.f, 0.f, "%.2f");
+        ImGui::PopItemWidth();
+        m_imgui->disabled_end();
+
         if (is_screw) {
+            // Free (clearance) or Tap (thread-forming into plastic).
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(m_desc.at("screw_fit"));
+            ImGui::SameLine(left_width);
+            m_imgui->disabled_begin(s->clearance_d <= 0.); // tap-only size
+            if (m_imgui->button(m_desc.at("fit_free")))
+                set_screw_fit(ScrewFit::Free);
+            m_imgui->disabled_end();
+            ImGui::SameLine();
+            m_imgui->disabled_begin(s->tap_d <= 0.);
+            if (m_imgui->button(m_desc.at("fit_tap")))
+                set_screw_fit(ScrewFit::Tap);
+            m_imgui->disabled_end();
+
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("head"));
             ImGui::SameLine(left_width);

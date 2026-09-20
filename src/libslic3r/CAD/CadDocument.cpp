@@ -929,7 +929,7 @@ int CadDocument::add_hole_standard(const std::string& designation, int style, bo
     const HoleStandard* std = find_hole_standard(designation);
     if (std == nullptr)
         throw std::runtime_error("unknown hole standard \"" + designation + "\"");
-    return add_hole_styled(std->clearance_d, depth, through, x, y, plane, style,
+    return add_hole_styled(screw_nominal_diameter(*std, false), depth, through, x, y, plane, style,
                            std->cbore_d, std->cbore_depth, std->csink_d, std->csink_angle, designation, name);
 }
 
