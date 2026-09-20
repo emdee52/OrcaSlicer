@@ -154,3 +154,22 @@ TEST_CASE("A bore follows an arbitrary axis", "[HoleShapes]")
     CHECK_THAT(bb.min.y(), WithinAbs(-2., 1e-3));
     CHECK_THAT(bb.max.y(), WithinAbs(2., 1e-3));
 }
+
+TEST_CASE("A nut pocket is a hexagon across the given flats", "[HoleShapes]")
+{
+    constexpr double      s = 5.5, h = 2.4, clearance = 3.4;
+    const indexed_triangle_set nut = its_make_nut_pocket(s, h, clearance, h, Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(nut.empty());
+    CHECK(its_volume(nut) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(nut);
+    // Circumradius = across_flats / sqrt(3).
+    CHECK_THAT(bb.max.x(), WithinAbs(s / std::sqrt(3.), 1e-3));
+    CHECK_THAT(bb.min.x(), WithinAbs(-s / std::sqrt(3.), 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(h, 1e-3));
+    // Merged closed meshes sum their volumes: hexagon + the coaxial bore.
+    const double hex_vol  = std::sqrt(3.) * 0.5 * s * s * h;
+    const double bore_vol = PI * (clearance * 0.5) * (clearance * 0.5) * h;
+    CHECK_THAT(double(its_volume(nut)), WithinRel(hex_vol + bore_vol, 0.04));
+}
+

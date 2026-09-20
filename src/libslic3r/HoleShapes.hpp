@@ -55,6 +55,12 @@ indexed_triangle_set its_make_tube(double outer_d, double inner_d, double depth,
                                    const Vec3d &axis, const Vec3d &entry,
                                    int segments = HOLE_SHAPE_SEGMENTS);
 
+// Hexagonal nut pocket (across-flats) with a coaxial clearance bore through it.
+indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_depth,
+                                         double clearance_d, double bore_depth,
+                                         const Vec3d &axis, const Vec3d &entry,
+                                         int segments = HOLE_SHAPE_SEGMENTS);
+
 } // namespace Slic3r
 
 #endif // libslic3r_HoleShapes_hpp_

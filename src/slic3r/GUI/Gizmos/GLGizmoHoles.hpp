@@ -27,6 +27,7 @@ namespace GUI {
 enum class HoleOperation { Teardrop, Bore };
 enum class BoreHead { None, Counterbore, Countersink };
 enum class ScrewFit { Free, Tap };
+enum class HoleCategory { Screw, Nut, Magnet, Insert, Custom };
 
 class GLGizmoHoles : public GLGizmoBase
 {
@@ -54,6 +55,8 @@ public:
     std::string standard_name(int idx) const;        // idx 0 = Custom
     int         get_standard() const { return m_standard; }
     void        set_standard(int idx);
+    HoleCategory get_category() const { return m_category; }
+    void         set_category(HoleCategory c);
     BoreHead    get_head() const { return m_head; }
     void        set_head(BoreHead h);
     ScrewFit    get_screw_fit() const { return m_screw_fit; }
@@ -131,6 +134,7 @@ private:
     float m_angle_deg{ 45.f };
 
     HoleOperation m_operation{ HoleOperation::Teardrop };
+    HoleCategory  m_category{ HoleCategory::Screw };
     int           m_standard{ -1 };   // -1 = Custom, else index into hole_standards()
     BoreHead      m_head{ BoreHead::None };
     ScrewFit      m_screw_fit{ ScrewFit::Free };

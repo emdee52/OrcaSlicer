@@ -71,3 +71,16 @@ TEST_CASE("Small screws are tap-only", "[HoleStandards]")
     CHECK_THAT(screw_nominal_diameter(*m2, true), WithinAbs(1.70, 1e-9));
 }
 
+TEST_CASE("Nuts expose an across-flats and height", "[HoleStandards]")
+{
+    const HoleStandard *m3 = find_hole_standard("M3 nut");
+    REQUIRE(m3 != nullptr);
+    CHECK(m3->kind == HoleStandardKind::Nut);
+    CHECK_THAT(m3->across_flats, WithinAbs(5.50, 1e-9));
+    CHECK_THAT(m3->pocket_depth, WithinAbs(2.40, 1e-9));
+    CHECK_THAT(m3->clearance_d, WithinAbs(3.4, 1e-9)); // matching screw clearance bore
+    CHECK(find_hole_standard("M2 nut") == nullptr);
+    CHECK(find_hole_standard("M2.5 nut") == nullptr);
+}
+
+

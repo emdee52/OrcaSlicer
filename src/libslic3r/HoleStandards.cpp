@@ -35,6 +35,15 @@ const std::vector<HoleStandard> &standards_table()
             s.pocket_depth  = depth;
             t.push_back(s);
         };
+        auto nut = [&](const char *desig, double across_flats, double height, double clearance) {
+            HoleStandard s;
+            s.designation   = desig;
+            s.kind          = HoleStandardKind::Nut;
+            s.across_flats  = across_flats;
+            s.pocket_depth  = height;
+            s.clearance_d   = clearance; // through hole for the screw
+            t.push_back(s);
+        };
 
         // Tap-only sizes (too small for a free fit). Tap = lower 50%-thread steel drill.
         screw("M2", 0.0, 1.70, 0.0, 0.0, 0.0);
@@ -52,6 +61,15 @@ const std::vector<HoleStandard> &standards_table()
         screw("1/4-20", 6.9, 0.0, 14.4, 7.2, 14.7);
         screw("5/16-18", 8.8, 0.0, 17.0, 8.2, 17.3);
         screw("3/8-16", 10.5, 0.0, 19.6, 9.5, 19.8);
+
+        // Hex nuts (across-flats s, height m) with the matching screw clearance bore. M2 and M2.5
+        // are omitted on purpose.
+        nut("M3 nut", 5.50, 2.40, 3.4);
+        nut("M4 nut", 7.00, 3.20, 4.5);
+        nut("M5 nut", 8.00, 4.00, 5.5);
+        nut("M6 nut", 10.00, 5.00, 6.6);
+        nut("M8 nut", 13.00, 6.50, 9.0);
+        nut("M10 nut", 17.00, 8.00, 11.0);
 
         // Heat-set inserts (OD x length), Ruthex-style brass.
         pocket("M2 insert", HoleStandardKind::Insert, 3.2, 4.0);

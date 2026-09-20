@@ -9,7 +9,8 @@ namespace Slic3r {
 // Common mechanical hole/pocket standards, shared by the CAD Hole feature and the mesh
 // bore/pocket tool. All dimensions are millimetres so they feed straight into either backend.
 enum class HoleStandardKind {
-    Screw,  // clearance bore, optionally with a counterbore / countersink for the head
+    Screw,  // clearance/tap bore, optionally with a counterbore / countersink for the head
+    Nut,    // hex nut pocket (across-flats) with a coaxial clearance bore
     Insert, // heat-set threaded insert pocket
     Magnet, // round magnet pocket
 };
@@ -32,6 +33,10 @@ struct HoleStandard {
     // Insert / magnet: nominal pocket outer diameter and depth.
     double pocket_d{ 0. };
     double pocket_depth{ 0. };
+
+    // Nut: across-flats width (s). The pocket depth is `pocket_depth` (nut height, m) and the
+    // coaxial clearance bore uses `clearance_d`.
+    double across_flats{ 0. };
 };
 
 // All standards, in table order.

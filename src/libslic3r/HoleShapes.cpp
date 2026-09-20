@@ -244,4 +244,21 @@ indexed_triangle_set its_make_tube(double outer_d, double inner_d, double depth,
     return its;
 }
 
+indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_depth,
+                                         double clearance_d, double bore_depth,
+                                         const Vec3d &axis, const Vec3d &entry, int segments)
+{
+    if (across_flats <= 0. || pocket_depth <= 0.)
+        return {};
+    // A regular hexagon with the given across-flats has circumradius across_flats / sqrt(3).
+    // its_make_cylinder with 6 segments is exactly that hex prism.
+    indexed_triangle_set hex = its_make_cylinder(across_flats / std::sqrt(3.0), pocket_depth, 2. * PI / 6.);
+    if (clearance_d > 0. && bore_depth > 0.) {
+        indexed_triangle_set bore = its_make_cylinder(clearance_d * 0.5, bore_depth, 2. * PI / std::max(segments, 8));
+        its_merge(hex, bore);
+    }
+    place_on_axis(hex, axis, entry);
+    return hex;
+}
+
 } // namespace Slic3r

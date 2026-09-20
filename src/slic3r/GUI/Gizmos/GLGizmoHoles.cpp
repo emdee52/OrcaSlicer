@@ -4,6 +4,7 @@
 #include "libslic3r/HoleShapes.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Utils.hpp"
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -68,6 +69,53 @@ int parsed_hole_index(const std::string &name, const char *prefix)
     }
 }
 
+bool category_matches(HoleCategory cat, HoleStandardKind kind)
+{
+    switch (cat) {
+    case HoleCategory::Screw:  return kind == HoleStandardKind::Screw;
+    case HoleCategory::Nut:    return kind == HoleStandardKind::Nut;
+    case HoleCategory::Magnet: return kind == HoleStandardKind::Magnet;
+    case HoleCategory::Insert: return kind == HoleStandardKind::Insert;
+    case HoleCategory::Custom: return false;
+    }
+    return false;
+}
+
+// Category button icon, loaded once from resources/images.
+ImTextureID category_icon(HoleCategory cat)
+{
+    static std::map<int, ImTextureID> cache;
+    auto                              it = cache.find(int(cat));
+    if (it != cache.end())
+        return it->second;
+
+    const char *file = nullptr;
+    switch (cat) {
+    case HoleCategory::Screw:  file = "hole_cat_screw.svg"; break;
+    case HoleCategory::Nut:    file = "hole_cat_nut.svg"; break;
+    case HoleCategory::Magnet: file = "hole_cat_magnet.svg"; break;
+    case HoleCategory::Insert: file = "hole_cat_insert.svg"; break;
+    case HoleCategory::Custom: file = "hole_cat_custom.svg"; break;
+    }
+    ImTextureID tex = nullptr;
+    if (file != nullptr)
+        IMTexture::load_from_svg_file(Slic3r::resources_dir() + "/images/" + file, 40, 40, tex);
+    cache[int(cat)] = tex;
+    return tex;
+}
+
+wxString category_label(HoleCategory cat)
+{
+    switch (cat) {
+    case HoleCategory::Screw:  return _L("Screw");
+    case HoleCategory::Nut:    return _L("Nut");
+    case HoleCategory::Magnet: return _L("Magnet");
+    case HoleCategory::Insert: return _L("Insert");
+    case HoleCategory::Custom: return _L("Custom");
+    }
+    return {};
+}
+
 // Right-handed frame so the pick-cylinder face normals point outward and SceneRaycaster accepts
 // the hit.
 indexed_triangle_set make_pick_cylinder(const DetectedHole &h, const Vec3d &up)
@@ -121,6 +169,7 @@ bool GLGizmoHoles::on_init()
     m_desc["fit_tap"]          = _L("Tap");
     m_desc["true_dia"]         = _L("True diameter");
     m_desc["diameter"]         = _L("Diameter");
+    m_desc["across_flats"]     = _L("Across flats");
     m_desc["tolerance"]        = _L("Tolerance");
     m_desc["through"]          = _L("Through");
     m_desc["depth"]            = _L("Depth");
@@ -198,11 +247,10 @@ double GLGizmoHoles::bore_diameter() const
     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                 ? &hole_standards()[m_standard]
                                 : nullptr;
-    // Insert / magnet pockets derive their tolerance from the fit; everything else uses the
-    // editable tolerance field.
-    const double tol = (s != nullptr && s->kind != HoleStandardKind::Screw)
-                           ? hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit))
-                           : m_tolerance;
+    // Insert / magnet pockets derive their tolerance from the fit; screws, nuts and custom use
+    // the editable tolerance field.
+    const bool fitted = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
+    const double tol = fitted ? hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit)) : m_tolerance;
     return std::max(0.1, m_diameter + tol);
 }
 
@@ -234,7 +282,8 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                 ? &hole_standards()[m_standard]
                                 : nullptr;
-    const bool is_pocket = s != nullptr && s->kind != HoleStandardKind::Screw;
+    const bool is_nut    = s != nullptr && s->kind == HoleStandardKind::Nut;
+    const bool is_pocket = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
 
     const double margin = std::max(0.5, 0.25 * h.radius);
     double       depth  = 0.;
@@ -244,6 +293,11 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
         depth = h.depth + 2.0 * margin;
     else
         depth = std::max(0.1, m_depth);
+
+    if (is_nut) {
+        const double across = std::max(0.1, m_diameter + m_tolerance);
+        return its_make_nut_pocket(across, s->pocket_depth, s->clearance_d, depth, dir, entry);
+    }
 
     const double d = bore_diameter();
     if (d <= 0. || depth <= 0.)
@@ -263,6 +317,12 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(int idx) const
     if (idx < 0 || idx >= int(m_holes.size()))
         return {};
     const DetectedHole &h = m_holes[idx].hole;
+
+    const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
+                                ? &hole_standards()[m_standard]
+                                : nullptr;
+    if (s != nullptr && s->kind == HoleStandardKind::Nut)
+        return {}; // a hex pocket has no round shrink tube
 
     const double target_d = bore_diameter();
     const double exist_d  = 2.0 * h.radius;
@@ -669,6 +729,8 @@ void GLGizmoHoles::set_standard(int idx)
             if (m_screw_fit == ScrewFit::Free && s.clearance_d <= 0.)
                 m_screw_fit = ScrewFit::Tap; // tap-only size
             m_diameter = screw_nominal_diameter(s, m_screw_fit == ScrewFit::Tap);
+        } else if (s.kind == HoleStandardKind::Nut) {
+            m_diameter = s.across_flats;
         } else {
             m_diameter = s.pocket_d;
         }
@@ -703,6 +765,23 @@ void GLGizmoHoles::set_fit(HoleFit f)
     m_parent.set_as_dirty();
 }
 
+void GLGizmoHoles::set_category(HoleCategory c)
+{
+    m_category = c;
+    if (c == HoleCategory::Custom) {
+        m_standard = -1;
+    } else {
+        const std::vector<HoleStandard> &t = hole_standards();
+        for (size_t i = 0; i < t.size(); ++i)
+            if (category_matches(c, t[i].kind)) {
+                set_standard(int(i) + 1);
+                break;
+            }
+    }
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
 void GLGizmoHoles::set_diameter(double d)
 {
     m_diameter = std::max(0.1, d);
@@ -719,6 +798,11 @@ void GLGizmoHoles::set_diameter(double d)
             if (t[i].tap_d > 0. && std::abs(t[i].tap_d - m_diameter) <= 0.01) {
                 m_standard  = int(i);
                 m_screw_fit = ScrewFit::Tap;
+                break;
+            }
+        } else if (t[i].kind == HoleStandardKind::Nut) {
+            if (t[i].across_flats > 0. && std::abs(t[i].across_flats - m_diameter) <= 0.01) {
+                m_standard = int(i);
                 break;
             }
         } else if (std::abs(t[i].pocket_d - m_diameter) <= 0.01) {
@@ -866,24 +950,58 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             set_angle(angle);
         ImGui::PopItemWidth();
     } else {
-        // Standard.
-        std::vector<std::string> names;
-        names.reserve(standard_count());
-        for (int i = 0; i < standard_count(); ++i)
-            names.push_back(standard_name(i));
-        int sel = m_standard + 1;
-        if (render_combo(m_desc.at("standard").ToStdString(), names, sel, left_width, m_imgui->scaled(12.0f)))
-            set_standard(sel);
+        // Category buttons (image buttons in Orca's toolbar style).
+        const HoleCategory categories[] = {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet,
+                                           HoleCategory::Insert, HoleCategory::Custom};
+        const float icon_sz = m_imgui->scaled(22.f);
+        for (HoleCategory cat : categories) {
+            ImTextureID  tex = category_icon(cat);
+            const bool   on  = (m_category == cat);
+            const ImVec4 tint = on ? ImVec4(0.10f, 0.59f, 0.53f, 1.f) : ImVec4(1.f, 1.f, 1.f, 1.f);
+            const ImVec4 bg   = on ? ImVec4(0.92f, 0.92f, 0.92f, 1.f) : ImVec4(0.f, 0.f, 0.f, 0.f);
+            if (tex != nullptr) {
+                if (m_imgui->image_button(tex, ImVec2(icon_sz, icon_sz), ImVec2(0, 0), ImVec2(1, 1), -1, bg, tint))
+                    set_category(cat);
+            } else if (m_imgui->button(category_label(cat), ImVec2(icon_sz, icon_sz), true)) {
+                set_category(cat);
+            }
+            ImGui::SameLine();
+        }
+        ImGui::NewLine();
+
+        // Items of the chosen category.
+        {
+            std::vector<std::string>         names;
+            std::vector<int>                 idxs;
+            const std::vector<HoleStandard> &t = hole_standards();
+            for (size_t i = 0; i < t.size(); ++i)
+                if (category_matches(m_category, t[i].kind)) {
+                    names.push_back(t[i].designation);
+                    idxs.push_back(int(i) + 1);
+                }
+            if (!names.empty()) {
+                int sel = 0;
+                for (size_t k = 0; k < idxs.size(); ++k)
+                    if (idxs[k] == m_standard + 1) {
+                        sel = int(k);
+                        break;
+                    }
+                const int prev = sel;
+                if (render_combo(m_desc.at("standard").ToStdString(), names, sel, left_width, m_imgui->scaled(12.0f)) && sel != prev)
+                    set_standard(idxs[sel]);
+            }
+        }
 
         const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                     ? &hole_standards()[m_standard]
                                     : nullptr;
         const bool is_screw  = s != nullptr && s->kind == HoleStandardKind::Screw;
-        const bool is_pocket = s != nullptr && s->kind != HoleStandardKind::Screw;
+        const bool is_nut    = s != nullptr && s->kind == HoleStandardKind::Nut;
+        const bool is_pocket = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
 
         // Diameter is always editable; typing an existing standard's size relabels the combo.
         ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("diameter"));
+        m_imgui->text(is_nut ? m_desc.at("across_flats") : m_desc.at("diameter"));
         ImGui::SameLine(left_width);
         ImGui::PushItemWidth(sliders_width);
         float d = float(m_diameter);

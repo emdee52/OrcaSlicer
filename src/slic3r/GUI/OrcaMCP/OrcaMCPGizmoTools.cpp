@@ -155,6 +155,14 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         });
     }
     const char *op = g.get_operation() == HoleOperation::Teardrop ? "teardrop" : "bore";
+    const char *cat = "custom";
+    switch (g.get_category()) {
+    case HoleCategory::Screw:  cat = "screw"; break;
+    case HoleCategory::Nut:    cat = "nut"; break;
+    case HoleCategory::Magnet: cat = "magnet"; break;
+    case HoleCategory::Insert: cat = "insert"; break;
+    case HoleCategory::Custom: cat = "custom"; break;
+    }
 
     // Volume bookkeeping helps diagnose whether features are actually being added.
     int         volume_count = -1, pocket_volumes = 0;
@@ -174,6 +182,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
     return {
         {"hole_count", n},
         {"operation", op},
+        {"category", cat},
         {"angle", g.get_angle()},
         {"standard_index", g.get_standard() + 1},
         {"standard_name", g.standard_name(g.get_standard() + 1)},
@@ -223,10 +232,11 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
+                {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
                 {"head", {{"type", "string"}, {"description", "none | counterbore | countersink, for action=set_head."}}},
@@ -272,6 +282,13 @@ void OrcaMCPServer::register_gizmo_tools()
                 if (action == "set_operation") {
                     g->set_operation(params.value("operation", std::string("teardrop")) == "bore" ? HoleOperation::Bore
                                                                                                  : HoleOperation::Teardrop);
+                } else if (action == "set_category") {
+                    const std::string c = params.value("category", std::string("custom"));
+                    g->set_category(c == "screw" ? HoleCategory::Screw
+                                   : c == "nut" ? HoleCategory::Nut
+                                   : c == "magnet" ? HoleCategory::Magnet
+                                   : c == "insert" ? HoleCategory::Insert
+                                                   : HoleCategory::Custom);
                 } else if (action == "set_angle") {
                     if (!need("angle")) return {{"status", "error"}, {"error", "needs 'angle'"}};
                     g->set_angle(params["angle"].get<float>());
