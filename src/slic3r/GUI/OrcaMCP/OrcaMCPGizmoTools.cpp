@@ -239,7 +239,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
-                {"head", {{"type", "string"}, {"description", "none | counterbore | countersink, for action=set_head."}}},
+                {"head", {{"type", "string"}, {"description", "none | socket | button | countersink, for action=set_head."}}},
                 {"screw_fit", {{"type", "string"}, {"description", "free | tap, for action=set_screw_fit (screws only)."}}},
                 {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
                 {"diameter", {{"type", "number"}, {"description", "Nominal diameter mm, for action=set_diameter. Matching a standard's size selects it."}}},
@@ -297,7 +297,10 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->set_standard(params["standard_index"].get<int>());
                 } else if (action == "set_head") {
                     const std::string h = params.value("head", std::string("none"));
-                    g->set_head(h == "counterbore" ? BoreHead::Counterbore : (h == "countersink" ? BoreHead::Countersink : BoreHead::None));
+                    g->set_head(h == "socket" ? BoreHead::SocketHead
+                                       : h == "button" ? BoreHead::ButtonHead
+                                       : h == "countersink" ? BoreHead::Countersink
+                                                            : BoreHead::None);
                 } else if (action == "set_screw_fit") {
                     g->set_screw_fit(params.value("screw_fit", std::string("free")) == "tap" ? ScrewFit::Tap : ScrewFit::Free);
                 } else if (action == "set_fit") {

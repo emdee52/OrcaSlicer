@@ -16,15 +16,19 @@ const std::vector<HoleStandard> &standards_table()
     static const std::vector<HoleStandard> table = [] {
         std::vector<HoleStandard> t;
 
-        auto screw = [&](const char *desig, double clearance, double tap, double cbore_d, double cbore_depth, double csink_d) {
+        auto screw = [&](const char *desig, double clearance, double tap, double socket_d, double socket_k,
+                         double button_d, double button_k, double csink_d, double csink_angle = 90.) {
             HoleStandard s;
-            s.designation   = desig;
-            s.kind          = HoleStandardKind::Screw;
-            s.clearance_d   = clearance;
-            s.tap_d         = tap;
-            s.cbore_d       = cbore_d;
-            s.cbore_depth   = cbore_depth;
-            s.csink_d       = csink_d;
+            s.designation  = desig;
+            s.kind         = HoleStandardKind::Screw;
+            s.clearance_d  = clearance;
+            s.tap_d        = tap;
+            s.socket_d     = socket_d;
+            s.socket_k     = socket_k;
+            s.button_d     = button_d;
+            s.button_k     = button_k;
+            s.csink_d      = csink_d;
+            s.csink_angle  = csink_angle;
             t.push_back(s);
         };
         auto pocket = [&](const char *desig, HoleStandardKind kind, double d, double depth) {
@@ -46,21 +50,21 @@ const std::vector<HoleStandard> &standards_table()
         };
 
         // Tap-only sizes (too small for a free fit). Tap = lower 50%-thread steel drill.
-        screw("M2", 0.0, 1.70, 0.0, 0.0, 0.0);
-        screw("M2.2", 0.0, 1.90, 0.0, 0.0, 0.0);
-        screw("M2.5", 0.0, 2.20, 0.0, 0.0, 0.0);
-        // Free (clearance) and tap (plastic thread-forming) fits.
-        screw("M3", 3.4, 2.60, 6.0, 3.4, 6.3);
-        screw("M4", 4.5, 3.50, 8.0, 4.4, 8.4);
-        screw("M5", 5.5, 4.40, 10.0, 5.4, 10.4);
-        screw("M6", 6.6, 5.40, 11.0, 6.8, 12.6);
-        screw("M8", 9.0, 7.20, 15.0, 8.8, 17.3);
-        screw("M10", 11.0, 9.00, 18.0, 11.0, 20.0);
-        screw("#6-32", 3.7, 0.0, 8.8, 4.2, 8.7);
-        screw("#8-32", 4.4, 0.0, 9.9, 5.1, 10.2);
-        screw("1/4-20", 6.9, 0.0, 14.4, 7.2, 14.7);
-        screw("5/16-18", 8.8, 0.0, 17.0, 8.2, 17.3);
-        screw("3/8-16", 10.5, 0.0, 19.6, 9.5, 19.8);
+        screw("M2",   0.0, 1.70,  3.8, 2.0, 0.0, 0.0, 0.0);
+        screw("M2.2", 0.0, 1.90,  0.0, 0.0, 0.0, 0.0, 0.0);
+        screw("M2.5", 0.0, 2.20,  4.5, 2.5, 0.0, 0.0, 0.0);
+        // Free (clearance) and tap (plastic thread-forming) fits, with socket / button / countersunk heads.
+        screw("M3",  3.4, 2.60,  5.5,  3.0,  5.70, 1.65,  6.0);
+        screw("M4",  4.5, 3.50,  7.0,  4.0,  7.60, 2.20,  8.0);
+        screw("M5",  5.5, 4.40,  8.5,  5.0,  9.50, 2.75, 10.0);
+        screw("M6",  6.6, 5.40, 10.0,  6.0, 10.50, 3.30, 12.0);
+        screw("M8",  9.0, 7.20, 13.0,  8.0, 14.00, 4.40, 16.0);
+        screw("M10", 11.0, 9.00, 16.0, 10.0, 17.50, 5.50, 20.0);
+        screw("#6-32",   3.7, 0.0,  8.8, 4.2, 0.0, 0.0,  8.7);
+        screw("#8-32",   4.4, 0.0,  9.9, 5.1, 0.0, 0.0, 10.2);
+        screw("1/4-20",  6.9, 0.0, 14.4, 7.2, 0.0, 0.0, 14.7);
+        screw("5/16-18", 8.8, 0.0, 17.0, 8.2, 0.0, 0.0, 17.3);
+        screw("3/8-16", 10.5, 0.0, 19.6, 9.5, 0.0, 0.0, 19.8);
 
         // Hex nuts (across-flats s, height m) with the matching screw clearance bore. M2 and M2.5
         // are omitted on purpose.

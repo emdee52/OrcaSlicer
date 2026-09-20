@@ -24,10 +24,12 @@ struct HoleStandard {
     double clearance_d{ 0. };
     // Screw: thread-forming (tap) diameter for plastic - the lower 50%-thread steel tap drill.
     double tap_d{ 0. };
-    // Screw: head features (0 when the standard carries none).
-    double cbore_d{ 0. };
-    double cbore_depth{ 0. };
-    double csink_d{ 0. };
+    // Screw head features, per head type (0 when the standard carries none).
+    double socket_d{ 0. };  // socket-head cap screw head diameter (DIN 912 dk)
+    double socket_k{ 0. };  // socket-head cap screw head height (DIN 912 k)
+    double button_d{ 0. };  // button-head socket screw head diameter (ISO 7380 dk)
+    double button_k{ 0. };  // button-head socket screw head height (ISO 7380 k)
+    double csink_d{ 0. };   // countersunk head diameter (DIN 7991 dk)
     double csink_angle{ 90. };
 
     // Insert / magnet: nominal pocket outer diameter and depth.

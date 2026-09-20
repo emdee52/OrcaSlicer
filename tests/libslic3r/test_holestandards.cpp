@@ -11,9 +11,10 @@ TEST_CASE("A known screw standard reports its clearance and head dimensions", "[
     REQUIRE(m3 != nullptr);
     CHECK(m3->kind == HoleStandardKind::Screw);
     CHECK_THAT(m3->clearance_d, WithinAbs(3.4, 1e-9));
-    CHECK_THAT(m3->cbore_d, WithinAbs(6.0, 1e-9));
-    CHECK_THAT(m3->cbore_depth, WithinAbs(3.4, 1e-9));
-    CHECK_THAT(m3->csink_d, WithinAbs(6.3, 1e-9));
+    CHECK_THAT(m3->socket_d, WithinAbs(5.5, 1e-9));
+    CHECK_THAT(m3->socket_k, WithinAbs(3.0, 1e-9));
+    CHECK_THAT(m3->button_d, WithinAbs(5.7, 1e-9));
+    CHECK_THAT(m3->csink_d, WithinAbs(6.0, 1e-9));
 }
 
 TEST_CASE("An unknown designation is not a standard", "[HoleStandards]")

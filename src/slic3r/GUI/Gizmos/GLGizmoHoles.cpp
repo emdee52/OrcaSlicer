@@ -158,8 +158,9 @@ bool GLGizmoHoles::on_init()
     m_desc["standard"]         = _L("Standard");
     m_desc["head"]             = _L("Head");
     m_desc["head_none"]        = _L("None");
-    m_desc["head_cbore"]       = _L("Counterbore");
-    m_desc["head_csink"]       = _L("Countersink");
+    m_desc["head_socket"]      = _L("Socket");
+    m_desc["head_button"]      = _L("Button");
+    m_desc["head_csink"]       = _L("Sink");
     m_desc["fit"]              = _L("Fit");
     m_desc["fit_tight"]        = _L("Tight");
     m_desc["fit_slip"]         = _L("Slip");
@@ -179,6 +180,12 @@ bool GLGizmoHoles::on_init()
     m_desc["clear"]            = _L("Clear");
     m_desc["clipping_of_view"] = _L("Section view");
     m_desc["reset_direction"]  = _L("Reset direction");
+
+    // Preload the category button icons here (the GL context is current), never inside the
+    // ImGui render pass where a texture upload can trip glsafe.
+    for (HoleCategory c : {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet, HoleCategory::Insert,
+                           HoleCategory::Custom})
+        category_icon(c);
     return true;
 }
 
@@ -304,8 +311,10 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
         return {};
 
     if (s != nullptr && s->kind == HoleStandardKind::Screw) {
-        if (m_head == BoreHead::Counterbore && s->cbore_d > d)
-            return its_make_counterbore(d, s->cbore_d, s->cbore_depth, depth, dir, entry);
+        if (m_head == BoreHead::SocketHead && s->socket_d > d)
+            return its_make_counterbore(d, s->socket_d, s->socket_k, depth, dir, entry);
+        if (m_head == BoreHead::ButtonHead && s->button_d > d)
+            return its_make_counterbore(d, s->button_d, s->button_k, depth, dir, entry);
         if (m_head == BoreHead::Countersink && s->csink_d > d)
             return its_make_countersink(d, s->csink_d, s->csink_angle, depth, dir, entry);
     }
@@ -922,15 +931,15 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
     const float sliders_width = m_imgui->scaled(7.0f);
     const float left_width    = m_imgui->scaled(10.0f);
 
-    // Operation.
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("operation"));
-    ImGui::SameLine(left_width);
-    if (m_imgui->button(m_desc.at("op_teardrop")))
-        set_operation(HoleOperation::Teardrop);
-    ImGui::SameLine();
-    if (m_imgui->button(m_desc.at("op_bore")))
-        set_operation(HoleOperation::Bore);
+    // Operation dropdown: Teardrop or Bore / pocket (which then reveals the category buttons).
+    {
+        std::vector<std::string> ops;
+        ops.push_back(_u8L("Teardrop"));
+        ops.push_back(_u8L("Bore / pocket"));
+        int op_sel = (m_operation == HoleOperation::Teardrop) ? 0 : 1;
+        if (render_combo(m_desc.at("operation").ToStdString(), ops, op_sel, left_width, m_imgui->scaled(12.0f)))
+            set_operation(op_sel == 0 ? HoleOperation::Teardrop : HoleOperation::Bore);
+    }
 
     ImGui::Separator();
 
@@ -1058,11 +1067,20 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             if (m_imgui->button(m_desc.at("head_none")))
                 set_head(BoreHead::None);
             ImGui::SameLine();
-            if (m_imgui->button(m_desc.at("head_cbore")))
-                set_head(BoreHead::Counterbore);
+            m_imgui->disabled_begin(s->socket_d <= 0.);
+            if (m_imgui->button(m_desc.at("head_socket")))
+                set_head(BoreHead::SocketHead);
+            m_imgui->disabled_end();
             ImGui::SameLine();
+            m_imgui->disabled_begin(s->button_d <= 0.);
+            if (m_imgui->button(m_desc.at("head_button")))
+                set_head(BoreHead::ButtonHead);
+            m_imgui->disabled_end();
+            ImGui::SameLine();
+            m_imgui->disabled_begin(s->csink_d <= 0.);
             if (m_imgui->button(m_desc.at("head_csink")))
                 set_head(BoreHead::Countersink);
+            m_imgui->disabled_end();
         }
 
         if (is_pocket) {

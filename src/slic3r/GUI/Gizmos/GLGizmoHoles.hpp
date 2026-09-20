@@ -25,7 +25,7 @@ enum class ModelVolumeType : int;
 namespace GUI {
 
 enum class HoleOperation { Teardrop, Bore };
-enum class BoreHead { None, Counterbore, Countersink };
+enum class BoreHead { None, SocketHead, ButtonHead, Countersink };
 enum class ScrewFit { Free, Tap };
 enum class HoleCategory { Screw, Nut, Magnet, Insert, Custom };
 
