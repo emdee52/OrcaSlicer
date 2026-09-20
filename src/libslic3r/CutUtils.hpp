@@ -15,6 +15,12 @@ enum class ModelObjectCutAttribute : int { KeepUpper, KeepLower, KeepAsParts, Fl
 using ModelObjectCutAttributes = enum_bitmask<ModelObjectCutAttribute>;
 ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 
+// Outward normal of facet `facet_idx` of `its` in world space, given the object-to-world
+// transform `trafo`. The normal is transformed with the inverse-transpose of the linear part,
+// so it stays correct under non-uniform scaling and mirrored (left-handed) transforms.
+// Returns UnitZ if the facet index is out of range.
+Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, const Transform3d& trafo);
+
 
 class Cut {
 
