@@ -17,6 +17,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoFdmSupports.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoFuzzySkin.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp" // [ORCAPORT:PF-2b]
+#include "slic3r/GUI/Gizmos/GLGizmoHorizontalHoles.hpp"  // [ORCAPORT:ME-1]
 #include "slic3r/GUI/Gizmos/GLGizmoBrimEars.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoAlignStack.hpp" // [ORCAPORT:AS-2]
 #include "slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp" // [ORCAPORT:SU-5]
@@ -194,6 +195,9 @@ void GLGizmosManager::switch_gizmos_icon_filename()
         case (EType::CounterboreBridge): // [ORCAPORT:PF-2b]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg");
             break;
+        case (EType::HorizontalHoles): // [ORCAPORT:ME-1]
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg");
+            break;
 #ifdef SLIC3R_CAD
         case (EType::Primitive):
             gizmo->set_icon_filename(m_is_dark ? "toolbar_modifier_cube_dark.svg" : "toolbar_modifier_cube.svg");
@@ -248,6 +252,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoAlignStack(m_parent, m_is_dark ? "toolbar_align_stack_dark.svg" : "toolbar_align_stack.svg", EType::AlignStack)); // [ORCAPORT:AS-2]
     m_gizmos.emplace_back(new GLGizmoSupportZones(m_parent, m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg", EType::SupportZones)); // [ORCAPORT:SU-5]
     m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
+    m_gizmos.emplace_back(new GLGizmoHorizontalHoles(m_parent, m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg", EType::HorizontalHoles)); // [ORCAPORT:ME-1]
 #ifdef SLIC3R_CAD
     // Registered last: Primitive and Sketch are the final entries before Undefined, so
     // omitting them leaves every preceding m_gizmos index (indexed by EType) untouched.

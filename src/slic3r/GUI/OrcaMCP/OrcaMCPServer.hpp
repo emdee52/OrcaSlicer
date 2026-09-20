@@ -66,6 +66,8 @@ private:
     static void register_filament_tools();
     // [ORCAPORT:MCP-2] OraExt introspection tools (OrcaExtTools.cpp)
     static void register_orcaext_tools();
+    // [ORCAPORT:ME-1] Mesh hole features and gizmo control (OrcaMCPGizmoTools.cpp)
+    static void register_gizmo_tools();
 };
 
 }} // namespace Slic3r::GUI
