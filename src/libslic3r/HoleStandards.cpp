@@ -39,6 +39,15 @@ const std::vector<HoleStandard> &standards_table()
             s.pocket_depth  = depth;
             t.push_back(s);
         };
+        auto insert = [&](const char *desig, double d, std::vector<double> heights) {
+            HoleStandard s;
+            s.designation    = desig;
+            s.kind           = HoleStandardKind::Insert;
+            s.pocket_d       = d;
+            s.insert_heights = std::move(heights);
+            s.pocket_depth   = s.insert_heights.empty() ? 0. : s.insert_heights.front();
+            t.push_back(std::move(s));
+        };
         auto nut = [&](const char *desig, double across_flats, double height, double clearance) {
             HoleStandard s;
             s.designation   = desig;
@@ -75,17 +84,13 @@ const std::vector<HoleStandard> &standards_table()
         nut("M8 nut", 13.00, 6.50, 9.0);
         nut("M10 nut", 17.00, 8.00, 11.0);
 
-        // Heat-set inserts: max outer diameter x length, from a common M2-M5 brass kit. The
-        // pocket depth is exposed and editable in the tool.
-        pocket("M2 insert", HoleStandardKind::Insert, 3.0, 2.0);
-        pocket("M2.5 insert", HoleStandardKind::Insert, 3.5, 2.5);
-        pocket("M3x3 insert", HoleStandardKind::Insert, 4.2, 3.0);
-        pocket("M3x5 insert", HoleStandardKind::Insert, 4.2, 5.0);
-        pocket("M3x7 insert", HoleStandardKind::Insert, 4.2, 7.0);
-        pocket("M4x6 insert", HoleStandardKind::Insert, 5.5, 6.0);
-        pocket("M4x8 insert", HoleStandardKind::Insert, 5.5, 8.0);
-        pocket("M5x8 insert", HoleStandardKind::Insert, 7.0, 8.0);
-        pocket("M5x10 insert", HoleStandardKind::Insert, 7.0, 10.0);
+        // Heat-set inserts: max outer diameter and the available heights, from a common M2-M5
+        // brass kit. The chosen height maps to the (editable) pocket depth.
+        insert("M2 insert", 3.0, {2.0});
+        insert("M2.5 insert", 3.5, {2.5});
+        insert("M3 insert", 4.2, {3.0, 5.0, 7.0});
+        insert("M4 insert", 5.5, {6.0, 8.0});
+        insert("M5 insert", 7.0, {8.0, 10.0});
 
         // Round magnets (diameter x thickness).
         pocket("3x2 magnet", HoleStandardKind::Magnet, 3.0, 2.0);

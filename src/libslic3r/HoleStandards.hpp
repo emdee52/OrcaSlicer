@@ -36,6 +36,10 @@ struct HoleStandard {
     double pocket_d{ 0. };
     double pocket_depth{ 0. };
 
+    // Insert: available heights (lengths) for this size; the chosen height maps to the pocket
+    // depth and can still be fine-tuned. Empty for non-inserts.
+    std::vector<double> insert_heights;
+
     // Nut: across-flats width (s). The pocket depth is `pocket_depth` (nut height, m) and the
     // coaxial clearance bore uses `clearance_d`.
     double across_flats{ 0. };

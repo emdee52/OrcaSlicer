@@ -177,6 +177,7 @@ bool GLGizmoHoles::on_init()
     m_desc["tolerance"]        = _L("Tolerance");
     m_desc["through"]          = _L("Through");
     m_desc["depth"]            = _L("Depth");
+    m_desc["height"]           = _L("Height");
     m_desc["entry"]            = _L("Flip");
     m_desc["holes"]            = _L("Detected holes");
     m_desc["all"]              = _L("Apply all");
@@ -1166,6 +1167,28 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         }
 
         if (is_pocket || is_nut) {
+            // Insert heights map to the pocket depth; the depth can still be fine-tuned below.
+            if (s != nullptr && s->kind == HoleStandardKind::Insert && !s->insert_heights.empty()) {
+                ImGui::AlignTextToFramePadding();
+                m_imgui->text(m_desc.at("height"));
+                ImGui::SameLine(left_width);
+                for (size_t hi = 0; hi < s->insert_heights.size(); ++hi) {
+                    const double hv = s->insert_heights[hi];
+                    const bool   on = std::abs(m_depth - hv) < 1e-6;
+                    if (on) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+                    }
+                    const bool clicked = m_imgui->button(wxString::Format("%.1f", hv));
+                    if (on)
+                        ImGui::PopStyleColor(3);
+                    if (clicked)
+                        set_depth(hv);
+                    if (hi + 1 < s->insert_heights.size())
+                        ImGui::SameLine();
+                }
+            }
             // Editable pocket depth (insert / magnet / nut).
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("depth"));

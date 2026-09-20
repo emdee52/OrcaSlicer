@@ -179,6 +179,11 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         }
     }
 
+    nlohmann::json heights = nlohmann::json::array();
+    if (g.get_standard() >= 0 && g.get_standard() < int(hole_standards().size()))
+        for (double hv : hole_standards()[g.get_standard()].insert_heights)
+            heights.push_back(hv);
+
     return {
         {"hole_count", n},
         {"operation", op},
@@ -194,6 +199,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
+        {"heights", heights},
         {"holes", arr},
     };
 }

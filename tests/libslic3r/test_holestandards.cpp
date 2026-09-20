@@ -25,11 +25,14 @@ TEST_CASE("An unknown designation is not a standard", "[HoleStandards]")
 
 TEST_CASE("Insert and magnet standards carry a pocket diameter and depth", "[HoleStandards]")
 {
-    const HoleStandard *insert = find_hole_standard("M3x5 insert");
+    const HoleStandard *insert = find_hole_standard("M3 insert");
     REQUIRE(insert != nullptr);
     CHECK(insert->kind == HoleStandardKind::Insert);
     CHECK_THAT(insert->pocket_d, WithinAbs(4.2, 1e-9));
-    CHECK_THAT(insert->pocket_depth, WithinAbs(5.0, 1e-9));
+    REQUIRE(insert->insert_heights.size() == 3);
+    CHECK_THAT(insert->insert_heights[0], WithinAbs(3.0, 1e-9));
+    CHECK_THAT(insert->insert_heights[1], WithinAbs(5.0, 1e-9));
+    CHECK_THAT(insert->insert_heights[2], WithinAbs(7.0, 1e-9));
 
     const HoleStandard *magnet = find_hole_standard("6x3 magnet");
     REQUIRE(magnet != nullptr);
