@@ -1149,6 +1149,8 @@ void GLGizmoCut3D::render_model(GLModel& model, const ColorRGBA& color, Transfor
         shader->set_uniform("view_model_matrix", view_model_matrix);
         shader->set_uniform("emission_factor", 0.2f);
         shader->set_uniform("projection_matrix", wxGetApp().plater()->get_camera().get_projection_matrix());
+        // gouraud_light shades from view_normal_matrix; set it for this model's own transform.
+        shader->set_uniform("view_normal_matrix", Matrix3d(view_model_matrix.matrix().block(0, 0, 3, 3).inverse().transpose()));
 
         model.set_color(color);
         model.render();
@@ -2203,7 +2205,14 @@ void GLGizmoCut3D::PartSelection::render(const Vec3d* normal, GLModel& sphere_mo
             if (!m_parts[id].is_modifier && normal && ((is_looking_forward && m_parts[id].selected) ||
                                                       (!is_looking_forward && !m_parts[id].selected)   ) )
                 continue;
-            shader->set_uniform("view_model_matrix", view_inst_matrix * model_object()->volumes[id]->get_matrix());
+            const Transform3d part_matrix = model_object()->volumes[id]->get_matrix();
+            shader->set_uniform("view_model_matrix", view_inst_matrix * part_matrix);
+            // gouraud_light needs the normal matrix. The real object volumes are hidden while the parts
+            // are drawn, so without setting it the parts keep a stale (previous camera) normal matrix
+            // and the lighting appears frozen in object space.
+            const Matrix3d view_normal_matrix = view_inst_matrix.matrix().block(0, 0, 3, 3) *
+                                                part_matrix.matrix().block(0, 0, 3, 3).inverse().transpose();
+            shader->set_uniform("view_normal_matrix", view_normal_matrix);
             if (m_parts[id].is_modifier) {
                 glsafe(::glEnable(GL_BLEND));
                 glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));

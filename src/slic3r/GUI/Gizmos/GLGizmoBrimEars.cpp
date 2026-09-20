@@ -185,6 +185,9 @@ void GLGizmoBrimEars::render_points(const Selection &selection)
             m_grabbers[i].raycasters[0]->set_transform(center_matrix);
         }
         shader->set_uniform("view_model_matrix", view_matrix * center_matrix);
+        // gouraud_light shades from view_normal_matrix; set it for the marker's own transform,
+        // otherwise a stale matrix makes the markers shade as if the light were frozen in object space.
+        shader->set_uniform("view_normal_matrix", Matrix3d(view_matrix.matrix().block(0, 0, 3, 3) * center_matrix.matrix().block(0, 0, 3, 3).inverse().transpose()));
         m_cylinder.model.render();
 
         if (vol->is_left_handed()) glFrontFace(GL_CCW);
