@@ -159,3 +159,34 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
 - Next feature candidates (see the roadmap): cut-tool shape cuts (independent), bosses/ribs, local
   tolerance adjuster, mesh rim chamfer.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
+
+---
+
+## 7. CUT-1 — align the cut plane to a picked face (branch `port/CUT-1`, pushed)
+
+Built after ME-2 was merged (`port/integration` @ `cfc22945a8`). Independent of the holes work.
+
+Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP).
+
+- **`facet_normal_in_world`** (`src/libslic3r/CutUtils.{hpp,cpp}`) — world-space outward normal
+  of a mesh facet via the inverse-transpose of the object-to-world linear part; correct under
+  non-uniform scale and mirrors. Tested in `tests/libslic3r/test_cututils.cpp` (perpendicularity
+  property + exact value + out-of-range fallback).
+- **`GLGizmoCut3D`** — "Pick flat face" button (planar mode) toggles a pick mode; the next left
+  click raycasts the selected object's volumes with `GLVolume::mesh_raycaster`/`world_matrix()`,
+  takes the closest hit and its world normal, then sets the plane orientation
+  (`Geometry::rotation_from_two_vectors(UnitZ, n)`) and the center to the click point. Right-click
+  cancels; snapshot "Align cut plane to face". `m_cut_normal` now defaults to `UnitZ` (it was
+  read before first `update_clipper()`).
+- **MCP `cut_gizmo`** (`OrcaMCPGizmoTools.cpp`) — `open | status | set_plane_normal |
+  set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | close`; public
+  control surface on `GLGizmoCut3D`. `apply` is wrapped in `McpDialogSuppressionGuard` (the
+  non-manifold repair dialog would deadlock the main-thread call).
+- **Verified**: `[CutUtils]` tests pass; MCP end-to-end on a 20 mm box (normal +X, center on the
+  +X face, shift −10 → two 10 mm halves); fresh box slices and exports g-code.
+- **Design note**: the measure tool's `Measure::Measuring` face grouping was studied but is not
+  needed here — the plane uses the clicked point and a single facet's plane, so grouping only
+  affects the face centroid/average. The useful reuse is the raycaster pattern.
+- **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
+  profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
+  by "keep section shapes".
