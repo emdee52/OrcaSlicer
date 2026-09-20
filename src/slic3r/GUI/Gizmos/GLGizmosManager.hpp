@@ -93,7 +93,7 @@ public:
         AlignStack, // [ORCAPORT:AS-2]
         SupportZones, // [ORCAPORT:SU-5]
         CounterboreBridge, // [ORCAPORT:PF-2b]
-        HorizontalHoles, // [ORCAPORT:ME-1]
+        Holes, // [ORCAPORT:ME-2] holes tool (teardrop / bore-pocket)
 #ifdef SLIC3R_CAD
         // Both need the CAD kernel (GeometryEngine); keep them last so that with
         // SLIC3R_CAD off the enum matches upstream's numbering exactly.

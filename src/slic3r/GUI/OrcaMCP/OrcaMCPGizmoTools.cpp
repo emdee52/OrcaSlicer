@@ -1,6 +1,6 @@
-// [ORCAPORT:ME-1] Embedded-MCP tools for mesh hole features and gizmo control.
-// find_holes runs the HoleDetector headlessly; the *_gizmo tools open and drive the
-// horizontal-hole picker so the feature can be exercised without clicking.
+// [ORCAPORT:ME-2] Embedded-MCP tools for mesh hole features and gizmo control.
+// find_holes runs the HoleDetector headlessly; holes_gizmo opens and drives the Holes tool so the
+// feature can be exercised without clicking.
 #include "OrcaMCPServer.hpp"
 #include "OrcaMCPCommon.hpp"
 
@@ -8,12 +8,13 @@
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmosManager.hpp"
-#include "slic3r/GUI/Gizmos/GLGizmoHorizontalHoles.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Selection.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/HoleDetector.hpp"
+#include "libslic3r/HoleStandards.hpp"
 #include "libslic3r/Point.hpp"
 
 #include <wx/utils.h>
@@ -27,8 +28,7 @@ namespace {
 
 using OrcaMCP::run_on_main_thread;
 
-// Bed-up direction expressed in the object's frame (the same frame raw_mesh() uses).
-Vec3d object_up(const ModelObject& mo)
+Vec3d object_up(const ModelObject &mo)
 {
     if (mo.instances.empty())
         return Vec3d::UnitZ();
@@ -38,34 +38,16 @@ Vec3d object_up(const ModelObject& mo)
     return up.normalized();
 }
 
-nlohmann::json vec3_json(const Vec3d& v) { return nlohmann::json::array({v(0), v(1), v(2)}); }
+nlohmann::json vec3_json(const Vec3d &v) { return nlohmann::json::array({v(0), v(1), v(2)}); }
 
-// A hole is horizontal (the top of its wall is an overhang) when its axis is close to the
-// build plane. Both the teardrop and the horizontal partial-bridge remedy only make sense there.
 constexpr double HORIZONTAL_COS = 0.5;
 
-ModelObject* resolve_object(Plater* plater, int object_id)
+int resolved_object_id(Plater *plater, int object_id)
 {
-    Model& model = plater->model();
-    int    oid   = object_id;
-    if (oid < 0) {
-        GLCanvas3D* canvas = plater->get_view3D_canvas3D();
-        if (canvas != nullptr)
-            oid = canvas->get_selection().get_object_idx();
-    }
-    if (oid < 0 && model.objects.size() == 1)
-        oid = 0;
-    if (oid < 0 || oid >= int(model.objects.size()))
-        return nullptr;
-    return model.objects[oid];
-}
-
-int resolved_object_id(Plater* plater, int object_id)
-{
-    Model& model = plater->model();
+    Model &model = plater->model();
     if (object_id >= 0 && object_id < int(model.objects.size()))
         return object_id;
-    GLCanvas3D* canvas = plater->get_view3D_canvas3D();
+    GLCanvas3D *canvas = plater->get_view3D_canvas3D();
     if (canvas != nullptr) {
         const int sel = canvas->get_selection().get_object_idx();
         if (sel >= 0 && sel < int(model.objects.size()))
@@ -76,24 +58,24 @@ int resolved_object_id(Plater* plater, int object_id)
 
 nlohmann::json find_holes_json(int object_id, bool include_vertical)
 {
-    Plater* plater = wxGetApp().plater();
+    Plater *plater = wxGetApp().plater();
     if (plater == nullptr)
         return {{"status", "error"}, {"error", "No plater"}};
 
     const int oid = resolved_object_id(plater, object_id);
-    ModelObject* mo = resolve_object(plater, object_id);
-    if (mo == nullptr)
+    if (oid < 0)
         return {{"status", "error"}, {"error", "No object (load a model or pass object_id)"}};
+    ModelObject *mo = plater->model().objects[oid];
 
-    wxBusyCursor    wait;
-    const Vec3d     up    = object_up(*mo);
-    TriangleMesh    mesh  = mo->raw_mesh();
+    wxBusyCursor wait;
+    const Vec3d up = object_up(*mo);
+    TriangleMesh mesh = mo->raw_mesh();
     std::vector<DetectedHole> holes = detect_holes(mesh.its);
 
     nlohmann::json arr = nlohmann::json::array();
     int            kept = 0;
     for (size_t i = 0; i < holes.size(); ++i) {
-        const DetectedHole& h          = holes[i];
+        const DetectedHole &h          = holes[i];
         const bool          horizontal = std::abs(h.axis.dot(up)) < HORIZONTAL_COS;
         if (!include_vertical && !horizontal)
             continue;
@@ -109,7 +91,7 @@ nlohmann::json find_holes_json(int object_id, bool include_vertical)
             {"confidence", h.confidence},
             {"facet_count", int(h.facets.size())},
             {"eligible_teardrop", horizontal},
-            {"eligible_partial_bridge", horizontal},
+            {"eligible_bore", true},
         });
         ++kept;
     }
@@ -124,9 +106,38 @@ nlohmann::json find_holes_json(int object_id, bool include_vertical)
     };
 }
 
-nlohmann::json horizontal_gizmo_state(GLGizmoHorizontalHoles &g)
+GLGizmoHoles *active_holes_gizmo(bool open_if_needed)
 {
-    const int      n   = g.hole_count(); // runs detection on demand
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr)
+        return nullptr;
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Holes) {
+        Selection &sel = canvas->get_selection();
+        if (!sel.is_single_full_instance() && !plater->model().objects.empty()) {
+            int oid = sel.get_object_idx();
+            if (oid < 0)
+                oid = 0;
+            if (oid >= 0 && oid < int(plater->model().objects.size())) {
+                sel.clear();
+                sel.add_object(unsigned(oid), true);
+            }
+        }
+        mgr.open_gizmo(GLGizmosManager::EType::Holes);
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+    }
+
+    if (mgr.get_current_type() != GLGizmosManager::EType::Holes)
+        return nullptr;
+    return dynamic_cast<GLGizmoHoles *>(mgr.get_current());
+}
+
+nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
+{
+    const int      n   = g.hole_count();
     nlohmann::json arr = nlohmann::json::array();
     for (int i = 0; i < n; ++i) {
         const DetectedHole h = g.hole(i);
@@ -138,46 +149,38 @@ nlohmann::json horizontal_gizmo_state(GLGizmoHorizontalHoles &g)
             {"diameter", 2.0 * h.radius},
             {"depth", h.depth},
             {"through", h.through},
+            {"horizontal", g.hole_horizontal(i)},
             {"has_teardrop", g.hole_has_teardrop(i)},
+            {"has_bore", g.hole_has_bore(i)},
         });
     }
-    return {
-        {"hole_count", n},
-        {"angle", g.get_angle()},
-        {"holes", arr},
-    };
-}
+    const char *op = g.get_operation() == HoleOperation::Teardrop ? "teardrop" : "bore";
 
-// Find the horizontal-holes gizmo, activating it if requested. Returns nullptr when it is not
-// the active gizmo (or cannot become active, e.g. no single object selected).
-GLGizmoHorizontalHoles* active_horizontal_holes_gizmo(bool open_if_needed)
-{
-    Plater*      plater = wxGetApp().plater();
-    GLCanvas3D*  canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
-    if (canvas == nullptr)
-        return nullptr;
-    GLGizmosManager& mgr = canvas->get_gizmos_manager();
-
-    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HorizontalHoles) {
-        // The gizmo is only activable on a single full instance; select one if needed.
-        Selection& sel = canvas->get_selection();
-        if (!sel.is_single_full_instance() && !plater->model().objects.empty()) {
-            int oid = sel.get_object_idx();
-            if (oid < 0)
-                oid = 0;
-            if (oid >= 0 && oid < int(plater->model().objects.size())) {
-                sel.clear();
-                sel.add_object(unsigned(oid), true);
-            }
+    // Volume bookkeeping helps diagnose whether features are actually being added.
+    int         volume_count = -1, pocket_volumes = 0;
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (plater != nullptr && canvas != nullptr) {
+        const int oi = canvas->get_selection().get_object_idx();
+        if (oi >= 0 && oi < int(plater->model().objects.size())) {
+            const ModelObject *mo = plater->model().objects[oi];
+            volume_count          = int(mo->volumes.size());
+            for (const ModelVolume *v : mo->volumes)
+                if (v->name.rfind("HolePocket", 0) == 0)
+                    ++pocket_volumes;
         }
-        mgr.open_gizmo(GLGizmosManager::EType::HorizontalHoles);
-        canvas->set_as_dirty();
-        canvas->request_extra_frame();
     }
 
-    if (mgr.get_current_type() != GLGizmosManager::EType::HorizontalHoles)
-        return nullptr;
-    return dynamic_cast<GLGizmoHorizontalHoles*>(mgr.get_current());
+    return {
+        {"hole_count", n},
+        {"operation", op},
+        {"angle", g.get_angle()},
+        {"standard_index", g.get_standard() + 1},
+        {"standard_name", g.standard_name(g.get_standard() + 1)},
+        {"volume_count", volume_count},
+        {"pocket_volumes", pocket_volumes},
+        {"holes", arr},
+    };
 }
 
 } // namespace
@@ -187,8 +190,8 @@ void OrcaMCPServer::register_gizmo_tools()
     register_tool({
         "find_holes",
         "Detect cylindrical holes on a model object's mesh (no CAD reconstruction). Returns axis, "
-        "center, radius, depth, through/blind and whether each hole is horizontal, i.e. eligible "
-        "for a teardrop or a horizontal partial bridge. Omit object_id to use the selection.",
+        "center, radius, depth, through/blind and whether each hole is horizontal (eligible for a "
+        "teardrop; every hole is eligible for a bore/pocket). Omit object_id for the selection.",
         {
             {"type", "object"},
             {"properties", {
@@ -196,7 +199,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"include_vertical", {{"type", "boolean"}, {"description", "Also return vertical holes (default false)."}}}
             }}
         },
-        [](const nlohmann::json& params) -> nlohmann::json {
+        [](const nlohmann::json &params) -> nlohmann::json {
             const int  object_id        = params.contains("object_id") ? params["object_id"].get<int>() : -1;
             const bool include_vertical = params.value("include_vertical", false);
             return run_on_main_thread([object_id, include_vertical]() -> nlohmann::json {
@@ -206,26 +209,35 @@ void OrcaMCPServer::register_gizmo_tools()
     });
 
     register_tool({
-        "horizontal_holes_gizmo",
-        "Control the horizontal-hole picker gizmo. Actions: 'open' (activate it; selects the object "
-        "if needed), 'status' (detected holes + which are teardropped), 'set_angle' (apex angle, "
-        "clamped), 'toggle' (one hole by index), 'apply_all', 'clear_all', 'refresh', 'close'. Use "
-        "find_holes first for indices.",
+        "holes_gizmo",
+        "Control the Holes tool. Actions: 'open' (activate it; selects the object if needed), "
+        "'status' (detected holes + which are teardropped / bored), 'set_operation' "
+        "(teardrop|bore), 'set_angle', 'set_standard' (0=Custom, else 1-based index into the "
+        "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
+        "(tight|slip|epoxy), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
+        "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_angle | toggle | apply_all | clear_all | refresh | close"}}},
-                {"object_id", {{"type", "integer"}, {"description", "Object to select when opening (default: current selection or the only object)."}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_fit | set_diameter | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
-                {"angle", {{"type", "number"}, {"description", "Apex angle in degrees for action=set_angle."}}}
+                {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
+                {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
+                {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
+                {"head", {{"type", "string"}, {"description", "none | counterbore | countersink, for action=set_head."}}},
+                {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
+                {"diameter", {{"type", "number"}, {"description", "Custom diameter mm, for action=set_diameter."}}},
+                {"through", {{"type", "boolean"}, {"description", "For action=set_through."}}},
+                {"flip", {{"type", "boolean"}, {"description", "For action=set_flip."}}}
             }},
             {"required", {"action"}}
         },
-        [](const nlohmann::json& params) -> nlohmann::json {
+        [](const nlohmann::json &params) -> nlohmann::json {
             const std::string action = params.value("action", std::string("status"));
             return run_on_main_thread([action, params]() -> nlohmann::json {
-                Plater*     plater = wxGetApp().plater();
-                GLCanvas3D* canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
                 if (canvas == nullptr)
                     return {{"status", "error"}, {"error", "No 3D canvas"}};
 
@@ -235,29 +247,46 @@ void OrcaMCPServer::register_gizmo_tools()
                     return {{"status", "ok"}, {"open", false}, {"action", action}};
                 }
 
-                // Select the requested object before opening, when given.
                 if (params.contains("object_id")) {
                     const int oid = params["object_id"].get<int>();
-                    Model&    model = plater->model();
-                    if (oid < 0 || oid >= int(model.objects.size()))
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
                         return {{"status", "error"}, {"error", "Invalid object_id"}};
-                    Selection& sel = canvas->get_selection();
+                    Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
                 }
 
-                GLGizmoHorizontalHoles* g = active_horizontal_holes_gizmo(action == "open");
+                GLGizmoHoles *g = active_holes_gizmo(action == "open");
                 if (g == nullptr)
                     return {{"status", "error"},
-                            {"error", "Horizontal-holes gizmo is not active. Load a model and pass object_id or select a single object."}};
+                            {"error", "Holes gizmo is not active. Load a model and pass object_id or select a single object."}};
 
-                if (action == "set_angle") {
-                    if (!params.contains("angle"))
-                        return {{"status", "error"}, {"error", "action=set_angle needs 'angle'"}};
+                auto need = [&](const char *key) { return params.contains(key); };
+
+                if (action == "set_operation") {
+                    g->set_operation(params.value("operation", std::string("teardrop")) == "bore" ? HoleOperation::Bore
+                                                                                                 : HoleOperation::Teardrop);
+                } else if (action == "set_angle") {
+                    if (!need("angle")) return {{"status", "error"}, {"error", "needs 'angle'"}};
                     g->set_angle(params["angle"].get<float>());
+                } else if (action == "set_standard") {
+                    if (!need("standard_index")) return {{"status", "error"}, {"error", "needs 'standard_index'"}};
+                    g->set_standard(params["standard_index"].get<int>());
+                } else if (action == "set_head") {
+                    const std::string h = params.value("head", std::string("none"));
+                    g->set_head(h == "counterbore" ? BoreHead::Counterbore : (h == "countersink" ? BoreHead::Countersink : BoreHead::None));
+                } else if (action == "set_fit") {
+                    const std::string f = params.value("fit", std::string("slip"));
+                    g->set_fit(f == "tight" ? HoleFit::Tight : (f == "epoxy" ? HoleFit::Epoxy : HoleFit::Slip));
+                } else if (action == "set_diameter") {
+                    if (!need("diameter")) return {{"status", "error"}, {"error", "needs 'diameter'"}};
+                    g->set_diameter(params["diameter"].get<double>());
+                } else if (action == "set_through") {
+                    g->set_through(params.value("through", true));
+                } else if (action == "set_flip") {
+                    g->set_flip(params.value("flip", false));
                 } else if (action == "toggle") {
-                    if (!params.contains("hole_index"))
-                        return {{"status", "error"}, {"error", "action=toggle needs 'hole_index'"}};
+                    if (!need("hole_index")) return {{"status", "error"}, {"error", "needs 'hole_index'"}};
                     g->gizmo_toggle_hole(params["hole_index"].get<int>());
                 } else if (action == "apply_all") {
                     g->gizmo_apply_all();
@@ -269,7 +298,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     return {{"status", "error"}, {"error", "Unknown action: " + action}};
                 }
 
-                nlohmann::json result = horizontal_gizmo_state(*g);
+                nlohmann::json result = holes_gizmo_state(*g);
                 result["status"] = "ok";
                 result["open"]   = true;
                 result["action"] = action;
