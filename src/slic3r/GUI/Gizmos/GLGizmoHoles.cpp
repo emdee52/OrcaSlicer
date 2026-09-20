@@ -748,6 +748,11 @@ void GLGizmoHoles::set_standard(int idx)
             if (m_screw_fit == ScrewFit::Free && s.clearance_d <= 0.)
                 m_screw_fit = ScrewFit::Tap; // tap-only size
             m_diameter = screw_nominal_diameter(s, m_screw_fit == ScrewFit::Tap);
+            // Drop a head style this screw has no dimensions for.
+            if ((m_head == BoreHead::SocketHead && s.socket_d <= 0.) ||
+                (m_head == BoreHead::ButtonHead && s.button_d <= 0.) ||
+                (m_head == BoreHead::Countersink && s.csink_d <= 0.))
+                m_head = BoreHead::None;
         } else if (s.kind == HoleStandardKind::Nut) {
             m_diameter = s.across_flats;
             m_depth    = s.pocket_depth;
@@ -1090,40 +1095,52 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         m_imgui->disabled_end();
 
         if (is_screw) {
-            // Free (clearance) or Tap (thread-forming into plastic).
-            ImGui::AlignTextToFramePadding();
-            m_imgui->text(m_desc.at("screw_fit"));
-            ImGui::SameLine(left_width);
-            m_imgui->disabled_begin(s->clearance_d <= 0.); // tap-only size
-            if (m_imgui->button(m_desc.at("fit_free")))
-                set_screw_fit(ScrewFit::Free);
-            m_imgui->disabled_end();
-            ImGui::SameLine();
-            m_imgui->disabled_begin(s->tap_d <= 0.);
-            if (m_imgui->button(m_desc.at("fit_tap")))
-                set_screw_fit(ScrewFit::Tap);
-            m_imgui->disabled_end();
+            // Free (clearance) or Tap (thread-forming into plastic). Only the fits this screw
+            // actually has are shown.
+            const bool has_free = s->clearance_d > 0.;
+            const bool has_tap  = s->tap_d > 0.;
+            if (has_free || has_tap) {
+                ImGui::AlignTextToFramePadding();
+                m_imgui->text(m_desc.at("screw_fit"));
+                ImGui::SameLine(left_width);
+                bool first = true;
+                if (has_free) {
+                    if (m_imgui->button(m_desc.at("fit_free")))
+                        set_screw_fit(ScrewFit::Free);
+                    first = false;
+                }
+                if (has_tap) {
+                    if (!first)
+                        ImGui::SameLine();
+                    if (m_imgui->button(m_desc.at("fit_tap")))
+                        set_screw_fit(ScrewFit::Tap);
+                }
+            }
 
-            ImGui::AlignTextToFramePadding();
-            m_imgui->text(m_desc.at("head"));
-            ImGui::SameLine(left_width);
-            if (m_imgui->button(m_desc.at("head_none")))
-                set_head(BoreHead::None);
-            ImGui::SameLine();
-            m_imgui->disabled_begin(s->socket_d <= 0.);
-            if (m_imgui->button(m_desc.at("head_socket")))
-                set_head(BoreHead::SocketHead);
-            m_imgui->disabled_end();
-            ImGui::SameLine();
-            m_imgui->disabled_begin(s->button_d <= 0.);
-            if (m_imgui->button(m_desc.at("head_button")))
-                set_head(BoreHead::ButtonHead);
-            m_imgui->disabled_end();
-            ImGui::SameLine();
-            m_imgui->disabled_begin(s->csink_d <= 0.);
-            if (m_imgui->button(m_desc.at("head_csink")))
-                set_head(BoreHead::Countersink);
-            m_imgui->disabled_end();
+            // Head styles this screw has dimensions for; hidden entirely when it has none.
+            const bool has_head = s->socket_d > 0. || s->button_d > 0. || s->csink_d > 0.;
+            if (has_head) {
+                ImGui::AlignTextToFramePadding();
+                m_imgui->text(m_desc.at("head"));
+                ImGui::SameLine(left_width);
+                if (m_imgui->button(m_desc.at("head_none")))
+                    set_head(BoreHead::None);
+                if (s->socket_d > 0.) {
+                    ImGui::SameLine();
+                    if (m_imgui->button(m_desc.at("head_socket")))
+                        set_head(BoreHead::SocketHead);
+                }
+                if (s->button_d > 0.) {
+                    ImGui::SameLine();
+                    if (m_imgui->button(m_desc.at("head_button")))
+                        set_head(BoreHead::ButtonHead);
+                }
+                if (s->csink_d > 0.) {
+                    ImGui::SameLine();
+                    if (m_imgui->button(m_desc.at("head_csink")))
+                        set_head(BoreHead::Countersink);
+                }
+            }
         }
 
         if (is_pocket) {
@@ -1139,8 +1156,11 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
 
         // Head fit: sink the head / pocket below the surface by 0.08 or 0.16 mm (Z tolerance).
         {
-            const bool show = (is_screw && m_head != BoreHead::None) || is_nut ||
-                              (s != nullptr && s->kind == HoleStandardKind::Magnet);
+            const bool head_active = is_screw && m_head != BoreHead::None &&
+                                     ((m_head == BoreHead::SocketHead && s->socket_d > 0.) ||
+                                      (m_head == BoreHead::ButtonHead && s->button_d > 0.) ||
+                                      (m_head == BoreHead::Countersink && s->csink_d > 0.));
+            const bool show = head_active || is_nut || (s != nullptr && s->kind == HoleStandardKind::Magnet);
             if (show) {
                 ImGui::AlignTextToFramePadding();
                 m_imgui->text(m_desc.at("head_fit"));
