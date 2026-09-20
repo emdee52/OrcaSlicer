@@ -57,8 +57,10 @@ public:
     void        set_head(BoreHead h);
     HoleFit     get_fit() const { return HoleFit(m_fit); }
     void        set_fit(HoleFit f);
-    double      get_diameter() const { return m_custom_d; }
+    double      get_diameter() const { return m_diameter; }
     void        set_diameter(double d);
+    double      get_tolerance() const { return m_tolerance; }
+    void        set_tolerance(double t);
     bool        get_through() const { return m_through; }
     void        set_through(bool t);
     bool        get_flip() const { return m_flip; }
@@ -111,11 +113,13 @@ private:
     void toggle_teardrop(int idx);
     void toggle_bore(int idx);
     void clear_all();
-    void reapply_teardrops();
-    void reapply_bores();
 
     void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
+
+    // The standard whose nominal diameter matches `d` (screw clearance, or pocket diameter for
+    // inserts/magnets), or -1. Used to relabel Custom <-> standard when the diameter is edited.
+    int matched_standard(double d) const;
 
     std::vector<HoleView>             m_holes;
     std::vector<char>                 m_teardrop; // a teardrop negative matches this hole
@@ -124,15 +128,14 @@ private:
 
     bool  m_dirty{ true };
     bool  m_preview_dirty{ true };
-    bool  m_angle_changed{ false };
-    bool  m_bore_changed{ false };
     float m_angle_deg{ 45.f };
 
     HoleOperation m_operation{ HoleOperation::Teardrop };
-    int           m_standard{ -1 };          // -1 = Custom, else index into hole_standards()
+    int           m_standard{ -1 };   // -1 = Custom, else index into hole_standards()
     BoreHead      m_head{ BoreHead::None };
-    int           m_fit{ 1 };                // 0 tight, 1 slip, 2 epoxy
-    double        m_custom_d{ 5.0 };
+    int           m_fit{ 1 };         // 0 tight, 1 slip, 2 epoxy
+    double        m_diameter{ 5.0 };  // nominal diameter (editable)
+    double        m_tolerance{ 0.0 }; // extra diameter; fit-derived and read-only for insert/magnet
     bool          m_through{ true };
     double        m_depth{ 10.0 };
     bool          m_flip{ false };

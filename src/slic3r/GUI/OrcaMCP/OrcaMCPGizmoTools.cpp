@@ -177,6 +177,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"angle", g.get_angle()},
         {"standard_index", g.get_standard() + 1},
         {"standard_name", g.standard_name(g.get_standard() + 1)},
+        {"diameter", g.get_diameter()},
+        {"tolerance", g.get_tolerance()},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"holes", arr},
@@ -219,7 +221,7 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_fit | set_diameter | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_angle | set_standard | set_head | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
@@ -227,7 +229,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
                 {"head", {{"type", "string"}, {"description", "none | counterbore | countersink, for action=set_head."}}},
                 {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
-                {"diameter", {{"type", "number"}, {"description", "Custom diameter mm, for action=set_diameter."}}},
+                {"diameter", {{"type", "number"}, {"description", "Nominal diameter mm, for action=set_diameter. Matching a standard's size selects it."}}},
+                {"tolerance", {{"type", "number"}, {"description", "Extra diameter mm, for action=set_tolerance (ignored for insert/magnet, which derive it from the fit)."}}},
                 {"through", {{"type", "boolean"}, {"description", "For action=set_through."}}},
                 {"flip", {{"type", "boolean"}, {"description", "For action=set_flip."}}}
             }},
@@ -281,6 +284,9 @@ void OrcaMCPServer::register_gizmo_tools()
                 } else if (action == "set_diameter") {
                     if (!need("diameter")) return {{"status", "error"}, {"error", "needs 'diameter'"}};
                     g->set_diameter(params["diameter"].get<double>());
+                } else if (action == "set_tolerance") {
+                    if (!need("tolerance")) return {{"status", "error"}, {"error", "needs 'tolerance'"}};
+                    g->set_tolerance(params["tolerance"].get<double>());
                 } else if (action == "set_through") {
                     g->set_through(params.value("through", true));
                 } else if (action == "set_flip") {

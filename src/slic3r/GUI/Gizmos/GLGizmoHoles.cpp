@@ -117,6 +117,7 @@ bool GLGizmoHoles::on_init()
     m_desc["fit_slip"]         = _L("Slip");
     m_desc["fit_epoxy"]        = _L("Epoxy");
     m_desc["diameter"]         = _L("Diameter");
+    m_desc["tolerance"]        = _L("Tolerance");
     m_desc["through"]          = _L("Through");
     m_desc["depth"]            = _L("Depth");
     m_desc["entry"]            = _L("Flip");
@@ -190,12 +191,26 @@ std::string GLGizmoHoles::standard_name(int idx) const
 
 double GLGizmoHoles::bore_diameter() const
 {
-    if (m_standard < 0 || m_standard >= int(hole_standards().size()))
-        return m_custom_d;
-    const HoleStandard &s = hole_standards()[m_standard];
-    if (s.kind == HoleStandardKind::Screw)
-        return s.clearance_d;
-    return s.pocket_d + hole_fit_diameter_delta(s.kind, s.pocket_d, HoleFit(m_fit));
+    const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
+                                ? &hole_standards()[m_standard]
+                                : nullptr;
+    // Insert / magnet pockets derive their tolerance from the fit; everything else uses the
+    // editable tolerance field.
+    const double tol = (s != nullptr && s->kind != HoleStandardKind::Screw)
+                           ? hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit))
+                           : m_tolerance;
+    return std::max(0.1, m_diameter + tol);
+}
+
+int GLGizmoHoles::matched_standard(double d) const
+{
+    const std::vector<HoleStandard> &t = hole_standards();
+    for (size_t i = 0; i < t.size(); ++i) {
+        const double nominal = (t[i].kind == HoleStandardKind::Screw) ? t[i].clearance_d : t[i].pocket_d;
+        if (std::abs(nominal - d) <= 0.01)
+            return int(i);
+    }
+    return -1;
 }
 
 void GLGizmoHoles::feature_frame(int idx, Vec3d &dir, Vec3d &entry) const
@@ -439,17 +454,34 @@ void GLGizmoHoles::rebuild_previews()
     m_preview_hover.reset();
 
     indexed_triangle_set all_its, applied_its, hover_its;
+
+    // Applied features are shown from the actual model volumes, so the red preview always matches
+    // what was baked in when each hole was placed (per-hole parameter capture).
+    const ModelObject *mo = model_object();
+    if (mo != nullptr) {
+        for (const ModelVolume *v : mo->volumes) {
+            if (v == nullptr || !v->is_negative_volume())
+                continue;
+            if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0)
+                continue;
+            indexed_triangle_set its = v->mesh().its;
+            const Transform3d    m   = v->get_matrix();
+            if (!m.isApprox(Transform3d::Identity()))
+                for (stl_vertex &p : its.vertices)
+                    p = (m * Eigen::Vector3d(p(0), p(1), p(2))).cast<float>();
+            merge_into(applied_its, its);
+        }
+    }
+
     for (size_t i = 0; i < m_holes.size(); ++i) {
+        const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] : m_bore[i];
+        if (applied)
+            continue; // already drawn from the actual volume
         indexed_triangle_set ghost = shape_mesh(int(i));
         if (ghost.indices.empty())
             continue;
         merge_into(all_its, ghost);
-
-        const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] : m_bore[i];
-        if (applied) {
-            indexed_triangle_set s = shape_mesh(int(i));
-            merge_into(applied_its, s);
-        } else if (int(i) == m_hover_id) {
+        if (int(i) == m_hover_id) {
             indexed_triangle_set s = shape_mesh(int(i));
             merge_into(hover_its, s);
         }
@@ -595,89 +627,6 @@ void GLGizmoHoles::clear_all()
         ol->delete_from_model_and_list(items);
 }
 
-void GLGizmoHoles::reapply_teardrops()
-{
-    std::vector<int> applied;
-    for (size_t i = 0; i < m_holes.size(); ++i)
-        if (m_teardrop[i])
-            applied.push_back(int(i));
-    ModelObject *mo = model_object();
-    const int    oi = object_idx();
-    if (mo == nullptr || oi < 0)
-        return;
-
-    std::vector<ItemForDelete> items;
-    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
-        const ModelVolume *v = mo->volumes[vi];
-        if (v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0)
-            items.emplace_back(ItemType::itVolume, oi, int(vi));
-    }
-    if (applied.empty() && items.empty())
-        return;
-
-    Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, _u8L("Update teardrops"), UndoRedo::SnapshotType::GizmoAction);
-    if (!items.empty())
-        if (ObjectList *ol = wxGetApp().obj_list())
-            ol->delete_from_model_and_list(items);
-    for (int i : applied) {
-        indexed_triangle_set its = teardrop_mesh(i);
-        if (its.indices.empty())
-            continue;
-        ModelVolume *v = mo->add_volume(TriangleMesh(std::move(its)), ModelVolumeType::NEGATIVE_VOLUME, false);
-        v->name        = feature_name(TEARDROP_NAME, i);
-    }
-    if (ObjectList *ol = wxGetApp().obj_list()) {
-        ol->add_volumes_to_object_in_list(oi);
-        ol->update_info_items(oi);
-    }
-    plater->update();
-}
-
-void GLGizmoHoles::reapply_bores()
-{
-    std::vector<int> applied;
-    for (size_t i = 0; i < m_holes.size(); ++i)
-        if (m_bore[i])
-            applied.push_back(int(i));
-    ModelObject *mo = model_object();
-    const int    oi = object_idx();
-    if (mo == nullptr || oi < 0)
-        return;
-
-    std::vector<ItemForDelete> items;
-    for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
-        const ModelVolume *v = mo->volumes[vi];
-        if (v->name.rfind(POCKET_NAME, 0) == 0)
-            items.emplace_back(ItemType::itVolume, oi, int(vi));
-    }
-    if (applied.empty() && items.empty())
-        return;
-
-    Plater *plater = wxGetApp().plater();
-    Plater::TakeSnapshot snapshot(plater, _u8L("Update pockets"), UndoRedo::SnapshotType::GizmoAction);
-    if (!items.empty())
-        if (ObjectList *ol = wxGetApp().obj_list())
-            ol->delete_from_model_and_list(items);
-    for (int i : applied) {
-        indexed_triangle_set tube = bore_tube_mesh(i);
-        if (!tube.empty()) {
-            ModelVolume *v = mo->add_volume(TriangleMesh(std::move(tube)), ModelVolumeType::MODEL_PART, false);
-            v->name        = feature_name(POCKET_NAME, i);
-        }
-        indexed_triangle_set neg = bore_negative_mesh(i);
-        if (!neg.empty()) {
-            ModelVolume *v = mo->add_volume(TriangleMesh(std::move(neg)), ModelVolumeType::NEGATIVE_VOLUME, false);
-            v->name        = feature_name(POCKET_NAME, i);
-        }
-    }
-    if (ObjectList *ol = wxGetApp().obj_list()) {
-        ol->add_volumes_to_object_in_list(oi);
-        ol->update_info_items(oi);
-    }
-    plater->update();
-}
-
 // ---------------------------------------------------------------------------------------------
 // MCP control surface
 // ---------------------------------------------------------------------------------------------
@@ -712,15 +661,17 @@ void GLGizmoHoles::set_operation(HoleOperation op)
 void GLGizmoHoles::set_angle(float deg)
 {
     m_angle_deg     = std::clamp(deg, ANGLE_MIN, ANGLE_MAX);
-    m_angle_changed = true;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
 
 void GLGizmoHoles::set_standard(int idx)
 {
-    m_standard      = std::clamp(idx, 0, standard_count() - 1) - 1;
-    m_bore_changed  = true;
+    m_standard = std::clamp(idx, 0, standard_count() - 1) - 1;
+    if (m_standard >= 0) {
+        const HoleStandard &s = hole_standards()[m_standard];
+        m_diameter            = (s.kind == HoleStandardKind::Screw) ? s.clearance_d : s.pocket_d;
+    }
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -728,7 +679,6 @@ void GLGizmoHoles::set_standard(int idx)
 void GLGizmoHoles::set_head(BoreHead h)
 {
     m_head          = h;
-    m_bore_changed  = true;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -736,15 +686,21 @@ void GLGizmoHoles::set_head(BoreHead h)
 void GLGizmoHoles::set_fit(HoleFit f)
 {
     m_fit           = int(f);
-    m_bore_changed  = true;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
 
 void GLGizmoHoles::set_diameter(double d)
 {
-    m_custom_d      = std::max(0.1, d);
-    m_bore_changed  = true;
+    m_diameter      = std::max(0.1, d);
+    m_standard      = matched_standard(m_diameter); // relabel Custom <-> a standard by diameter
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_tolerance(double t)
+{
+    m_tolerance     = t;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -752,7 +708,6 @@ void GLGizmoHoles::set_diameter(double d)
 void GLGizmoHoles::set_through(bool t)
 {
     m_through       = t;
-    m_bore_changed  = true;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -760,7 +715,6 @@ void GLGizmoHoles::set_through(bool t)
 void GLGizmoHoles::set_flip(bool f)
 {
     m_flip          = f;
-    m_bore_changed  = true;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -895,6 +849,33 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         const bool is_screw  = s != nullptr && s->kind == HoleStandardKind::Screw;
         const bool is_pocket = s != nullptr && s->kind != HoleStandardKind::Screw;
 
+        // Diameter is always editable; typing an existing standard's size relabels the combo.
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("diameter"));
+        ImGui::SameLine(left_width);
+        ImGui::PushItemWidth(sliders_width);
+        float d = float(m_diameter);
+        if (ImGui::InputFloat("##dia", &d, 0.1f, 1.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+            set_diameter(d);
+        ImGui::PopItemWidth();
+
+        // Tolerance: read-only and fit-derived for inserts/magnets, editable otherwise.
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("tolerance"));
+        ImGui::SameLine(left_width);
+        ImGui::PushItemWidth(sliders_width);
+        if (is_pocket) {
+            float t = float(hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit)));
+            m_imgui->disabled_begin(true);
+            ImGui::InputFloat("##tol", &t, 0.f, 0.f, "%.2f");
+            m_imgui->disabled_end();
+        } else {
+            float t = float(m_tolerance);
+            if (ImGui::InputFloat("##tol", &t, 0.05f, 0.2f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+                set_tolerance(t);
+        }
+        ImGui::PopItemWidth();
+
         if (is_screw) {
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("head"));
@@ -907,7 +888,9 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             ImGui::SameLine();
             if (m_imgui->button(m_desc.at("head_csink")))
                 set_head(BoreHead::Countersink);
-        } else if (is_pocket) {
+        }
+
+        if (is_pocket) {
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("fit"));
             ImGui::SameLine(left_width);
@@ -919,15 +902,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             ImGui::SameLine();
             if (m_imgui->button(m_desc.at("fit_epoxy")))
                 set_fit(HoleFit::Epoxy);
-        } else {
-            ImGui::AlignTextToFramePadding();
-            m_imgui->text(m_desc.at("diameter"));
-            ImGui::SameLine(left_width);
-            ImGui::PushItemWidth(sliders_width);
-            float d = float(m_custom_d);
-            if (ImGui::InputFloat("##dia", &d, 0.1f, 1.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-                set_diameter(d);
-            ImGui::PopItemWidth();
         }
 
         if (!is_pocket) {
@@ -992,22 +966,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
 
     GizmoImguiEnd();
     ImGuiWrapper::pop_toolbar_style();
-
-    // Re-apply on parameter changes so applied features track the settings.
-    if (m_angle_changed) {
-        m_angle_changed = false;
-        reapply_teardrops();
-        refresh_applied();
-        m_preview_dirty = true;
-        m_parent.set_as_dirty();
-    }
-    if (m_bore_changed) {
-        m_bore_changed = false;
-        reapply_bores();
-        refresh_applied();
-        m_preview_dirty = true;
-        m_parent.set_as_dirty();
-    }
 }
 
 } // namespace GUI
