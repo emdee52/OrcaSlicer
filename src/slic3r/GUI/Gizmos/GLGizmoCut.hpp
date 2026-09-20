@@ -94,7 +94,7 @@ class GLGizmoCut3D : public GLGizmoBase
     GLModel m_reference_radius;
     GLModel m_angle_arc;
 
-    Vec3d   m_cut_normal;
+    Vec3d   m_cut_normal{ Vec3d::UnitZ() };
 
     struct InvalidConnectorsStatistics
     {
@@ -136,6 +136,8 @@ class GLGizmoCut3D : public GLGizmoBase
     bool m_hide_cut_plane{ false };
     bool m_connectors_editing{ false };
     bool m_cut_plane_as_circle{ false };
+    // When on, the next left click on the object aligns the cut plane to the clicked facet.
+    bool m_pick_face_mode{ false };
 
     float m_connector_depth_ratio{ 3.f };
     float m_connector_size{ 2.5f };
@@ -246,6 +248,25 @@ class GLGizmoCut3D : public GLGizmoBase
 
 public:
     GLGizmoCut3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
+
+    // --- control surface for the embedded MCP cut_gizmo tool (see OrcaMCPGizmoTools.cpp) ---
+    int    gizmo_get_mode() const { return int(m_mode); }
+    void   gizmo_set_mode(int mode);
+    bool   gizmo_keep_upper() const { return m_keep_upper; }
+    void   gizmo_set_keep_upper(bool keep) { m_keep_upper = keep; }
+    bool   gizmo_keep_lower() const { return m_keep_lower; }
+    void   gizmo_set_keep_lower(bool keep) { m_keep_lower = keep; }
+    bool   gizmo_keep_as_parts() const { return m_keep_as_parts; }
+    void   gizmo_set_keep_as_parts(bool keep) { m_keep_as_parts = keep; }
+    Vec3d  gizmo_plane_center() const { return m_plane_center; }
+    Vec3d  gizmo_plane_normal() const { return m_cut_normal; }
+    double gizmo_plane_offset() const { return m_cut_normal.dot(m_plane_center); }
+    void   gizmo_set_plane_normal(const Vec3d& normal);
+    void   gizmo_set_plane_center(const Vec3d& center);
+    void   gizmo_flip_plane();     // swaps upper/lower
+    void   gizmo_reset_plane();
+    void   gizmo_apply();          // performs the cut with the current plane and options
+    bool   gizmo_pick_face_mode() const { return m_pick_face_mode; }
 
     std::string get_tooltip() const override;
     bool unproject_on_cut_plane(const Vec2d& mouse_pos, Vec3d& pos, Vec3d& pos_world, bool respect_contours = true);
@@ -383,6 +404,12 @@ private:
     void validate_connector_settings();
     bool process_cut_line(SLAGizmoEventType action, const Vec2d& mouse_position);
     void check_and_update_connectors_state();
+
+    // Aligns the cut-plane normal (from a face) and places its center. Used by face picking and MCP.
+    void apply_plane_orientation(const Vec3d& normal, const Vec3d& center);
+    // Raycasts the object under the mouse and aligns the cut plane to the hit facet. Returns false
+    // if the ray did not hit the object.
+    bool pick_face_at(const Vec2d& mouse_position);
 
     void toggle_model_objects_visibility();
 

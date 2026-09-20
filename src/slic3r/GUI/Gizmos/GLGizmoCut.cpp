@@ -275,10 +275,65 @@ std::string GLGizmoCut3D::get_tooltip() const
     return tooltip;
 }
 
+// --- MCP control surface (see OrcaMCPGizmoTools.cpp) ---
+
+void GLGizmoCut3D::gizmo_set_mode(int mode)
+{
+    if (mode < 0 || mode >= int(m_modes.size()) || mode == int(m_mode))
+        return;
+    switch_to_mode(size_t(mode));
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoCut3D::gizmo_set_plane_normal(const Vec3d& normal)
+{
+    apply_plane_orientation(normal, m_plane_center);
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_set_plane_center(const Vec3d& center)
+{
+    set_center(center);
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoCut3D::gizmo_flip_plane()
+{
+    flip_cut_plane();
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_reset_plane()
+{
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Reset cutting plane"), UndoRedo::SnapshotType::GizmoAction);
+    reset_cut_plane();
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_apply()
+{
+    perform_cut(m_parent.get_selection());
+}
+
 bool GLGizmoCut3D::on_mouse(const wxMouseEvent &mouse_event)
 {
     Vec2i32 mouse_coord(mouse_event.GetX(), mouse_event.GetY());
     Vec2d mouse_pos = mouse_coord.cast<double>();
+
+    // Face-pick mode: the next left click aligns the cut plane to the clicked facet.
+    if (m_pick_face_mode) {
+        if (mouse_event.LeftDown()) {
+            pick_face_at(mouse_pos);
+            return true;
+        }
+        if (mouse_event.RightDown()) {
+            m_pick_face_mode = false;
+            m_parent.set_as_dirty();
+            return true;
+        }
+    }
 
     if (mouse_event.ShiftDown() && mouse_event.LeftDown())
         return gizmo_event(SLAGizmoEventType::LeftDown, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), mouse_event.CmdDown());
@@ -1418,6 +1473,7 @@ void GLGizmoCut3D::on_set_state()
             oc->set_behavior(true, true, 0.);
             oc->release();
         }
+        m_pick_face_mode = false;
         m_selected.clear();
         m_parent.set_use_color_clip_plane(false);
         //m_c->selection_info()->set_use_shift(false);
@@ -2493,6 +2549,77 @@ void GLGizmoCut3D::reset_cut_plane()
     m_parent.request_extra_frame();
 }
 
+// Sets the cut-plane orientation so its +Z matches `normal` (world space) and rebuilds the
+// derived state around `center`. Used by face picking and by the MCP control surface.
+void GLGizmoCut3D::apply_plane_orientation(const Vec3d& normal, const Vec3d& center)
+{
+    const Vec3d n = (normal.allFinite() && normal.norm() > 1e-9) ? normal.normalized() : Vec3d::UnitZ();
+
+    Vec3d    axis;
+    double   angle = 0.;
+    Matrix3d rotation;
+    rotation_from_two_vectors(Vec3d::UnitZ(), n, axis, angle, &rotation);
+
+    m_rotation_m               = Transform3d(rotation);
+    m_transformed_bounding_box = transformed_bounding_box(center, m_rotation_m);
+    m_start_dragging_m         = m_rotation_m;
+    reset_cut_by_contours();
+    update_clipper();
+    m_parent.request_extra_frame();
+}
+
+bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
+{
+    const CommonGizmosDataObjects::SelectionInfo* sel_info = m_c->selection_info();
+    const ModelObject* mo = sel_info != nullptr ? sel_info->model_object() : nullptr;
+    if (mo == nullptr)
+        return false;
+
+    const Selection& selection = m_parent.get_selection();
+    const Camera&    camera    = wxGetApp().plater()->get_camera();
+
+    const GLVolume* hit_volume = nullptr;
+    size_t          hit_facet  = 0;
+    Vec3d           hit_world  = Vec3d::Zero();
+    double          closest    = std::numeric_limits<double>::max();
+
+    for (unsigned int idx : selection.get_volume_idxs()) {
+        const GLVolume* volume = selection.get_volume(idx);
+        if (volume == nullptr || volume->mesh_raycaster == nullptr || volume->is_modifier ||
+            volume->is_sla_pad() || volume->is_sla_support() || volume->volume_idx() < 0)
+            continue;
+
+        Vec3f  hit, normal;
+        size_t facet = 0;
+        if (volume->mesh_raycaster->unproject_on_mesh(mouse_position, volume->world_matrix(), camera, hit, normal, nullptr, &facet)) {
+            const Vec3d  p = volume->world_matrix() * hit.cast<double>();
+            const double d = (camera.get_position() - p).squaredNorm();
+            if (d < closest) {
+                closest    = d;
+                hit_volume = volume;
+                hit_facet  = facet;
+                hit_world  = p;
+            }
+        }
+    }
+
+    if (hit_volume == nullptr)
+        return false;
+
+    const int volume_idx = hit_volume->volume_idx();
+    if (volume_idx < 0 || volume_idx >= int(mo->volumes.size()))
+        return false;
+
+    const Vec3d normal = facet_normal_in_world(mo->volumes[volume_idx]->mesh().its, int(hit_facet), hit_volume->world_matrix());
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Align cut plane to face"), UndoRedo::SnapshotType::GizmoAction);
+    apply_plane_orientation(normal, hit_world);
+    set_center(hit_world);
+
+    m_pick_face_mode = false;
+    return true;
+}
+
 void GLGizmoCut3D::invalidate_cut_plane()
 {
     m_rotation_m    = Transform3d::Identity();
@@ -2878,6 +3005,15 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
 
         if (mode == CutMode::cutPlanar) {
             ImGui::Separator();
+
+            if (m_imgui->button(m_pick_face_mode ? _L("Cancel face pick") : _L("Pick flat face"))) {
+                m_pick_face_mode = !m_pick_face_mode;
+                m_parent.set_as_dirty();
+            }
+            if (m_pick_face_mode) {
+                ImGui::SameLine();
+                m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, _L("Click a flat face to align the cut plane"));
+            }
 
             m_imgui->disabled_begin(!m_keep_upper || !m_keep_lower || m_keep_as_parts || (m_part_selection.valid() && m_part_selection.is_one_object()));
                 if (m_imgui->button(has_connectors ? _L("Edit connectors") : _L("Add connectors")))
