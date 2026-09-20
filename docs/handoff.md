@@ -166,7 +166,8 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
 
 Built after ME-2 was merged (`port/integration` @ `cfc22945a8`). Independent of the holes work.
 
-Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP).
+Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` (hover highlight
++ `pick_face`).
 
 - **`facet_normal_in_world`** (`src/libslic3r/CutUtils.{hpp,cpp}`) — world-space outward normal
   of a mesh facet via the inverse-transpose of the object-to-world linear part; correct under
@@ -178,15 +179,26 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP).
   (`Geometry::rotation_from_two_vectors(UnitZ, n)`) and the center to the click point. Right-click
   cancels; snapshot "Align cut plane to face". `m_cut_normal` now defaults to `UnitZ` (it was
   read before first `update_clipper()`).
+- **Hover highlight** (`242e670f48`) — while pick mode is on, `on_render` raycasts on each frame
+  and draws a translucent patch over the coplanar facets around the hovered facet (normal-agreement
+  growth, lifted along facet normals, reusing `GLGizmoAlignStack::build_mesh_face_model`'s
+  approach). `render_follows_cursor()` disables frame skipping so it tracks the cursor; adjacency/
+  normals are cached per volume. The raycast respects the cut clipping plane (only the visible half
+  is pickable).
 - **MCP `cut_gizmo`** (`OrcaMCPGizmoTools.cpp`) — `open | status | set_plane_normal |
-  set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | close`; public
-  control surface on `GLGizmoCut3D`. `apply` is wrapped in `McpDialogSuppressionGuard` (the
-  non-manifold repair dialog would deadlock the main-thread call).
+  set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | pick_face | close`;
+  public control surface on `GLGizmoCut3D`. `apply` is wrapped in `McpDialogSuppressionGuard` (the
+  non-manifold repair dialog would deadlock the main-thread call). `pick_face` runs the same
+  raycast-and-align path at `screen_x`/`screen_y` (default: viewport centre) so it is headless-testable.
 - **Verified**: `[CutUtils]` tests pass; MCP end-to-end on a 20 mm box (normal +X, center on the
-  +X face, shift −10 → two 10 mm halves); fresh box slices and exports g-code.
+  +X face, shift −10 → two 10 mm halves); on `Cut tool testing.3mf` a screen-point sweep picked the
+  top face (normal +Z at z=51), a 45° chamfer (normal `[0.707,-0.707,0]`) and a shelf (z=27),
+  confirming the raycast and world-normal math through the real path. Highlight rendering and the
+  mouse click itself are user click-tests.
 - **Design note**: the measure tool's `Measure::Measuring` face grouping was studied but is not
-  needed here — the plane uses the clicked point and a single facet's plane, so grouping only
-  affects the face centroid/average. The useful reuse is the raycaster pattern.
+  needed for the plane itself — the plane uses the clicked point and a single facet's plane. The
+  hover highlight borrows the AlignStack patch-growth idea instead; `Measure`'s plane GL model was
+  not reused.
 - **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
   profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
   by "keep section shapes".
