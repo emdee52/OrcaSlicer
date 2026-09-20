@@ -72,6 +72,8 @@ public:
     double      true_diameter() const { return bore_diameter(); }
     bool        get_through() const { return m_through; }
     void        set_through(bool t);
+    double      get_depth() const { return m_depth; }
+    void        set_depth(double d);
     bool        get_flip() const { return m_flip; }
     void        set_flip(bool f);
 

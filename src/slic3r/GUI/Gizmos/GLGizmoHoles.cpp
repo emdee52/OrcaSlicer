@@ -164,7 +164,6 @@ bool GLGizmoHoles::on_init()
     m_desc["fit"]              = _L("Fit");
     m_desc["fit_tight"]        = _L("Tight");
     m_desc["fit_slip"]         = _L("Slip");
-    m_desc["fit_epoxy"]        = _L("Epoxy");
     m_desc["screw_fit"]        = _L("Fit");
     m_desc["fit_free"]         = _L("Free");
     m_desc["fit_tap"]          = _L("Tap");
@@ -298,8 +297,8 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
 
     const double margin = std::max(0.5, 0.25 * h.radius);
     double       depth  = 0.;
-    if (is_pocket)
-        depth = s->pocket_depth;
+    if (is_pocket || is_nut)
+        depth = std::max(0.1, m_depth); // editable pocket depth
     else if (m_through)
         depth = h.depth + 2.0 * margin;
     else
@@ -309,7 +308,7 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
 
     if (is_nut) {
         const double across = std::max(0.1, m_diameter + m_tolerance);
-        return its_make_nut_pocket(across, s->pocket_depth + sink, s->clearance_d, depth, dir, entry);
+        return its_make_nut_pocket(across, depth + sink, s->clearance_d, depth, dir, entry);
     }
 
     const double d = bore_diameter();
@@ -750,8 +749,10 @@ void GLGizmoHoles::set_standard(int idx)
             m_diameter = screw_nominal_diameter(s, m_screw_fit == ScrewFit::Tap);
         } else if (s.kind == HoleStandardKind::Nut) {
             m_diameter = s.across_flats;
+            m_depth    = s.pocket_depth;
         } else {
             m_diameter = s.pocket_d;
+            m_depth    = s.pocket_depth;
         }
     }
     m_preview_dirty = true;
@@ -853,6 +854,13 @@ void GLGizmoHoles::set_head_fit(double f)
 void GLGizmoHoles::set_through(bool t)
 {
     m_through       = t;
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_depth(double d)
+{
+    m_depth         = std::max(0.1, d);
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -1126,9 +1134,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             ImGui::SameLine();
             if (m_imgui->button(m_desc.at("fit_slip")))
                 set_fit(HoleFit::Slip);
-            ImGui::SameLine();
-            if (m_imgui->button(m_desc.at("fit_epoxy")))
-                set_fit(HoleFit::Epoxy);
         }
 
         // Head fit: sink the head / pocket below the surface by 0.08 or 0.16 mm (Z tolerance).
@@ -1160,7 +1165,17 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             }
         }
 
-        if (!is_pocket) {
+        if (is_pocket || is_nut) {
+            // Editable pocket depth (insert / magnet / nut).
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(m_desc.at("depth"));
+            ImGui::SameLine(left_width);
+            ImGui::PushItemWidth(sliders_width);
+            float pocket_depth = float(m_depth);
+            if (ImGui::InputFloat("##depth", &pocket_depth, 0.5f, 2.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+                m_depth = std::max(0.1, double(pocket_depth));
+            ImGui::PopItemWidth();
+        } else {
             bool through = m_through;
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("through"));

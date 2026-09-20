@@ -25,11 +25,11 @@ TEST_CASE("An unknown designation is not a standard", "[HoleStandards]")
 
 TEST_CASE("Insert and magnet standards carry a pocket diameter and depth", "[HoleStandards]")
 {
-    const HoleStandard *insert = find_hole_standard("M3 insert");
+    const HoleStandard *insert = find_hole_standard("M3x5 insert");
     REQUIRE(insert != nullptr);
     CHECK(insert->kind == HoleStandardKind::Insert);
-    CHECK_THAT(insert->pocket_d, WithinAbs(4.0, 1e-9));
-    CHECK_THAT(insert->pocket_depth, WithinAbs(5.7, 1e-9));
+    CHECK_THAT(insert->pocket_d, WithinAbs(4.2, 1e-9));
+    CHECK_THAT(insert->pocket_depth, WithinAbs(5.0, 1e-9));
 
     const HoleStandard *magnet = find_hole_standard("6x3 magnet");
     REQUIRE(magnet != nullptr);
@@ -42,9 +42,7 @@ TEST_CASE("Pocket clearance grows with the fit and with the diameter", "[HoleSta
 {
     const double tight = hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Tight);
     const double slip  = hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Slip);
-    const double epoxy = hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Epoxy);
     CHECK(tight < slip);
-    CHECK(slip < epoxy);
 
     CHECK(hole_fit_diameter_delta(HoleStandardKind::Magnet, 10.0, HoleFit::Slip) >
           hole_fit_diameter_delta(HoleStandardKind::Magnet, 3.0, HoleFit::Slip));

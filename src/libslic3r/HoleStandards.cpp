@@ -75,14 +75,17 @@ const std::vector<HoleStandard> &standards_table()
         nut("M8 nut", 13.00, 6.50, 9.0);
         nut("M10 nut", 17.00, 8.00, 11.0);
 
-        // Heat-set inserts (OD x length), Ruthex-style brass.
-        pocket("M2 insert", HoleStandardKind::Insert, 3.2, 4.0);
-        pocket("M2.5 insert", HoleStandardKind::Insert, 3.6, 4.5);
-        pocket("M3 insert", HoleStandardKind::Insert, 4.0, 5.7);
-        pocket("M4 insert", HoleStandardKind::Insert, 5.6, 8.1);
-        pocket("M5 insert", HoleStandardKind::Insert, 6.4, 9.5);
-        pocket("M6 insert", HoleStandardKind::Insert, 8.0, 12.7);
-        pocket("M8 insert", HoleStandardKind::Insert, 10.0, 12.7);
+        // Heat-set inserts: max outer diameter x length, from a common M2-M5 brass kit. The
+        // pocket depth is exposed and editable in the tool.
+        pocket("M2 insert", HoleStandardKind::Insert, 3.0, 2.0);
+        pocket("M2.5 insert", HoleStandardKind::Insert, 3.5, 2.5);
+        pocket("M3x3 insert", HoleStandardKind::Insert, 4.2, 3.0);
+        pocket("M3x5 insert", HoleStandardKind::Insert, 4.2, 5.0);
+        pocket("M3x7 insert", HoleStandardKind::Insert, 4.2, 7.0);
+        pocket("M4x6 insert", HoleStandardKind::Insert, 5.5, 6.0);
+        pocket("M4x8 insert", HoleStandardKind::Insert, 5.5, 8.0);
+        pocket("M5x8 insert", HoleStandardKind::Insert, 7.0, 8.0);
+        pocket("M5x10 insert", HoleStandardKind::Insert, 7.0, 10.0);
 
         // Round magnets (diameter x thickness).
         pocket("3x2 magnet", HoleStandardKind::Magnet, 3.0, 2.0);
@@ -122,7 +125,6 @@ double hole_fit_diameter_delta(HoleStandardKind kind, double nominal_d, HoleFit 
     switch (fit) {
     case HoleFit::Tight: return 0.05 + rel * d;
     case HoleFit::Slip:  return 0.20 + rel * d;
-    case HoleFit::Epoxy: return 0.30 + rel * d;
     }
     return 0.20 + rel * d;
 }

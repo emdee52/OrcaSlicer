@@ -188,6 +188,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"standard_name", g.standard_name(g.get_standard() + 1)},
         {"diameter", g.get_diameter()},
         {"tolerance", g.get_tolerance()},
+        {"depth", g.get_depth()},
         {"head_fit", g.get_head_fit()},
         {"true_diameter", g.true_diameter()},
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
@@ -228,12 +229,12 @@ void OrcaMCPServer::register_gizmo_tools()
         "'status' (detected holes + which are teardropped / bored), 'set_operation' "
         "(teardrop|bore), 'set_angle', 'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
-        "(tight|slip|epoxy), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
+        "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
         "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
@@ -242,9 +243,10 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
                 {"head", {{"type", "string"}, {"description", "none | socket | button | countersink, for action=set_head."}}},
                 {"screw_fit", {{"type", "string"}, {"description", "free | tap, for action=set_screw_fit (screws only)."}}},
-                {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
+                {"fit", {{"type", "string"}, {"description", "tight | slip, for action=set_fit."}}},
                 {"diameter", {{"type", "number"}, {"description", "Nominal diameter mm, for action=set_diameter. Matching a standard's size selects it."}}},
                 {"tolerance", {{"type", "number"}, {"description", "Extra diameter mm, for action=set_tolerance (ignored for insert/magnet, which derive it from the fit)."}}},
+                {"depth", {{"type", "number"}, {"description", "Pocket / blind depth mm, for action=set_depth."}}},
                 {"head_fit", {{"type", "number"}, {"description", "0, -0.08 or -0.16 mm, for action=set_head_fit (screws/nuts/magnets)."}}},
                 {"through", {{"type", "boolean"}, {"description", "For action=set_through."}}},
                 {"flip", {{"type", "boolean"}, {"description", "For action=set_flip."}}}
@@ -307,7 +309,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->set_screw_fit(params.value("screw_fit", std::string("free")) == "tap" ? ScrewFit::Tap : ScrewFit::Free);
                 } else if (action == "set_fit") {
                     const std::string f = params.value("fit", std::string("slip"));
-                    g->set_fit(f == "tight" ? HoleFit::Tight : (f == "epoxy" ? HoleFit::Epoxy : HoleFit::Slip));
+                    g->set_fit(f == "tight" ? HoleFit::Tight : HoleFit::Slip);
                 } else if (action == "set_diameter") {
                     if (!need("diameter")) return {{"status", "error"}, {"error", "needs 'diameter'"}};
                     g->set_diameter(params["diameter"].get<double>());
@@ -319,6 +321,9 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->set_head_fit(params["head_fit"].get<double>());
                 } else if (action == "set_through") {
                     g->set_through(params.value("through", true));
+                } else if (action == "set_depth") {
+                    if (!need("depth")) return {{"status", "error"}, {"error", "needs 'depth'"}};
+                    g->set_depth(params["depth"].get<double>());
                 } else if (action == "set_flip") {
                     g->set_flip(params.value("flip", false));
                 } else if (action == "toggle") {
