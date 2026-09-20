@@ -33,11 +33,14 @@ namespace {
 constexpr const char *TEARDROP_NAME = "Teardrop";
 // |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
 constexpr double       HORIZONTAL_COS = 0.5;
-constexpr float        ANGLE_MIN = 10.f;
-constexpr float        ANGLE_MAX = 80.f;
-const ColorRGBA        ALL_COLOR{0.75f, 0.75f, 0.75f, 0.35f};
-const ColorRGBA        APPLIED_COLOR{0.90f, 0.25f, 0.25f, 0.60f};
-const ColorRGBA        HOVER_COLOR{0.30f, 0.85f, 0.35f, 0.70f};
+constexpr float        ANGLE_MIN = 45.f;
+constexpr float        ANGLE_MAX = 60.f;
+// Candidate holes neutral; a teardrop is a geometry change (red); a partial bridge is a
+// slicer-only change (blue); hover is green.
+const ColorRGBA        ALL_COLOR{0.55f, 0.62f, 0.72f, 0.30f};
+const ColorRGBA        TEARDROP_COLOR{0.90f, 0.25f, 0.25f, 0.65f};
+const ColorRGBA        BRIDGE_COLOR{0.25f, 0.55f, 0.95f, 0.65f};
+const ColorRGBA        HOVER_COLOR{0.30f, 0.85f, 0.35f, 0.75f};
 
 Vec3d mesh_centroid(const indexed_triangle_set &its)
 {
@@ -197,7 +200,8 @@ void GLGizmoHorizontalHoles::on_set_state()
         set_dirty();
     } else {
         m_preview_all.reset();
-        m_preview_applied.reset();
+        m_preview_teardrop.reset();
+        m_preview_bridge.reset();
         m_preview_hover.reset();
     }
 }
@@ -211,7 +215,8 @@ void GLGizmoHorizontalHoles::data_changed(bool /*is_serializing*/)
         m_bridge.clear();
         m_pick_its.clear();
         m_preview_all.reset();
-        m_preview_applied.reset();
+        m_preview_teardrop.reset();
+        m_preview_bridge.reset();
         m_preview_hover.reset();
         m_dirty = false;
         return;
@@ -268,7 +273,8 @@ void GLGizmoHorizontalHoles::detect()
     m_bridge.clear();
     m_pick_its.clear();
     m_preview_all.reset();
-    m_preview_applied.reset();
+    m_preview_teardrop.reset();
+    m_preview_bridge.reset();
     m_preview_hover.reset();
     m_old_model_object = nullptr;
     m_old_volume_count = -1;
@@ -393,30 +399,44 @@ void GLGizmoHorizontalHoles::rebuild_previews()
 {
     m_preview_dirty = false;
     m_preview_all.reset();
-    m_preview_applied.reset();
+    m_preview_teardrop.reset();
+    m_preview_bridge.reset();
     m_preview_hover.reset();
 
-    indexed_triangle_set all_its, applied_its, hover_its;
+    indexed_triangle_set all_its, teardrop_its, bridge_its, hover_its;
     for (size_t i = 0; i < m_holes.size(); ++i) {
-        indexed_triangle_set shape = m_bridge_mode ? upper_arc_mesh(int(i)) : teardrop_mesh(int(i));
-        if (shape.indices.empty())
+        // The candidate marker is always the teardrop shape, so an unselected hole never looks
+        // like a partial bridge (which is a slicer-only change and shows the upper arc instead).
+        indexed_triangle_set ghost = teardrop_mesh(int(i));
+        if (ghost.indices.empty())
             continue;
-        merge_into(all_its, shape);
+        merge_into(all_its, ghost);
 
-        const bool applied = m_bridge_mode ? m_bridge[i] : m_teardrop[i];
-        if (applied)
-            merge_into(applied_its, shape);
-        else if (int(i) == m_hover_id)
-            merge_into(hover_its, shape);
+        if (m_teardrop[i]) {
+            indexed_triangle_set td = teardrop_mesh(int(i));
+            merge_into(teardrop_its, td);
+        }
+        if (m_bridge[i]) {
+            indexed_triangle_set arc = upper_arc_mesh(int(i));
+            merge_into(bridge_its, arc);
+        }
+        if (int(i) == m_hover_id) {
+            indexed_triangle_set hint = m_bridge_mode ? upper_arc_mesh(int(i)) : teardrop_mesh(int(i));
+            merge_into(hover_its, hint);
+        }
     }
 
     if (!all_its.indices.empty()) {
         m_preview_all.model.init_from(all_its);
         m_preview_all.model.set_color(ALL_COLOR);
     }
-    if (!applied_its.indices.empty()) {
-        m_preview_applied.model.init_from(applied_its);
-        m_preview_applied.model.set_color(APPLIED_COLOR);
+    if (!teardrop_its.indices.empty()) {
+        m_preview_teardrop.model.init_from(teardrop_its);
+        m_preview_teardrop.model.set_color(TEARDROP_COLOR);
+    }
+    if (!bridge_its.indices.empty()) {
+        m_preview_bridge.model.init_from(bridge_its);
+        m_preview_bridge.model.set_color(BRIDGE_COLOR);
     }
     if (!hover_its.indices.empty()) {
         m_preview_hover.model.init_from(hover_its);
@@ -445,7 +465,8 @@ void GLGizmoHorizontalHoles::on_render()
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     m_preview_all.model.render();
-    m_preview_applied.model.render();
+    m_preview_teardrop.model.render();
+    m_preview_bridge.model.render();
     m_preview_hover.model.render();
 
     glsafe(::glDisable(GL_BLEND));
@@ -755,22 +776,24 @@ void GLGizmoHorizontalHoles::on_render_input_window(float x, float y, float bott
 
     ImGui::Separator();
 
-    // Apex angle: slider plus a typed value, clamped to the sane range.
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("apex"));
-    ImGui::SameLine(left_width);
-    ImGui::PushItemWidth(sliders_width);
-    float angle = m_angle_deg;
-    if (m_imgui->bbl_slider_float_style("##apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
-        set_angle(angle);
-    ImGui::PopItemWidth();
-    ImGui::SameLine();
-    ImGui::PushItemWidth(m_imgui->scaled(4.0f));
-    if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
-        set_angle(angle);
-    ImGui::PopItemWidth();
+    // Apex angle only applies to teardrops.
+    if (!m_bridge_mode) {
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("apex"));
+        ImGui::SameLine(left_width);
+        ImGui::PushItemWidth(sliders_width);
+        float angle = m_angle_deg;
+        if (m_imgui->bbl_slider_float_style("##apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
+            set_angle(angle);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(m_imgui->scaled(4.0f));
+        if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
+            set_angle(angle);
+        ImGui::PopItemWidth();
 
-    ImGui::Separator();
+        ImGui::Separator();
+    }
 
     const int applied = int(std::count_if(m_bridge_mode ? m_bridge.begin() : m_teardrop.begin(),
                                           m_bridge_mode ? m_bridge.end() : m_teardrop.end(),

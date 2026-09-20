@@ -100,7 +100,8 @@ private:
     float m_angle_deg{ 45.f };
 
     PickingModel m_preview_all;
-    PickingModel m_preview_applied;
+    PickingModel m_preview_teardrop;
+    PickingModel m_preview_bridge;
     PickingModel m_preview_hover;
 
     std::vector<std::unique_ptr<MeshRaycaster>>      m_pick_raycasters;
