@@ -575,6 +575,8 @@ public:
     void            start_http_server(const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            start_http_server(int port, const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            stop_http_server();
+    // [ORCAPORT:MCP-1] true when the embedded MCP endpoint is enabled (env ORCA_EXT_MCP or app key orca_ext_mcp).
+    bool            is_mcp_enabled() const;
 
     void            on_show_check_privacy_dlg(int online_login = 0, const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            show_check_privacy_dlg(wxCommandEvent& evt);

@@ -7848,7 +7848,12 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
             std::string last_backup = last;
             std::string originfile;
             if (Slic3r::has_restore_data(last_backup, originfile)) {
-                auto result = MessageDialog(this->q, _L("Previously unsaved items have been detected. Do you want to restore them\?"), wxString(SLIC3R_APP_FULL_NAME) + " - " + _L("Restore"), wxYES_NO | wxYES_DEFAULT | wxCENTRE).ShowModal();
+                // [ORCAPORT:MCP-1] When the embedded MCP endpoint is enabled the app may be driven
+                // headlessly and nothing can answer the modal; auto-decline it ("No") instead of
+                // blocking startup. Same effect as clicking No: the stale backup is removed below.
+                int result = wxID_NO;
+                if (!wxGetApp().is_mcp_enabled())
+                    result = MessageDialog(this->q, _L("Previously unsaved items have been detected. Do you want to restore them\?"), wxString(SLIC3R_APP_FULL_NAME) + " - " + _L("Restore"), wxYES_NO | wxYES_DEFAULT | wxCENTRE).ShowModal();
                 if (result == wxID_YES) {
                     this->q->load_project(from_path(last_backup), from_path(originfile));
                     Slic3r::backup_soon();
