@@ -205,3 +205,22 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
 - **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
   profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
   by "keep section shapes".
+
+### Shading fix (`5007ef7949`)
+
+- **Symptom** (user): in the Cut tool, orbiting the camera made whichever side faced the camera
+  look dark while other sides stayed bright.
+- **Cause**: `GLGizmoCut3D::PartSelection::render` draws the split parts with the `gouraud_light`
+  shader but never set `view_normal_matrix`. The real object volumes are hidden while the parts are
+  drawn, so the shader kept a **stale** normal matrix from a previous camera/frame; the lighting
+  appeared frozen in object space and whichever side was orbited to face the camera looked dark.
+  Upstream bug (present in `main` too), not a fork regression. The same omission was in
+  `GLGizmoCut3D::render_model` (connector/part markers) and `GLGizmoBrimEars` (brim-ear markers).
+- **Fix**: set `view_normal_matrix = view_linear * model_part_linear^{-T}` per part/marker, the
+  same inverse-transpose form `3DScene.cpp` uses for the main object.
+- **Not the cause**: the main prepare-view object shader (`3DScene.cpp`) already sets the normal
+  matrix; the cut cross-section (`MeshClipper::render_cut`) uses the unlit `flat` shader. The shadow
+  map and outline are upstream features.
+- **Caveat**: not visually confirmed end-to-end (the fix was built and code-verified; the user
+  should re-check). If the symptom persists on the *main* object (not the cyan/magenta cut parts),
+  the remaining suspect is the upstream shadow map.
