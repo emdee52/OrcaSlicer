@@ -989,42 +989,6 @@ static void apply_counterbore_bridge_geometry(PrintObject &po)
             }
         }
     }
-
-    // [ORCAPORT:ME-1] Horizontal holes: a through hole whose axis lies in the build plane splits
-    // a thin plate's layer into separate islands, so there is no ep.holes to match. Bridge the
-    // upper arc directly: at each painted layer fill the part of the void that the next layer
-    // already supports, so the shrinking ceiling prints as a bridge instead of unsupported.
-    if (painted) {
-        for (int L = 1; L + 1 < n_layers; ++L) {
-            if (painted_partial[L].empty())
-                continue;
-            Layer       *layer = po.get_layer(L);
-            const Layer *next  = po.get_layer(L + 1);
-            if (layer == nullptr || next == nullptr || layer->region_count() == 0)
-                continue;
-            const ExPolygons region = painted_partial[L];
-            const ExPolygons gap_L  = diff_ex(region, layer->lslices);
-            if (gap_L.empty())
-                continue;
-            const ExPolygons gap_Ln = diff_ex(region, next->lslices);
-            ExPolygons       bm     = diff_ex(gap_L, gap_Ln);
-            if (bm.empty())
-                continue;
-
-            ExPolygons merged = layer->lslices;
-            merged.insert(merged.end(), bm.begin(), bm.end());
-            layer->lslices = union_ex(merged);
-            layer->counterbore_bridge_regions.emplace_back(bm, 0.0); // bridge lines span the gap
-
-            LayerRegion *layerm = layer->get_region(0);
-            ExPolygons   carved;
-            carved.reserve(layerm->slices.surfaces.size());
-            for (const Surface &s : layerm->slices.surfaces)
-                carved.push_back(s.expolygon);
-            carved.insert(carved.end(), bm.begin(), bm.end());
-            layerm->slices.set(union_ex(carved), stInternal);
-        }
-    }
 }
 
 // Called by make_perimeters()

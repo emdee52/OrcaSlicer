@@ -139,12 +139,10 @@ nlohmann::json horizontal_gizmo_state(GLGizmoHorizontalHoles &g)
             {"depth", h.depth},
             {"through", h.through},
             {"has_teardrop", g.hole_has_teardrop(i)},
-            {"has_bridge", g.hole_has_bridge(i)},
         });
     }
     return {
         {"hole_count", n},
-        {"bridge_mode", g.bridge_mode()},
         {"angle", g.get_angle()},
         {"holes", arr},
     };
@@ -210,17 +208,16 @@ void OrcaMCPServer::register_gizmo_tools()
     register_tool({
         "horizontal_holes_gizmo",
         "Control the horizontal-hole picker gizmo. Actions: 'open' (activate it; selects the object "
-        "if needed), 'status' (detected holes + which are teardropped / partial-bridged), "
-        "'set_angle' (apex angle, clamped), 'set_mode' (teardrop|bridge), 'toggle' (one hole by "
-        "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
+        "if needed), 'status' (detected holes + which are teardropped), 'set_angle' (apex angle, "
+        "clamped), 'toggle' (one hole by index), 'apply_all', 'clear_all', 'refresh', 'close'. Use "
+        "find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_angle | set_mode | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_angle | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening (default: current selection or the only object)."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
-                {"angle", {{"type", "number"}, {"description", "Apex angle in degrees for action=set_angle."}}},
-                {"mode", {{"type", "string"}, {"description", "teardrop | bridge, for action=set_mode."}}}
+                {"angle", {{"type", "number"}, {"description", "Apex angle in degrees for action=set_angle."}}}
             }},
             {"required", {"action"}}
         },
@@ -258,8 +255,6 @@ void OrcaMCPServer::register_gizmo_tools()
                     if (!params.contains("angle"))
                         return {{"status", "error"}, {"error", "action=set_angle needs 'angle'"}};
                     g->set_angle(params["angle"].get<float>());
-                } else if (action == "set_mode") {
-                    g->set_bridge_mode(params.value("mode", std::string("teardrop")) == "bridge");
                 } else if (action == "toggle") {
                     if (!params.contains("hole_index"))
                         return {{"status", "error"}, {"error", "action=toggle needs 'hole_index'"}};
