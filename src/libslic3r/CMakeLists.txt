@@ -324,6 +324,8 @@ set(lisbslic3r_sources
     HoleDetector.hpp
     HoleShapes.cpp
     HoleShapes.hpp
+    HoleStandards.cpp
+    HoleStandards.hpp
     Int128.hpp
     KDTreeIndirect.hpp
     Layer.cpp

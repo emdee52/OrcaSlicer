@@ -2,6 +2,7 @@
 #include "libslic3r/CAD/SketchConstraints.hpp"
 #include "libslic3r/CAD/SketchSolver.hpp"
 #include "libslic3r/CAD/SketchImport.hpp"   // transform_regions for imported art
+#include "libslic3r/HoleStandards.hpp"      // shared screw/insert/magnet table
 
 #include <array>
 
@@ -893,35 +894,8 @@ int CadDocument::add_hole(double diameter, double depth, bool through,
     return int(features.size()) - 1;
 }
 
-// Hole standards lookup table (representative ISO 273 medium / ISO 4762 / ANSI unified).
-struct HoleStdEntry { const char* desig; double clearance; double cbore_d; double cbore_depth; double csink_d; };
-static const HoleStdEntry kHoleStdTable[] = {
-    {"M3",   3.4,  6.0,  3.4,  6.3},
-    {"M4",   4.5,  8.0,  4.4,  8.4},
-    {"M5",   5.5, 10.0,  5.4, 10.4},
-    {"M6",   6.6, 11.0,  6.8, 12.6},
-    {"M8",   9.0, 15.0,  8.8, 17.3},
-    {"M10", 11.0, 18.0, 11.0, 20.0},
-    {"#6-32",    3.7,  8.8,  4.2,  8.7},
-    {"#8-32",    4.4,  9.9,  5.1, 10.2},
-    {"1/4-20",   6.9, 14.4,  7.2, 14.7},
-    {"5/16-18",  8.8, 17.0,  8.2, 17.3},
-    {"3/8-16",  10.5, 19.6,  9.5, 19.8},
-};
-static bool hole_std_lookup(const std::string& desig, double& clearance,
-                            double& cbore_d, double& cbore_depth, double& csink_d)
-{
-    for (const auto& e : kHoleStdTable) {
-        if (e.desig == desig) {
-            clearance   = e.clearance;
-            cbore_d     = e.cbore_d;
-            cbore_depth = e.cbore_depth;
-            csink_d     = e.csink_d;
-            return true;
-        }
-    }
-    return false;
-}
+// Hole standards live in the shared HoleStandards module (also used by the mesh bore/pocket
+// tool), so the CAD Hole feature and the mesh tool cannot diverge.
 
 int CadDocument::add_hole_styled(double diameter, double depth, bool through,
                                  double x, double y, const SketchPlane& plane, int style,
@@ -952,11 +926,11 @@ int CadDocument::add_hole_standard(const std::string& designation, int style, bo
                                    double depth, double x, double y,
                                    const SketchPlane& plane, const std::string& name)
 {
-    double clearance, cbore_d, cbore_depth, csink_d;
-    if (!hole_std_lookup(designation, clearance, cbore_d, cbore_depth, csink_d))
+    const HoleStandard* std = find_hole_standard(designation);
+    if (std == nullptr)
         throw std::runtime_error("unknown hole standard \"" + designation + "\"");
-    return add_hole_styled(clearance, depth, through, x, y, plane, style,
-                           cbore_d, cbore_depth, csink_d, 90, designation, name);
+    return add_hole_styled(std->clearance_d, depth, through, x, y, plane, style,
+                           std->cbore_d, std->cbore_depth, std->csink_d, std->csink_angle, designation, name);
 }
 
 int CadDocument::add_thread(double radius, double pitch, double height, double depth,
