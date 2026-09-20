@@ -181,8 +181,10 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoFlatten.hpp
 GUI/Gizmos/GLGizmoFuzzySkin.cpp
 GUI/Gizmos/GLGizmoFuzzySkin.hpp
-GUI/Gizmos/GLGizmoCounterboreBridge.cpp
-GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+    GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+    GUI/Gizmos/GLGizmoCounterboreBridge.hpp
+    GUI/Gizmos/GLGizmoHorizontalHoles.cpp
+    GUI/Gizmos/GLGizmoHorizontalHoles.hpp
     #GUI/Gizmos/GLGizmoHollow.cpp
     #GUI/Gizmos/GLGizmoHollow.hpp
     GUI/Gizmos/GLGizmoMeasure.cpp

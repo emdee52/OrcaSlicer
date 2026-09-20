@@ -71,16 +71,16 @@ indexed_triangle_set its_make_teardrop(double radius, double depth, double angle
 }
 
 indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
-                                                double angle_deg, int segments)
+                                                double angle_deg, int segments, const Vec3d &up_dir)
 {
     indexed_triangle_set local = its_make_teardrop(hole.radius, depth, angle_deg, segments);
     if (local.indices.empty())
         return local;
 
-    const Vec3d a = hole.axis.normalized();
-    Vec3d       up = Vec3d::UnitZ() - a * a.dot(Vec3d::UnitZ());
+    const Vec3d a  = hole.axis.normalized();
+    Vec3d       up = up_dir - a * a.dot(up_dir);
     if (up.norm() < 1e-6)
-        return {}; // vertical hole: a teardrop has no meaning
+        return {}; // hole parallel to up: a teardrop has no meaning
     up.normalize();
     const Vec3d right = a.cross(up).normalized();
 

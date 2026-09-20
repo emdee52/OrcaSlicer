@@ -19,12 +19,14 @@ indexed_triangle_set its_make_teardrop(double radius, double depth,
                                        int    segments  = HOLE_SHAPE_SEGMENTS);
 
 // `its_make_teardrop` placed on a detected hole: centred on the hole axis, extruded along it
-// for `depth` straddling `hole.center`, with the apex pointing up (world +Z projected into
-// the hole's cross-section). Returns an empty mesh for a vertical hole, where a teardrop has
-// no meaning.
+// for `depth` straddling `hole.center`, with the apex pointing along `up_dir` projected into
+// the hole's cross-section (default: world +Z). Pass the bed-up direction expressed in the
+// same frame as the hole when the object is rotated. Returns an empty mesh for a vertical
+// hole, where a teardrop has no meaning.
 indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
                                                 double angle_deg = 45.,
-                                                int    segments  = HOLE_SHAPE_SEGMENTS);
+                                                int    segments  = HOLE_SHAPE_SEGMENTS,
+                                                const Vec3d &up_dir = Vec3d::UnitZ());
 
 } // namespace Slic3r
 
