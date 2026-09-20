@@ -10,6 +10,8 @@
 
 #include <boost/log/trivial.hpp>
 
+#include <algorithm>
+
 namespace Slic3r {
 
 using namespace Geometry;
@@ -215,6 +217,18 @@ static void process_solid_part_cut(const ModelVolume* volume, const Transform3d&
         add_cut_volume(lower_mesh, lower, volume, cut_matrix);
 }
 
+// Carries a model part that is NOT being cut into the single result object, baked into cut space
+// exactly like process_volume_cut and then re-added through the cut matrix, so it lands at its
+// original world transform once the result object's instance transformation is reset.
+static void process_untouched_volume(const ModelVolume* volume, const Transform3d& instance_matrix,
+                                     const Transform3d& inverse_cut_matrix, const Transform3d& cut_matrix,
+                                     ModelObject* object)
+{
+    TriangleMesh mesh(volume->mesh());
+    mesh.transform(inverse_cut_matrix * instance_matrix * volume->get_matrix(), true);
+    add_cut_volume(mesh, object, volume, cut_matrix);
+}
+
 static void reset_instance_transformation(ModelObject* object, size_t src_instance_idx, 
                                           const Transform3d& cut_matrix = Transform3d::Identity(),
                                           bool place_on_cut = false, bool flip = false)
@@ -257,8 +271,9 @@ static void reset_instance_transformation(ModelObject* object, size_t src_instan
 
 
 Cut::Cut(const ModelObject* object, int instance, const Transform3d& cut_matrix,
-         ModelObjectCutAttributes attributes/*= ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts*/)
-    : m_instance(instance), m_cut_matrix(cut_matrix), m_attributes(attributes)
+         ModelObjectCutAttributes attributes/*= ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts*/,
+         const std::vector<int>& cut_volume_idxs)
+    : m_instance(instance), m_cut_matrix(cut_matrix), m_attributes(attributes), m_cut_volume_idxs(cut_volume_idxs)
 {
     m_model = Model();
     if (object)
@@ -346,7 +361,11 @@ const ModelObjectPtrs& Cut::perform_with_plane()
     const Transform3d       inverse_cut_matrix = cut_transformation.get_rotation_matrix().inverse() * translation_transform(-1. * cut_transformation.get_offset());
 
     std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
-    for (ModelVolume* volume : mo->volumes) {
+    const bool cut_selected_only = !m_cut_volume_idxs.empty();
+    // A volume-filtered cut keeps everything in one object, so KeepAsParts is required.
+    assert(!cut_selected_only || m_attributes.has(ModelObjectCutAttribute::KeepAsParts));
+    for (size_t vol_idx = 0; vol_idx < mo->volumes.size(); ++vol_idx) {
+        ModelVolume* volume = mo->volumes[vol_idx];
         // Save painting data before reset_extra_facets() discards it.
         if (m_attributes.has(ModelObjectCutAttribute::KeepPaint)) {
             saved_paintings.emplace_back(volume->save_painting());
@@ -364,8 +383,13 @@ const ModelObjectPtrs& Cut::perform_with_plane()
             else
                 process_connector_cut(volume, instance_matrix, m_cut_matrix, m_attributes, upper, lower, dowels);
         }
-        else if (!volume->mesh().empty())
-            process_solid_part_cut(volume, instance_matrix, m_cut_matrix, m_attributes, upper, lower);
+        else if (!volume->mesh().empty()) {
+            if (cut_selected_only &&
+                std::find(m_cut_volume_idxs.begin(), m_cut_volume_idxs.end(), int(vol_idx)) == m_cut_volume_idxs.end())
+                process_untouched_volume(volume, instance_matrix, inverse_cut_matrix, m_cut_matrix, upper);
+            else
+                process_solid_part_cut(volume, instance_matrix, m_cut_matrix, m_attributes, upper, lower);
+        }
     }
 
     // Post-process cut parts
