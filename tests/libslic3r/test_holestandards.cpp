@@ -41,14 +41,12 @@ TEST_CASE("Insert and magnet standards carry a pocket diameter and depth", "[Hol
     CHECK_THAT(magnet->pocket_depth, WithinAbs(3.0, 1e-9));
 }
 
-TEST_CASE("Pocket clearance grows with the fit and with the diameter", "[HoleStandards]")
+TEST_CASE("Slip gives more pocket clearance than tight", "[HoleStandards]")
 {
-    const double tight = hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Tight);
-    const double slip  = hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Slip);
-    CHECK(tight < slip);
-
-    CHECK(hole_fit_diameter_delta(HoleStandardKind::Magnet, 10.0, HoleFit::Slip) >
-          hole_fit_diameter_delta(HoleStandardKind::Magnet, 3.0, HoleFit::Slip));
+    CHECK_THAT(hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Tight), WithinAbs(0.05, 1e-9));
+    CHECK_THAT(hole_fit_diameter_delta(HoleStandardKind::Magnet, 6.0, HoleFit::Slip), WithinAbs(0.16, 1e-9));
+    CHECK(hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Tight) <
+          hole_fit_diameter_delta(HoleStandardKind::Insert, 4.0, HoleFit::Slip));
 }
 
 TEST_CASE("Screws carry both a free and a tap diameter", "[HoleStandards]")

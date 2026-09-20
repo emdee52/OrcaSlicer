@@ -122,16 +122,14 @@ const HoleStandard *find_hole_standard(const std::string &designation)
     return it == table.end() ? nullptr : &*it;
 }
 
-double hole_fit_diameter_delta(HoleStandardKind kind, double nominal_d, HoleFit fit)
+double hole_fit_diameter_delta(HoleStandardKind /*kind*/, double /*nominal_d*/, HoleFit fit)
 {
-    // Press-fit inserts need less clearance than glue-in magnets.
-    const double rel = (kind == HoleStandardKind::Insert) ? 0.005 : 0.010;
-    const double d   = std::max(0., nominal_d);
+    // Flat diameter deltas: a slip pocket is 0.16 mm larger than nominal, a tight one 0.05 mm.
     switch (fit) {
-    case HoleFit::Tight: return 0.05 + rel * d;
-    case HoleFit::Slip:  return 0.20 + rel * d;
+    case HoleFit::Tight: return 0.05;
+    case HoleFit::Slip:  return 0.16;
     }
-    return 0.20 + rel * d;
+    return 0.16;
 }
 
 double screw_nominal_diameter(const HoleStandard &s, bool tap)

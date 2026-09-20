@@ -54,8 +54,8 @@ const HoleStandard *find_hole_standard(const std::string &designation);
 // Pocket fit, expressed as a diameter delta added to the nominal pocket diameter.
 enum class HoleFit { Tight, Slip };
 
-// Extra diameter (mm) for a pocket of nominal diameter `nominal_d` with the given fit. Scales
-// slightly with the diameter so larger pockets get proportionally more clearance.
+// Extra diameter (mm) for a pocket of nominal diameter `nominal_d` with the given fit: a slip
+// pocket is 0.16 mm larger than nominal, a tight one 0.05 mm.
 double hole_fit_diameter_delta(HoleStandardKind kind, double nominal_d, HoleFit fit);
 
 // A screw's nominal diameter for a free fit (tap == false) or a thread-forming tap fit
