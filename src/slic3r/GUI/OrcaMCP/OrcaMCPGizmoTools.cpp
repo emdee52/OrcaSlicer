@@ -188,6 +188,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"standard_name", g.standard_name(g.get_standard() + 1)},
         {"diameter", g.get_diameter()},
         {"tolerance", g.get_tolerance()},
+        {"head_fit", g.get_head_fit()},
         {"true_diameter", g.true_diameter()},
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
         {"volume_count", volume_count},
@@ -232,7 +233,7 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
@@ -244,6 +245,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"fit", {{"type", "string"}, {"description", "tight | slip | epoxy, for action=set_fit."}}},
                 {"diameter", {{"type", "number"}, {"description", "Nominal diameter mm, for action=set_diameter. Matching a standard's size selects it."}}},
                 {"tolerance", {{"type", "number"}, {"description", "Extra diameter mm, for action=set_tolerance (ignored for insert/magnet, which derive it from the fit)."}}},
+                {"head_fit", {{"type", "number"}, {"description", "0, -0.08 or -0.16 mm, for action=set_head_fit (screws/nuts/magnets)."}}},
                 {"through", {{"type", "boolean"}, {"description", "For action=set_through."}}},
                 {"flip", {{"type", "boolean"}, {"description", "For action=set_flip."}}}
             }},
@@ -312,6 +314,9 @@ void OrcaMCPServer::register_gizmo_tools()
                 } else if (action == "set_tolerance") {
                     if (!need("tolerance")) return {{"status", "error"}, {"error", "needs 'tolerance'"}};
                     g->set_tolerance(params["tolerance"].get<double>());
+                } else if (action == "set_head_fit") {
+                    if (!need("head_fit")) return {{"status", "error"}, {"error", "needs 'head_fit'"}};
+                    g->set_head_fit(params["head_fit"].get<double>());
                 } else if (action == "set_through") {
                     g->set_through(params.value("through", true));
                 } else if (action == "set_flip") {

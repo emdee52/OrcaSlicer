@@ -169,6 +169,10 @@ bool GLGizmoHoles::on_init()
     m_desc["fit_free"]         = _L("Free");
     m_desc["fit_tap"]          = _L("Tap");
     m_desc["true_dia"]         = _L("True diameter");
+    m_desc["head_fit"]         = _L("Head fit");
+    m_desc["fit_flush"]        = _L("Flush");
+    m_desc["sink_008"]         = _L("-0.08");
+    m_desc["sink_016"]         = _L("-0.16");
     m_desc["diameter"]         = _L("Diameter");
     m_desc["across_flats"]     = _L("Across flats");
     m_desc["tolerance"]        = _L("Tolerance");
@@ -301,9 +305,11 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
     else
         depth = std::max(0.1, m_depth);
 
+    const double sink = std::max(0.0, -m_head_fit); // depth the head/pocket is sunk below the surface
+
     if (is_nut) {
         const double across = std::max(0.1, m_diameter + m_tolerance);
-        return its_make_nut_pocket(across, s->pocket_depth, s->clearance_d, depth, dir, entry);
+        return its_make_nut_pocket(across, s->pocket_depth + sink, s->clearance_d, depth, dir, entry);
     }
 
     const double d = bore_diameter();
@@ -312,12 +318,16 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
 
     if (s != nullptr && s->kind == HoleStandardKind::Screw) {
         if (m_head == BoreHead::SocketHead && s->socket_d > d)
-            return its_make_counterbore(d, s->socket_d, s->socket_k, depth, dir, entry);
+            return its_make_counterbore(d, s->socket_d, s->socket_k + sink, depth, dir, entry);
         if (m_head == BoreHead::ButtonHead && s->button_d > d)
-            return its_make_counterbore(d, s->button_d, s->button_k, depth, dir, entry);
+            return its_make_counterbore(d, s->button_d, s->button_k + sink, depth, dir, entry);
+        // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
+        // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
         if (m_head == BoreHead::Countersink && s->csink_d > d)
-            return its_make_countersink(d, s->csink_d, s->csink_angle, depth, dir, entry);
+            return its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
     }
+    if (s != nullptr && s->kind == HoleStandardKind::Magnet)
+        depth += sink; // sink the magnet pocket
     return its_make_bore(d, depth, dir, entry);
 }
 
@@ -794,10 +804,13 @@ void GLGizmoHoles::set_category(HoleCategory c)
 void GLGizmoHoles::set_diameter(double d)
 {
     m_diameter = std::max(0.1, d);
-    // Relabel Custom <-> a standard by diameter (screw free/tap or insert/magnet pocket).
+    // Relabel Custom <-> a standard only within the current category, so editing a screw's size
+    // to a magnet's diameter does not switch the screw to a magnet.
     m_standard = -1;
     const std::vector<HoleStandard> &t = hole_standards();
     for (size_t i = 0; i < t.size(); ++i) {
+        if (!category_matches(m_category, t[i].kind))
+            continue;
         if (t[i].kind == HoleStandardKind::Screw) {
             if (t[i].clearance_d > 0. && std::abs(t[i].clearance_d - m_diameter) <= 0.01) {
                 m_standard  = int(i);
@@ -826,6 +839,13 @@ void GLGizmoHoles::set_diameter(double d)
 void GLGizmoHoles::set_tolerance(double t)
 {
     m_tolerance     = t;
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_head_fit(double f)
+{
+    m_head_fit      = f;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -931,14 +951,27 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
     const float sliders_width = m_imgui->scaled(7.0f);
     const float left_width    = m_imgui->calc_text_size(m_desc.at("true_dia")).x + m_imgui->scaled(1.0f);
 
-    // Operation dropdown: Teardrop or Bore / pocket (which then reveals the category buttons).
+    // Operation: two mutually exclusive buttons; the active one is highlighted.
     {
-        std::vector<std::string> ops;
-        ops.push_back(_u8L("Teardrop"));
-        ops.push_back(_u8L("Bore / pocket"));
-        int op_sel = (m_operation == HoleOperation::Teardrop) ? 0 : 1;
-        if (render_combo(m_desc.at("operation").ToStdString(), ops, op_sel, left_width, m_imgui->scaled(12.0f)))
-            set_operation(op_sel == 0 ? HoleOperation::Teardrop : HoleOperation::Bore);
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("operation"));
+        ImGui::SameLine(left_width);
+        auto op_button = [&](const wxString &label, HoleOperation op) {
+            const bool on = (m_operation == op);
+            if (on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+            }
+            const bool clicked = m_imgui->button(label);
+            if (on)
+                ImGui::PopStyleColor(3);
+            if (clicked)
+                set_operation(op);
+        };
+        op_button(m_desc.at("op_teardrop"), HoleOperation::Teardrop);
+        ImGui::SameLine();
+        op_button(m_desc.at("op_bore"), HoleOperation::Bore);
     }
 
     ImGui::Separator();
@@ -1096,6 +1129,35 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             ImGui::SameLine();
             if (m_imgui->button(m_desc.at("fit_epoxy")))
                 set_fit(HoleFit::Epoxy);
+        }
+
+        // Head fit: sink the head / pocket below the surface by 0.08 or 0.16 mm (Z tolerance).
+        {
+            const bool show = (is_screw && m_head != BoreHead::None) || is_nut ||
+                              (s != nullptr && s->kind == HoleStandardKind::Magnet);
+            if (show) {
+                ImGui::AlignTextToFramePadding();
+                m_imgui->text(m_desc.at("head_fit"));
+                ImGui::SameLine(left_width);
+                auto fit_button = [&](const wxString &label, double v) {
+                    const bool on = std::abs(m_head_fit - v) < 1e-6;
+                    if (on) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+                    }
+                    const bool clicked = m_imgui->button(label);
+                    if (on)
+                        ImGui::PopStyleColor(3);
+                    if (clicked)
+                        set_head_fit(v);
+                };
+                fit_button(m_desc.at("fit_flush"), 0.0);
+                ImGui::SameLine();
+                fit_button(m_desc.at("sink_008"), -0.08);
+                ImGui::SameLine();
+                fit_button(m_desc.at("sink_016"), -0.16);
+            }
         }
 
         if (!is_pocket) {

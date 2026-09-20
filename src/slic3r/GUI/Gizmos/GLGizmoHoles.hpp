@@ -67,6 +67,8 @@ public:
     void        set_diameter(double d);
     double      get_tolerance() const { return m_tolerance; }
     void        set_tolerance(double t);
+    double      get_head_fit() const { return m_head_fit; }
+    void        set_head_fit(double f);
     double      true_diameter() const { return bore_diameter(); }
     bool        get_through() const { return m_through; }
     void        set_through(bool t);
@@ -141,6 +143,7 @@ private:
     int           m_fit{ 1 };         // 0 tight, 1 slip, 2 epoxy
     double        m_diameter{ 5.0 };  // nominal diameter (editable)
     double        m_tolerance{ 0.0 }; // extra diameter; fit-derived and read-only for insert/magnet
+    double        m_head_fit{ 0.0 };  // 0 flush, -0.08, -0.16: sink the head/pocket below the surface
     bool          m_through{ true };
     double        m_depth{ 10.0 };
     bool          m_flip{ false };
