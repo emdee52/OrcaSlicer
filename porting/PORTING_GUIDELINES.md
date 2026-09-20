@@ -166,13 +166,21 @@ The fewer lines of upstream code we touch, the cheaper every upstream refresh is
 
 - Remove every Libre Mode check, `ORCA_DEBUG_*` check, and master-switch dependency around
   the selected features. Delete the Libre Mode gate as a concept; do not port it.
-- A feature is exposed through its own option, default **off**. Visibility rules:
-  - Always visible for normally-scoped options (MT-1/MT-2/MT-3/MT-4, PQ-1, PQ-2, AS-2,
-    AS-3, AS-1).
-  - Visible when its own prerequisite selector is set: NeoWave controls when support type
-    is NeoWave; NeoArachne options when `wall_generator = NeoArachne`; PerObject Support
-    checkbox under Enable support.
-  - Disabled-with-tooltip is allowed when a prerequisite is unmet. Hidden is not allowed.
+- A feature is exposed through its own top-level option, default **off**. Visibility rules:
+  - The feature's own top-level option is always visible for normally-scoped options
+    (MT-1/MT-2/MT-3/MT-4, PQ-1, PQ-2, AS-2, AS-3, AS-1); do not bury it behind an
+    unrelated master switch or Libre Mode.
+  - A feature's subordinate options are shown only while the feature's own switch is
+    active, and hidden otherwise - e.g. PQ-2's "Inner wall slowdown"/"Inner wall reach"
+    under "Slow down inner walls next to overhangs", or PF-9's sub-options under "Enable
+    interlocking perimeters". This is normal nesting, not an ungate violation, so hidden
+    is allowed for a feature's own subordinate rows.
+  - Options gated by a prerequisite selector other than the feature's own toggle are
+    visible when that selector is set: NeoWave controls when support type is NeoWave;
+    NeoArachne options when `wall_generator = NeoArachne`; PerObject Support checkbox
+    under Enable support.
+  - Disabled-with-tooltip is allowed when a prerequisite is unmet and the option should
+    stay discoverable.
 - Removing a gate must not change output at defaults. Prove it with an off-by-default
   comparison (Section 10).
 - No new environment-variable gates. No "expert" double-locks.

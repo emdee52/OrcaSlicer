@@ -81,6 +81,11 @@ itself is carried by `mm3_per_mm` (PF-9 applies it as a per-segment flow in GCod
 over-extruded bead is also physically taller, which Orca's constant-layer-height preview cannot show
 (known visual difference vs PF-9).
 
+**UI gating.** The seven keys are registered with plain keys (`Tab.cpp`), and the six
+sub-options are hidden with `toggle_line` while `interlock_perimeters_enabled` is off (or the
+wall generator is not Classic), matching PQ-2's nesting. `interlock_perimeters_enabled` itself
+stays disabled-with-tooltip on Arachne.
+
 ## Approximation vs PF-9 (known limitations)
 
 - The rings are generated with plain polygon offsets on Orca's Classic path, not PF-9's Athena
