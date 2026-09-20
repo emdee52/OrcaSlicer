@@ -27,6 +27,7 @@ add_executable(${_TEST_NAME}_tests
     test_geometry.cpp
     test_holedetector.cpp
     test_holeshapes.cpp
+    test_holestandards.cpp
     test_multimaterial_segmentation.cpp
     test_placeholder_parser.cpp
     test_polygon.cpp

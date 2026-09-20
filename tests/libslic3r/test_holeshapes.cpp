@@ -91,3 +91,85 @@ TEST_CASE("Invalid teardrop parameters produce nothing", "[HoleShapes]")
     CHECK(its_make_teardrop(2., -1., 45., 64).empty());
     CHECK(its_make_teardrop(2., 10., 45., 4).empty());
 }
+
+TEST_CASE("A bore is placed at the entry and runs along the axis", "[HoleShapes]")
+{
+    const indexed_triangle_set bore = its_make_bore(4., 10., Vec3d::UnitZ(), Vec3d(1., 2., 3.));
+    REQUIRE_FALSE(bore.empty());
+    CHECK(its_volume(bore) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(bore);
+    CHECK_THAT(bb.min.x(), WithinAbs(-1., 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(3., 1e-3));
+    CHECK_THAT(bb.min.z(), WithinAbs(3., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(13., 1e-3));
+    CHECK_THAT(double(its_volume(bore)), WithinRel(PI * 4. * 10., 0.03));
+}
+
+TEST_CASE("A counterbore widens the entrance to the head diameter", "[HoleShapes]")
+{
+    const indexed_triangle_set cbore = its_make_counterbore(3.4, 6., 3., 10., Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(cbore.empty());
+    CHECK(its_volume(cbore) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(cbore);
+    CHECK_THAT(bb.min.x(), WithinAbs(-3., 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(3., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(10., 1e-3));
+    CHECK(its_volume(cbore) > its_volume(its_make_bore(3.4, 10., Vec3d::UnitZ(), Vec3d::Zero())));
+}
+
+TEST_CASE("A countersink widens the entrance to the sink diameter", "[HoleShapes]")
+{
+    const indexed_triangle_set csink = its_make_countersink(3.4, 6.3, 90., 10., Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(csink.empty());
+    CHECK(its_volume(csink) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(csink);
+    CHECK_THAT(bb.max.x(), WithinAbs(3.15, 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(10., 1e-3));
+}
+
+TEST_CASE("A tube is an annulus with a bore", "[HoleShapes]")
+{
+    const indexed_triangle_set tube = its_make_tube(6., 4., 5., Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(tube.empty());
+    CHECK(its_volume(tube) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(tube);
+    CHECK_THAT(bb.min.x(), WithinAbs(-3., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(5., 1e-3));
+    CHECK_THAT(double(its_volume(tube)), WithinRel(PI * (9. - 4.) * 5., 0.03));
+}
+
+TEST_CASE("A bore follows an arbitrary axis", "[HoleShapes]")
+{
+    const indexed_triangle_set bore = its_make_bore(4., 10., Vec3d::UnitX(), Vec3d::Zero());
+    REQUIRE_FALSE(bore.empty());
+    CHECK(its_volume(bore) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(bore);
+    CHECK_THAT(bb.min.x(), WithinAbs(0., 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(10., 1e-3));
+    CHECK_THAT(bb.min.y(), WithinAbs(-2., 1e-3));
+    CHECK_THAT(bb.max.y(), WithinAbs(2., 1e-3));
+}
+
+TEST_CASE("A nut pocket is a hexagon across the given flats", "[HoleShapes]")
+{
+    constexpr double      s = 5.5, h = 2.4, clearance = 3.4;
+    const indexed_triangle_set nut = its_make_nut_pocket(s, h, clearance, h, Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(nut.empty());
+    CHECK(its_volume(nut) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(nut);
+    // Circumradius = across_flats / sqrt(3).
+    CHECK_THAT(bb.max.x(), WithinAbs(s / std::sqrt(3.), 1e-3));
+    CHECK_THAT(bb.min.x(), WithinAbs(-s / std::sqrt(3.), 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(h, 1e-3));
+    // Merged closed meshes sum their volumes: hexagon + the coaxial bore.
+    const double hex_vol  = std::sqrt(3.) * 0.5 * s * s * h;
+    const double bore_vol = PI * (clearance * 0.5) * (clearance * 0.5) * h;
+    CHECK_THAT(double(its_volume(nut)), WithinRel(hex_vol + bore_vol, 0.04));
+}
+
