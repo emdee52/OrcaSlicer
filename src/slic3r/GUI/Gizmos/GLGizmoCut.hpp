@@ -139,6 +139,14 @@ class GLGizmoCut3D : public GLGizmoBase
     // When on, the next left click on the object aligns the cut plane to the clicked facet.
     bool m_pick_face_mode{ false };
 
+    // Translucent highlight of the flat face under the cursor while in pick-face mode.
+    GLModel              m_face_highlight;
+    const GLVolume*      m_hover_volume{ nullptr };
+    const ModelVolume*   m_hover_mv{ nullptr };
+    int                  m_hover_facet{ -1 };
+    std::vector<Vec3f>   m_hover_normals;
+    std::vector<Vec3i32> m_hover_neighbors;
+
     float m_connector_depth_ratio{ 3.f };
     float m_connector_size{ 2.5f };
     float m_connector_angle{ 0.f };
@@ -267,6 +275,8 @@ public:
     void   gizmo_reset_plane();
     void   gizmo_apply();          // performs the cut with the current plane and options
     bool   gizmo_pick_face_mode() const { return m_pick_face_mode; }
+    // Aligns the cut plane to the face at a screen position (same path as the interactive pick).
+    bool   gizmo_pick_face_at(const Vec2d& screen_pos) { return pick_face_at(screen_pos); }
 
     std::string get_tooltip() const override;
     bool unproject_on_cut_plane(const Vec2d& mouse_pos, Vec3d& pos, Vec3d& pos_world, bool respect_contours = true);
@@ -275,6 +285,9 @@ public:
     bool is_in_editing_mode() const override { return m_connectors_editing; }
     bool is_selection_rectangle_dragging() const override { return m_selection_rectangle.is_dragging(); }
     bool is_looking_forward() const;
+
+    // The face highlight follows the cursor, so the rendered frame must not be reused from cache.
+    bool render_follows_cursor() const override { return get_state() == On && m_pick_face_mode; }
 
     /// <summary>
     /// Drag of plane
@@ -407,9 +420,15 @@ private:
 
     // Aligns the cut-plane normal (from a face) and places its center. Used by face picking and MCP.
     void apply_plane_orientation(const Vec3d& normal, const Vec3d& center);
-    // Raycasts the object under the mouse and aligns the cut plane to the hit facet. Returns false
-    // if the ray did not hit the object.
+    // Raycasts the selected object and returns the closest visible volume, its model volume, the
+    // hit facet and the hit point (world space). Returns false if the ray did not hit the object.
+    bool raycast_object_face(const Vec2d& mouse_position, const GLVolume*& volume, const ModelVolume*& mv, size_t& facet, Vec3d& hit_world);
+    // Aligns the cut plane to the facet under the mouse. Returns false if the ray missed.
     bool pick_face_at(const Vec2d& mouse_position);
+    // Hover highlight of the flat face under the cursor while in pick-face mode.
+    void update_face_highlight();
+    void build_face_highlight(const ModelVolume* mv, size_t facet);
+    void render_face_highlight();
 
     void toggle_model_objects_visibility();
 

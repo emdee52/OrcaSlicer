@@ -1474,6 +1474,10 @@ void GLGizmoCut3D::on_set_state()
             oc->release();
         }
         m_pick_face_mode = false;
+        m_face_highlight.reset();
+        m_hover_volume = nullptr;
+        m_hover_mv     = nullptr;
+        m_hover_facet  = -1;
         m_selected.clear();
         m_parent.set_use_color_clip_plane(false);
         //m_c->selection_info()->set_use_shift(false);
@@ -2361,6 +2365,11 @@ void GLGizmoCut3D::on_render()
 
     render_cut_line();
 
+    if (m_pick_face_mode) {
+        update_face_highlight();
+        render_face_highlight();
+    }
+
     m_selection_rectangle.render(m_parent);
 }
 
@@ -2568,8 +2577,13 @@ void GLGizmoCut3D::apply_plane_orientation(const Vec3d& normal, const Vec3d& cen
     m_parent.request_extra_frame();
 }
 
-bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
+bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolume*& volume, const ModelVolume*& mv, size_t& facet, Vec3d& hit_world)
 {
+    volume = nullptr;
+    mv     = nullptr;
+    facet  = 0;
+    hit_world = Vec3d::Zero();
+
     const CommonGizmosDataObjects::SelectionInfo* sel_info = m_c->selection_info();
     const ModelObject* mo = sel_info != nullptr ? sel_info->model_object() : nullptr;
     if (mo == nullptr)
@@ -2578,46 +2592,170 @@ bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
     const Selection& selection = m_parent.get_selection();
     const Camera&    camera    = wxGetApp().plater()->get_camera();
 
-    const GLVolume* hit_volume = nullptr;
-    size_t          hit_facet  = 0;
-    Vec3d           hit_world  = Vec3d::Zero();
-    double          closest    = std::numeric_limits<double>::max();
+    // Respect the cut clipping plane so only the visible half of the object is pickable.
+    const ClippingPlane* clipping = nullptr;
+    if (auto oc = m_c->object_clipper())
+        clipping = oc->get_clipping_plane();
 
+    double closest = std::numeric_limits<double>::max();
     for (unsigned int idx : selection.get_volume_idxs()) {
-        const GLVolume* volume = selection.get_volume(idx);
-        if (volume == nullptr || volume->mesh_raycaster == nullptr || volume->is_modifier ||
-            volume->is_sla_pad() || volume->is_sla_support() || volume->volume_idx() < 0)
+        const GLVolume* v = selection.get_volume(idx);
+        if (v == nullptr || v->mesh_raycaster == nullptr || v->is_modifier || v->is_sla_pad() || v->is_sla_support())
+            continue;
+        const int vi = v->volume_idx();
+        if (vi < 0 || vi >= int(mo->volumes.size()))
             continue;
 
         Vec3f  hit, normal;
-        size_t facet = 0;
-        if (volume->mesh_raycaster->unproject_on_mesh(mouse_position, volume->world_matrix(), camera, hit, normal, nullptr, &facet)) {
-            const Vec3d  p = volume->world_matrix() * hit.cast<double>();
+        size_t f = 0;
+        if (v->mesh_raycaster->unproject_on_mesh(mouse_position, v->world_matrix(), camera, hit, normal, clipping, &f)) {
+            const Vec3d  p = v->world_matrix() * hit.cast<double>();
             const double d = (camera.get_position() - p).squaredNorm();
             if (d < closest) {
-                closest    = d;
-                hit_volume = volume;
-                hit_facet  = facet;
-                hit_world  = p;
+                closest   = d;
+                volume    = v;
+                mv        = mo->volumes[vi];
+                facet     = f;
+                hit_world = p;
             }
         }
     }
+    return volume != nullptr;
+}
 
-    if (hit_volume == nullptr)
+bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
+{
+    const GLVolume*    hit_volume = nullptr;
+    const ModelVolume* hit_mv     = nullptr;
+    size_t             hit_facet  = 0;
+    Vec3d              hit_world  = Vec3d::Zero();
+    if (!raycast_object_face(mouse_position, hit_volume, hit_mv, hit_facet, hit_world))
         return false;
 
-    const int volume_idx = hit_volume->volume_idx();
-    if (volume_idx < 0 || volume_idx >= int(mo->volumes.size()))
-        return false;
-
-    const Vec3d normal = facet_normal_in_world(mo->volumes[volume_idx]->mesh().its, int(hit_facet), hit_volume->world_matrix());
+    const Vec3d normal = facet_normal_in_world(hit_mv->mesh().its, int(hit_facet), hit_volume->world_matrix());
 
     Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Align cut plane to face"), UndoRedo::SnapshotType::GizmoAction);
     apply_plane_orientation(normal, hit_world);
     set_center(hit_world);
 
     m_pick_face_mode = false;
+    m_face_highlight.reset();
+    m_hover_facet = -1;
     return true;
+}
+
+// Grow a translucent patch over the coplanar facets around `facet` (a flat face fills completely,
+// a curved one yields a patch around the cursor), lifted slightly along the normals to beat
+// z-fighting. Modelled on GLGizmoAlignStack::build_mesh_face_model.
+void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
+{
+    m_face_highlight.reset();
+    if (mv == nullptr)
+        return;
+    const indexed_triangle_set& its       = mv->mesh().its;
+    const int                   n_facets  = int(its.indices.size());
+    if (facet >= size_t(n_facets))
+        return;
+
+    if (m_hover_mv != mv) {
+        m_hover_mv        = mv;
+        m_hover_normals   = its_face_normals(its);
+        m_hover_neighbors = its_face_neighbors(its);
+    }
+    if (int(m_hover_normals.size()) != n_facets || int(m_hover_neighbors.size()) != n_facets)
+        return;
+
+    const float  cos_thresh = 0.94f; // ~20 degrees
+    const size_t max_facets = 40000;
+    const Vec3f  seed_n     = m_hover_normals[facet].normalized();
+
+    std::vector<int>  region;
+    std::vector<char> visited(n_facets, 0);
+    std::vector<int>  stack{ int(facet) };
+    region.reserve(256);
+    visited[facet] = 1;
+    while (!stack.empty() && region.size() < max_facets) {
+        const int f = stack.back();
+        stack.pop_back();
+        region.push_back(f);
+        for (int e = 0; e < 3; ++e) {
+            const int nb = m_hover_neighbors[f][e];
+            if (nb < 0 || nb >= n_facets || visited[nb])
+                continue;
+            if (m_hover_normals[nb].normalized().dot(seed_n) >= cos_thresh) {
+                visited[nb] = 1;
+                stack.push_back(nb);
+            }
+        }
+    }
+
+    const float lift = 0.10f;
+    indexed_triangle_set highlight;
+    highlight.vertices.reserve(region.size() * 3);
+    highlight.indices.reserve(region.size());
+    int base = 0;
+    for (int f : region) {
+        const Vec3i32 tri = its.indices[f];
+        Vec3f         n   = m_hover_normals[f];
+        const float   nl  = n.norm();
+        n = (nl > 1e-6f) ? (n / nl) : seed_n;
+        highlight.vertices.push_back(its.vertices[tri[0]] + n * lift);
+        highlight.vertices.push_back(its.vertices[tri[1]] + n * lift);
+        highlight.vertices.push_back(its.vertices[tri[2]] + n * lift);
+        highlight.indices.emplace_back(base, base + 1, base + 2);
+        base += 3;
+    }
+    if (highlight.indices.empty())
+        return;
+    m_face_highlight.init_from(highlight);
+    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+}
+
+void GLGizmoCut3D::update_face_highlight()
+{
+    const GLVolume*    hover_volume = nullptr;
+    const ModelVolume* hover_mv     = nullptr;
+    size_t             hover_facet  = 0;
+    Vec3d              hit_world    = Vec3d::Zero();
+    const bool         hit = raycast_object_face(m_parent.get_local_mouse_position(), hover_volume, hover_mv, hover_facet, hit_world);
+
+    if (!hit) {
+        if (m_hover_volume != nullptr || m_face_highlight.is_initialized())
+            m_face_highlight.reset();
+        m_hover_volume = nullptr;
+        m_hover_mv     = nullptr;
+        m_hover_facet  = -1;
+        return;
+    }
+    if (hover_volume == m_hover_volume && int(hover_facet) == m_hover_facet)
+        return;
+
+    m_hover_volume = hover_volume;
+    m_hover_facet  = int(hover_facet);
+    build_face_highlight(hover_mv, hover_facet);
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::render_face_highlight()
+{
+    if (!m_face_highlight.is_initialized() || m_hover_volume == nullptr)
+        return;
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    shader->start_using();
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_hover_volume->world_matrix());
+    m_face_highlight.render();
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
+    shader->stop_using();
 }
 
 void GLGizmoCut3D::invalidate_cut_plane()

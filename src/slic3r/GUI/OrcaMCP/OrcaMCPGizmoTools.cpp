@@ -23,6 +23,7 @@
 #include <wx/utils.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace Slic3r { namespace GUI {
@@ -417,12 +418,14 @@ void OrcaMCPServer::register_gizmo_tools()
         "'set_plane_center' (plane point), 'shift_cut' (move the plane along its normal by delta mm), "
         "'set_mode' (0=Planar, 1=Dovetail), 'set_keep' (keep_upper/keep_lower/keep_as_parts), "
         "'flip' (swap upper/lower), 'reset' (reset plane and connectors), 'apply' (perform the cut), "
+        "'pick_face' (raycast the object and align the plane to the face under screen_x/screen_y, or "
+        "the viewport centre if omitted - the same path as the interactive 'Pick flat face' mode), "
         "'close'. To cut parallel to a face: set_plane_normal to the face normal, then "
         "set_plane_center to a point on the face, then shift_cut to move it into the part, then apply.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | pick_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"normal", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space cut-plane normal, for action=set_plane_normal."}}},
                 {"center", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space plane point, for action=set_plane_center."}}},
@@ -431,6 +434,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"keep_upper", {{"type", "boolean"}, {"description", "Keep the part above the plane, for action=set_keep."}}},
                 {"keep_lower", {{"type", "boolean"}, {"description", "Keep the part below the plane, for action=set_keep."}}},
                 {"keep_as_parts", {{"type", "boolean"}, {"description", "Keep both halves as parts of one object, for action=set_keep."}}},
+                {"screen_x", {{"type", "number"}, {"description", "Canvas X for action=pick_face (defaults to the viewport centre)."}}},
+                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for action=pick_face (defaults to the viewport centre)."}}},
             }},
             {"required", {"action"}}
         },
@@ -491,6 +496,16 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->gizmo_flip_plane();
                 } else if (action == "reset") {
                     g->gizmo_reset_plane();
+                } else if (action == "pick_face") {
+                    Vec2d screen;
+                    if (need("screen_x") && need("screen_y"))
+                        screen = Vec2d(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    else {
+                        const std::array<int, 4> viewport = wxGetApp().plater()->get_camera().get_viewport();
+                        screen = Vec2d(viewport[0] + 0.5 * viewport[2], viewport[1] + 0.5 * viewport[3]);
+                    }
+                    if (!g->gizmo_pick_face_at(screen))
+                        return {{"status", "error"}, {"error", "No face under the screen point"}};
                 } else if (action == "apply") {
                     OrcaMCP::McpDialogSuppressionGuard guard;
                     g->gizmo_apply();
