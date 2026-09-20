@@ -154,8 +154,8 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
   `port/integration`.
 - Reliability of detection on a wider corpus; `HoleDetectorParams` may need tuning
   (`min_facets`, `radial_tolerance`, `max_angular_gap_deg`).
-- **Insert fit**: pocket OD uses the max (knurl) diameter and Tight/Slip deltas (+0.05 / +0.20) may
-  be large for heat-set; tune after a test print.
+- **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
+  0.16 mm on the pocket diameter.
 - Next feature candidates (see the roadmap): cut-tool shape cuts (independent), bosses/ribs, local
   tolerance adjuster, mesh rim chamfer.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
