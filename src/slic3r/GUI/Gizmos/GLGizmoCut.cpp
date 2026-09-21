@@ -303,6 +303,26 @@ void GLGizmoCut3D::gizmo_set_shape(int kind, float size)
     m_parent.request_extra_frame();
 }
 
+void GLGizmoCut3D::gizmo_set_shape_through(bool through)
+{
+    m_shape_through = through;
+    if (CutMode(m_mode) == CutMode::cutShape)
+        rebuild_shape_cutter();
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoCut3D::gizmo_set_shape_depth(float depth)
+{
+    if (depth <= 0.f)
+        return;
+    m_shape_depth = depth;
+    if (CutMode(m_mode) == CutMode::cutShape)
+        rebuild_shape_cutter();
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
 void GLGizmoCut3D::gizmo_set_plane_normal(const Vec3d& normal)
 {
     apply_plane_orientation(normal, m_plane_center);
@@ -1163,19 +1183,30 @@ void GLGizmoCut3D::render_cut_plane()
 
 indexed_triangle_set GLGizmoCut3D::make_cut_shape() const
 {
-    return make_cookie_cutter(CutShapeKind(m_shape_kind), double(m_shape_size), shape_half_height());
+    if (m_shape_through)
+        return make_cookie_cutter(CutShapeKind(m_shape_kind), double(m_shape_size), shape_half_height());
+
+    // Blind pocket: remove material on one side of the plane only. Pick the side the object is on
+    // so the prism reaches into it, and keep a small margin on the open side.
+    const double side = (!m_bounding_box.defined || (m_bounding_box.center() - m_plane_center).dot(m_cut_normal) >= 0.) ? 1. : -1.;
+    const double depth = std::max(double(m_shape_depth), 0.);
+    return make_cookie_cutter(CutShapeKind(m_shape_kind), double(m_shape_size),
+                              side > 0. ? -1.0 : -depth,
+                              side > 0. ? depth : 1.0);
 }
 
 double GLGizmoCut3D::shape_half_height() const
 {
-    // Extend the prism past the object on both sides of the cut plane so it always pierces it.
+    // Extend the prism past the object on all sides so it always pierces it, regardless of the cut
+    // normal: use the largest corner distance (not its projection on the normal) so the cached
+    // cutter mesh stays long enough after any rotation.
     double half_height = 0.;
     if (m_bounding_box.defined) {
         for (int i = 0; i < 8; ++i) {
             const Vec3d corner((i & 1) ? m_bounding_box.max.x() : m_bounding_box.min.x(),
                                (i & 2) ? m_bounding_box.max.y() : m_bounding_box.min.y(),
                                (i & 4) ? m_bounding_box.max.z() : m_bounding_box.min.z());
-            half_height = std::max(half_height, std::abs((corner - m_plane_center).dot(m_cut_normal)));
+            half_height = std::max(half_height, (corner - m_plane_center).norm());
         }
     }
     return half_height + 1.0; // margin
@@ -1270,6 +1301,77 @@ void GLGizmoCut3D::render_shape_outline()
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_DEPTH_TEST));
+}
+
+// CUT-3: translucent overlay marking the part(s) the shaped cut will act on, replacing the planar
+// cross-section which has no meaning for a shaped cut.
+void GLGizmoCut3D::render_shape_highlight()
+{
+    const auto*        sel_info = m_c->selection_info();
+    const ModelObject* mo       = sel_info ? sel_info->model_object() : nullptr;
+    if (mo == nullptr)
+        return;
+
+    const size_t instance_idx = sel_info->get_active_instance();
+
+    // Highlight the single selected part, or every model part of the object when the whole object
+    // is being shaped.
+    std::vector<size_t> vol_idxs;
+    if (is_single_part_cut()) {
+        const int idx = m_cut_volume_idxs.front();
+        if (idx >= 0 && size_t(idx) < mo->volumes.size())
+            vol_idxs.push_back(size_t(idx));
+    } else {
+        for (size_t i = 0; i < mo->volumes.size(); ++i)
+            if (mo->volumes[i]->is_model_part())
+                vol_idxs.push_back(i);
+    }
+    if (vol_idxs.empty())
+        return;
+
+    // Rebuild the overlay only when the highlighted set actually changes.
+    size_t sig = size_t(reinterpret_cast<uintptr_t>(mo)) ^ (instance_idx << 8) ^ (vol_idxs.size() << 1) ^ (is_single_part_cut() ? 1u : 0u);
+    for (size_t i : vol_idxs) {
+        sig = sig * 31 + i;
+        sig = sig * 31 + mo->volumes[i]->mesh().its.indices.size();
+    }
+    if (sig != m_shape_highlight_sig) {
+        m_shape_highlight_sig = sig;
+        m_shape_highlight.reset();
+
+        indexed_triangle_set combined;
+        const Transform3d  instance_matrix = mo->instances[instance_idx]->get_matrix();
+        for (size_t i : vol_idxs) {
+            indexed_triangle_set its = mo->volumes[i]->mesh().its;
+            const Transform3d  matrix = instance_matrix * mo->volumes[i]->get_matrix();
+            for (Vec3f& v : its.vertices)
+                v = (matrix * v.cast<double>()).cast<float>();
+            const int base = int(combined.vertices.size());
+            combined.vertices.insert(combined.vertices.end(), its.vertices.begin(), its.vertices.end());
+            for (const Vec3i32& f : its.indices)
+                combined.indices.emplace_back(f + Vec3i32(base, base, base));
+        }
+        m_shape_highlight.init_from(combined);
+        m_shape_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+    }
+
+    if (!m_shape_highlight.is_initialized())
+        return;
+
+    if (GLShaderProgram* shader = wxGetApp().get_shader("flat")) {
+        const Camera& camera = wxGetApp().plater()->get_camera();
+        shader->start_using();
+        glsafe(::glEnable(GL_DEPTH_TEST));
+        glsafe(::glDisable(GL_CULL_FACE));
+        glsafe(::glEnable(GL_BLEND));
+        glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+        shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+        shader->set_uniform("view_model_matrix", camera.get_view_matrix());
+        m_shape_highlight.render();
+        glsafe(::glDisable(GL_BLEND));
+        glsafe(::glEnable(GL_CULL_FACE));
+        shader->stop_using();
+    }
 }
 
 static double get_half_size(double size)
@@ -1545,11 +1647,13 @@ void GLGizmoCut3D::on_load(cereal::BinaryInputArchive& ar)
     float groove_width_tolerance;
     int   shape_kind;
     float shape_size;
+    bool  shape_through;
+    float shape_depth;
 
     ar( m_keep_upper, m_keep_lower, m_rotate_lower, m_rotate_upper, m_hide_cut_plane, mode, m_connectors_editing,
         m_ar_plane_center, m_rotation_m,
         groove_depth, groove_width, groove_flaps_angle, groove_angle, groove_depth_tolerance, groove_width_tolerance,
-        shape_kind, shape_size);
+        shape_kind, shape_size, shape_through, shape_depth);
 
     m_start_dragging_m = m_rotation_m;
 
@@ -1577,9 +1681,12 @@ void GLGizmoCut3D::on_load(cereal::BinaryInputArchive& ar)
         reset_cut_by_contours();
     }
 
-    if (shape_kind != m_shape_kind || !is_approx(shape_size, m_shape_size)) {
-        m_shape_kind = shape_kind;
-        m_shape_size = shape_size;
+    if (shape_kind != m_shape_kind || !is_approx(shape_size, m_shape_size) ||
+        shape_through != m_shape_through || !is_approx(shape_depth, m_shape_depth)) {
+        m_shape_kind    = shape_kind;
+        m_shape_size    = shape_size;
+        m_shape_through = shape_through;
+        m_shape_depth   = shape_depth;
         m_shape_outline.reset();
         m_plane.reset(); // rebuilt by the next init_picking_models()
     }
@@ -1592,7 +1699,7 @@ void GLGizmoCut3D::on_save(cereal::BinaryOutputArchive& ar) const
     ar( m_keep_upper, m_keep_lower, m_rotate_lower, m_rotate_upper, m_hide_cut_plane, m_mode, m_connectors_editing,
         m_ar_plane_center, m_start_dragging_m,
         m_groove.depth, m_groove.width, m_groove.flaps_angle, m_groove.angle, m_groove.depth_tolerance, m_groove.width_tolerance,
-        m_shape_kind, m_shape_size);
+        m_shape_kind, m_shape_size, m_shape_through, m_shape_depth);
 }
 
 std::string GLGizmoCut3D::on_get_name() const
@@ -2549,12 +2656,17 @@ void GLGizmoCut3D::on_render()
 
     render_connectors();
 
-    if (!m_connectors_editing)
-        m_part_selection.render(nullptr, m_sphere.model);
-    else
-        m_part_selection.render(&m_cut_normal, m_sphere.model);
+    if (CutMode(m_mode) == CutMode::cutShape) {
+        // CUT-3: the shaped cut has no planar cross-section; highlight the part it will cut instead.
+        render_shape_highlight();
+    } else {
+        if (!m_connectors_editing)
+            m_part_selection.render(nullptr, m_sphere.model);
+        else
+            m_part_selection.render(&m_cut_normal, m_sphere.model);
 
-    render_clipper_cut();
+        render_clipper_cut();
+    }
 
     if (!m_hide_cut_plane && !m_connectors_editing) {
         if (CutMode(m_mode) == CutMode::cutShape)
@@ -3400,6 +3512,9 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
                 m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, m_labels_map["Shape"] + ": ");
                 bool shape_changed = m_imgui->combo(_u8L("Profile"), m_shape_kinds, m_shape_kind, 0, m_label_width, m_control_width);
                 shape_changed |= render_slider_input(_u8L("Size"), m_shape_size, 0.1f, 200.f);
+                shape_changed |= m_imgui->checkbox(_u8L("Through"), m_shape_through);
+                if (!m_shape_through)
+                    shape_changed |= render_slider_input(_u8L("Depth"), m_shape_depth, 0.1f, 200.f);
                 if (shape_changed) {
                     // The cutter solid/picker is cached; rebuild it for the new profile/size.
                     rebuild_shape_cutter();
@@ -3988,9 +4103,9 @@ bool GLGizmoCut3D::can_perform_cut() const
     if (CutMode(m_mode) == CutMode::cutTongueAndGroove)
         return has_valid_groove();
 
-    // CUT-3: a shaped cut needs a valid profile size; both sides are handled by the keep flags above.
+    // CUT-3: a shaped cut needs a valid profile size and, for a blind pocket, a positive depth.
     if (CutMode(m_mode) == CutMode::cutShape)
-        return m_shape_size > 0.f;
+        return m_shape_size > 0.f && (m_shape_through || m_shape_depth > 0.f);
 
     if (m_part_selection.valid())
         return ! m_part_selection.is_one_object();

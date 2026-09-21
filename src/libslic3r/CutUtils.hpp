@@ -31,6 +31,11 @@ enum class CutShapeKind : int { Circle, Square, Hexagon };
 // across-flats distance (Hexagon).
 indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double half_height);
 
+// Same prism, but spanning an explicit range [z_min, z_max] along the cut normal. Used to cut a
+// blind pocket (material removed on one side of the plane only) instead of cutting all the way
+// through.
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max);
+
 
 class Cut {
 

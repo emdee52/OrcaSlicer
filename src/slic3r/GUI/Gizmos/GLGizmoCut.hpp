@@ -144,6 +144,14 @@ class GLGizmoCut3D : public GLGizmoBase
     int     m_shape_outline_kind { -1 };
     float   m_shape_outline_size { -1.f };
 
+    // When off, the shape cuts a blind pocket of this depth (mm) into the object instead of
+    // going all the way through. Depth is measured from the cut plane along the cut normal.
+    bool  m_shape_through { true };
+    float m_shape_depth { 5.f };
+    // Translucent overlay of the part(s) the shape will cut, shown in Shape mode.
+    GLModel m_shape_highlight;
+    size_t  m_shape_highlight_sig { 0 };
+
     // Input params for cut with snaps
     float m_snap_bulge_proportion{ 0.15f };
     float m_snap_space_proportion{ 0.3f };
@@ -291,7 +299,11 @@ public:
     // CUT-3 shaped cut: profile kind (0 circle, 1 square, 2 hexagon) and size in mm.
     int    gizmo_shape_kind() const { return m_shape_kind; }
     float  gizmo_shape_size() const { return m_shape_size; }
+    bool   gizmo_shape_through() const { return m_shape_through; }
+    float  gizmo_shape_depth() const { return m_shape_depth; }
     void   gizmo_set_shape(int kind, float size);
+    void   gizmo_set_shape_through(bool through);
+    void   gizmo_set_shape_depth(float depth);
     Vec3d  gizmo_plane_center() const { return m_plane_center; }
     Vec3d  gizmo_plane_normal() const { return m_cut_normal; }
     double gizmo_plane_offset() const { return m_cut_normal.dot(m_plane_center); }
@@ -437,6 +449,8 @@ private:
     // so the solid can be clicked and dragged directly.
     void rebuild_shape_cutter();
     void render_shape_outline();
+    // Translucent overlay marking the part(s) the shaped cut will act on.
+    void render_shape_highlight();
     static void render_model(GLModel& model, const ColorRGBA& color, Transform3d view_model_matrix);
     void render_line(GLModel& line_model, const ColorRGBA& color, Transform3d view_model_matrix, float width);
     void render_rotation_snapping(GrabberID axis, const ColorRGBA& color);

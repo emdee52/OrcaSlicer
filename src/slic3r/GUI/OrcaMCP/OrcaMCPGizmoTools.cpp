@@ -271,6 +271,8 @@ nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
         {"parts", parts},
         {"shape_kind", g.gizmo_shape_kind()},
         {"shape_size", g.gizmo_shape_size()},
+        {"shape_through", g.gizmo_shape_through()},
+        {"shape_depth", g.gizmo_shape_depth()},
         {"object_id", object_id},
     };
 }
@@ -434,8 +436,8 @@ void OrcaMCPServer::register_gizmo_tools()
         "normal, e.g. a face normal - the same path as the interactive 'Pick flat face' mode), "
         "'set_plane_center' (plane point), 'shift_cut' (move the plane along its normal by delta mm), "
         "'set_mode' (0=Planar, 1=Dovetail, 2=Shape), 'set_keep' (keep_upper/keep_lower/keep_as_parts), "
-        "'set_shape' (profile kind 0=circle, 1=square, 2=hexagon and size in mm; switches to Shape "
-        "mode), "
+        "'set_shape' (profile kind 0=circle, 1=square, 2=hexagon, size in mm, optional through and "
+        "depth in mm; switches to Shape mode), "
         "'flip' (swap upper/lower), 'reset' (reset plane and connectors), 'apply' (perform the cut), "
         "'pick_face' (raycast the object and align the plane to the face under screen_x/screen_y, or "
         "the viewport centre if omitted - the same path as the interactive 'Pick flat face' mode), "
@@ -458,6 +460,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"keep_as_parts", {{"type", "boolean"}, {"description", "Keep both halves as parts of one object, for action=set_keep."}}},
                 {"shape_kind", {{"type", "integer"}, {"description", "0=circle, 1=square, 2=hexagon, for action=set_shape."}}},
                 {"shape_size", {{"type", "number"}, {"description", "Shape size in mm (diameter / side / across-flats), for action=set_shape."}}},
+                {"through", {{"type", "boolean"}, {"description", "Cut all the way through (default true); false cuts a blind pocket of 'depth' mm, for action=set_shape."}}},
+                {"depth", {{"type", "number"}, {"description", "Blind-pocket depth in mm (used when through is false), for action=set_shape."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for action=pick_face or hover_face (defaults to the viewport centre)."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for action=pick_face or hover_face (defaults to the viewport centre)."}}},
             }},
@@ -529,6 +533,10 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->gizmo_set_shape(params["shape_kind"].get<int>(), size);
                     if (g->gizmo_get_mode() != 2)
                         g->gizmo_set_mode(2);
+                    if (need("through"))
+                        g->gizmo_set_shape_through(params["through"].get<bool>());
+                    if (need("depth"))
+                        g->gizmo_set_shape_depth(params["depth"].get<float>());
                 } else if (action == "flip") {
                     g->gizmo_flip_plane();
                 } else if (action == "reset") {

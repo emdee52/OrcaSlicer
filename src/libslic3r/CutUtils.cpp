@@ -29,34 +29,39 @@ Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, cons
     return world.norm() > 1e-12 ? world.normalized() : Vec3d::UnitZ();
 }
 
-indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double half_height)
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max)
 {
-    const double h = 2. * half_height;
+    const double h = z_max - z_min;
 
     indexed_triangle_set its;
     Vec3f                offset = Vec3f::Zero();
     switch (kind) {
     case CutShapeKind::Square:
         its    = its_make_cube(size, size, h);
-        offset = Vec3f(float(-0.5 * size), float(-0.5 * size), float(-half_height));
+        offset = Vec3f(float(-0.5 * size), float(-0.5 * size), float(z_min));
         break;
     case CutShapeKind::Hexagon:
         // its_make_cylinder with 6 segments is a regular hexagon perpendicular to its circumradius.
         its    = its_make_cylinder(size / std::sqrt(3.0), h, 2. * PI / 6.);
-        offset = Vec3f(0.f, 0.f, float(-half_height));
+        offset = Vec3f(0.f, 0.f, float(z_min));
         break;
     case CutShapeKind::Circle:
     default:
         its    = its_make_cylinder(size * 0.5, h, 2. * PI / 64.);
-        offset = Vec3f(0.f, 0.f, float(-half_height));
+        offset = Vec3f(0.f, 0.f, float(z_min));
         break;
     }
 
-    // its_make_cube/its_make_cylinder are anchored at z = 0; center them on the cut plane.
+    // its_make_cube/its_make_cylinder are anchored at z = 0; move them onto the requested range.
     for (Vec3f& v : its.vertices)
         v += offset;
 
     return its;
+}
+
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double half_height)
+{
+    return make_cookie_cutter(kind, size, -half_height, half_height);
 }
 
 static void apply_tolerance(ModelVolume* vol)

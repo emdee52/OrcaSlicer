@@ -341,3 +341,35 @@ TEST_CASE("A shaped cut that misses one part still cuts the others", "[CutUtils]
     CHECK(found_untouched);
 }
 
+TEST_CASE("A depth-limited shaped cut removes only a pocket", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = make_centered_cube(model, 20.);
+
+    const double radius = 5.;
+    const double depth  = 6.;
+    const double margin = 1.;
+    // Blind pocket on the top face: the plane sits on the top of the cube (z = 10) and the prism
+    // reaches `depth` into the object while a small margin stays outside, so the cut opens at the
+    // surface instead of leaving a cavity inside.
+    TriangleMesh cutter(make_cookie_cutter(CutShapeKind::Circle, 2. * radius, -depth, margin));
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts;
+    Cut                            cut(obj, 0, translation_transform(Vec3d(0., 0., 10.)), attrs);
+    const ModelObjectPtrs         &results = cut.perform_with_shape(cutter);
+
+    REQUIRE(results.size() == 1);
+    const ModelObject *result = results.front();
+    REQUIRE(result->volumes.size() == 2);
+
+    const double v0      = volume_of(result->volumes[0]);
+    const double v1      = volume_of(result->volumes[1]);
+    const double inside  = std::min(v0, v1);
+    const double outside = std::max(v0, v1);
+
+    // The pocket is only a fraction of the 20mm cube, but the two pieces still tile it.
+    const double polygon_area = 0.5 * 64. * radius * radius * std::sin(2. * PI / 64.);
+    CHECK_THAT(inside, WithinRel(polygon_area * depth, 0.02));
+    CHECK_THAT(inside + outside, WithinRel(8000., 1e-3));
+}
+
