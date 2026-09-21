@@ -350,7 +350,7 @@ keep-upper piece is the part **inside** the cutter, the keep-lower piece is the 
 
 ## 11. ME-2c — place a bore/pocket on any flat face
 
-Branch `port/ME-2c` off `port/integration`. Until now the Holes tool could only rework holes
+Branch `port/ME-2c` off `port/integration`, merged into `port/integration` (`f4c2a25fb5`). Until now the Holes tool could only rework holes
 `detect_holes()` found; ME-2c lets it author a new feature on any flat face the user clicks.
 
 - **Shared face picking** (`refactor`, commit `edd343e289`): the Cut gizmo's
@@ -388,12 +388,12 @@ Branch `port/ME-2c` off `port/integration`. Until now the Holes tool could only 
   kept the placed feature; `clear_all` removed it; slicing the object with the pocket completed with
   no warnings.
 - **Caveats**: the negative is a 2D Clipper region at slice time, so the usual volume-order rule
-  applies. A placed feature is not re-editable, and the coplanar highlight and ghost are rebuilt only
-  when the hovered `(ModelVolume*, facet)` changes (a per-frame rebuild would be too heavy).
+  applies. A placed feature is not re-editable. The coplanar patch is rebuilt only when the hovered
+  `(ModelVolume*, facet)` changes, while the ghost follows the cursor within a facet (see section 12).
 
 ## 12. ME-2d — scale-correct dimensions and a cursor-following ghost
 
-Found while testing ME-2c, on branch `port/ME-2d` off `port/integration`.
+Found while testing ME-2c, on branch `port/ME-2d` off `port/integration`; merged into `port/integration` (`d7aa104236`).
 
 - **Symptom 1 — holes scaled with the object.** An M2 hole (tap_d 1.70 mm) measured 8.46 mm on a 5x
   instance, and every standard (head dims, nut across-flats, magnet/insert pockets) was affected.
