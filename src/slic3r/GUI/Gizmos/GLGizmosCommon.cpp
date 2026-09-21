@@ -1,8 +1,12 @@
 #include "GLGizmosCommon.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
+#include <utility>
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "libslic3r/SLAPrint.hpp"
@@ -730,6 +734,26 @@ bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection
         }
     }
     return volume != nullptr;
+}
+
+std::vector<FaceSnapPoint> build_face_snap_points(const ModelVolume* mv, const std::vector<int>& region)
+{
+    return mv == nullptr ? std::vector<FaceSnapPoint>() : face_snap_points(mv->mesh().its, region);
+}
+
+Vec2d world_to_screen(const Camera& camera, const Vec3d& world)
+{
+    // Raw 4x4 matrices: the projection is not affine, so the Transform3d product would be wrong.
+    const Eigen::Matrix4d   m    = camera.get_projection_matrix().matrix() * camera.get_view_matrix().matrix();
+    const Eigen::Vector4d   clip = m * world.homogeneous();
+    if (std::abs(clip.w()) < 1e-9)
+        return Vec2d::Constant(std::numeric_limits<double>::quiet_NaN());
+    const Vec3d ndc = clip.head<3>() / clip.w();
+    if (!ndc.allFinite())
+        return Vec2d::Constant(std::numeric_limits<double>::quiet_NaN());
+    const std::array<int, 4>& vp = camera.get_viewport();
+    return Vec2d(vp[0] + (ndc.x() * 0.5 + 0.5) * vp[2],
+                 vp[1] + (1.0 - (ndc.y() * 0.5 + 0.5)) * vp[3]);
 }
 
 

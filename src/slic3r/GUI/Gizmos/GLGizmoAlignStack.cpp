@@ -2,6 +2,9 @@
 // Source: NEOTKOCM_RELEASE_2_3.md, NEOTKOCM_RELEASE_2_39.md; fork sha cca8426cfe, c3508e5a92.
 // NEOTKO_ALIGNSTACK_TAG_START
 #include "GLGizmoAlignStack.hpp"
+
+#include "GLGizmosCommon.hpp"
+#include "libslic3r/CutUtils.hpp" // for face_plane_axes
 #include "GLGizmoMeasure.hpp" // for TransformHelper::world_to_ss
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -1079,18 +1082,7 @@ void GLGizmoAlignStack::render_zone_and_ghosts()
 
 void GLGizmoAlignStack::build_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis)
 {
-    const Vec3d  z     = normal.normalized();
-    const double z_dot = z.dot(Vec3d::UnitZ());
-    if (std::abs(z_dot) > 0.9) {
-        x_axis = Vec3d::UnitX();
-        y_axis = z.cross(x_axis).normalized();
-        if (z_dot < 0) y_axis = -y_axis;
-        x_axis = y_axis.cross(z).normalized();
-    } else {
-        x_axis = Vec3d::UnitZ().cross(z).normalized();
-        y_axis = z.cross(x_axis).normalized();
-        if (y_axis.z() < 0) { y_axis = -y_axis; x_axis = -x_axis; }
-    }
+    face_plane_axes(normal, x_axis, y_axis);
 }
 
 void GLGizmoAlignStack::clear_mate_state()

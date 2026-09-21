@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <utility>
 
 namespace Slic3r {
 
@@ -27,6 +29,181 @@ Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, cons
     const Matrix3d normal_matrix = trafo.linear().inverse().transpose();
     Vec3d          world         = normal_matrix * local;
     return world.norm() > 1e-12 ? world.normalized() : Vec3d::UnitZ();
+}
+
+void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis)
+{
+    const Vec3d  z     = normal.normalized();
+    const double z_dot = z.dot(Vec3d::UnitZ());
+    if (std::abs(z_dot) > 0.9) {
+        x_axis = Vec3d::UnitX();
+        y_axis = z.cross(x_axis).normalized();
+        if (z_dot < 0) y_axis = -y_axis;
+        x_axis = y_axis.cross(z).normalized();
+    } else {
+        x_axis = Vec3d::UnitZ().cross(z).normalized();
+        y_axis = z.cross(x_axis).normalized();
+        if (y_axis.z() < 0) { y_axis = -y_axis; x_axis = -x_axis; }
+    }
+}
+
+std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region)
+{
+    std::vector<FaceSnapPoint> out;
+    if (region.empty())
+        return out;
+
+    const int n_facets = int(its.indices.size());
+    const int n_verts  = int(its.vertices.size());
+    if (n_facets == 0 || n_verts == 0)
+        return out;
+
+    // A region edge used by one region facet only lies on the region's boundary; the loop it forms
+    // is walked in the direction the facets store it.
+    const auto ekey = [](int a, int b) {
+        if (a > b) std::swap(a, b);
+        return (uint64_t(uint32_t(a)) << 32) | uint32_t(b);
+    };
+    std::unordered_map<uint64_t, int> edge_count;
+    std::unordered_multimap<int, int> dir_edges;
+    for (int f : region) {
+        if (f < 0 || f >= n_facets)
+            continue;
+        const Vec3i32& t = its.indices[f];
+        for (int e = 0; e < 3; ++e)
+            ++edge_count[ekey(t[e], t[(e + 1) % 3])];
+    }
+    for (int f : region) {
+        if (f < 0 || f >= n_facets)
+            continue;
+        const Vec3i32& t = its.indices[f];
+        for (int e = 0; e < 3; ++e) {
+            const int v0 = t[e], v1 = t[(e + 1) % 3];
+            if (edge_count[ekey(v0, v1)] == 1)
+                dir_edges.emplace(v0, v1);
+        }
+    }
+    if (dir_edges.empty())
+        return out; // closed patch: nothing to snap to
+
+    std::vector<std::vector<int>> loops;
+    while (!dir_edges.empty()) {
+        const int start = dir_edges.begin()->first;
+        std::vector<int> loop;
+        int              cur = start;
+        while (true) {
+            auto it = dir_edges.find(cur);
+            if (it == dir_edges.end())
+                break;
+            const int nxt = it->second;
+            dir_edges.erase(it);
+            loop.push_back(cur);
+            if (nxt == start)
+                break;
+            cur = nxt;
+            if (int(loop.size()) > n_verts)
+                break;
+        }
+        if (loop.size() >= 3)
+            loops.push_back(std::move(loop));
+    }
+    if (loops.empty())
+        return out;
+
+    const int seed = region.front();
+    if (seed < 0 || seed >= n_facets)
+        return out;
+    const Vec3i32& st = its.indices[seed];
+    Vec3d          n  = (its.vertices[st[1]] - its.vertices[st[0]]).cast<double>()
+                            .cross((its.vertices[st[2]] - its.vertices[st[0]]).cast<double>());
+    const double nl = n.norm();
+    if (nl < 1e-12)
+        return out;
+    n /= nl;
+    Vec3d px, py;
+    face_plane_axes(n, px, py);
+
+    const auto vertex    = [&its](int vi) { return its.vertices[vi].cast<double>(); };
+    const auto loop_area = [&](const std::vector<int>& loop) {
+        const Vec3d o = vertex(loop[0]);
+        double      a = 0.;
+        for (size_t j = 0; j < loop.size(); ++j) {
+            const Vec3d p0 = vertex(loop[j]) - o;
+            const Vec3d p1 = vertex(loop[(j + 1) % loop.size()]) - o;
+            a += p0.dot(px) * p1.dot(py) - p1.dot(px) * p0.dot(py);
+        }
+        return a * 0.5;
+    };
+
+    size_t outer      = 0;
+    double outer_area = 0.;
+    for (size_t i = 0; i < loops.size(); ++i) {
+        const double a = std::abs(loop_area(loops[i]));
+        if (a > outer_area) {
+            outer_area = a;
+            outer      = i;
+        }
+    }
+    if (outer_area < 1e-9)
+        return out;
+    const std::vector<int>& loop = loops[outer];
+
+    // The facets are coplanar by normal, but a staircase of parallel facets can still carry the loop
+    // off the plane. Placing holes on such a loop would be wrong, so reject it and let the caller
+    // fall back to the raw hit.
+    const Vec3d origin = vertex(loop[0]);
+    double      diag   = 0.;
+    for (int vi : loop)
+        diag = std::max(diag, (vertex(vi) - origin).norm());
+    const double plane_tol = std::max(1e-3, 0.005 * diag);
+    for (int vi : loop)
+        if (std::abs((vertex(vi) - origin).dot(n)) > plane_tol)
+            return out;
+
+    const double signed_area = loop_area(loop);
+    Vec3d        centroid    = origin;
+    if (std::abs(signed_area) > 1e-12) {
+        double cx = 0., cy = 0.;
+        for (size_t j = 0; j < loop.size(); ++j) {
+            const Vec3d  p0 = vertex(loop[j]) - origin;
+            const Vec3d  p1 = vertex(loop[(j + 1) % loop.size()]) - origin;
+            const double cr = p0.dot(px) * p1.dot(py) - p1.dot(px) * p0.dot(py);
+            cx += (p0.dot(px) + p1.dot(px)) * cr;
+            cy += (p0.dot(py) + p1.dot(py)) * cr;
+        }
+        // ponytail: area centroid, not the vertex average, so the point stays central on a face whose
+        // triangles are unevenly sized. On a non-convex loop it can fall outside the material, which
+        // only matters if a hole is placed there.
+        centroid = origin + px * (cx / (6. * signed_area)) + py * (cy / (6. * signed_area));
+    }
+
+    out.reserve(loop.size() * 2 + 1);
+    for (int vi : loop)
+        out.push_back({ FaceSnapKind::Corner, vertex(vi) });
+    for (size_t j = 0; j < loop.size(); ++j)
+        out.push_back({ FaceSnapKind::EdgeMid, 0.5 * (vertex(loop[j]) + vertex(loop[(j + 1) % loop.size()])) });
+    out.push_back({ FaceSnapKind::FaceCenter, centroid });
+    return out;
+}
+
+bool nearest_face_snap(const std::vector<FaceSnapPoint>& pts, const std::function<Vec2d(const Vec3d&)>& project,
+                       const Vec2d& screen_pos, double max_px, FaceSnapPoint& out)
+{
+    bool   found = false;
+    double best  = max_px * max_px;
+    for (const FaceSnapPoint& p : pts) {
+        const Vec2d s = project(p.pos);
+        if (!s.allFinite())
+            continue;
+        const double d = (s - screen_pos).squaredNorm();
+        // Strictly closer only: candidates are ordered by priority, so an earlier kind keeps a tie.
+        if (d < best) {
+            best  = d;
+            out   = p;
+            found = true;
+        }
+    }
+    return found;
 }
 
 indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max)

@@ -148,6 +148,11 @@ private:
     void         render_face_highlight();
     void         exit_place_face_mode();
 
+    // Alt-held coordinate snap on the hovered face: corners, edge midpoints and the face centre.
+    const std::vector<FaceSnapPoint>& face_snap_points(const ModelVolume* mv, size_t facet);
+    Vec3d snap_face_hit(const Vec3d& hit_obj, const Vec2d& screen_pos, const ModelVolume* mv, size_t facet,
+                        FaceSnapKind& kind);
+
     void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
 
@@ -200,6 +205,10 @@ private:
     int                  m_hover_face_facet{ -1 };
     Vec3d                m_last_face_hit{ Vec3d::Constant(1e30) }; // object space, to detect movement
     FaceRegionCache      m_face_cache;
+    const ModelVolume*   m_snap_mv{ nullptr };
+    int                  m_snap_facet{ -1 };
+    std::vector<FaceSnapPoint> m_snap_points;
+    FaceSnapKind         m_hover_snap{ FaceSnapKind::None };
     std::vector<PlacedFace> m_placed;
     int                  m_next_face_id{ 1 };
     indexed_triangle_set m_merged_its; // merged model-part mesh, used for through-depth marching

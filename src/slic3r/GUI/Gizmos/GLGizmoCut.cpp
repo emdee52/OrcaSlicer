@@ -2954,9 +2954,23 @@ bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
 
     const Vec3d normal = facet_normal_in_world(hit_mv->mesh().its, int(hit_facet), hit_volume->world_matrix());
 
+    // Alt snaps the plane centre to a face coordinate: a corner, an edge midpoint or the face
+    // centre. Without Alt the raw hit is used.
+    Vec3d place_world = hit_world;
+    if (wxGetKeyState(WXK_ALT)) {
+        const std::vector<FaceSnapPoint> pts = build_face_snap_points(hit_mv, coplanar_region(hit_mv, hit_facet));
+        if (!pts.empty()) {
+            const Camera &camera  = wxGetApp().plater()->get_camera();
+            const auto    project = [&](const Vec3d &p) { return world_to_screen(camera, hit_volume->world_matrix() * p); };
+            FaceSnapPoint best;
+            if (nearest_face_snap(pts, project, mouse_position, 8.0, best))
+                place_world = hit_volume->world_matrix() * best.pos;
+        }
+    }
+
     Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Align cut plane to face"), UndoRedo::SnapshotType::GizmoAction);
-    apply_plane_orientation(normal, hit_world);
-    set_center(hit_world);
+    apply_plane_orientation(normal, place_world);
+    set_center(place_world);
 
     m_pick_face_mode = false;
     m_face_highlight.reset();

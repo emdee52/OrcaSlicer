@@ -1,12 +1,15 @@
 #ifndef slic3r_GUI_GLGizmosCommon_hpp_
 #define slic3r_GUI_GLGizmosCommon_hpp_
 
+#include <functional>
 #include <memory>
 #include <map>
+#include <vector>
 
 #include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/MeshUtils.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/CutUtils.hpp" // FaceSnapPoint
 
 namespace Slic3r {
 
@@ -20,6 +23,7 @@ namespace GUI {
 class GLCanvas3D;
 class Selection;
 class ClippingPlane;
+class Camera;
 
 enum class SLAGizmoEventType : unsigned char {
     LeftDown = 1,
@@ -307,6 +311,14 @@ indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vect
 bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection, const ModelObject* mo,
                          const ClippingPlane* clipping, const GLVolume*& volume, const ModelVolume*& mv,
                          size_t& facet, Vec3d& hit_world);
+
+
+// Snap coordinates of the coplanar `region` of `mv`: corners, edge midpoints and the face centre.
+// The geometry lives in libslic3r/CutUtils; this is a thin wrapper over the volume's mesh.
+std::vector<FaceSnapPoint> build_face_snap_points(const ModelVolume* mv, const std::vector<int>& region);
+
+// Device-pixel projection of a world point; non-finite when it is behind the camera.
+Vec2d world_to_screen(const Camera& camera, const Vec3d& world);
 
 
 enum class AssembleViewDataID {

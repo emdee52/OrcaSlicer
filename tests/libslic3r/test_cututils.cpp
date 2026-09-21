@@ -6,7 +6,10 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <numeric>
+#include <vector>
 
 using namespace Slic3r;
 using namespace Slic3r::Geometry;
@@ -371,5 +374,79 @@ TEST_CASE("A depth-limited shaped cut removes only a pocket", "[CutUtils]")
     const double polygon_area = 0.5 * 64. * radius * radius * std::sin(2. * PI / 64.);
     CHECK_THAT(inside, WithinRel(polygon_area * depth, 0.02));
     CHECK_THAT(inside + outside, WithinRel(8000., 1e-3));
+}
+
+TEST_CASE("Face snap points cover the corners, edge midpoints and centre of a square face", "[CutUtils]")
+{
+    indexed_triangle_set square;
+    square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(10.f, 10.f, 0.f), Vec3f(0.f, 10.f, 0.f) };
+    square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+
+    const std::vector<FaceSnapPoint> pts = face_snap_points(square, { 0, 1 });
+    REQUIRE(pts.size() == 9);
+
+    const auto count_of = [&pts](FaceSnapKind kind) {
+        return std::count_if(pts.begin(), pts.end(), [kind](const FaceSnapPoint &p) { return p.kind == kind; });
+    };
+    CHECK(count_of(FaceSnapKind::Corner) == 4);
+    CHECK(count_of(FaceSnapKind::EdgeMid) == 4);
+    CHECK(count_of(FaceSnapKind::FaceCenter) == 1);
+
+    const auto has_point = [&pts](const Vec3d &expected) {
+        return std::any_of(pts.begin(), pts.end(),
+                           [&expected](const FaceSnapPoint &p) { return (p.pos - expected).norm() < 1e-9; });
+    };
+    CHECK(has_point(Vec3d(0., 0., 0.)));
+    CHECK(has_point(Vec3d(10., 0., 0.)));
+    CHECK(has_point(Vec3d(10., 10., 0.)));
+    CHECK(has_point(Vec3d(0., 10., 0.)));
+    CHECK(has_point(Vec3d(5., 0., 0.)));
+    CHECK(has_point(Vec3d(10., 5., 0.)));
+    CHECK(has_point(Vec3d(5., 10., 0.)));
+    CHECK(has_point(Vec3d(0., 5., 0.)));
+    CHECK(has_point(Vec3d(5., 5., 0.)));
+
+    CHECK(pts.front().kind == FaceSnapKind::Corner);
+    REQUIRE(pts.back().kind == FaceSnapKind::FaceCenter);
+    CHECK_THAT(pts.back().pos.x(), WithinAbs(5.0, 1e-9));
+    CHECK_THAT(pts.back().pos.y(), WithinAbs(5.0, 1e-9));
+    CHECK_THAT(pts.back().pos.z(), WithinAbs(0.0, 1e-9));
+}
+
+TEST_CASE("Face snap points are empty for a closed surface", "[CutUtils]")
+{
+    const indexed_triangle_set cube = its_make_cube(10., 10., 10.);
+    std::vector<int>         all(cube.indices.size());
+    std::iota(all.begin(), all.end(), 0);
+
+    CHECK(face_snap_points(cube, all).empty());
+}
+
+TEST_CASE("Nearest face snap picks the closest candidate within tolerance", "[CutUtils]")
+{
+    indexed_triangle_set square;
+    square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(10.f, 10.f, 0.f), Vec3f(0.f, 10.f, 0.f) };
+    square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+
+    const std::vector<FaceSnapPoint> pts     = face_snap_points(square, { 0, 1 });
+    const auto                       project = [](const Vec3d &p) { return Vec2d(p.x(), p.y()); };
+    FaceSnapPoint                    best;
+
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(4.6, 5.2), 8., best));
+    CHECK(best.kind == FaceSnapKind::FaceCenter);
+
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(0.5, 0.5), 8., best));
+    CHECK(best.kind == FaceSnapKind::Corner);
+    CHECK_THAT(best.pos.norm(), WithinAbs(0.0, 1e-9));
+
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(5.2, 0.4), 8., best));
+    CHECK(best.kind == FaceSnapKind::EdgeMid);
+    CHECK_THAT((best.pos - Vec3d(5., 0., 0.)).norm(), WithinAbs(0.0, 1e-9));
+
+    CHECK(!nearest_face_snap(pts, project, Vec2d(30., 30.), 8., best));
+
+    // Equidistant from a corner, two edge midpoints and the centre: the first kind emitted wins.
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(2.5, 2.5), 8., best));
+    CHECK(best.kind == FaceSnapKind::Corner);
 }
 

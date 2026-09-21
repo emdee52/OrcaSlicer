@@ -758,8 +758,10 @@ bool GLGizmoHoles::place_face_at(const Vec2d &screen_pos)
         return false;
 
     // Work in object space: the added volume and the previews both live there.
-    const Vec3d         hit_obj = instance_matrix().inverse() * hit;
-    const DetectedHole  hole    = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
+    const Vec3d hit_obj = instance_matrix().inverse() * hit;
+    FaceSnapKind snap_kind = FaceSnapKind::None;
+    const Vec3d  place_obj = snap_face_hit(hit_obj, screen_pos, mv, facet, snap_kind);
+    const DetectedHole  hole = face_hole(place_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
     indexed_triangle_set neg     = face_shape_mesh(hole);
     if (neg.indices.empty())
         return false;
@@ -798,6 +800,7 @@ void GLGizmoHoles::update_face_highlight()
             m_hover_face_mv    = nullptr;
             m_hover_face_facet = -1;
             m_last_face_hit    = Vec3d::Constant(1e30);
+            m_hover_snap       = FaceSnapKind::None;
             m_parent.set_as_dirty();
         }
         return;
@@ -808,8 +811,10 @@ void GLGizmoHoles::update_face_highlight()
     // The ghost follows the cursor, so it must be rebuilt whenever the hit point moves, not only
     // when the facet changes: a flat face is a few large triangles, so the facet can stay the same
     // across most of the face. The coplanar patch depends only on the facet.
-    const double move_eps = std::max(1e-4, 0.01 * std::max(0.1, m_diameter / object_scale()));
-    if (!face_changed && (hit_obj - m_last_face_hit).norm() <= move_eps)
+    FaceSnapKind snap_kind = FaceSnapKind::None;
+    const Vec3d  place_obj = snap_face_hit(hit_obj, m_parent.get_local_mouse_position(), mv, facet, snap_kind);
+    const double move_eps  = std::max(1e-4, 0.01 * std::max(0.1, m_diameter / object_scale()));
+    if (!face_changed && (place_obj - m_last_face_hit).norm() <= move_eps && snap_kind == m_hover_snap)
         return;
 
     if (face_changed) {
@@ -817,9 +822,10 @@ void GLGizmoHoles::update_face_highlight()
         m_hover_face_facet = int(facet);
         build_face_highlight(mv, facet);
     }
-    m_last_face_hit = hit_obj;
+    m_last_face_hit = place_obj;
+    m_hover_snap    = snap_kind;
 
-    const DetectedHole  hole  = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
+    const DetectedHole  hole  = face_hole(place_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
     indexed_triangle_set ghost = face_shape_mesh(hole);
     m_face_ghost.reset();
     if (!ghost.indices.empty()) {
@@ -864,6 +870,43 @@ void GLGizmoHoles::render_face_highlight()
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
     shader->stop_using();
+}
+
+// Candidates of the hovered face, rebuilt only when the face changes.
+const std::vector<FaceSnapPoint> &GLGizmoHoles::face_snap_points(const ModelVolume *mv, size_t facet)
+{
+    if (mv != m_snap_mv || int(facet) != m_snap_facet) {
+        m_snap_mv     = mv;
+        m_snap_facet  = int(facet);
+        m_snap_points = build_face_snap_points(mv, coplanar_region(mv, facet, m_face_cache));
+    }
+    return m_snap_points;
+}
+
+// With Alt held, moves an object-space hit onto the nearest face coordinate within a few pixels;
+// returns the hit unchanged otherwise. `kind` is None when nothing was snapped.
+Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos, const ModelVolume *mv,
+                                 size_t facet, FaceSnapKind &kind)
+{
+    kind = FaceSnapKind::None;
+    if (mv == nullptr || !wxGetKeyState(WXK_ALT))
+        return hit_obj;
+
+    const std::vector<FaceSnapPoint> &pts = face_snap_points(mv, facet);
+    if (pts.empty())
+        return hit_obj;
+
+    const Camera     &camera  = wxGetApp().plater()->get_camera();
+    const Transform3d inst    = instance_matrix();
+    const Transform3d to_obj  = mv->get_matrix();
+    const auto        project = [&](const Vec3d &p) { return world_to_screen(camera, inst * to_obj * p); };
+
+    FaceSnapPoint best;
+    if (!nearest_face_snap(pts, project, screen_pos, 8.0, best))
+        return hit_obj;
+
+    kind = best.kind;
+    return to_obj * best.pos;
 }
 
 // ---------------------------------------------------------------------------------------------

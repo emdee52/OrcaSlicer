@@ -22,6 +22,30 @@ ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 // Returns UnitZ if the facet index is out of range.
 Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, const Transform3d& trafo);
 
+// Coordinates on a picked flat face that the cursor can snap to. Ordered by pick priority: an
+// earlier kind wins a tie at the same screen distance.
+enum class FaceSnapKind : unsigned char { None = 0, Corner, EdgeMid, FaceCenter };
+
+struct FaceSnapPoint
+{
+    FaceSnapKind kind{ FaceSnapKind::None };
+    Vec3d        pos{ Vec3d::Zero() }; // mesh space of the mesh the region came from
+};
+
+// Deterministic right-handed in-plane basis of `normal`; repeated picks of one face give the same
+// axes.
+void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis);
+
+// Corners and edge midpoints of the outer boundary loop of `region`, plus the loop's area centroid.
+// The region must be planar enough to trust (see the check in the implementation); returns an empty
+// vector otherwise, so the caller can fall back to the raw raycast hit.
+std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region);
+
+// Nearest candidate to `screen_pos` within `max_px`, measured through `project` (mesh space to
+// device pixels). Candidates further away or projecting behind the camera are ignored.
+bool nearest_face_snap(const std::vector<FaceSnapPoint>& pts, const std::function<Vec2d(const Vec3d&)>& project,
+                       const Vec2d& screen_pos, double max_px, FaceSnapPoint& out);
+
 // Built-in profiles for the shaped ("cookie cutter") cut.
 enum class CutShapeKind : int { Circle, Square, Hexagon };
 
