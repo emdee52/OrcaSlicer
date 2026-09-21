@@ -431,6 +431,11 @@ private:
     // object with a mesh boolean. The half-height is derived from the object's extent along the
     // cut normal so the prism always pierces it.
     indexed_triangle_set make_cut_shape() const;
+    // Half-height of a cutter that pierces the object along the cut normal (with a margin).
+    double shape_half_height() const;
+    // Rebuilds the cutter prism used as the shape picker (m_plane) and re-registers its raycaster,
+    // so the solid can be clicked and dragged directly.
+    void rebuild_shape_cutter();
     void render_shape_outline();
     static void render_model(GLModel& model, const ColorRGBA& color, Transform3d view_model_matrix);
     void render_line(GLModel& line_model, const ColorRGBA& color, Transform3d view_model_matrix, float width);
