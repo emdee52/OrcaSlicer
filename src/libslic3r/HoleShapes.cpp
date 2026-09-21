@@ -1,5 +1,7 @@
 #include "HoleShapes.hpp"
 
+#include "AABBMesh.hpp"
+
 #include <Eigen/Geometry>
 
 #include <algorithm>
@@ -259,6 +261,20 @@ indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_dept
     }
     place_on_axis(hex, axis, entry);
     return hex;
+}
+
+double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, const Vec3d &dir, double margin)
+{
+    if (its.indices.empty() || !dir.allFinite() || dir.squaredNorm() < 1e-18)
+        return 0.;
+    const Vec3d                             d = dir.normalized();
+    const AABBMesh                          mesh(its);
+    const std::vector<AABBMesh::hit_result> hits = mesh.query_ray_hits(entry, d);
+    double                                  far  = 0.;
+    for (const AABBMesh::hit_result &h : hits)
+        if (h.is_hit() && h.distance() > far)
+            far = h.distance();
+    return far > 0. ? far + std::max(0., margin) : 0.;
 }
 
 } // namespace Slic3r

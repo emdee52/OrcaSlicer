@@ -173,3 +173,19 @@ TEST_CASE("A nut pocket is a hexagon across the given flats", "[HoleShapes]")
     CHECK_THAT(double(its_volume(nut)), WithinRel(hex_vol + bore_vol, 0.04));
 }
 
+TEST_CASE("A through-hole depth reaches the far wall", "[HoleShapes]")
+{
+    constexpr double           r = 3., h = 12.;
+    const indexed_triangle_set cyl = its_make_cylinder(r, h, 2. * PI / 64.);
+
+    // Entering the top cap travelling -Z, the far wall is the bottom cap at z = 0.
+    const double through = hole_through_depth(cyl, Vec3d(0., 0., h), Vec3d(0., 0., -1.), 0.5);
+    CHECK_THAT(through, WithinAbs(h + 0.5, 1e-3));
+
+    // A ray leaving the mesh without a far wall returns 0 so the caller can fall back.
+    CHECK_THAT(hole_through_depth(cyl, Vec3d(0., 0., 2. * h), Vec3d(0., 0., 1.), 0.5), WithinAbs(0., 1e-9));
+
+    // An empty mesh has nothing to march through.
+    CHECK_THAT(hole_through_depth(indexed_triangle_set{}, Vec3d::Zero(), Vec3d::UnitZ(), 0.5), WithinAbs(0., 1e-9));
+}
+
