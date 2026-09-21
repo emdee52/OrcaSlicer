@@ -202,9 +202,9 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
   needed for the plane itself — the plane uses the clicked point and a single facet's plane. The
   hover highlight borrows the AlignStack patch-growth idea instead; `Measure`'s plane GL model was
   not reused.
-- **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
+- **Not done**: CUT-3 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
   profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
-  by "keep section shapes".
+  by "keep section shapes". (CUT-2 is now the single-assembly-part cut — see section 8.)
 
 ### Shading fix (`5007ef7949`)
 
@@ -224,3 +224,42 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
 - **Caveat**: not visually confirmed end-to-end (the fix was built and code-verified; the user
   should re-check). If the symptom persists on the *main* object (not the cyan/magenta cut parts),
   the remaining suspect is the upstream shadow map.
+
+---
+
+## 8. CUT-2 — cut a single part of a multi-part object (IN PROGRESS — resume at Milestone 2)
+
+The user wants to cut **one part** of a merged "Assembly" object without cutting the whole
+assembly. Full design + milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md`
+(gitignored); summary in `docs/superpowers/ME-roadmap.md`. **Read the plan doc first.**
+
+- **Branch**: `port/CUT-2`, stacked on `port/CUT-1` (CUT-1 is not merged yet — merge CUT-1 into
+  `port/integration` first, then CUT-2, both `--no-ff`).
+- **Agreed UX**: select a part in the ObjectList/canvas, then open Cut; only that part is cut; the
+  assembly stays **one object** with the part replaced by its two pieces; preview shows only the
+  selected part.
+- **Commits so far**:
+  - `bc00ed12ba` — MCP: auto-decline the startup restore prompt when MCP is enabled.
+  - `dda15801eb` — **Milestone 1**: `Cut` volume filter + `process_untouched_volume` + tests.
+- **Milestone 1 is DONE and verified** (`[CutUtils]` 7/7). The library API is:
+  `Cut(object, instance, cut_matrix, attributes, const std::vector<int>& cut_volume_idxs = {})`.
+  Empty list = old behaviour (cut all parts). Non-empty = only those model parts are cut; the rest
+  are carried into the single result object untouched. **Requires `KeepAsParts`.**
+- **Resume at Milestone 2** (gizmo): allow `on_is_activable()` on `selection.is_single_volume()`;
+  track `m_cut_volume_idxs`; in `perform_cut` force
+  `KeepAsParts | KeepPaint | InvalidateCutInfo`, drop connectors/place/flip, pass the filter;
+  scope the preview/`PartSelection` to the selected part and show only it; add a "Cutting part"
+  note and disable the now-meaningless controls. File refs in the plan doc §2/M2.
+- **Watch out**: `reset_extra_facets()` wipes paint on *all* volumes — rely on `KeepPaint`+`finalize`
+  and test the untouched parts; connectors are disabled in single-part mode (ill-defined across
+  parts); a part is object-level so all instances of the object get it cut; invalidate `cut_id`.
+
+## 9. Restore-prompt automation (`bc00ed12ba`)
+
+- The startup "restore unsaved items" modal blocked MCP runs (it is shown before any tool call, and
+  the per-tool dialog suppression defaults Yes/No to *Yes*, so it could not be used). Now
+  `GUI_App::is_mcp_enabled()` (env `ORCA_EXT_MCP` or app key `orca_ext_mcp`) makes the restore
+  handler skip the modal and treat it as **No**, which removes the stale backup just like clicking
+  No. No need to delete `last_backup_path` by hand anymore.
+- Verified: with a dead-lock backup present, a new MCP-enabled launch started normally and the
+  backup dir was removed by the handler.
