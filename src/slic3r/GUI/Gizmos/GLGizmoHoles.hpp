@@ -82,6 +82,18 @@ public:
     void gizmo_clear_all();
     void gizmo_refresh();
 
+    // --- authoring a new pocket on a picked flat face (ME-2c) ---
+    bool place_face_mode() const { return m_place_face_mode; }
+    void set_place_face_mode(bool on);
+    // Places a feature on the face under `screen_pos` using the current settings; stays in face
+    // mode so several can be placed. Returns false when the ray misses.
+    bool gizmo_place_face_at(const Vec2d& screen_pos);
+    // Info about the face under `screen_pos`: facet index, size of its coplanar region, world normal.
+    bool gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal);
+    int  placed_face_count() const { return int(m_placed.size()); }
+    int  placed_face_id(int idx) const { return idx >= 0 && idx < int(m_placed.size()) ? m_placed[idx].id : -1; }
+    DetectedHole placed_face(int idx) const { return idx >= 0 && idx < int(m_placed.size()) ? m_placed[idx].hole : DetectedHole(); }
+
 protected:
     bool on_init() override;
     std::string on_get_name() const override;
@@ -108,13 +120,13 @@ private:
     double       teardrop_depth(const DetectedHole& hole) const;
     // Feature geometry for one hole, oriented from the chosen entry end. `dir` grows into the
     // material, `entry` is a point on the axis at the near end.
-    void feature_frame(int idx, Vec3d& dir, Vec3d& entry) const;
+    void feature_frame(const DetectedHole& hole, Vec3d& dir, Vec3d& entry) const;
     double bore_diameter() const; // resolved from the standard / custom diameter + fit
 
-    indexed_triangle_set teardrop_mesh(int idx) const;
-    indexed_triangle_set bore_negative_mesh(int idx) const; // empty when nothing to cut
-    indexed_triangle_set bore_tube_mesh(int idx) const;     // empty unless shrinking
-    indexed_triangle_set shape_mesh(int idx) const;         // the preview shape for the operation
+    indexed_triangle_set teardrop_mesh(const DetectedHole& hole) const;
+    indexed_triangle_set bore_negative_mesh(const DetectedHole& hole) const; // empty when nothing to cut
+    indexed_triangle_set bore_tube_mesh(const DetectedHole& hole) const;     // empty unless shrinking
+    indexed_triangle_set shape_mesh(const DetectedHole& hole) const;         // the preview shape for the operation
 
     void detect();
     void refresh_applied();
@@ -124,6 +136,15 @@ private:
     void toggle_teardrop(int idx);
     void toggle_bore(int idx);
     void clear_all();
+
+    // Face authoring: builds a synthetic hole from a picked face and adds it as a FacePocket volume.
+    bool         place_face_at(const Vec2d& screen_pos);
+    DetectedHole face_hole(const Vec3d& hit_world, const Vec3d& outward_normal) const;
+    indexed_triangle_set face_shape_mesh(const DetectedHole& hole);
+    void         update_face_highlight();
+    void         build_face_highlight(const ModelVolume* mv, size_t facet);
+    void         render_face_highlight();
+    void         exit_place_face_mode();
 
     void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
@@ -161,6 +182,24 @@ private:
     const ModelObject* m_old_model_object{ nullptr };
     int                m_old_volume_count{ -1 };
     Transform3d        m_old_instance_matrix{ Transform3d::Identity() };
+
+    // Placed features authored on a picked face, tracked by their own monotonic id so they survive
+    // re-detection and keep a stable volume name.
+    struct PlacedFace
+    {
+        int          id{ 0 };
+        DetectedHole hole;
+    };
+
+    bool                 m_place_face_mode{ false };
+    GLModel              m_face_highlight;
+    GLModel              m_face_ghost;
+    const ModelVolume*   m_hover_face_mv{ nullptr };
+    int                  m_hover_face_facet{ -1 };
+    FaceRegionCache      m_face_cache;
+    std::vector<PlacedFace> m_placed;
+    int                  m_next_face_id{ 1 };
+    indexed_triangle_set m_merged_its; // merged model-part mesh, used for through-depth marching
 
     std::map<std::string, wxString> m_desc;
 };

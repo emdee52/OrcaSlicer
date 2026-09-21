@@ -2,6 +2,7 @@
 #include "GLGizmoUtils.hpp"
 
 #include "libslic3r/HoleShapes.hpp"
+#include "libslic3r/CutUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
@@ -32,6 +33,7 @@ namespace {
 
 constexpr const char *TEARDROP_NAME = "Teardrop";
 constexpr const char *POCKET_NAME   = "HolePocket";
+constexpr const char *FACE_POCKET_NAME = "FacePocket";
 // |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
 constexpr double       HORIZONTAL_COS = 0.5;
 constexpr float        ANGLE_MIN = 45.f;
@@ -265,30 +267,22 @@ double GLGizmoHoles::bore_diameter() const
     return std::max(0.1, m_diameter + tol);
 }
 
-void GLGizmoHoles::feature_frame(int idx, Vec3d &dir, Vec3d &entry) const
+void GLGizmoHoles::feature_frame(const DetectedHole &h, Vec3d &dir, Vec3d &entry) const
 {
-    const DetectedHole &h = m_holes[idx].hole;
-    const Vec3d         a = h.axis.normalized();
+    const Vec3d a = h.axis.normalized();
     dir   = m_flip ? -a : a;
     entry = h.center - dir * (0.5 * h.depth);
 }
 
-indexed_triangle_set GLGizmoHoles::teardrop_mesh(int idx) const
+indexed_triangle_set GLGizmoHoles::teardrop_mesh(const DetectedHole &h) const
 {
-    if (idx < 0 || idx >= int(m_holes.size()))
-        return {};
-    const DetectedHole &h = m_holes[idx].hole;
     return its_make_teardrop_for_hole(h, teardrop_depth(h), m_angle_deg, HOLE_SHAPE_SEGMENTS, object_up());
 }
 
-indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
+indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) const
 {
-    if (idx < 0 || idx >= int(m_holes.size()))
-        return {};
-    const DetectedHole &h = m_holes[idx].hole;
-
     Vec3d dir, entry;
-    feature_frame(idx, dir, entry);
+    feature_frame(h, dir, entry);
 
     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                 ? &hole_standards()[m_standard]
@@ -331,12 +325,8 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(int idx) const
     return its_make_bore(d, depth, dir, entry);
 }
 
-indexed_triangle_set GLGizmoHoles::bore_tube_mesh(int idx) const
+indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
 {
-    if (idx < 0 || idx >= int(m_holes.size()))
-        return {};
-    const DetectedHole &h = m_holes[idx].hole;
-
     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                 ? &hole_standards()[m_standard]
                                 : nullptr;
@@ -349,15 +339,15 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(int idx) const
         return {}; // enlarging or matching: no fill needed
 
     Vec3d dir, entry;
-    feature_frame(idx, dir, entry);
+    feature_frame(h, dir, entry);
     const double outer_d = exist_d + 0.4; // overlap the existing wall
     const double depth   = h.depth + std::max(0.4, 0.2 * h.depth);
     return its_make_tube(outer_d, target_d, depth, dir, entry);
 }
 
-indexed_triangle_set GLGizmoHoles::shape_mesh(int idx) const
+indexed_triangle_set GLGizmoHoles::shape_mesh(const DetectedHole &h) const
 {
-    return m_operation == HoleOperation::Teardrop ? teardrop_mesh(idx) : bore_negative_mesh(idx);
+    return m_operation == HoleOperation::Teardrop ? teardrop_mesh(h) : bore_negative_mesh(h);
 }
 
 bool GLGizmoHoles::on_is_activable() const
@@ -380,6 +370,7 @@ void GLGizmoHoles::on_set_state()
         m_preview_all.reset();
         m_preview_applied.reset();
         m_preview_hover.reset();
+        exit_place_face_mode();
     }
 }
 
@@ -394,6 +385,7 @@ void GLGizmoHoles::data_changed(bool /*is_serializing*/)
         m_preview_all.reset();
         m_preview_applied.reset();
         m_preview_hover.reset();
+        exit_place_face_mode();
         m_dirty = false;
         return;
     }
@@ -408,6 +400,8 @@ void GLGizmoHoles::data_changed(bool /*is_serializing*/)
 
 void GLGizmoHoles::on_set_hover_id()
 {
+    if (m_place_face_mode)
+        m_hover_id = -1; // detected-hole picking is off while placing on a face
     if (m_hover_id < -1 || m_hover_id >= int(m_holes.size()))
         m_hover_id = -1;
     m_preview_dirty = true;
@@ -487,6 +481,23 @@ void GLGizmoHoles::detect()
     for (const HoleView &v : m_holes)
         m_pick_its.push_back(make_pick_cylinder(v.hole, up));
 
+    m_merged_its = mesh.its;
+
+    // Placed face features are tracked by their own monotonic id, independent of detected holes.
+    int                     max_face_id = 0;
+    std::vector<PlacedFace> kept_placed;
+    for (const ModelVolume *v : mo->volumes)
+        if (v != nullptr)
+            max_face_id = std::max(max_face_id, parsed_hole_index(v->name, FACE_POCKET_NAME));
+    for (const PlacedFace &f : m_placed)
+        for (const ModelVolume *v : mo->volumes)
+            if (v != nullptr && v->is_negative_volume() && parsed_hole_index(v->name, FACE_POCKET_NAME) == f.id) {
+                kept_placed.push_back(f);
+                break;
+            }
+    m_placed       = std::move(kept_placed);
+    m_next_face_id = max_face_id + 1;
+
     refresh_applied();
     m_old_model_object    = mo;
     m_old_volume_count    = int(mo->volumes.size());
@@ -534,7 +545,8 @@ void GLGizmoHoles::rebuild_previews()
         for (const ModelVolume *v : mo->volumes) {
             if (v == nullptr || !v->is_negative_volume())
                 continue;
-            if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0)
+            if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0 &&
+                parsed_hole_index(v->name, FACE_POCKET_NAME) < 0)
                 continue;
             indexed_triangle_set its = v->mesh().its;
             const Transform3d    m   = v->get_matrix();
@@ -549,12 +561,12 @@ void GLGizmoHoles::rebuild_previews()
         const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] : m_bore[i];
         if (applied)
             continue; // already drawn from the actual volume
-        indexed_triangle_set ghost = shape_mesh(int(i));
+        indexed_triangle_set ghost = shape_mesh(m_holes[i].hole);
         if (ghost.indices.empty())
             continue;
         merge_into(all_its, ghost);
         if (int(i) == m_hover_id) {
-            indexed_triangle_set s = shape_mesh(int(i));
+            indexed_triangle_set s = shape_mesh(m_holes[i].hole);
             merge_into(hover_its, s);
         }
     }
@@ -579,6 +591,8 @@ void GLGizmoHoles::on_render()
         detect();
     if (m_preview_dirty)
         rebuild_previews();
+    if (m_place_face_mode)
+        update_face_highlight();
 
     GLShaderProgram *shader = wxGetApp().get_shader("flat");
     if (shader == nullptr)
@@ -601,10 +615,223 @@ void GLGizmoHoles::on_render()
     m_preview_all.model.render(shader);
     m_preview_applied.model.render(shader);
     m_preview_hover.model.render(shader);
+    if (m_place_face_mode)
+        m_face_ghost.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_DEPTH_TEST));
+    shader->stop_using();
+
+    if (m_place_face_mode)
+        render_face_highlight();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Place on a picked face
+// ---------------------------------------------------------------------------------------------
+
+void GLGizmoHoles::set_place_face_mode(bool on)
+{
+    if (m_place_face_mode == on)
+        return;
+    m_place_face_mode = on;
+    if (on)
+        m_hover_id = -1; // suppress detected-hole hover while placing
+    else
+        exit_place_face_mode();
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::exit_place_face_mode()
+{
+    m_place_face_mode = false;
+    m_face_highlight.reset();
+    m_face_ghost.reset();
+    m_hover_face_mv    = nullptr;
+    m_hover_face_facet = -1;
+}
+
+bool GLGizmoHoles::gizmo_place_face_at(const Vec2d &screen_pos)
+{
+    return m_place_face_mode && place_face_at(screen_pos);
+}
+
+bool GLGizmoHoles::gizmo_face_info_at(const Vec2d &screen_pos, int &facet, int &region_facets, Vec3d &normal)
+{
+    facet         = -1;
+    region_facets = 0;
+    normal        = Vec3d::Zero();
+
+    const ModelObject *mo = model_object();
+    if (mo == nullptr)
+        return false;
+
+    const ClippingPlane *clipping = nullptr;
+    if (auto oc = m_c->object_clipper())
+        clipping = oc->get_clipping_plane();
+
+    const GLVolume    *volume = nullptr;
+    const ModelVolume *mv     = nullptr;
+    size_t             f      = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, f, hit))
+        return false;
+
+    facet         = int(f);
+    normal        = facet_normal_in_world(mv->mesh().its, int(f), mv->get_matrix());
+    region_facets = int(coplanar_region(mv, f, m_face_cache).size());
+    return true;
+}
+
+DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outward_normal) const
+{
+    const Vec3d n   = (outward_normal.allFinite() && outward_normal.norm() > 1e-9) ? outward_normal.normalized() : Vec3d::UnitZ();
+    const Vec3d dir = -n; // into the material
+
+    double depth = std::max(0.1, m_depth);
+    if (m_through) {
+        const double d = hole_through_depth(m_merged_its, hit_world, dir, std::max(0.5, 0.25 * m_diameter));
+        if (d > 0.)
+            depth = d;
+    }
+
+    DetectedHole h;
+    h.axis    = dir;
+    h.center  = hit_world + dir * (0.5 * depth);
+    h.depth   = depth;
+    h.radius  = 0.5 * bore_diameter();
+    h.through = m_through;
+    return h;
+}
+
+// A teardrop only has meaning on a near-vertical face; fall back to a plain bore otherwise. The
+// `flip` control is meaningless for a placed face (the entry is fixed by the picked surface).
+indexed_triangle_set GLGizmoHoles::face_shape_mesh(const DetectedHole &hole)
+{
+    const bool saved_flip = m_flip;
+    m_flip = false;
+    indexed_triangle_set shape = shape_mesh(hole);
+    if (shape.indices.empty())
+        shape = bore_negative_mesh(hole);
+    m_flip = saved_flip;
+    return shape;
+}
+
+bool GLGizmoHoles::place_face_at(const Vec2d &screen_pos)
+{
+    const ModelObject *mo = model_object();
+    if (mo == nullptr)
+        return false;
+
+    const ClippingPlane *clipping = nullptr;
+    if (auto oc = m_c->object_clipper())
+        clipping = oc->get_clipping_plane();
+
+    const GLVolume    *volume = nullptr;
+    const ModelVolume *mv     = nullptr;
+    size_t             facet  = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit))
+        return false;
+
+    // Work in object space: the added volume and the previews both live there.
+    const Vec3d         hit_obj = instance_matrix().inverse() * hit;
+    const DetectedHole  hole    = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
+    indexed_triangle_set neg     = face_shape_mesh(hole);
+    if (neg.indices.empty())
+        return false;
+
+    const int id = m_next_face_id++;
+    add_named_volume(id, neg, ModelVolumeType::NEGATIVE_VOLUME, feature_name(FACE_POCKET_NAME, id), true);
+
+    PlacedFace placed;
+    placed.id   = id;
+    placed.hole = hole;
+    m_placed.push_back(placed);
+
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+    return true;
+}
+
+void GLGizmoHoles::update_face_highlight()
+{
+    const ModelObject *mo = model_object();
+    if (mo == nullptr)
+        return;
+
+    const ClippingPlane *clipping = nullptr;
+    if (auto oc = m_c->object_clipper())
+        clipping = oc->get_clipping_plane();
+
+    const GLVolume    *volume = nullptr;
+    const ModelVolume *mv     = nullptr;
+    size_t             facet  = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(m_parent.get_local_mouse_position(), m_parent.get_selection(), mo, clipping, volume, mv, facet, hit)) {
+        if (m_hover_face_mv != nullptr || m_face_highlight.is_initialized()) {
+            m_face_highlight.reset();
+            m_face_ghost.reset();
+            m_hover_face_mv    = nullptr;
+            m_hover_face_facet = -1;
+            m_parent.set_as_dirty();
+        }
+        return;
+    }
+    if (mv == m_hover_face_mv && int(facet) == m_hover_face_facet)
+        return; // unchanged: keep the current highlight and ghost
+
+    m_hover_face_mv    = mv;
+    m_hover_face_facet = int(facet);
+    build_face_highlight(mv, facet);
+
+    const Vec3d         hit_obj = instance_matrix().inverse() * hit;
+    const DetectedHole  hole    = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
+    indexed_triangle_set ghost   = face_shape_mesh(hole);
+    m_face_ghost.reset();
+    if (!ghost.indices.empty()) {
+        m_face_ghost.init_from(ghost);
+        m_face_ghost.set_color(HOVER_COLOR);
+    }
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::build_face_highlight(const ModelVolume *mv, size_t facet)
+{
+    m_face_highlight.reset();
+    if (mv == nullptr)
+        return;
+    const std::vector<int> region = coplanar_region(mv, facet, m_face_cache);
+    if (region.empty())
+        return;
+    indexed_triangle_set patch = build_coplanar_patch(mv, region, m_face_cache, 0.05f);
+    if (patch.indices.empty())
+        return;
+    m_face_highlight.init_from(patch);
+    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+}
+
+void GLGizmoHoles::render_face_highlight()
+{
+    if (m_hover_face_mv == nullptr || !m_face_highlight.is_initialized())
+        return;
+    GLShaderProgram *shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera &camera = wxGetApp().plater()->get_camera();
+    shader->start_using();
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * instance_matrix() * m_hover_face_mv->get_matrix());
+    m_face_highlight.render();
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
     shader->stop_using();
 }
 
@@ -658,7 +885,7 @@ void GLGizmoHoles::toggle_teardrop(int idx)
     if (m_teardrop[idx])
         remove_named_volumes(idx, TEARDROP_NAME, _u8L("Remove teardrop"));
     else
-        add_named_volume(idx, teardrop_mesh(idx), ModelVolumeType::NEGATIVE_VOLUME, feature_name(TEARDROP_NAME, idx), true);
+        add_named_volume(idx, teardrop_mesh(m_holes[idx].hole), ModelVolumeType::NEGATIVE_VOLUME, feature_name(TEARDROP_NAME, idx), true);
 }
 
 void GLGizmoHoles::toggle_bore(int idx)
@@ -669,10 +896,10 @@ void GLGizmoHoles::toggle_bore(int idx)
     }
     const std::string name = feature_name(POCKET_NAME, idx);
     // Shrink first (positive tube), then the negative bore; the negative clips the tube too.
-    indexed_triangle_set tube = bore_tube_mesh(idx);
+    indexed_triangle_set tube = bore_tube_mesh(m_holes[idx].hole);
     if (!tube.empty())
         add_named_volume(idx, tube, ModelVolumeType::MODEL_PART, name, true);
-    indexed_triangle_set neg = bore_negative_mesh(idx);
+    indexed_triangle_set neg = bore_negative_mesh(m_holes[idx].hole);
     if (!neg.empty())
         add_named_volume(idx, neg, ModelVolumeType::NEGATIVE_VOLUME, name, tube.empty());
 }
@@ -687,9 +914,11 @@ void GLGizmoHoles::clear_all()
     std::vector<ItemForDelete> items;
     for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
         const ModelVolume *v = mo->volumes[vi];
-        if ((v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0) || v->name.rfind(POCKET_NAME, 0) == 0)
+        if ((v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0) || v->name.rfind(POCKET_NAME, 0) == 0 ||
+            v->name.rfind(FACE_POCKET_NAME, 0) == 0)
             items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
+    m_placed.clear();
     if (items.empty())
         return;
 
@@ -936,6 +1165,19 @@ void GLGizmoHoles::gizmo_refresh()
 
 bool GLGizmoHoles::on_mouse(const wxMouseEvent &mouse_event)
 {
+    if (m_place_face_mode) {
+        if (mouse_event.LeftDown()) {
+            place_face_at(Vec2d(mouse_event.GetX(), mouse_event.GetY()));
+            return true;
+        }
+        if (mouse_event.RightDown()) {
+            exit_place_face_mode();
+            m_parent.set_as_dirty();
+            return true;
+        }
+        return false;
+    }
+
     const bool on_hole = m_hover_id >= 0 && m_hover_id < int(m_holes.size());
     if (mouse_event.LeftDown() && on_hole) {
         gizmo_toggle_hole(m_hover_id);
@@ -986,6 +1228,23 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         op_button(m_desc.at("op_teardrop"), HoleOperation::Teardrop);
         ImGui::SameLine();
         op_button(m_desc.at("op_bore"), HoleOperation::Bore);
+    }
+
+    // Place a new pocket on any flat face, instead of only reworking detected holes.
+    {
+        const bool on = m_place_face_mode;
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+        }
+        const bool clicked = m_imgui->button(on ? _L("Cancel face pick") : _L("Place on face"));
+        if (on)
+            ImGui::PopStyleColor(3);
+        if (clicked)
+            set_place_face_mode(!on);
+        if (m_place_face_mode)
+            m_imgui->text(_L("Click a flat face to place the feature; right-click to finish."));
     }
 
     ImGui::Separator();

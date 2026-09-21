@@ -169,7 +169,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
     }
 
     // Volume bookkeeping helps diagnose whether features are actually being added.
-    int         volume_count = -1, pocket_volumes = 0;
+    int         volume_count = -1, pocket_volumes = 0, face_pocket_volumes = 0;
     Plater     *plater = wxGetApp().plater();
     GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
     if (plater != nullptr && canvas != nullptr) {
@@ -177,10 +177,24 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         if (oi >= 0 && oi < int(plater->model().objects.size())) {
             const ModelObject *mo = plater->model().objects[oi];
             volume_count          = int(mo->volumes.size());
-            for (const ModelVolume *v : mo->volumes)
+            for (const ModelVolume *v : mo->volumes) {
                 if (v->name.rfind("HolePocket", 0) == 0)
                     ++pocket_volumes;
+                if (v->name.rfind("FacePocket", 0) == 0)
+                    ++face_pocket_volumes;
+            }
         }
+    }
+
+    nlohmann::json placed = nlohmann::json::array();
+    for (int i = 0; i < g.placed_face_count(); ++i) {
+        const DetectedHole h = g.placed_face(i);
+        placed.push_back({{"id", g.placed_face_id(i)},
+                          {"axis", vec3_json(h.axis)},
+                          {"center", vec3_json(h.center)},
+                          {"diameter", 2.0 * h.radius},
+                          {"depth", h.depth},
+                          {"through", h.through}});
     }
 
     nlohmann::json heights = nlohmann::json::array();
@@ -203,6 +217,9 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
+        {"face_pocket_volumes", face_pocket_volumes},
+        {"place_face_mode", g.place_face_mode()},
+        {"placed_faces", placed},
         {"heights", heights},
         {"holes", arr},
     };
@@ -313,9 +330,12 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
+                {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
+                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
+                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
@@ -414,6 +434,28 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->gizmo_clear_all();
                 } else if (action == "refresh") {
                     g->gizmo_refresh();
+                } else if (action == "set_place_face") {
+                    g->set_place_face_mode(params.value("on", true));
+                } else if (action == "place_face" || action == "hover_face") {
+                    Vec2d screen;
+                    if (need("screen_x") && need("screen_y"))
+                        screen = Vec2d(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    else {
+                        const std::array<int, 4> vp = wxGetApp().plater()->get_camera().get_viewport();
+                        screen = Vec2d(vp[0] + 0.5 * vp[2], vp[1] + 0.5 * vp[3]);
+                    }
+                    if (action == "hover_face") {
+                        int   facet = -1, region = 0;
+                        Vec3d normal = Vec3d::Zero();
+                        if (!g->gizmo_face_info_at(screen, facet, region, normal))
+                            return {{"status", "error"}, {"error", "No face under the screen point"}};
+                        return {{"status", "ok"}, {"open", true}, {"action", action}, {"facet", facet},
+                                {"region_facets", region}, {"normal", vec3_json(normal)}};
+                    }
+                    if (!g->place_face_mode())
+                        return {{"status", "error"}, {"error", "Face mode is off; call set_place_face first"}};
+                    if (!g->gizmo_place_face_at(screen))
+                        return {{"status", "error"}, {"error", "No face under the screen point"}};
                 } else if (action != "status" && action != "open") {
                     return {{"status", "error"}, {"error", "Unknown action: " + action}};
                 }
