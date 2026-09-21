@@ -197,3 +197,101 @@ TEST_CASE("A volume-filtered cut keeps painting on the untouched parts", "[CutUt
     CHECK(painted_parts == 1);
 }
 
+namespace {
+
+// A cube centered on `center`, spanning +/-10mm, cut by a cylinder of the given diameter.
+ModelObject *make_centered_cube(Model &model, double size)
+{
+    ModelObject *obj = model.add_object();
+    obj->add_instance();
+    const double half = size / 2.;
+    TriangleMesh cube(its_make_cube(size, size, size));
+    its_translate(cube.its, Vec3f(float(-half), float(-half), float(-half)));
+    obj->add_volume(std::move(cube), ModelVolumeType::MODEL_PART, false);
+    return obj;
+}
+
+double volume_of(const ModelVolume *v) { return double(its_volume(v->mesh().its)); }
+
+} // namespace
+
+TEST_CASE("A shaped cut splits a cube into an inside plug and the outside body", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = make_centered_cube(model, 20.);
+
+    const double cut_height = 20.;
+    TriangleMesh cutter(make_cookie_cutter(CutShapeKind::Circle, 10., cut_height));
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts;
+    Cut                            cut(obj, 0, Transform3d::Identity(), attrs);
+    const ModelObjectPtrs         &results = cut.perform_with_shape(cutter);
+
+    REQUIRE(results.size() == 1);
+    const ModelObject *result = results.front();
+    REQUIRE(result->volumes.size() == 2);
+
+    double inside = 0., outside = 0.;
+    for (const ModelVolume *v : result->volumes) {
+        CHECK(its_num_open_edges(v->mesh().its) == 0);
+        const double vol = volume_of(v);
+        if (vol < 0.5 * 20. * 20. * 20.)
+            inside = vol;
+        else
+            outside = vol;
+    }
+
+    // The two pieces tile the original cube.
+    CHECK_THAT(inside + outside, WithinRel(8000., 1e-3));
+    // The plug is a 10mm cylinder through the 20mm cube (a 64-gon prism, slightly under pi*r^2).
+    CHECK_THAT(inside, WithinRel(1568., 1e-2));
+}
+
+TEST_CASE("A shaped cut of a selected volume leaves the other parts untouched", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = make_two_part_object(model);
+    REQUIRE(obj->volumes.size() == 2);
+
+    const BoundingBoxf3 untouched_before = volume_world_box(obj, obj->volumes[1]);
+
+    // Shape centered on the first 10mm cube (which spans [0,10]^3).
+    TriangleMesh cutter(make_cookie_cutter(CutShapeKind::Circle, 4., 20.));
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts;
+    Cut                            cut(obj, 0, translation_transform(Vec3d(5., 5., 5.)), attrs, { 0 });
+    const ModelObjectPtrs         &results = cut.perform_with_shape(cutter);
+
+    REQUIRE(results.size() == 1);
+    const ModelObject *result = results.front();
+    // volume 0 split into two, volume 1 carried over whole.
+    REQUIRE(result->volumes.size() == 3);
+
+    bool found_untouched = false;
+    for (const ModelVolume *v : result->volumes) {
+        const BoundingBoxf3 bb = volume_world_box(result, v);
+        if (bb.min.isApprox(untouched_before.min, 1e-3) && bb.max.isApprox(untouched_before.max, 1e-3))
+            found_untouched = true;
+    }
+    CHECK(found_untouched);
+}
+
+TEST_CASE("A shaped cut bails out when the shape misses the object", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = model.add_object();
+    obj->add_instance();
+    obj->add_volume(TriangleMesh(its_make_cube(10., 10., 10.)), ModelVolumeType::MODEL_PART, false);
+
+    // Cut plane far away from the part, so the prism never intersects it and the inside piece
+    // would come back empty.
+    TriangleMesh cutter(make_cookie_cutter(CutShapeKind::Circle, 4., 20.));
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts;
+    Cut                            cut(obj, 0, translation_transform(Vec3d(100., 100., 5.)), attrs);
+    const ModelObjectPtrs         &results = cut.perform_with_shape(cutter);
+
+    // The failed split must not produce a partial result.
+    CHECK(results.empty());
+}
+
