@@ -469,3 +469,46 @@ and the Measure tool does not snap.
   within tolerance, including the priority tie-break). Manually, holding Alt over a square face
   makes the ghost — or the cut plane centre — jump to the corner, the edge midpoint or the centre.
 
+## 14. SNAP-2 / SNAP-3 — adaptive stick distance, snap markers and two follow-ups
+
+**The stick distance scales with the face.** `nearest_face_snap` no longer takes a fixed tolerance:
+it projects the candidates once, finds the nearest and measures the gap to the next nearest. Half
+that gap is the largest distance that can never be ambiguous — the stick region ends where the next
+candidate's begins — so it is the tolerance, clamped to `[8, 48]` px. A big face therefore sticks
+from further away, a small one stays tight, and zooming out tightens both without any extra code.
+The chosen tolerance is reported through `tolerance_px`.
+
+**Hysteresis** keeps the picked target stable: once a candidate is locked, the tool holds it until
+the cursor moves more than `1.25 * tolerance` past it, so the ghost no longer flickers between two
+neighbouring points while the cursor sits between them. The lock is dropped when Alt is released, the
+pick fails or the face changes.
+
+**Snap markers.** While Alt is held, every candidate is drawn as a small sphere — one
+`its_make_sphere(radius, PI / 12.0)` per candidate, merged per kind with `its_merge` into
+`GLModel m_snap_markers[3]`, with the active target as a larger sphere on top. The radius is
+face-relative (1.2 % of the largest candidate-to-candidate distance), corners are magenta, edge
+midpoints teal and the face centre cyan, mirroring the sketch tool's inference hints. They are built
+once per hovered face, not per frame, and drawn with depth testing off because the surface and the
+lifted coplanar patch would otherwise hide them.
+
+**The Cut tool snaps while moving.** `snap_plane_center` is the only snap implementation and it is
+called from `GLGizmoCut3D::set_center`, which every way of moving the plane goes through: the
+grabber drags, the position field, the arrow keys and the MCP setter. The shaped cut is built from
+`m_plane_center`, so it snaps along with the plane. The Alt block that SNAP-1 had put inside
+`pick_face_at` was removed in favour of this single path. The whole helper is Alt-gated, so a typed
+position stays literal and a drag without Alt behaves exactly as before.
+
+**Leaving the face.** In the Holes tool the face highlight, the ghost and the marker spheres used to
+disappear the moment the cursor stepped off the face, which made coming back over an edge a race.
+They now survive `FACE_LEAVE_GRACE_SEC` (0.35 s) after the raycast misses and are cleared once that
+window expires; any successful hit resets the timer. In the Cut tool the markers are drawn whenever
+Alt is held, not only while a face is being picked, so they also appear during a drag.
+
+- **Verification**: `[CutUtils]` covers tolerance growth with candidate spacing, both clamps, the
+  reject gate and the SNAP-1 cases — 106 assertions in 19 test cases. The builds producing
+  `build/src/Release/orca-slicer.exe` are clean.
+- **Branch state**: SNAP-2 is merged into `port/integration` (`99ecff2432`); SNAP-3 is on
+  `port/SNAP-3`, unmerged until the user has tested it (see section 0).
+- Still not implemented: edge quarters and face quarters as snap kinds, and snapping in the Measure
+  tool.
+
