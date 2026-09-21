@@ -251,7 +251,7 @@ static void process_solid_part_cut(const ModelVolume* volume, const Transform3d&
 
 static void process_shape_cut(const ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
                               const TriangleMesh& cutter, ModelObjectCutAttributes attributes,
-                              ModelObject* upper, ModelObject* lower, bool& ok)
+                              ModelObject* upper, ModelObject* lower, bool& hit)
 {
     const auto volume_matrix = volume->get_matrix();
 
@@ -262,19 +262,38 @@ static void process_shape_cut(const ModelVolume* volume, const Transform3d& inst
     mesh.transform(invert_cut_matrix * instance_matrix * volume_matrix, true);
 
     // The keep-upper piece is inside the cutter, the keep-lower piece is the rest of the part.
-    std::vector<TriangleMesh> inside_parts, outside_parts;
-    MeshBoolean::mcut::make_boolean(mesh, cutter, inside_parts, "INTERSECTION");
-    MeshBoolean::mcut::make_boolean(mesh, cutter, outside_parts, "A_NOT_B");
+    auto merge_boolean = [&mesh, &cutter](const char* op) {
+        std::vector<TriangleMesh> parts;
+        MeshBoolean::mcut::make_boolean(mesh, cutter, parts, op);
+        TriangleMesh merged;
+        for (const TriangleMesh& part : parts)
+            merged.merge(part);
+        return merged;
+    };
 
-    TriangleMesh inside, outside;
-    for (const TriangleMesh& part : inside_parts)
-        inside.merge(part);
-    for (const TriangleMesh& part : outside_parts)
-        outside.merge(part);
+    TriangleMesh inside = merge_boolean("INTERSECTION");
+    if (inside.empty()) {
+        // The shape does not touch this part: carry it over whole instead of failing the cut.
+        if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+            upper->volumes.back()->cut_info.is_from_upper = false;
+        } else if (attributes.has(ModelObjectCutAttribute::KeepLower)) {
+            add_cut_volume(mesh, lower, volume, cut_matrix);
+        }
+        return;
+    }
 
-    // An empty result means the boolean failed (e.g. open input mesh) or the shape misses the part.
-    if (inside.empty() || outside.empty()) {
-        ok = false;
+    // The shape intersects at least one part, so the cut as a whole is valid.
+    hit = true;
+
+    TriangleMesh outside = merge_boolean("A_NOT_B");
+    if (outside.empty()) {
+        // The part lies entirely inside the shape.
+        if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+        } else if (attributes.has(ModelObjectCutAttribute::KeepUpper)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+        }
         return;
     }
 
@@ -536,9 +555,14 @@ const ModelObjectPtrs& Cut::perform_with_plane()
 
 const ModelObjectPtrs& Cut::perform_with_shape(const TriangleMesh& cutter)
 {
-    return perform_split([this, &cutter](const ModelVolume* volume, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool& ok) {
-        process_shape_cut(volume, instance_matrix, m_cut_matrix, cutter, m_attributes, upper, lower, ok);
+    bool hit = false;
+    perform_split([this, &cutter, &hit](const ModelVolume* volume, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool&) {
+        process_shape_cut(volume, instance_matrix, m_cut_matrix, cutter, m_attributes, upper, lower, hit);
     });
+    // If the shape missed every part there is nothing to split, so report the empty result to the caller.
+    if (!hit)
+        m_model.clear_objects();
+    return m_model.objects;
 }
 
 static void distribute_modifiers_from_object(ModelObject* from_obj, const int instance_idx, ModelObject* to_obj1, ModelObject* to_obj2)

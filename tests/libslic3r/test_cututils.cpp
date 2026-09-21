@@ -312,3 +312,32 @@ TEST_CASE("A shaped cut bails out when the shape misses the object", "[CutUtils]
     CHECK(results.empty());
 }
 
+TEST_CASE("A shaped cut that misses one part still cuts the others", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = make_two_part_object(model);
+    REQUIRE(obj->volumes.size() == 2);
+
+    const BoundingBoxf3 untouched_before = volume_world_box(obj, obj->volumes[1]);
+
+    // Shape centered on the first 10mm cube only; the second cube at x in [20,30] is missed.
+    TriangleMesh cutter(make_cookie_cutter(CutShapeKind::Circle, 4., 20.));
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts;
+    Cut                            cut(obj, 0, translation_transform(Vec3d(5., 5., 5.)), attrs);
+    const ModelObjectPtrs         &results = cut.perform_with_shape(cutter);
+
+    REQUIRE(results.size() == 1);
+    const ModelObject *result = results.front();
+    // Volume 0 is split into two, volume 1 (missed by the shape) is carried over whole.
+    REQUIRE(result->volumes.size() == 3);
+
+    bool found_untouched = false;
+    for (const ModelVolume *v : result->volumes) {
+        const BoundingBoxf3 bb = volume_world_box(result, v);
+        if (bb.min.isApprox(untouched_before.min, 1e-3) && bb.max.isApprox(untouched_before.max, 1e-3))
+            found_untouched = true;
+    }
+    CHECK(found_untouched);
+}
+
