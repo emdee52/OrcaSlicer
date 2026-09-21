@@ -28,6 +28,10 @@ class Cut {
     int                         m_instance;
     const Transform3d           m_cut_matrix;
     ModelObjectCutAttributes    m_attributes;
+    // Indices into the source object's volumes to cut. Empty = cut every model part (default).
+    // When non-empty, only these parts are cut; the others are carried into the single result
+    // object unchanged. Requires KeepAsParts.
+    std::vector<int>            m_cut_volume_idxs;
 
     void post_process(ModelObject* object, ModelObjectPtrs& objects, bool keep, bool place_on_cut, bool flip);
     void post_process(ModelObject* upper_object, ModelObject* lower_object, ModelObjectPtrs& objects);
@@ -38,7 +42,8 @@ public:
     Cut(const ModelObject* object, int instance, const Transform3d& cut_matrix, 
         ModelObjectCutAttributes attributes = ModelObjectCutAttribute::KeepUpper |
                                               ModelObjectCutAttribute::KeepLower |
-                                              ModelObjectCutAttribute::KeepAsParts );
+                                              ModelObjectCutAttribute::KeepAsParts,
+        const std::vector<int>& cut_volume_idxs = {});
     ~Cut() { m_model.clear_objects(); }
 
     struct Groove

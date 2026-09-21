@@ -437,7 +437,7 @@ bool GLGizmoCut3D::on_mouse(const wxMouseEvent &mouse_event)
     }
     else if (mouse_event.RightDown()) {
         if (! m_connectors_editing && mouse_event.GetModifiers() == wxMOD_NONE &&
-            CutMode(m_mode) == CutMode::cutPlanar) {
+            CutMode(m_mode) == CutMode::cutPlanar && !is_single_part_cut()) {
             // Check the internal part raycasters.
             if (! m_part_selection.valid())
                 process_contours();
@@ -1459,8 +1459,12 @@ void GLGizmoCut3D::on_set_state()
     if (m_state == On) {
         m_parent.set_use_color_clip_plane(true);
 
+        // CUT-2: derive the target part before the preview is built.
+        update_cut_volume_idxs();
+
         update_bb();
-        m_connectors_editing = !m_selected.empty();
+        // CUT-2: connectors are disabled for a single-part cut.
+        m_connectors_editing = !is_single_part_cut() && !m_selected.empty();
         m_transformed_bounding_box = transformed_bounding_box(m_plane_center, m_rotation_m);
 
         // initiate archived values
@@ -1473,6 +1477,7 @@ void GLGizmoCut3D::on_set_state()
     else {
         if (auto oc = m_c->object_clipper()) {
             oc->set_behavior(true, true, 0.);
+            oc->set_volume_filter({});
             oc->release();
         }
         m_pick_face_mode = false;
@@ -1483,6 +1488,11 @@ void GLGizmoCut3D::on_set_state()
         m_selected.clear();
         m_parent.set_use_color_clip_plane(false);
         //m_c->selection_info()->set_use_shift(false);
+
+        // CUT-2: restore the whole-object visibility when leaving a single-part cut.
+        if (is_single_part_cut())
+            m_parent.toggle_selected_volume_visibility(false);
+        m_cut_volume_idxs.clear();
 
         // Make sure that the part selection data are released when the gizmo is closed.
         // The CallAfter is needed because in perform_cut, the gizmo is closed BEFORE
@@ -1690,7 +1700,7 @@ bool GLGizmoCut3D::on_is_activable() const
 
     // This is assumed in GLCanvas3D::do_rotate, do not change this
     // without updating that function too.
-    return selection.is_single_full_instance() && !m_parent.is_layers_editing_enabled();
+    return (selection.is_single_full_instance() || is_single_model_part_selection()) && !m_parent.is_layers_editing_enabled();
 }
 
 bool GLGizmoCut3D::on_is_selectable() const
@@ -3153,11 +3163,24 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
 
     float f_scale = m_parent.get_gizmos_manager().get_layout_scale();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f * f_scale));
+
+    // CUT-2: only the selected part of the assembly is cut.
+    if (is_single_part_cut()) {
+        const Selection& selection = m_parent.get_selection();
+        const int        object_idx = selection.get_object_idx();
+        if (object_idx >= 0 && object_idx < int(selection.get_model()->objects.size())) {
+            const ModelObject* mo = selection.get_model()->objects[object_idx];
+            if (m_cut_volume_idxs.front() < int(mo->volumes.size())) {
+                m_imgui->text(_L("Cutting part") + ": " + from_u8(mo->volumes[m_cut_volume_idxs.front()]->name));
+                ImGui::Separator();
+            }
+        }
+    }
     
     CutMode mode = CutMode(m_mode);
     if (mode == CutMode::cutPlanar || mode == CutMode::cutTongueAndGroove) {
 
-        m_imgui->disabled_begin(has_connectors);
+        m_imgui->disabled_begin(has_connectors || is_single_part_cut());
         if (render_cut_mode_combo())
             mode = CutMode(m_mode);
         m_imgui->disabled_end();
@@ -3190,7 +3213,7 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
                 m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, _L("Click a flat face to align the cut plane"));
             }
 
-            m_imgui->disabled_begin(!m_keep_upper || !m_keep_lower || m_keep_as_parts || (m_part_selection.valid() && m_part_selection.is_one_object()));
+            m_imgui->disabled_begin(!m_keep_upper || !m_keep_lower || m_keep_as_parts || is_single_part_cut() || (m_part_selection.valid() && m_part_selection.is_one_object()));
                 if (m_imgui->button(has_connectors ? _L("Edit connectors") : _L("Add connectors")))
                     set_connectors_editing(true);
             m_imgui->disabled_end();
@@ -3245,13 +3268,13 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
 
             ImGui::SameLine(h_shift);
 
-            m_imgui->disabled_begin(!connectors.empty() || m_keep_as_parts);
+            m_imgui->disabled_begin(!connectors.empty() || m_keep_as_parts || is_single_part_cut());
             m_imgui->bbl_checkbox(_L("Keep") + suffix, connectors.empty() ? keep_part : keep);
             m_imgui->disabled_end();
 
             ImGui::SameLine();
 
-            m_imgui->disabled_begin(!keep_part || m_keep_as_parts);
+            m_imgui->disabled_begin(!keep_part || m_keep_as_parts || is_single_part_cut());
             if (m_imgui->bbl_checkbox(_L("Place on cut") + suffix, place_on_cut_part))
                 rotate_part = false;
             ImGui::SameLine();
@@ -3264,12 +3287,16 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
         render_part_action_line(_L("Upper part"), "##upper", m_keep_upper, m_place_on_cut_upper, m_rotate_upper);
         render_part_action_line(_L("Lower part"), "##lower", m_keep_lower, m_place_on_cut_lower, m_rotate_lower);
 
-        m_imgui->disabled_begin(has_connectors || m_part_selection.valid() || mode == CutMode::cutTongueAndGroove);
+        m_imgui->disabled_begin(has_connectors || m_part_selection.valid() || is_single_part_cut() || mode == CutMode::cutTongueAndGroove);
 
             if (m_part_selection.valid())
                 m_keep_as_parts = false;
 
-            m_imgui->bbl_checkbox(_L("Cut to parts"), m_keep_as_parts);
+            // CUT-2: a single part is always kept as parts (the other parts must stay in the object).
+            bool keep_as_parts = is_single_part_cut() ? true : m_keep_as_parts;
+            m_imgui->bbl_checkbox(_L("Cut to parts"), keep_as_parts);
+            if (!is_single_part_cut())
+                m_keep_as_parts = keep_as_parts;
             if (m_keep_as_parts) {
                 m_keep_upper = m_keep_lower = true;
                 m_place_on_cut_upper = m_place_on_cut_lower = false;
@@ -3411,7 +3438,7 @@ void GLGizmoCut3D::init_input_window_data(CutConnectors &connectors)
 void GLGizmoCut3D::render_input_window_warning() const
 {
     const bool invalid_connector_warning = !m_invalid_connectors_idxs.empty();
-    const bool keep_after_cut_warning    = !m_keep_upper && !m_keep_lower;
+    const bool keep_after_cut_warning    = !is_single_part_cut() && !m_keep_upper && !m_keep_lower;
     const bool invalid_contour_warning   = !has_valid_contour();
     const bool invalid_groove_warning    = !has_valid_groove();
 
@@ -3574,8 +3601,86 @@ void GLGizmoCut3D::check_and_update_connectors_state()
      }
 }
 
+bool GLGizmoCut3D::is_single_model_part_selection() const
+{
+    const Selection& selection = m_parent.get_selection();
+    if (!selection.is_single_volume())
+        return false;
+
+    const Selection::IndicesList& idxs = selection.get_volume_idxs();
+    if (idxs.size() != 1)
+        return false;
+
+    const GLVolume* vol = selection.get_volume(*idxs.begin());
+    if (vol == nullptr || vol->volume_idx() < 0)
+        return false;
+
+    const int object_idx = vol->object_idx();
+    if (object_idx < 0 || object_idx >= int(selection.get_model()->objects.size()))
+        return false;
+
+    const ModelObject* mo = selection.get_model()->objects[object_idx];
+    if (vol->volume_idx() >= int(mo->volumes.size()))
+        return false;
+
+    const ModelVolume* mv = mo->volumes[vol->volume_idx()];
+    return mv->is_model_part() && !mv->is_cut_connector();
+}
+
+void GLGizmoCut3D::update_cut_volume_idxs()
+{
+    m_cut_volume_idxs.clear();
+
+    if (is_single_model_part_selection()) {
+        const Selection& selection = m_parent.get_selection();
+        const GLVolume*  vol       = selection.get_volume(*selection.get_volume_idxs().begin());
+        m_cut_volume_idxs = { vol->volume_idx() };
+    }
+
+    if (auto oc = m_c->object_clipper())
+        oc->set_volume_filter(m_cut_volume_idxs);
+}
+
+void GLGizmoCut3D::gizmo_set_cut_volume(int part_index)
+{
+    Selection& selection = m_parent.get_selection();
+    const int  object_idx = selection.get_object_idx();
+    if (object_idx < 0 || object_idx >= int(selection.get_model()->objects.size()))
+        return;
+
+    if (part_index < 0) {
+        selection.clear();
+        selection.add_object(unsigned(object_idx), true);
+    }
+    else {
+        const ModelObject* mo = selection.get_model()->objects[object_idx];
+        if (part_index >= int(mo->volumes.size()) || !mo->volumes[part_index]->is_model_part() ||
+            mo->volumes[part_index]->is_cut_connector())
+            return;
+
+        int instance_idx = selection.get_instance_idx();
+        if (instance_idx < 0)
+            instance_idx = 0;
+
+        selection.clear();
+        selection.add_volume(unsigned(object_idx), unsigned(part_index), instance_idx, true);
+    }
+
+    update_cut_volume_idxs();
+    update_bb();
+    toggle_model_objects_visibility();
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
 void GLGizmoCut3D::toggle_model_objects_visibility()
 {
+    // CUT-2: show only the part that is being cut, not the rest of the assembly.
+    if (is_single_part_cut()) {
+        m_parent.toggle_selected_volume_visibility(true);
+        return;
+    }
+
     bool has_active_volume = false;
     std::vector<std::shared_ptr<SceneRaycasterItem>>* raycasters = m_parent.get_raycasters_for_picking(SceneRaycaster::EType::Volume);
     for (const std::shared_ptr<SceneRaycasterItem> &raycaster : *raycasters)
@@ -3673,7 +3778,14 @@ void GLGizmoCut3D::render_connectors()
 
 bool GLGizmoCut3D::can_perform_cut() const
 {
-    if (! m_invalid_connectors_idxs.empty() || (!m_keep_upper && !m_keep_lower) || m_connectors_editing)
+    if (m_connectors_editing)
+        return false;
+
+    // CUT-2: a single-part cut always keeps both halves and has no connectors to validate.
+    if (is_single_part_cut())
+        return true;
+
+    if (! m_invalid_connectors_idxs.empty() || (!m_keep_upper && !m_keep_lower))
         return false;
 
     if (CutMode(m_mode) == CutMode::cutTongueAndGroove)
@@ -3838,6 +3950,10 @@ void GLGizmoCut3D::perform_cut(const Selection& selection)
     if (!mo)
         return;
 
+    // CUT-2: capture the target part before closing the gizmo (on_set_state(Off) clears it).
+    const std::vector<int> cut_volume_idxs = m_cut_volume_idxs;
+    const bool single_part_cut = !cut_volume_idxs.empty();
+
     // deactivate CutGizmo and than perform a cut
     m_parent.reset_all_gizmos();
 
@@ -3848,8 +3964,8 @@ void GLGizmoCut3D::perform_cut(const Selection& selection)
         // This shall delete the part selection class and deallocate the memory.
         ScopeGuard part_selection_killer([this]() { m_part_selection = PartSelection(); });
 
-        const bool cut_with_groove = CutMode(m_mode) == CutMode::cutTongueAndGroove;
-        const bool cut_by_contour = !cut_with_groove && m_part_selection.valid();
+        const bool cut_with_groove = !single_part_cut && CutMode(m_mode) == CutMode::cutTongueAndGroove;
+        const bool cut_by_contour = !single_part_cut && !cut_with_groove && m_part_selection.valid();
 
         ModelObject* cut_mo = cut_by_contour ? m_part_selection.model_object() : nullptr;
         if (cut_mo)
@@ -3857,32 +3973,51 @@ void GLGizmoCut3D::perform_cut(const Selection& selection)
         else
             cut_mo = mo;
 
+        // CUT-2: connectors do not apply to a partial cut. Drop any stale ones so they are not
+        // carried into the result object.
+        if (single_part_cut)
+            cut_mo->cut_connectors.clear();
+
         int dowels_count = 0;
-        const bool has_connectors = !mo->cut_connectors.empty();
+        // CUT-2: a partial cut is one object kept as parts, so connectors and dowels do not apply.
+        const bool has_connectors = !single_part_cut && !mo->cut_connectors.empty();
         // update connectors pos as offset of its center before cut performing
-        apply_connectors_in_model(cut_mo , dowels_count);
+        if (!single_part_cut)
+            apply_connectors_in_model(cut_mo , dowels_count);
 
         wxBusyCursor wait;
 
         const bool keep_painting = GUI::wxGetApp().app_config->get_bool("keep_painting");
-        ModelObjectCutAttributes attributes = only_if(has_connectors ? true : m_keep_upper, ModelObjectCutAttribute::KeepUpper) |
-                                              only_if(has_connectors ? true : m_keep_lower, ModelObjectCutAttribute::KeepLower) |
-                                              only_if(has_connectors ? false : m_keep_as_parts, ModelObjectCutAttribute::KeepAsParts) |
-                                              only_if(m_place_on_cut_upper, ModelObjectCutAttribute::PlaceOnCutUpper) |
-                                              only_if(m_place_on_cut_lower, ModelObjectCutAttribute::PlaceOnCutLower) |
-                                              only_if(m_rotate_upper, ModelObjectCutAttribute::FlipUpper) |
-                                              only_if(m_rotate_lower, ModelObjectCutAttribute::FlipLower) |
-                                              only_if(dowels_count > 0, ModelObjectCutAttribute::CreateDowels) |
-                                              only_if(!has_connectors && !cut_with_groove && cut_mo->cut_id.id().invalid(), ModelObjectCutAttribute::InvalidateCutInfo) |
-                                              only_if(keep_painting, ModelObjectCutAttribute::KeepPaint);
+        ModelObjectCutAttributes attributes;
+        if (single_part_cut) {
+            // Only the selected part is cut; the rest is carried over untouched into the same object.
+            attributes = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower |
+                         ModelObjectCutAttribute::KeepAsParts |
+                         only_if(keep_painting, ModelObjectCutAttribute::KeepPaint) |
+                         ModelObjectCutAttribute::InvalidateCutInfo;
+        }
+        else {
+            attributes = only_if(has_connectors ? true : m_keep_upper, ModelObjectCutAttribute::KeepUpper) |
+                         only_if(has_connectors ? true : m_keep_lower, ModelObjectCutAttribute::KeepLower) |
+                         only_if(has_connectors ? false : m_keep_as_parts, ModelObjectCutAttribute::KeepAsParts) |
+                         only_if(m_place_on_cut_upper, ModelObjectCutAttribute::PlaceOnCutUpper) |
+                         only_if(m_place_on_cut_lower, ModelObjectCutAttribute::PlaceOnCutLower) |
+                         only_if(m_rotate_upper, ModelObjectCutAttribute::FlipUpper) |
+                         only_if(m_rotate_lower, ModelObjectCutAttribute::FlipLower) |
+                         only_if(dowels_count > 0, ModelObjectCutAttribute::CreateDowels) |
+                         only_if(!has_connectors && !cut_with_groove && cut_mo->cut_id.id().invalid(), ModelObjectCutAttribute::InvalidateCutInfo) |
+                         only_if(keep_painting, ModelObjectCutAttribute::KeepPaint);
 
-        // update cut_id for the cut object in respect to the attributes
-        update_object_cut_id(cut_mo->cut_id, attributes, dowels_count);
+            // update cut_id for the cut object in respect to the attributes
+            update_object_cut_id(cut_mo->cut_id, attributes, dowels_count);
+        }
 
-        Cut cut(cut_mo, instance_idx, get_cut_matrix(selection), attributes);
-        const ModelObjectPtrs& new_objects = cut_by_contour    ? cut.perform_by_contour(mo, m_part_selection.get_cut_parts(), dowels_count):
-                                             cut_with_groove   ? cut.perform_with_groove(m_groove, m_rotation_m, m_groove_count, m_groove_gap, m_radius) :
-                                                                 cut.perform_with_plane();
+        Cut cut(cut_mo, instance_idx, get_cut_matrix(selection), attributes,
+                single_part_cut ? cut_volume_idxs : std::vector<int>{});
+        const ModelObjectPtrs& new_objects = single_part_cut  ? cut.perform_with_plane() :
+                                             cut_by_contour   ? cut.perform_by_contour(mo, m_part_selection.get_cut_parts(), dowels_count):
+                                             cut_with_groove  ? cut.perform_with_groove(m_groove, m_rotation_m, m_groove_count, m_groove_gap, m_radius) :
+                                                                cut.perform_with_plane();
 
         // fix_non_manifold_edges
         {
@@ -3927,13 +4062,20 @@ void GLGizmoCut3D::perform_cut(const Selection& selection)
         }
         check_objects_after_cut(new_objects);
 
+        // CUT-2: a partial cut is not a restorable parametric cut.
+        if (single_part_cut) {
+            for (ModelObject* obj : new_objects)
+                obj->invalidate_cut();
+        }
+
         // save cut_id to post update synchronization
         const CutObjectBase cut_id = cut_mo->cut_id;
 
         // update cut results on plater and in the model 
         plater->apply_cut_object_to_model(object_idx, new_objects);
 
-        synchronize_model_after_cut(plater->model(), cut_id);
+        if (!single_part_cut)
+            synchronize_model_after_cut(plater->model(), cut_id);
     }
 }
 
@@ -4299,6 +4441,10 @@ bool GLGizmoCut3D::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_posi
 }
 
 CommonGizmosDataID GLGizmoCut3D::on_get_requirements() const {
+    // CUT-2: keep the common clipper restricted to the part being cut. Set here (before the pool
+    // update) so the cross-section preview matches the visible part.
+    if (auto oc = m_c->object_clipper())
+        oc->set_volume_filter(m_cut_volume_idxs);
     return CommonGizmosDataID(
                 int(CommonGizmosDataID::SelectionInfo)
               | int(CommonGizmosDataID::InstancesHider)
@@ -4307,6 +4453,8 @@ CommonGizmosDataID GLGizmoCut3D::on_get_requirements() const {
 
 void GLGizmoCut3D::data_changed(bool is_serializing) 
 {
+    if (m_state == On)
+        update_cut_volume_idxs();
     update_bb();
     if (auto oc = m_c->object_clipper())
         oc->set_behavior(m_connectors_editing, m_connectors_editing, double(m_contour_width));

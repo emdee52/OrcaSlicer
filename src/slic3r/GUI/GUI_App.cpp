@@ -1061,15 +1061,8 @@ void GUI_App::post_init()
         });
 
     // [ORCAPORT:MCP-1] BEGIN - start the MCP endpoint only when explicitly enabled (env ORCA_EXT_MCP or app key orca_ext_mcp)
-    {
-        bool mcp_enabled = false;
-        if (const char* env = std::getenv("ORCA_EXT_MCP"); env != nullptr && *env != '\0' && std::string(env) != "0")
-            mcp_enabled = true;
-        else if (app_config != nullptr && app_config->get_bool("orca_ext_mcp"))
-            mcp_enabled = true;
-        if (mcp_enabled)
-            start_http_server();
-    }
+    if (is_mcp_enabled())
+        start_http_server();
     // [ORCAPORT:MCP-1] END
 
     // remove old log files over LOG_FILES_MAX_NUM
@@ -7818,6 +7811,14 @@ void GUI_App::start_http_server(int port, const std::string& provider)
 void GUI_App::stop_http_server()
 {
     m_http_server.stop();
+}
+
+// [ORCAPORT:MCP-1] single source of truth for "is the embedded MCP endpoint enabled".
+bool GUI_App::is_mcp_enabled() const
+{
+    if (const char* env = std::getenv("ORCA_EXT_MCP"); env != nullptr && *env != '\0' && std::string(env) != "0")
+        return true;
+    return app_config != nullptr && app_config->get_bool("orca_ext_mcp");
 }
 
 #ifdef __linux__

@@ -202,9 +202,9 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
   needed for the plane itself — the plane uses the clicked point and a single facet's plane. The
   hover highlight borrows the AlignStack patch-growth idea instead; `Measure`'s plane GL model was
   not reused.
-- **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
+- **Not done**: CUT-3 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
   profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
-  by "keep section shapes".
+  by "keep section shapes". (CUT-2 is now the single-assembly-part cut — see section 8.)
 
 ### Shading fix (`5007ef7949`)
 
@@ -224,3 +224,57 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
 - **Caveat**: not visually confirmed end-to-end (the fix was built and code-verified; the user
   should re-check). If the symptom persists on the *main* object (not the cyan/magenta cut parts),
   the remaining suspect is the upstream shadow map.
+
+---
+
+## 8. CUT-2 — cut a single part of a multi-part object ✅ DONE (branch `port/CUT-2`, pushed)
+
+Cut **one part** of a merged "Assembly" object without cutting the whole assembly. Full design +
+milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md` (gitignored); summary in
+`docs/superpowers/ME-roadmap.md`.
+
+- **Branch**: `port/CUT-2`, stacked on `port/CUT-1` (CUT-1 is **not merged yet** — merge CUT-1
+  into `port/integration` first, then CUT-2, both `--no-ff`).
+- **UX**: select a part in the ObjectList/canvas, then open Cut; only that part is cut; the assembly
+  stays **one object** with the part replaced by its two pieces; the preview shows only the
+  selected part.
+- **Commits**: `bc00ed12ba` (MCP startup restore-prompt auto-decline), `dda15801eb` (**M1**:
+  `Cut` volume filter + `process_untouched_volume` + tests), `13acddef21` (**M2+M3**: gizmo
+  activation/apply/UI/preview + MCP `set_part`).
+- **Library API** (M1): `Cut(object, instance, cut_matrix, attributes, const std::vector<int>&
+  cut_volume_idxs = {})`. Empty = old behaviour (cut all parts); non-empty = only those model
+  parts are cut and the rest are carried into the single result object untouched. **Requires
+  `KeepAsParts`.**
+- **M2 (gizmo)**: `on_is_activable()` also accepts `is_single_model_part_selection()` (one
+  `MODEL_PART` volume of a multi-part object — modifiers/connectors excluded). `m_cut_volume_idxs`
+  is derived from the selection on activate and in `data_changed`. `perform_cut` forces
+  `KeepUpper|KeepLower|KeepAsParts|KeepPaint|InvalidateCutInfo`, drops connectors/place/flip and
+  invalidates the result `cut_id`. Preview: the other volumes are hidden via
+  `toggle_selected_volume_visibility`, and `ObjectClipper` gained a `set_volume_filter()` so only
+  the selected part's cross-section is drawn. UI shows "Cutting part: <name>" and disables the
+  meaningless controls (mode combo, connectors, after-cut, cut-to-parts is shown forced on).
+  Right-click contour mode is suppressed in single-part mode.
+- **M3 (MCP)**: `cut_gizmo` gained `set_part` (`part` = model-volume index, `-1` = whole object)
+  and an optional `part` on `open`; `status` reports `part`, `single_part` and `parts`
+  (index + name). `set_part` changes the volume selection, so `on_is_activable` is what makes a
+  part openable.
+- **Verified**: `[CutUtils]` 8 cases / 26 assertions (added a filtered-cut paint-preservation
+  case). MCP end-to-end on a hand-built two-cube assembly: `set_part 0` scopes the plane to that
+  part (center x=128 vs 143 for part 1); `apply` yields one object with 3 parts
+  (`_A`, `_B`, untouched `_1_2`), untouched part world bbox unchanged; whole-object apply still
+  produces two objects (stock). User click-test passed (activation, plane sizing, preview,
+  result).
+- **Watch-outs kept**: `reset_extra_facets()` wipes paint on all volumes — `KeepPaint`+`finalize`
+  remap restores the untouched part (now tested); connectors are disabled in single-part mode; a
+  part is object-level so all instances of the object get it cut; the result `cut_id` is
+  invalidated so it is not a restorable parametric cut.
+
+## 9. Restore-prompt automation (`bc00ed12ba`)
+
+- The startup "restore unsaved items" modal blocked MCP runs (it is shown before any tool call, and
+  the per-tool dialog suppression defaults Yes/No to *Yes*, so it could not be used). Now
+  `GUI_App::is_mcp_enabled()` (env `ORCA_EXT_MCP` or app key `orca_ext_mcp`) makes the restore
+  handler skip the modal and treat it as **No**, which removes the stale backup just like clicking
+  No. No need to delete `last_backup_path` by hand anymore.
+- Verified: with a dead-lock backup present, a new MCP-enabled launch started normally and the
+  backup dir was removed by the handler.
