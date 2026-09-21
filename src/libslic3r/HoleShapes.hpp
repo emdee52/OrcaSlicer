@@ -61,6 +61,12 @@ indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_dept
                                          const Vec3d &axis, const Vec3d &entry,
                                          int segments = HOLE_SHAPE_SEGMENTS);
 
+// Distance from `entry` to the far side of `its` along `dir`, plus `margin`. `dir` must point into
+// the material. Used to make a through-hole reach the opposite wall exactly. Returns 0 when the ray
+// leaves without hitting anything, so the caller can fall back to a fixed depth.
+double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, const Vec3d &dir,
+                          double margin = 0.5);
+
 } // namespace Slic3r
 
 #endif // libslic3r_HoleShapes_hpp_
