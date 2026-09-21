@@ -391,3 +391,29 @@ Branch `port/ME-2c` off `port/integration`. Until now the Holes tool could only 
   applies. A placed feature is not re-editable, and the coplanar highlight and ghost are rebuilt only
   when the hovered `(ModelVolume*, facet)` changes (a per-frame rebuild would be too heavy).
 
+## 12. ME-2d — scale-correct dimensions and a cursor-following ghost
+
+Found while testing ME-2c, on branch `port/ME-2d` off `port/integration`.
+
+- **Symptom 1 — holes scaled with the object.** An M2 hole (tap_d 1.70 mm) measured 8.46 mm on a 5x
+  instance, and every standard (head dims, nut across-flats, magnet/insert pockets) was affected.
+  Cause: `bore_negative_mesh` etc. build a **1.70 mm cylinder in object space**, and the resulting
+  sibling volume with an identity matrix is then scaled by the instance matrix. Fix: `object_scale()`
+  returns the uniform scale of `instance_matrix().linear()` (mean of the three column norms; a circle
+  cannot stay exact under a non-uniform scale), and every user/standard mm dimension is divided by it
+  before building object-space geometry — bore diameter, head socket/button/countersink dims, nut
+  across-flats and clearance, blind `m_depth` and `m_head_fit` sink. Detected `h.radius`/`h.depth` are
+  already object space and are untouched. This applies to both the detected-hole and place-on-face
+  paths. `m_diameter` stays world mm for the UI and `true_diameter`. The MCP `holes_gizmo` status now
+  reports `object_scale` and, per placed face, `diameter_world` / `depth_world` (the object-space
+  `diameter`/`depth` are also kept).
+- **Symptom 2 — the ghost stuck to the face.** `update_face_highlight` skipped its work whenever the
+  `(ModelVolume*, facet)` was unchanged, but a flat face is a few large triangles, so the ghost
+  froze at the first hit of each triangle and only jumped when crossing a triangle edge. Fix: the
+  coplanar patch is still rebuilt only per facet, but the ghost is rebuilt whenever the hit point
+  moves more than `max(1e-4, 0.01 * diameter)` (object space). The click now uses
+  `get_local_mouse_position()` so placement and hover share one coordinate space.
+- **Verification**: on a 3MF whose `<item>` transform was scaled 5x (`get_object_info` reports
+  scale 5.0, bbox 100 mm), placing M2 yields object-space diameter 0.34 and `true_diameter` 1.70,
+  i.e. a 1.70 mm world hole. Unscaled objects are unchanged (scale 1).
+

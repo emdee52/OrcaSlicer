@@ -193,7 +193,9 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
                           {"axis", vec3_json(h.axis)},
                           {"center", vec3_json(h.center)},
                           {"diameter", 2.0 * h.radius},
+                          {"diameter_world", 2.0 * h.radius * g.object_scale()},
                           {"depth", h.depth},
+                          {"depth_world", h.depth * g.object_scale()},
                           {"through", h.through}});
     }
 
@@ -218,6 +220,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"face_pocket_volumes", face_pocket_volumes},
+        {"object_scale", g.object_scale()},
         {"place_face_mode", g.place_face_mode()},
         {"placed_faces", placed},
         {"heights", heights},
