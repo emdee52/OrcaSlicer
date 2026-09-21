@@ -1352,7 +1352,7 @@ void GLGizmoCut3D::render_shape_highlight()
     // Intersecting the part with the cutter needs a mesh boolean, so throttle the rebuild instead of
     // running it every frame while the cutter is dragged or rotated.
     const auto now = std::chrono::steady_clock::now();
-    if (sig != m_shape_highlight_sig && (now - m_shape_highlight_time) >= std::chrono::milliseconds(150)) {
+    if (sig != m_shape_highlight_sig && (now - m_shape_highlight_time) >= std::chrono::milliseconds(40)) {
         m_shape_highlight_sig  = sig;
         m_shape_highlight_time = now;
         m_shape_highlight.reset();
@@ -1362,7 +1362,10 @@ void GLGizmoCut3D::render_shape_highlight()
         const Transformation cut_transformation(cut_matrix);
         const Transform3d  invert_cut_matrix = cut_transformation.get_rotation_matrix().inverse() *
                                               translation_transform(-cut_transformation.get_offset());
-        const Transform3d  instance_matrix = mo->instances[instance_idx]->get_matrix();
+        // Same mapping the cut itself uses: the instance offset is stripped here so the mesh lands in
+        // the cutter's frame (the cutter is centered on the plane), and added back when baking.
+        const Transform3d  instance_matrix = mo->instances[instance_idx]->get_transformation().get_matrix_no_offset();
+        const Transform3d  cut_to_world    = translation_transform(m_plane_center) * m_rotation_m;
 
         indexed_triangle_set combined;
         for (size_t i : vol_idxs) {
@@ -1374,7 +1377,7 @@ void GLGizmoCut3D::render_shape_highlight()
             MeshBoolean::mcut::make_boolean(mesh, cutter, inside_parts, "INTERSECTION");
             for (TriangleMesh& part : inside_parts) {
                 // Bake the cut-space result back into world coordinates.
-                part.transform(cut_matrix);
+                part.transform(cut_to_world);
                 const int base = int(combined.vertices.size());
                 combined.vertices.insert(combined.vertices.end(), part.its.vertices.begin(), part.its.vertices.end());
                 for (const Vec3i32& f : part.its.indices)
