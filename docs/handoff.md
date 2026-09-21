@@ -262,7 +262,8 @@ milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md` (gitignored)
   case). MCP end-to-end on a hand-built two-cube assembly: `set_part 0` scopes the plane to that
   part (center x=128 vs 143 for part 1); `apply` yields one object with 3 parts
   (`_A`, `_B`, untouched `_1_2`), untouched part world bbox unchanged; whole-object apply still
-  produces two objects (stock). Interactive rendering/click is a user click-test.
+  produces two objects (stock). User click-test passed (activation, plane sizing, preview,
+  result).
 - **Watch-outs kept**: `reset_extra_facets()` wipes paint on all volumes — `KeepPaint`+`finalize`
   remap restores the untouched part (now tested); connectors are disabled in single-part mode; a
   part is object-level so all instances of the object get it cut; the result `cut_id` is
