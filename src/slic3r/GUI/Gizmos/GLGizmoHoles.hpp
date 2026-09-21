@@ -93,6 +93,8 @@ public:
     int  placed_face_count() const { return int(m_placed.size()); }
     int  placed_face_id(int idx) const { return idx >= 0 && idx < int(m_placed.size()) ? m_placed[idx].id : -1; }
     DetectedHole placed_face(int idx) const { return idx >= 0 && idx < int(m_placed.size()) ? m_placed[idx].hole : DetectedHole(); }
+    // Uniform object-to-world scale of the instance, so callers can report world-space sizes.
+    double object_scale() const;
 
 protected:
     bool on_init() override;
@@ -196,6 +198,7 @@ private:
     GLModel              m_face_ghost;
     const ModelVolume*   m_hover_face_mv{ nullptr };
     int                  m_hover_face_facet{ -1 };
+    Vec3d                m_last_face_hit{ Vec3d::Constant(1e30) }; // object space, to detect movement
     FaceRegionCache      m_face_cache;
     std::vector<PlacedFace> m_placed;
     int                  m_next_face_id{ 1 };

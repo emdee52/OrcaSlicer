@@ -237,6 +237,15 @@ Vec3d GLGizmoHoles::object_up() const
     return up.normalized();
 }
 
+double GLGizmoHoles::object_scale() const
+{
+    // Uniform scale of the instance's linear part. A circle cannot stay exact under a non-uniform
+    // scale, so the mean of the three axis scales is used as the best single factor.
+    const Matrix3d linear = instance_matrix().linear();
+    const double   s      = (linear.col(0).norm() + linear.col(1).norm() + linear.col(2).norm()) / 3.0;
+    return (std::isfinite(s) && s > 1e-9) ? s : 1.0;
+}
+
 double GLGizmoHoles::teardrop_depth(const DetectedHole &hole) const
 {
     const double margin = hole.through ? std::max(0.5, 0.25 * hole.radius) : 0.0;
@@ -290,35 +299,42 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
     const bool is_nut    = s != nullptr && s->kind == HoleStandardKind::Nut;
     const bool is_pocket = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
 
-    const double margin = std::max(0.5, 0.25 * h.radius);
+    // All dimensions below are mm in world space and are converted to object space with `scale`
+    // so the feature measures its stated size even when the object is scaled.
+    const double scale = object_scale();
+
+    const double margin = std::max(0.5, 0.25 * h.radius); // h.radius is already object space
     double       depth  = 0.;
     if (is_pocket || is_nut)
-        depth = std::max(0.1, m_depth); // editable pocket depth
+        depth = std::max(0.1, m_depth / scale); // editable pocket depth
     else if (m_through)
         depth = h.depth + 2.0 * margin;
     else
-        depth = std::max(0.1, m_depth);
+        depth = std::max(0.1, m_depth / scale);
 
-    const double sink = std::max(0.0, -m_head_fit); // depth the head/pocket is sunk below the surface
+    const double sink = std::max(0.0, -m_head_fit) / scale; // depth the head/pocket is sunk below the surface
 
     if (is_nut) {
-        const double across = std::max(0.1, m_diameter + m_tolerance);
-        return its_make_nut_pocket(across, depth + sink, s->clearance_d, depth, dir, entry);
+        const double across = std::max(0.1, (m_diameter + m_tolerance) / scale);
+        return its_make_nut_pocket(across, depth + sink, s->clearance_d / scale, depth, dir, entry);
     }
 
-    const double d = bore_diameter();
+    const double d = bore_diameter() / scale;
     if (d <= 0. || depth <= 0.)
         return {};
 
     if (s != nullptr && s->kind == HoleStandardKind::Screw) {
-        if (m_head == BoreHead::SocketHead && s->socket_d > d)
-            return its_make_counterbore(d, s->socket_d, s->socket_k + sink, depth, dir, entry);
-        if (m_head == BoreHead::ButtonHead && s->button_d > d)
-            return its_make_counterbore(d, s->button_d, s->button_k + sink, depth, dir, entry);
+        const double socket_d = s->socket_d / scale;
+        const double button_d = s->button_d / scale;
+        const double csink_d  = s->csink_d / scale;
+        if (m_head == BoreHead::SocketHead && socket_d > d)
+            return its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
+        if (m_head == BoreHead::ButtonHead && button_d > d)
+            return its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
         // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
         // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
-        if (m_head == BoreHead::Countersink && s->csink_d > d)
-            return its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
+        if (m_head == BoreHead::Countersink && csink_d > d)
+            return its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
     }
     if (s != nullptr && s->kind == HoleStandardKind::Magnet)
         depth += sink; // sink the magnet pocket
@@ -333,7 +349,7 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
     if (s != nullptr && s->kind == HoleStandardKind::Nut)
         return {}; // a hex pocket has no round shrink tube
 
-    const double target_d = bore_diameter();
+    const double target_d = bore_diameter() / object_scale(); // object space, to match exist_d
     const double exist_d  = 2.0 * h.radius;
     if (target_d <= 0. || target_d >= exist_d - 0.01)
         return {}; // enlarging or matching: no fill needed
@@ -651,6 +667,7 @@ void GLGizmoHoles::exit_place_face_mode()
     m_face_ghost.reset();
     m_hover_face_mv    = nullptr;
     m_hover_face_facet = -1;
+    m_last_face_hit    = Vec3d::Constant(1e30);
 }
 
 bool GLGizmoHoles::gizmo_place_face_at(const Vec2d &screen_pos)
@@ -690,9 +707,13 @@ DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outwar
     const Vec3d n   = (outward_normal.allFinite() && outward_normal.norm() > 1e-9) ? outward_normal.normalized() : Vec3d::UnitZ();
     const Vec3d dir = -n; // into the material
 
-    double depth = std::max(0.1, m_depth);
+    // `hit_world` is in object space; the editable dimensions are mm in world space, so convert.
+    const double scale = object_scale();
+    const double d_obj = bore_diameter() / scale;
+
+    double depth = std::max(0.1, m_depth / scale);
     if (m_through) {
-        const double d = hole_through_depth(m_merged_its, hit_world, dir, std::max(0.5, 0.25 * m_diameter));
+        const double d = hole_through_depth(m_merged_its, hit_world, dir, std::max(0.5, 0.25 * d_obj));
         if (d > 0.)
             depth = d;
     }
@@ -701,7 +722,7 @@ DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outwar
     h.axis    = dir;
     h.center  = hit_world + dir * (0.5 * depth);
     h.depth   = depth;
-    h.radius  = 0.5 * bore_diameter();
+    h.radius  = 0.5 * d_obj;
     h.through = m_through;
     return h;
 }
@@ -776,20 +797,30 @@ void GLGizmoHoles::update_face_highlight()
             m_face_ghost.reset();
             m_hover_face_mv    = nullptr;
             m_hover_face_facet = -1;
+            m_last_face_hit    = Vec3d::Constant(1e30);
             m_parent.set_as_dirty();
         }
         return;
     }
-    if (mv == m_hover_face_mv && int(facet) == m_hover_face_facet)
-        return; // unchanged: keep the current highlight and ghost
 
-    m_hover_face_mv    = mv;
-    m_hover_face_facet = int(facet);
-    build_face_highlight(mv, facet);
+    const Vec3d hit_obj      = instance_matrix().inverse() * hit;
+    const bool  face_changed = (mv != m_hover_face_mv || int(facet) != m_hover_face_facet);
+    // The ghost follows the cursor, so it must be rebuilt whenever the hit point moves, not only
+    // when the facet changes: a flat face is a few large triangles, so the facet can stay the same
+    // across most of the face. The coplanar patch depends only on the facet.
+    const double move_eps = std::max(1e-4, 0.01 * std::max(0.1, m_diameter / object_scale()));
+    if (!face_changed && (hit_obj - m_last_face_hit).norm() <= move_eps)
+        return;
 
-    const Vec3d         hit_obj = instance_matrix().inverse() * hit;
-    const DetectedHole  hole    = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
-    indexed_triangle_set ghost   = face_shape_mesh(hole);
+    if (face_changed) {
+        m_hover_face_mv    = mv;
+        m_hover_face_facet = int(facet);
+        build_face_highlight(mv, facet);
+    }
+    m_last_face_hit = hit_obj;
+
+    const DetectedHole  hole  = face_hole(hit_obj, facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()));
+    indexed_triangle_set ghost = face_shape_mesh(hole);
     m_face_ghost.reset();
     if (!ghost.indices.empty()) {
         m_face_ghost.init_from(ghost);
@@ -1167,7 +1198,7 @@ bool GLGizmoHoles::on_mouse(const wxMouseEvent &mouse_event)
 {
     if (m_place_face_mode) {
         if (mouse_event.LeftDown()) {
-            place_face_at(Vec2d(mouse_event.GetX(), mouse_event.GetY()));
+            place_face_at(m_parent.get_local_mouse_position());
             return true;
         }
         if (mouse_event.RightDown()) {
