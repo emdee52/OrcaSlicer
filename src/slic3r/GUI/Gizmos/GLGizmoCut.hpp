@@ -135,6 +135,15 @@ class GLGizmoCut3D : public GLGizmoBase
     float m_groove_gap { 10.f }; // distance between multiple dovetail cuts
     float m_groove_gap_init { 10.f }; 
 
+    // CUT-3 shaped ("cookie cutter") cut: profile kind (see CutShapeKind) and its size in mm
+    // (diameter for Circle, side for Square, across-flats for Hexagon).
+    int   m_shape_kind { int(CutShapeKind::Circle) };
+    float m_shape_size { 10.f };
+    // Outline preview is a cached line loop, rebuilt when the profile or its size changes.
+    GLModel m_shape_outline;
+    int     m_shape_outline_kind { -1 };
+    float   m_shape_outline_size { -1.f };
+
     // Input params for cut with snaps
     float m_snap_bulge_proportion{ 0.15f };
     float m_snap_space_proportion{ 0.3f };
@@ -229,6 +238,7 @@ class GLGizmoCut3D : public GLGizmoBase
     enum class CutMode {
         cutPlanar
         , cutTongueAndGroove
+        , cutShape
         //, cutGrig
         //,cutRadial
         //,cutModular
@@ -241,6 +251,8 @@ class GLGizmoCut3D : public GLGizmoBase
 
     std::vector<std::string> m_modes;
     size_t m_mode{ size_t(CutMode::cutPlanar) };
+
+    std::vector<std::string> m_shape_kinds;
 
     std::vector<std::string> m_connector_modes;
     CutConnectorMode m_connector_mode{ CutConnectorMode::Manual };
@@ -276,6 +288,10 @@ public:
     bool   gizmo_single_part() const { return is_single_part_cut(); }
     int    gizmo_cut_volume() const { return m_cut_volume_idxs.empty() ? -1 : m_cut_volume_idxs.front(); }
     void   gizmo_set_cut_volume(int part_index);
+    // CUT-3 shaped cut: profile kind (0 circle, 1 square, 2 hexagon) and size in mm.
+    int    gizmo_shape_kind() const { return m_shape_kind; }
+    float  gizmo_shape_size() const { return m_shape_size; }
+    void   gizmo_set_shape(int kind, float size);
     Vec3d  gizmo_plane_center() const { return m_plane_center; }
     Vec3d  gizmo_plane_normal() const { return m_cut_normal; }
     double gizmo_plane_offset() const { return m_cut_normal.dot(m_plane_center); }
@@ -411,6 +427,11 @@ private:
 
     void apply_color_clip_plane_colors();
     void render_cut_plane();
+    // The shaped cut builds this closed prism in cut space (see make_cookie_cutter) and splits the
+    // object with a mesh boolean. The half-height is derived from the object's extent along the
+    // cut normal so the prism always pierces it.
+    indexed_triangle_set make_cut_shape() const;
+    void render_shape_outline();
     static void render_model(GLModel& model, const ColorRGBA& color, Transform3d view_model_matrix);
     void render_line(GLModel& line_model, const ColorRGBA& color, Transform3d view_model_matrix, float width);
     void render_rotation_snapping(GrabberID axis, const ColorRGBA& color);

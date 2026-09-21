@@ -215,6 +215,23 @@ double volume_of(const ModelVolume *v) { return double(its_volume(v->mesh().its)
 
 } // namespace
 
+TEST_CASE("Cookie-cutter prisms are closed and centered on the plane", "[CutUtils]")
+{
+    for (const CutShapeKind kind : { CutShapeKind::Circle, CutShapeKind::Square, CutShapeKind::Hexagon }) {
+        TriangleMesh cutter(make_cookie_cutter(kind, 10., 7.5));
+
+        CHECK(its_num_open_edges(cutter.its) == 0);
+        CHECK(its_volume(cutter.its) > 0.f);
+
+        // Extruded symmetrically about the cut plane and centered on its axis.
+        const BoundingBoxf3 bb = cutter.bounding_box();
+        CHECK_THAT(bb.min.z(), WithinAbs(-7.5, 1e-4));
+        CHECK_THAT(bb.max.z(), WithinAbs(7.5, 1e-4));
+        CHECK_THAT(bb.min.x() + bb.max.x(), WithinAbs(0., 1e-4));
+        CHECK_THAT(bb.min.y() + bb.max.y(), WithinAbs(0., 1e-4));
+    }
+}
+
 TEST_CASE("A shaped cut splits a cube into an inside plug and the outside body", "[CutUtils]")
 {
     Model        model;
