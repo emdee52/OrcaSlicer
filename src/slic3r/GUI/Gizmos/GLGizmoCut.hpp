@@ -2,6 +2,7 @@
 #define slic3r_GLGizmoCut_hpp_
 
 #include "GLGizmoBase.hpp"
+#include "GLGizmosCommon.hpp"
 #include "slic3r/GUI/GLSelectionRectangle.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -166,12 +167,10 @@ class GLGizmoCut3D : public GLGizmoBase
     bool m_pick_face_mode{ false };
 
     // Translucent highlight of the flat face under the cursor while in pick-face mode.
-    GLModel              m_face_highlight;
-    const GLVolume*      m_hover_volume{ nullptr };
-    const ModelVolume*   m_hover_mv{ nullptr };
-    int                  m_hover_facet{ -1 };
-    std::vector<Vec3f>   m_hover_normals;
-    std::vector<Vec3i32> m_hover_neighbors;
+    GLModel          m_face_highlight;
+    const GLVolume*  m_hover_volume{ nullptr };
+    int              m_hover_facet{ -1 };
+    FaceRegionCache  m_face_cache;
 
     float m_connector_depth_ratio{ 3.f };
     float m_connector_size{ 2.5f };

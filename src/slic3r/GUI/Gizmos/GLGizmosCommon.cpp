@@ -1,9 +1,12 @@
 #include "GLGizmosCommon.hpp"
 
 #include <cassert>
+#include <cmath>
+#include <limits>
 
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "libslic3r/SLAPrint.hpp"
+#include "libslic3r/Model.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Camera.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -609,6 +612,124 @@ void ModelObjectsClipper::set_position(double pos, bool keep_normal)
     m_clp.reset(new ClippingPlane(normal, (dist - (-m_active_inst_bb_radius * GLVolume::explosion_ratio) - m_clp_ratio * 2 * m_active_inst_bb_radius * GLVolume::explosion_ratio)));
     get_pool()->get_canvas()->set_as_dirty();
 
+}
+
+
+std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet, FaceRegionCache& cache)
+{
+    std::vector<int> region;
+    if (mv == nullptr)
+        return region;
+
+    const indexed_triangle_set& its      = mv->mesh().its;
+    const int                   n_facets = int(its.indices.size());
+    if (facet >= size_t(n_facets))
+        return region;
+
+    if (cache.mv != mv) {
+        cache.mv        = mv;
+        cache.normals   = its_face_normals(its);
+        cache.neighbors = its_face_neighbors(its);
+    }
+    if (int(cache.normals.size()) != n_facets || int(cache.neighbors.size()) != n_facets)
+        return region;
+
+    const size_t max_facets = 40000;
+    const Vec3f  seed_n     = cache.normals[facet];
+    const auto   is_same_normal = [&seed_n](const Vec3f& n) {
+        return std::abs(n.x() - seed_n.x()) < 0.001f && std::abs(n.y() - seed_n.y()) < 0.001f &&
+               std::abs(n.z() - seed_n.z()) < 0.001f;
+    };
+
+    std::vector<char> visited(n_facets, 0);
+    std::vector<int>  stack{ int(facet) };
+    region.reserve(256);
+    visited[facet] = 1;
+    while (!stack.empty() && region.size() < max_facets) {
+        const int f = stack.back();
+        stack.pop_back();
+        region.push_back(f);
+        for (int e = 0; e < 3; ++e) {
+            const int nb = cache.neighbors[f][e];
+            if (nb < 0 || nb >= n_facets || visited[nb])
+                continue;
+            if (is_same_normal(cache.normals[nb])) {
+                visited[nb] = 1;
+                stack.push_back(nb);
+            }
+        }
+    }
+    return region;
+}
+
+indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vector<int>& region,
+                                          const FaceRegionCache& cache, float lift)
+{
+    indexed_triangle_set patch;
+    if (mv == nullptr || region.empty())
+        return patch;
+
+    const bool have_normals = cache.mv == mv && cache.normals.size() == mv->mesh().its.indices.size();
+    const Vec3f seed_n = have_normals ? cache.normals[region.front()] : Vec3f(0.f, 0.f, 1.f);
+
+    patch.vertices.reserve(region.size() * 3);
+    patch.indices.reserve(region.size());
+    int base = 0;
+    for (int f : region) {
+        if (f < 0 || f >= int(mv->mesh().its.indices.size()))
+            continue;
+        const Vec3i32 tri = mv->mesh().its.indices[f];
+        Vec3f         n   = (have_normals && f < int(cache.normals.size())) ? cache.normals[f] : seed_n;
+        const float   nl  = n.norm();
+        n = (nl > 1e-6f) ? (n / nl) : seed_n;
+        patch.vertices.push_back(mv->mesh().its.vertices[tri[0]] + n * lift);
+        patch.vertices.push_back(mv->mesh().its.vertices[tri[1]] + n * lift);
+        patch.vertices.push_back(mv->mesh().its.vertices[tri[2]] + n * lift);
+        patch.indices.emplace_back(base, base + 1, base + 2);
+        base += 3;
+    }
+    if (patch.indices.empty())
+        patch.vertices.clear();
+    return patch;
+}
+
+bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection, const ModelObject* mo,
+                         const ClippingPlane* clipping, const GLVolume*& volume, const ModelVolume*& mv,
+                         size_t& facet, Vec3d& hit_world)
+{
+    volume    = nullptr;
+    mv        = nullptr;
+    facet     = 0;
+    hit_world = Vec3d::Zero();
+    if (mo == nullptr)
+        return false;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+
+    double closest = std::numeric_limits<double>::max();
+    for (unsigned int idx : selection.get_volume_idxs()) {
+        const GLVolume* v = selection.get_volume(idx);
+        if (v == nullptr || v->mesh_raycaster == nullptr || v->is_modifier || v->is_sla_pad() || v->is_sla_support())
+            continue;
+        const int vi = v->volume_idx();
+        if (vi < 0 || vi >= int(mo->volumes.size()))
+            continue;
+
+        Vec3f  hit, normal;
+        size_t f = 0;
+        if (v->mesh_raycaster->unproject_on_mesh(mouse_position, v->world_matrix(), camera, hit, normal, clipping, &f)) {
+            const Vec3d  p = v->world_matrix() * hit.cast<double>();
+            const double d = (camera.get_position() - p).squaredNorm();
+            if (d < closest) {
+                closest   = d;
+                volume    = v;
+                mv        = mo->volumes[vi];
+                facet     = f;
+                hit_world = p;
+            }
+        }
+    }
+    return volume != nullptr;
 }
 
 

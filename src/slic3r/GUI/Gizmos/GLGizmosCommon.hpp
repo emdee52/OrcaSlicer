@@ -6,6 +6,7 @@
 
 #include "slic3r/GUI/3DScene.hpp"
 #include "slic3r/GUI/MeshUtils.hpp"
+#include "libslic3r/TriangleMesh.hpp"
 
 namespace Slic3r {
 
@@ -17,6 +18,8 @@ class ModelVolume;
 namespace GUI {
 
 class GLCanvas3D;
+class Selection;
+class ClippingPlane;
 
 enum class SLAGizmoEventType : unsigned char {
     LeftDown = 1,
@@ -280,6 +283,30 @@ private:
 };
 
 } // namespace CommonGizmosDataObjects
+
+
+// Per-facet normals and edge-neighbours of one ModelVolume, rebuilt only when the volume changes.
+// Shared by the Cut and Holes gizmos' face-picking code.
+struct FaceRegionCache
+{
+    const ModelVolume*   mv{ nullptr };
+    std::vector<Vec3f>   normals;
+    std::vector<Vec3i32> neighbors;
+};
+
+// Facets coplanar with `facet` (component-wise normal equality, the same rule as the measure tool's
+// plane grouping), reached by edge adjacency. Fills `cache` if needed.
+std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet, FaceRegionCache& cache);
+
+// Triangle patch covering `region`, each facet lifted `lift` along its own normal to avoid z-fighting.
+indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vector<int>& region,
+                                          const FaceRegionCache& cache, float lift);
+
+// Raycasts the selected volumes of `mo` under `mouse_position` and returns the closest unclipped hit.
+// Returns false when nothing is hit.
+bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection, const ModelObject* mo,
+                         const ClippingPlane* clipping, const GLVolume*& volume, const ModelVolume*& mv,
+                         size_t& facet, Vec3d& hit_world);
 
 
 enum class AssembleViewDataID {
