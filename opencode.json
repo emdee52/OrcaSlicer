@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["FEATURE_AGENT.md"],
+  "instructions": ["FEATURE_AGENT.md", "MERGE_POLICY.md"],
   "mcp": {
     "orca-slicer": {
       "type": "local",

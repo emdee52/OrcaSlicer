@@ -172,6 +172,26 @@ class GLGizmoCut3D : public GLGizmoBase
     int              m_hover_facet{ -1 };
     FaceRegionCache  m_face_cache;
 
+    // Alt-held snap of the cut-plane centre: candidates of the hovered face, the hysteresis lock
+    // that keeps the target under the cursor, and the marker spheres. Mirrors the Holes tool.
+    std::vector<FaceSnapPoint> m_snap_points;
+    const ModelVolume*         m_snap_points_mv{ nullptr };
+    const GLVolume*            m_snap_points_volume{ nullptr };
+    int                        m_snap_points_facet{ -1 };
+    FaceSnapPoint              m_snap_lock; // mesh space
+    double                     m_snap_lock_tol{ 0.0 };
+    bool                       m_snap_locked{ false };
+    const ModelVolume*         m_snap_lock_mv{ nullptr };
+    int                        m_snap_lock_facet{ -1 };
+    double                     m_snap_radius{ 0.0 };
+    GLModel                    m_snap_markers[3]; // indexed by int(FaceSnapKind) - 1
+    GLModel                    m_snap_marker_active;
+
+    Vec3d snap_plane_center(const Vec3d& center);
+    void  build_snap_markers();
+    void  render_snap_markers();
+    void  set_active_snap_marker(const FaceSnapPoint& p);
+
     float m_connector_depth_ratio{ 3.f };
     float m_connector_size{ 2.5f };
     float m_connector_angle{ 0.f };

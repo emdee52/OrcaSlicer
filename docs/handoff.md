@@ -8,6 +8,15 @@ Living tracker with the full idea backlog lives in `docs/superpowers/ME-roadmap.
 
 ---
 
+## 0. Merge policy (read first)
+
+**A feature branch is not merged until the user has tested it.** See [`MERGE_POLICY.md`](../MERGE_POLICY.md)
+for the full wording. Build it, run the tests, commit, push and report - then wait. A green build and
+passing tests are not approval; merge `--no-ff` into the integration branch only after the user
+confirms the feature works in the app.
+
+---
+
 ## 1. Build / test notes (read first)
 
 Windows, from the repo root:

@@ -432,21 +432,69 @@ TEST_CASE("Nearest face snap picks the closest candidate within tolerance", "[Cu
     const auto                       project = [](const Vec3d &p) { return Vec2d(p.x(), p.y()); };
     FaceSnapPoint                    best;
 
-    REQUIRE(nearest_face_snap(pts, project, Vec2d(4.6, 5.2), 8., best));
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(4.6, 5.2), best));
     CHECK(best.kind == FaceSnapKind::FaceCenter);
 
-    REQUIRE(nearest_face_snap(pts, project, Vec2d(0.5, 0.5), 8., best));
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(0.5, 0.5), best));
     CHECK(best.kind == FaceSnapKind::Corner);
     CHECK_THAT(best.pos.norm(), WithinAbs(0.0, 1e-9));
 
-    REQUIRE(nearest_face_snap(pts, project, Vec2d(5.2, 0.4), 8., best));
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(5.2, 0.4), best));
     CHECK(best.kind == FaceSnapKind::EdgeMid);
     CHECK_THAT((best.pos - Vec3d(5., 0., 0.)).norm(), WithinAbs(0.0, 1e-9));
 
-    CHECK(!nearest_face_snap(pts, project, Vec2d(30., 30.), 8., best));
+    CHECK(!nearest_face_snap(pts, project, Vec2d(30., 30.), best));
 
     // Equidistant from a corner, two edge midpoints and the centre: the first kind emitted wins.
-    REQUIRE(nearest_face_snap(pts, project, Vec2d(2.5, 2.5), 8., best));
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(2.5, 2.5), best));
     CHECK(best.kind == FaceSnapKind::Corner);
+}
+
+TEST_CASE("Face snap tolerance grows with the spacing of the candidates and stays inside its bounds", "[CutUtils]")
+{
+    const auto project = [](const Vec3d &p) { return Vec2d(p.x(), p.y()); };
+
+    // A face scaled by `side / 10` has its candidates `side / 2` pixels apart, so the stick distance
+    // is half that gap, bounded by the floor and the cap.
+    const auto tolerance_for = [&project](double side) {
+        const double u = side / 10.;
+        indexed_triangle_set square;
+        square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(float(10. * u), 0.f, 0.f),
+                            Vec3f(float(10. * u), float(10. * u), 0.f), Vec3f(0.f, float(10. * u), 0.f) };
+        square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+
+        FaceSnapPoint best;
+        double        tolerance = 0.0;
+        REQUIRE(nearest_face_snap(face_snap_points(square, { 0, 1 }), project, Vec2d(5.2 * u, 0.4 * u), best, 8., 48.,
+                                 &tolerance));
+        CHECK(best.kind == FaceSnapKind::EdgeMid);
+        return tolerance;
+    };
+
+    const double small = tolerance_for(10.);
+    const double mid   = tolerance_for(100.);
+    const double big   = tolerance_for(1000.);
+
+    CHECK_THAT(small, WithinAbs(8.0, 1e-6)); // the gap is below the floor
+    CHECK(mid > small);                      // grows with the face
+    CHECK(mid < big);
+    CHECK_THAT(big, WithinAbs(48.0, 1e-6));  // and is capped
+
+    // Half the distance from the cursor to the next candidate over.
+    CHECK_THAT(mid, WithinAbs(0.5 * (Vec2d(50., 50.) - Vec2d(52., 4.)).norm(), 1e-6));
+}
+
+TEST_CASE("A candidate beyond the stick distance is not snapped", "[CutUtils]")
+{
+    indexed_triangle_set square;
+    square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(10.f, 10.f, 0.f), Vec3f(0.f, 10.f, 0.f) };
+    square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+    const std::vector<FaceSnapPoint> pts     = face_snap_points(square, { 0, 1 });
+    const auto                       project = [](const Vec3d &p) { return Vec2d(p.x(), p.y()); };
+    FaceSnapPoint                    best;
+
+    // 0.45 px from the edge midpoint: inside the default floor, outside a tightened bound.
+    CHECK(nearest_face_snap(pts, project, Vec2d(5.2, 0.4), best, 8., 48., nullptr));
+    CHECK(!nearest_face_snap(pts, project, Vec2d(5.2, 0.4), best, 0.1, 0.1, nullptr));
 }
 

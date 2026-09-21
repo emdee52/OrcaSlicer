@@ -152,6 +152,11 @@ private:
     const std::vector<FaceSnapPoint>& face_snap_points(const ModelVolume* mv, size_t facet);
     Vec3d snap_face_hit(const Vec3d& hit_obj, const Vec2d& screen_pos, const ModelVolume* mv, size_t facet,
                         FaceSnapKind& kind);
+    // Markers for the snap coordinates, shown while Alt is held. The three kind models plus the
+    // bigger marker of the active one.
+    void build_snap_markers();
+    void render_snap_markers();
+    void set_active_snap_marker(const FaceSnapPoint& p);
 
     void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
@@ -209,6 +214,15 @@ private:
     int                  m_snap_facet{ -1 };
     std::vector<FaceSnapPoint> m_snap_points;
     FaceSnapKind         m_hover_snap{ FaceSnapKind::None };
+    // Hysteresis: hold the snapped coordinate while the cursor stays near it.
+    FaceSnapPoint        m_snap_lock;
+    double               m_snap_lock_tol{ 0.0 };
+    bool                 m_snap_locked{ false };
+    const ModelVolume*   m_snap_lock_mv{ nullptr };
+    int                  m_snap_lock_facet{ -1 };
+    double               m_snap_radius{ 0.0 };
+    GLModel              m_snap_markers[3]; // indexed by int(FaceSnapKind) - 1
+    GLModel              m_snap_marker_active;
     std::vector<PlacedFace> m_placed;
     int                  m_next_face_id{ 1 };
     indexed_triangle_set m_merged_its; // merged model-part mesh, used for through-depth marching

@@ -41,10 +41,15 @@ void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis);
 // vector otherwise, so the caller can fall back to the raw raycast hit.
 std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region);
 
-// Nearest candidate to `screen_pos` within `max_px`, measured through `project` (mesh space to
-// device pixels). Candidates further away or projecting behind the camera are ignored.
+// Nearest candidate to `screen_pos`, measured through `project` (mesh space to device pixels).
+// The stick distance scales with the local spacing of the candidates - half the distance to the
+// second nearest, clamped to `[min_px, max_px]` - so it grows with the face's on-screen size and
+// shrinks when the face is small or zoomed out. The chosen tolerance is reported through
+// `tolerance_px` so a caller can hold the target while the cursor stays near it. Candidates that
+// project behind the camera are ignored.
 bool nearest_face_snap(const std::vector<FaceSnapPoint>& pts, const std::function<Vec2d(const Vec3d&)>& project,
-                       const Vec2d& screen_pos, double max_px, FaceSnapPoint& out);
+                       const Vec2d& screen_pos, FaceSnapPoint& out, double min_px = 8.0, double max_px = 48.0,
+                       double* tolerance_px = nullptr);
 
 // Built-in profiles for the shaped ("cookie cutter") cut.
 enum class CutShapeKind : int { Circle, Square, Hexagon };

@@ -187,23 +187,50 @@ std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, con
 }
 
 bool nearest_face_snap(const std::vector<FaceSnapPoint>& pts, const std::function<Vec2d(const Vec3d&)>& project,
-                       const Vec2d& screen_pos, double max_px, FaceSnapPoint& out)
+                       const Vec2d& screen_pos, FaceSnapPoint& out, double min_px, double max_px,
+                       double* tolerance_px)
 {
-    bool   found = false;
-    double best  = max_px * max_px;
-    for (const FaceSnapPoint& p : pts) {
-        const Vec2d s = project(p.pos);
-        if (!s.allFinite())
+    // Screen spacing scales with the face's on-screen size and with the zoom, so half the gap to the
+    // next candidate is the largest stick distance that can never be ambiguous: the stick region
+    // ends where the next candidate's begins.
+    std::vector<Vec2d> screen;
+    screen.reserve(pts.size());
+    for (const FaceSnapPoint& p : pts)
+        screen.push_back(project(p.pos));
+
+    int    hit      = -1;
+    double hit_dist = 0.0;
+    for (size_t i = 0; i < screen.size(); ++i) {
+        if (!screen[i].allFinite())
             continue;
-        const double d = (s - screen_pos).squaredNorm();
+        const double d = (screen[i] - screen_pos).squaredNorm();
         // Strictly closer only: candidates are ordered by priority, so an earlier kind keeps a tie.
-        if (d < best) {
-            best  = d;
-            out   = p;
-            found = true;
+        if (hit < 0 || d < hit_dist) {
+            hit      = int(i);
+            hit_dist = d;
         }
     }
-    return found;
+    if (hit < 0)
+        return false;
+
+    double second_dist = -1.0;
+    for (size_t i = 0; i < screen.size(); ++i) {
+        if (int(i) == hit || !screen[i].allFinite())
+            continue;
+        const double d = (screen[i] - screen_pos).squaredNorm();
+        if (second_dist < 0.0 || d < second_dist)
+            second_dist = d;
+    }
+
+    // A lone candidate has no spacing to scale from, so it gets the full stick distance.
+    const double tolerance = second_dist < 0.0 ? max_px : std::clamp(0.5 * std::sqrt(second_dist), min_px, max_px);
+    if (hit_dist > tolerance * tolerance)
+        return false;
+
+    out = pts[size_t(hit)];
+    if (tolerance_px != nullptr)
+        *tolerance_px = tolerance;
+    return true;
 }
 
 indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max)
