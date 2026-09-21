@@ -21,6 +21,7 @@
 #include <wx/utils.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,7 +36,9 @@ constexpr const char *TEARDROP_NAME = "Teardrop";
 constexpr const char *POCKET_NAME   = "HolePocket";
 constexpr const char *FACE_POCKET_NAME = "FacePocket";
 // |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
-constexpr double       HORIZONTAL_COS = 0.5;
+constexpr double HORIZONTAL_COS = 0.5;
+// How long the face highlight and the snap markers survive after the cursor leaves the face.
+constexpr double FACE_LEAVE_GRACE_SEC = 0.35;
 constexpr float        ANGLE_MIN = 45.f;
 constexpr float        ANGLE_MAX = 60.f;
 const ColorRGBA        ALL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};      // candidate
@@ -801,6 +804,16 @@ void GLGizmoHoles::update_face_highlight()
     size_t             facet  = 0;
     Vec3d              hit    = Vec3d::Zero();
     if (!raycast_object_face(m_parent.get_local_mouse_position(), m_parent.get_selection(), mo, clipping, volume, mv, facet, hit)) {
+        // Leaving the face near an edge must not wipe the highlight and the snap markers at once:
+        // hold them for a moment so the cursor can come back.
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (m_face_leave_time == 0.0)
+            m_face_leave_time = now;
+        if (now - m_face_leave_time < FACE_LEAVE_GRACE_SEC) {
+            m_parent.set_as_dirty();
+            return;
+        }
+        m_face_leave_time = 0.0;
         if (m_hover_face_mv != nullptr || m_face_highlight.is_initialized()) {
             m_face_highlight.reset();
             m_face_ghost.reset();
@@ -812,6 +825,7 @@ void GLGizmoHoles::update_face_highlight()
         }
         return;
     }
+    m_face_leave_time = 0.0;
 
     const Vec3d hit_obj      = instance_matrix().inverse() * hit;
     const bool  face_changed = (mv != m_hover_face_mv || int(facet) != m_hover_face_facet);

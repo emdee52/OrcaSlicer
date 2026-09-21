@@ -223,6 +223,8 @@ private:
     double               m_snap_radius{ 0.0 };
     GLModel              m_snap_markers[3]; // indexed by int(FaceSnapKind) - 1
     GLModel              m_snap_marker_active;
+    // Time the cursor last left the hovered face, so the highlight and markers linger a moment.
+    double               m_face_leave_time{ 0.0 };
     std::vector<PlacedFace> m_placed;
     int                  m_next_face_id{ 1 };
     indexed_triangle_set m_merged_its; // merged model-part mesh, used for through-depth marching
