@@ -592,7 +592,7 @@ void GLGizmoCut3D::update_clipper()
 
 void GLGizmoCut3D::set_center(const Vec3d& center, bool update_tbb /*=false*/)
 {
-    set_center_pos(center, update_tbb);
+    set_center_pos(snap_plane_center(center), update_tbb);
     check_and_update_connectors_state();
     update_clipper();
 }
@@ -2721,6 +2721,7 @@ void GLGizmoCut3D::on_render()
     if (m_pick_face_mode) {
         update_face_highlight();
         render_face_highlight();
+        render_snap_markers();
     }
 
     m_selection_rectangle.render(m_parent);
@@ -2943,6 +2944,143 @@ bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolu
     return Slic3r::GUI::raycast_object_face(mouse_position, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world);
 }
 
+// Alt-held snapping of the cut-plane centre: the plane - and the shaped cut, which is built from it -
+// sticks to a corner, an edge midpoint or the face centre under the cursor. Without Alt `center` is
+// returned untouched, so every existing path stays exactly as it was.
+Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
+{
+    if (!wxGetKeyState(WXK_ALT)) {
+        m_snap_locked = false;
+        return center;
+    }
+
+    const GLVolume*    volume = nullptr;
+    const ModelVolume* mv     = nullptr;
+    size_t             facet  = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(m_parent.get_local_mouse_position(), volume, mv, facet, hit)) {
+        m_snap_locked = false;
+        return center;
+    }
+
+    const Vec2d       mouse    = m_parent.get_local_mouse_position();
+    const Transform3d to_world = volume->world_matrix();
+    const auto        project  = [&](const Vec3d& p) {
+        return world_to_screen(wxGetApp().plater()->get_camera(), to_world * p);
+    };
+
+    // Hysteresis: keep the target the cursor was locked to until it moves well away from it.
+    if (m_snap_locked && m_snap_lock_mv == mv && m_snap_lock_facet == int(facet)) {
+        const Vec2d locked_px = project(m_snap_lock.pos);
+        if (locked_px.allFinite() && (locked_px - mouse).norm() <= 1.25 * m_snap_lock_tol)
+            return to_world * m_snap_lock.pos;
+    }
+
+    // The candidates depend only on the face, so a drag held over one facet does not re-walk it.
+    if (mv != m_snap_points_mv || int(facet) != m_snap_points_facet) {
+        m_snap_points_mv     = mv;
+        m_snap_points_volume = volume;
+        m_snap_points_facet  = int(facet);
+        m_snap_points        = build_face_snap_points(mv, coplanar_region(mv, facet));
+        build_snap_markers();
+    }
+    if (m_snap_points.empty()) {
+        m_snap_locked = false;
+        return center;
+    }
+
+    FaceSnapPoint best;
+    double       tol = 0.0;
+    if (!nearest_face_snap(m_snap_points, project, mouse, best, 8.0, 48.0, &tol)) {
+        m_snap_locked = false;
+        return center;
+    }
+
+    const bool target_changed = !m_snap_locked || (m_snap_lock.pos - best.pos).norm() > 1e-9;
+    m_snap_lock       = best;
+    m_snap_lock_tol   = tol;
+    m_snap_locked     = true;
+    m_snap_lock_mv    = mv;
+    m_snap_lock_facet = int(facet);
+    if (target_changed)
+        set_active_snap_marker(best);
+    return to_world * best.pos;
+}
+
+// Marker spheres for the snap coordinates of the hovered face, rebuilt with the candidate list.
+void GLGizmoCut3D::build_snap_markers()
+{
+    for (GLModel& m : m_snap_markers)
+        m.reset();
+    m_snap_marker_active.reset();
+
+    if (m_snap_points.empty()) {
+        m_snap_radius = 0.0;
+        return;
+    }
+
+    // Face-relative size, so a big face gets markers you can see and a small one is not swamped.
+    double diag = 0.0;
+    for (const FaceSnapPoint& a : m_snap_points)
+        for (const FaceSnapPoint& b : m_snap_points)
+            diag = std::max(diag, (a.pos - b.pos).norm());
+    m_snap_radius = std::max(1e-4, 0.012 * diag);
+
+    static const ColorRGBA KIND_COLOR[3] = { ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f),   // corner, magenta
+                                             ColorRGBA(0.35f, 0.90f, 0.75f, 1.0f),   // edge midpoint, teal
+                                             ColorRGBA(0.30f, 0.80f, 1.00f, 1.0f) }; // face centre, cyan
+    std::vector<indexed_triangle_set> acc(3);
+    for (const FaceSnapPoint& p : m_snap_points) {
+        const int k = int(p.kind) - 1;
+        if (k < 0 || k > 2)
+            continue;
+        indexed_triangle_set sphere = its_make_sphere(m_snap_radius, PI / 12.0);
+        its_translate(sphere, p.pos.cast<float>());
+        its_merge(acc[k], sphere);
+    }
+    for (int k = 0; k < 3; ++k) {
+        if (acc[k].indices.empty())
+            continue;
+        m_snap_markers[k].init_from(acc[k]);
+        m_snap_markers[k].set_color(KIND_COLOR[k]);
+    }
+}
+
+// A single bigger sphere marks the coordinate the cursor is currently locked to.
+void GLGizmoCut3D::set_active_snap_marker(const FaceSnapPoint& p)
+{
+    m_snap_marker_active.reset();
+    if (m_snap_radius <= 0.0)
+        return;
+    indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
+    its_translate(sphere, p.pos.cast<float>());
+    m_snap_marker_active.init_from(sphere);
+    m_snap_marker_active.set_color(ColorRGBA(0.0f, 1.0f, 0.0f, 1.0f));
+}
+
+// Drawn while Alt is held; depth test is off so the surface and the lifted patch cannot hide them.
+void GLGizmoCut3D::render_snap_markers()
+{
+    if (!wxGetKeyState(WXK_ALT) || m_snap_points_volume == nullptr)
+        return;
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    shader->start_using();
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_snap_points_volume->world_matrix());
+    for (GLModel& m : m_snap_markers)
+        m.render();
+    m_snap_marker_active.render();
+    glsafe(::glEnable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    shader->stop_using();
+}
+
 bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
 {
     const GLVolume*    hit_volume = nullptr;
@@ -2954,23 +3092,9 @@ bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
 
     const Vec3d normal = facet_normal_in_world(hit_mv->mesh().its, int(hit_facet), hit_volume->world_matrix());
 
-    // Alt snaps the plane centre to a face coordinate: a corner, an edge midpoint or the face
-    // centre. Without Alt the raw hit is used.
-    Vec3d place_world = hit_world;
-    if (wxGetKeyState(WXK_ALT)) {
-        const std::vector<FaceSnapPoint> pts = build_face_snap_points(hit_mv, coplanar_region(hit_mv, hit_facet));
-        if (!pts.empty()) {
-            const Camera &camera  = wxGetApp().plater()->get_camera();
-            const auto    project = [&](const Vec3d &p) { return world_to_screen(camera, hit_volume->world_matrix() * p); };
-            FaceSnapPoint best;
-            if (nearest_face_snap(pts, project, mouse_position, 8.0, best))
-                place_world = hit_volume->world_matrix() * best.pos;
-        }
-    }
-
     Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Align cut plane to face"), UndoRedo::SnapshotType::GizmoAction);
-    apply_plane_orientation(normal, place_world);
-    set_center(place_world);
+    apply_plane_orientation(normal, hit_world);
+    set_center(hit_world);
 
     m_pick_face_mode = false;
     m_face_highlight.reset();

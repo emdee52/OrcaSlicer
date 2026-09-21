@@ -639,8 +639,10 @@ void GLGizmoHoles::on_render()
     glsafe(::glEnable(GL_DEPTH_TEST));
     shader->stop_using();
 
-    if (m_place_face_mode)
+    if (m_place_face_mode) {
         render_face_highlight();
+        render_snap_markers();
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -668,6 +670,11 @@ void GLGizmoHoles::exit_place_face_mode()
     m_hover_face_mv    = nullptr;
     m_hover_face_facet = -1;
     m_last_face_hit    = Vec3d::Constant(1e30);
+    m_hover_snap       = FaceSnapKind::None;
+    m_snap_locked      = false;
+    m_snap_marker_active.reset();
+    for (GLModel &m : m_snap_markers)
+        m.reset();
 }
 
 bool GLGizmoHoles::gizmo_place_face_at(const Vec2d &screen_pos)
@@ -879,8 +886,85 @@ const std::vector<FaceSnapPoint> &GLGizmoHoles::face_snap_points(const ModelVolu
         m_snap_mv     = mv;
         m_snap_facet  = int(facet);
         m_snap_points = build_face_snap_points(mv, coplanar_region(mv, facet, m_face_cache));
+        build_snap_markers();
     }
     return m_snap_points;
+}
+
+// Marker spheres for the snap coordinates of the hovered face, rebuilt with the candidate list.
+void GLGizmoHoles::build_snap_markers()
+{
+    for (GLModel &m : m_snap_markers)
+        m.reset();
+    m_snap_marker_active.reset();
+
+    if (m_snap_points.empty() || m_hover_face_mv == nullptr) {
+        m_snap_radius = 0.0;
+        return;
+    }
+
+    // Face-relative size, so a big face gets markers you can see and a small one is not swamped.
+    double diag = 0.0;
+    for (const FaceSnapPoint &a : m_snap_points)
+        for (const FaceSnapPoint &b : m_snap_points)
+            diag = std::max(diag, (a.pos - b.pos).norm());
+    m_snap_radius = std::max(1e-4, 0.012 * diag);
+
+    static const ColorRGBA KIND_COLOR[3] = { ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f),   // corner, magenta
+                                             ColorRGBA(0.35f, 0.90f, 0.75f, 1.0f),   // edge midpoint, teal
+                                             ColorRGBA(0.30f, 0.80f, 1.00f, 1.0f) }; // face centre, cyan
+    std::vector<indexed_triangle_set> acc(3);
+    for (const FaceSnapPoint &p : m_snap_points) {
+        const int k = int(p.kind) - 1;
+        if (k < 0 || k > 2)
+            continue;
+        indexed_triangle_set sphere = its_make_sphere(m_snap_radius, PI / 12.0);
+        its_translate(sphere, p.pos.cast<float>());
+        its_merge(acc[k], sphere);
+    }
+    for (int k = 0; k < 3; ++k) {
+        if (acc[k].indices.empty())
+            continue;
+        m_snap_markers[k].init_from(acc[k]);
+        m_snap_markers[k].set_color(KIND_COLOR[k]);
+    }
+}
+
+// A single bigger sphere marks the coordinate the cursor is currently locked to.
+void GLGizmoHoles::set_active_snap_marker(const FaceSnapPoint &p)
+{
+    m_snap_marker_active.reset();
+    if (m_snap_radius <= 0.0)
+        return;
+    indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
+    its_translate(sphere, p.pos.cast<float>());
+    m_snap_marker_active.init_from(sphere);
+    m_snap_marker_active.set_color(HOVER_COLOR);
+}
+
+// Draws the marker spheres of the hovered face while Alt is held. Depth test is off so the surface
+// and the lifted coplanar patch cannot hide them.
+void GLGizmoHoles::render_snap_markers()
+{
+    if (!wxGetKeyState(WXK_ALT) || m_hover_face_mv == nullptr)
+        return;
+    GLShaderProgram *shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera &camera = wxGetApp().plater()->get_camera();
+    shader->start_using();
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix",
+                        camera.get_view_matrix() * instance_matrix() * m_hover_face_mv->get_matrix());
+    for (GLModel &m : m_snap_markers)
+        m.render();
+    m_snap_marker_active.render();
+    glsafe(::glEnable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    shader->stop_using();
 }
 
 // With Alt held, moves an object-space hit onto the nearest face coordinate within a few pixels;
@@ -889,21 +973,51 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
                                  size_t facet, FaceSnapKind &kind)
 {
     kind = FaceSnapKind::None;
-    if (mv == nullptr || !wxGetKeyState(WXK_ALT))
+    if (mv == nullptr || !wxGetKeyState(WXK_ALT)) {
+        m_snap_locked = false;
+        m_snap_marker_active.reset();
         return hit_obj;
+    }
 
     const std::vector<FaceSnapPoint> &pts = face_snap_points(mv, facet);
-    if (pts.empty())
+    if (pts.empty()) {
+        m_snap_locked = false;
+        m_snap_marker_active.reset();
         return hit_obj;
+    }
 
     const Camera     &camera  = wxGetApp().plater()->get_camera();
     const Transform3d inst    = instance_matrix();
     const Transform3d to_obj  = mv->get_matrix();
     const auto        project = [&](const Vec3d &p) { return world_to_screen(camera, inst * to_obj * p); };
 
+    // Magnetic: hold the current coordinate until the cursor leaves its stick distance by a margin,
+    // so neighbouring candidates do not flicker into each other at the boundary.
+    if (m_snap_locked && m_snap_lock_mv == mv && m_snap_lock_facet == int(facet)) {
+        const Vec2d locked_px = project(m_snap_lock.pos);
+        if (locked_px.allFinite() && (locked_px - screen_pos).norm() <= 1.25 * m_snap_lock_tol) {
+            kind = m_snap_lock.kind;
+            return to_obj * m_snap_lock.pos;
+        }
+    }
+
     FaceSnapPoint best;
-    if (!nearest_face_snap(pts, project, screen_pos, 8.0, best))
+    double        tol = 0.0;
+    if (!nearest_face_snap(pts, project, screen_pos, best, 8.0, 48.0, &tol)) {
+        m_snap_locked = false;
+        m_snap_marker_active.reset();
         return hit_obj;
+    }
+
+    const bool target_changed = !m_snap_locked || m_snap_lock_mv != mv || m_snap_lock_facet != int(facet) ||
+                                (m_snap_lock.pos - best.pos).norm() > 1e-9;
+    m_snap_lock       = best;
+    m_snap_lock_tol   = tol;
+    m_snap_locked     = true;
+    m_snap_lock_mv    = mv;
+    m_snap_lock_facet = int(facet);
+    if (target_changed)
+        set_active_snap_marker(best);
 
     kind = best.kind;
     return to_obj * best.pos;
