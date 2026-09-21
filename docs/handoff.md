@@ -348,3 +348,46 @@ keep-upper piece is the part **inside** the cutter, the keep-lower piece is the 
   reuse the plane-based `process_modifier_cut`. Paint remap is the CUT-2 simplification. `cut_id` is
   invalidated (the profile is not stored) — not a re-editable parametric cut.
 
+## 11. ME-2c — place a bore/pocket on any flat face
+
+Branch `port/ME-2c` off `port/integration`. Until now the Holes tool could only rework holes
+`detect_holes()` found; ME-2c lets it author a new feature on any flat face the user clicks.
+
+- **Shared face picking** (`refactor`, commit `edd343e289`): the Cut gizmo's
+  `raycast_object_face` and `coplanar_region` (edge-adjacency flood fill with component-wise
+  normal equality) moved to `src/slic3r/GUI/Gizmos/GLGizmosCommon.{hpp,cpp}` as free functions
+  (`raycast_object_face`, `coplanar_region` + `FaceRegionCache`, `build_coplanar_patch`).
+  `GLGizmoCut3D` now delegates to them; behaviour is unchanged (its face-pick state shrank to
+  `m_face_highlight` / `m_hover_volume` / `m_hover_facet` / `m_face_cache`).
+- **Through depth** (`feat`, commit `3c2d0e714f`): `hole_through_depth(its, entry, dir, margin)` in
+  `HoleShapes.{hpp,cpp}` ray-marches an `AABBMesh` from the entry point to the farthest hit along the
+  into-material direction, plus margin. Returns 0 when the ray leaves, so callers fall back to the
+  blind depth. Tested in `tests/libslic3r/test_holeshapes.cpp`.
+- **Gizmo** (`feat`, commit `649570888c`): a *Place on face* toggle in the Holes input window. While
+  active the gizmo raycasts the selected object every frame and draws a translucent cyan patch over
+  the whole coplanar face under the cursor, plus a hover-coloured ghost of the feature that would be
+  placed. A left click places the current bore/pocket family (plain / counterbore / countersink /
+  hex nut / magnet / insert, driven by the existing parameter UI) and stays in face mode so several
+  can be placed; right-click exits. Teardrop is offered only on near-vertical faces (it degenerates
+  on a horizontal one, where the code falls back to a plain bore).
+- **Placement math**: `facet_normal_in_world` gives the outward normal; the feature grows opposite
+  it. A synthetic `DetectedHole` (axis = into-material direction, `center = hit + dir*depth/2`) is fed
+  to the existing mesh builders, so no new mesh code was needed. The `flip` control is neutralised for
+  placed faces (the entry is fixed by the picked surface), and a through feature uses the ray-marched
+  depth.
+- **Storage**: placed features are negative-only `FacePocket#<id>` volumes with their own monotonic
+  id, so they survive `detect()` (which wipes the detected-hole list) and keep a stable name. They
+  are not tied to a detected hole and are not re-editable — the geometry is baked at placement, same
+  limitation as ME-2. `clear_all` removes them too.
+- **MCP**: `holes_gizmo` gained `set_place_face` (`on`), `place_face` and `hover_face`
+  (`screen_x`/`screen_y`, defaulting to the viewport centre, mirroring `cut_gizmo`). `status` now
+  reports `place_face_mode`, `face_pocket_volumes` and the `placed_faces` list.
+- **Verification** (box STL, MCP): `hover_face` at the viewport centre returned facet 6, normal
+  `[0,-1,0]`, region 2 triangles; `place_face` added one `FacePocket` volume with axis `[0,1,0]`
+  (into the material) and depth 21.25 (20 mm box + 1.25 margin), and stayed in face mode; `refresh`
+  kept the placed feature; `clear_all` removed it; slicing the object with the pocket completed with
+  no warnings.
+- **Caveats**: the negative is a 2D Clipper region at slice time, so the usual volume-order rule
+  applies. A placed feature is not re-editable, and the coplanar highlight and ghost are rebuilt only
+  when the hovered `(ModelVolume*, facet)` changes (a per-frame rebuild would be too heavy).
+
