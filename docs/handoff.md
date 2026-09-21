@@ -417,3 +417,46 @@ Found while testing ME-2c, on branch `port/ME-2d` off `port/integration`; merged
   scale 5.0, bbox 100 mm), placing M2 yields object-space diameter 0.34 and `true_diameter` 1.70,
   i.e. a 1.70 mm world hole. Unscaled objects are unchanged (scale 1).
 
+## 13. SNAP-1 — Alt-snapped hole and cut placement
+
+With Alt held, the Holes tool's place-on-face mode and the Cut tool's "pick flat face" move the
+picked point onto a coordinate of the hovered face — a corner, an edge midpoint or the face centre.
+Without Alt the raw raycast hit is used, so the default behaviour is unchanged.
+
+**Geometry** lives in `libslic3r/CutUtils.{hpp,cpp}` as `face_snap_points(its, region)`, so it can be
+unit tested without the GUI. It takes the coplanar facet region the GUI already computes
+(`coplanar_region`), counts undirected vertex pairs over that region, keeps the edges that occur once
+(boundary edges), walks them into loops and treats the largest-area loop as the outer perimeter. It
+then emits every loop vertex as `Corner`, every edge midpoint as `EdgeMid`, and one `FaceCenter` at
+the shoelace area centroid — the centroid, not the vertex average, which lands outside a non-convex
+loop. `face_plane_axes` supplies the deterministic in-plane basis; the align tool's
+`build_plane_axes` now delegates to it.
+
+Two guards keep curved surfaces honest. A loop that leaves the plane through its first vertex by more
+than `max(1e-3, 0.005 * diagonal)` rejects the whole region, because a staircase of parallel facets
+can otherwise produce a meaningless loop; and a region with no boundary edges (a closed patch)
+returns nothing. Both cases make the caller fall back to the raw hit.
+
+**Picking** is `nearest_face_snap(pts, project, screen_pos, max_px, out)`: candidates are projected
+to device pixels by the caller's projector and the nearest one within 8 px wins. Candidates are
+emitted in priority order and only a strictly closer one replaces the current winner, so a tie goes
+to `Corner` over `EdgeMid` over `FaceCenter`.
+
+**Wiring.** The GUI side of `GLGizmosCommon` keeps `world_to_screen` and a thin
+`build_face_snap_points(mv, region)` wrapper over the volume's mesh. `GLGizmoHoles` caches the
+candidates per `(ModelVolume*, facet)`, snaps inside `snap_face_hit` (used by both
+`update_face_highlight` and `place_face_at`), converts the winner into object space with
+`mv->get_matrix()`, and stores the active kind in `m_hover_snap` so the ghost is rebuilt when the
+snap target changes. `GLGizmoCut3D::pick_face_at` builds the candidates per click and passes the
+snapped world point to `apply_plane_orientation` and `set_center`; the cut tool works in world space,
+the holes tool in object space.
+
+Alt is the modifier because the canvas already uses Ctrl for additive selection and Shift for
+rectangle selection. Edge quarters and face quarters are deliberately not part of this snap set yet,
+and the Measure tool does not snap.
+
+- **Verification**: the geometry is covered by `[CutUtils]` cases in `tests/libslic3r/test_cututils.cpp`
+  (corners, edge midpoints and centre of a square face; nothing for a closed cube; nearest candidate
+  within tolerance, including the priority tie-break). Manually, holding Alt over a square face
+  makes the ghost — or the cut plane centre — jump to the corner, the edge midpoint or the centre.
+
