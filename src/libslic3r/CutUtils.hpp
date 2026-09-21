@@ -5,6 +5,7 @@
 #include "Point.hpp"
 #include "Model.hpp"
 
+#include <functional>
 #include <vector>
 
 namespace Slic3r {
@@ -21,6 +22,20 @@ ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 // Returns UnitZ if the facet index is out of range.
 Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, const Transform3d& trafo);
 
+// Built-in profiles for the shaped ("cookie cutter") cut.
+enum class CutShapeKind : int { Circle, Square, Hexagon };
+
+// Closed prism used as the cutting solid for Cut::perform_with_shape, expressed in cut space:
+// centered on the origin (the cut plane) and extruded along Z (the cut normal) from
+// -half_height to +half_height. `size` is the diameter (Circle), the side (Square) or the
+// across-flats distance (Hexagon).
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double half_height);
+
+// Same prism, but spanning an explicit range [z_min, z_max] along the cut normal. Used to cut a
+// blind pocket (material removed on one side of the plane only) instead of cutting all the way
+// through.
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max);
+
 
 class Cut {
 
@@ -36,6 +51,12 @@ class Cut {
     void post_process(ModelObject* object, ModelObjectPtrs& objects, bool keep, bool place_on_cut, bool flip);
     void post_process(ModelObject* upper_object, ModelObject* lower_object, ModelObjectPtrs& objects);
     void finalize(const ModelObjectPtrs& objects, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings);
+
+    // Shared driver for every solid-splitting cut mode. `split_solid_volume` fills the keep-upper
+    // (inside) and keep-lower (outside) objects for one model part; `ok` is set to false when the
+    // split could not be performed, which aborts the whole cut and leaves the model untouched.
+    const ModelObjectPtrs& perform_split(
+        const std::function<void(const ModelVolume*, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool& ok)>& split_solid_volume);
 
 public:
 
@@ -67,6 +88,10 @@ public:
     };
 
     const ModelObjectPtrs& perform_with_plane();
+    // Shaped ("cookie cutter") split: `cutter` is a closed solid in cut space (see
+    // make_cookie_cutter). The keep-upper piece is the object inside the cutter, the keep-lower
+    // piece is the object outside it. Returns an empty list when the boolean fails.
+    const ModelObjectPtrs& perform_with_shape(const TriangleMesh& cutter);
     const ModelObjectPtrs& perform_by_contour(const ModelObject* src_object, std::vector<Part> parts, int dowels_count);
     const ModelObjectPtrs& perform_with_groove(const Groove&      groove,
                                                const Transform3d& rotation_m,

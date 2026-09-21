@@ -2,6 +2,7 @@
 #include "CutUtils.hpp"
 #include "Geometry.hpp"
 #include "libslic3r.h"
+#include "MeshBoolean.hpp"
 #include "Model.hpp"
 #include "TriangleMesh.hpp"
 #include "TriangleMeshSlicer.hpp"
@@ -11,6 +12,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <cmath>
 
 namespace Slic3r {
 
@@ -25,6 +27,41 @@ Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, cons
     const Matrix3d normal_matrix = trafo.linear().inverse().transpose();
     Vec3d          world         = normal_matrix * local;
     return world.norm() > 1e-12 ? world.normalized() : Vec3d::UnitZ();
+}
+
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max)
+{
+    const double h = z_max - z_min;
+
+    indexed_triangle_set its;
+    Vec3f                offset = Vec3f::Zero();
+    switch (kind) {
+    case CutShapeKind::Square:
+        its    = its_make_cube(size, size, h);
+        offset = Vec3f(float(-0.5 * size), float(-0.5 * size), float(z_min));
+        break;
+    case CutShapeKind::Hexagon:
+        // its_make_cylinder with 6 segments is a regular hexagon perpendicular to its circumradius.
+        its    = its_make_cylinder(size / std::sqrt(3.0), h, 2. * PI / 6.);
+        offset = Vec3f(0.f, 0.f, float(z_min));
+        break;
+    case CutShapeKind::Circle:
+    default:
+        its    = its_make_cylinder(size * 0.5, h, 2. * PI / 64.);
+        offset = Vec3f(0.f, 0.f, float(z_min));
+        break;
+    }
+
+    // its_make_cube/its_make_cylinder are anchored at z = 0; move them onto the requested range.
+    for (Vec3f& v : its.vertices)
+        v += offset;
+
+    return its;
+}
+
+indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double half_height)
+{
+    return make_cookie_cutter(kind, size, -half_height, half_height);
 }
 
 static void apply_tolerance(ModelVolume* vol)
@@ -217,6 +254,68 @@ static void process_solid_part_cut(const ModelVolume* volume, const Transform3d&
         add_cut_volume(lower_mesh, lower, volume, cut_matrix);
 }
 
+static void process_shape_cut(const ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
+                              const TriangleMesh& cutter, ModelObjectCutAttributes attributes,
+                              ModelObject* upper, ModelObject* lower, bool& hit)
+{
+    const auto volume_matrix = volume->get_matrix();
+
+    const Transformation cut_transformation = Transformation(cut_matrix);
+    const Transform3d    invert_cut_matrix  = cut_transformation.get_rotation_matrix().inverse() * translation_transform(-1. * cut_transformation.get_offset());
+
+    TriangleMesh mesh(volume->mesh());
+    mesh.transform(invert_cut_matrix * instance_matrix * volume_matrix, true);
+
+    // The keep-upper piece is inside the cutter, the keep-lower piece is the rest of the part.
+    auto merge_boolean = [&mesh, &cutter](const char* op) {
+        std::vector<TriangleMesh> parts;
+        MeshBoolean::mcut::make_boolean(mesh, cutter, parts, op);
+        TriangleMesh merged;
+        for (const TriangleMesh& part : parts)
+            merged.merge(part);
+        return merged;
+    };
+
+    TriangleMesh inside = merge_boolean("INTERSECTION");
+    if (inside.empty()) {
+        // The shape does not touch this part: carry it over whole instead of failing the cut.
+        if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+            upper->volumes.back()->cut_info.is_from_upper = false;
+        } else if (attributes.has(ModelObjectCutAttribute::KeepLower)) {
+            add_cut_volume(mesh, lower, volume, cut_matrix);
+        }
+        return;
+    }
+
+    // The shape intersects at least one part, so the cut as a whole is valid.
+    hit = true;
+
+    TriangleMesh outside = merge_boolean("A_NOT_B");
+    if (outside.empty()) {
+        // The part lies entirely inside the shape.
+        if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+        } else if (attributes.has(ModelObjectCutAttribute::KeepUpper)) {
+            add_cut_volume(mesh, upper, volume, cut_matrix);
+        }
+        return;
+    }
+
+    if (attributes.has(ModelObjectCutAttribute::KeepAsParts)) {
+        add_cut_volume(inside, upper, volume, cut_matrix, "_A");
+        add_cut_volume(outside, upper, volume, cut_matrix, "_B");
+        upper->volumes.back()->cut_info.is_from_upper = false;
+        return;
+    }
+
+    if (attributes.has(ModelObjectCutAttribute::KeepUpper))
+        add_cut_volume(inside, upper, volume, cut_matrix);
+
+    if (attributes.has(ModelObjectCutAttribute::KeepLower))
+        add_cut_volume(outside, lower, volume, cut_matrix);
+}
+
 // Carries a model part that is NOT being cut into the single result object, baked into cut space
 // exactly like process_volume_cut and then re-added through the cut matrix, so it lands at its
 // original world transform once the result object's instance transformation is reset.
@@ -329,7 +428,8 @@ void Cut::finalize(const ModelObjectPtrs& objects, const std::vector<std::option
 }
 
 
-const ModelObjectPtrs& Cut::perform_with_plane()
+const ModelObjectPtrs& Cut::perform_split(
+    const std::function<void(const ModelVolume*, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool& ok)>& split_solid_volume)
 {
     if (!m_attributes.has(ModelObjectCutAttribute::KeepUpper) && !m_attributes.has(ModelObjectCutAttribute::KeepLower)) {
         m_model.clear_objects();
@@ -364,6 +464,7 @@ const ModelObjectPtrs& Cut::perform_with_plane()
     const bool cut_selected_only = !m_cut_volume_idxs.empty();
     // A volume-filtered cut keeps everything in one object, so KeepAsParts is required.
     assert(!cut_selected_only || m_attributes.has(ModelObjectCutAttribute::KeepAsParts));
+    bool ok = true;
     for (size_t vol_idx = 0; vol_idx < mo->volumes.size(); ++vol_idx) {
         ModelVolume* volume = mo->volumes[vol_idx];
         // Save painting data before reset_extra_facets() discards it.
@@ -388,8 +489,15 @@ const ModelObjectPtrs& Cut::perform_with_plane()
                 std::find(m_cut_volume_idxs.begin(), m_cut_volume_idxs.end(), int(vol_idx)) == m_cut_volume_idxs.end())
                 process_untouched_volume(volume, instance_matrix, inverse_cut_matrix, m_cut_matrix, upper);
             else
-                process_solid_part_cut(volume, instance_matrix, m_cut_matrix, m_attributes, upper, lower);
+                split_solid_volume(volume, instance_matrix, upper, lower, ok);
         }
+    }
+
+    // A failed split (e.g. a mesh boolean that could not be computed) aborts the cut and leaves the
+    // source object untouched.
+    if (!ok) {
+        m_model.clear_objects();
+        return m_model.objects;
     }
 
     // Post-process cut parts
@@ -439,6 +547,26 @@ const ModelObjectPtrs& Cut::perform_with_plane()
 
     BOOST_LOG_TRIVIAL(trace) << "ModelObject::cut - end";
 
+    return m_model.objects;
+}
+
+const ModelObjectPtrs& Cut::perform_with_plane()
+{
+    return perform_split([this](const ModelVolume* volume, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool& ok) {
+        ok = true;
+        process_solid_part_cut(volume, instance_matrix, m_cut_matrix, m_attributes, upper, lower);
+    });
+}
+
+const ModelObjectPtrs& Cut::perform_with_shape(const TriangleMesh& cutter)
+{
+    bool hit = false;
+    perform_split([this, &cutter, &hit](const ModelVolume* volume, const Transform3d& instance_matrix, ModelObject* upper, ModelObject* lower, bool&) {
+        process_shape_cut(volume, instance_matrix, m_cut_matrix, cutter, m_attributes, upper, lower, hit);
+    });
+    // If the shape missed every part there is nothing to split, so report the empty result to the caller.
+    if (!hit)
+        m_model.clear_objects();
     return m_model.objects;
 }
 

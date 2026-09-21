@@ -233,8 +233,8 @@ Cut **one part** of a merged "Assembly" object without cutting the whole assembl
 milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md` (gitignored); summary in
 `docs/superpowers/ME-roadmap.md`.
 
-- **Branch**: `port/CUT-2`, stacked on `port/CUT-1` (CUT-1 is **not merged yet** — merge CUT-1
-  into `port/integration` first, then CUT-2, both `--no-ff`).
+- **Branch**: `port/CUT-2`, stacked on `port/CUT-1`. Both are now merged `--no-ff` into
+  `port/integration` (CUT-1 `08a73dd0d3`, CUT-2 `353e64f18c`, pushed).
 - **UX**: select a part in the ObjectList/canvas, then open Cut; only that part is cut; the assembly
   stays **one object** with the part replaced by its two pieces; the preview shows only the
   selected part.
@@ -278,3 +278,73 @@ milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md` (gitignored)
   No. No need to delete `last_backup_path` by hand anymore.
 - Verified: with a dead-lock backup present, a new MCP-enabled launch started normally and the
   backup dir was removed by the handler.
+
+---
+
+## 10. CUT-3 — shaped "cookie cutter" split ✅ DONE (branch `port/CUT-3`, pushed)
+
+Split an object with a closed profile centered on the cut plane instead of a half-space: the
+keep-upper piece is the part **inside** the cutter, the keep-lower piece is the body **outside** it
+(a matching shaped hole). Profiles are built-in primitives — circle, square, hexagon.
+
+- **Branch**: `port/CUT-3` off `port/integration` (`353e64f18c`). Merge `--no-ff` into
+  `port/integration`.
+- **Commits**: `c5c142d30d` (**M1** library + tests), `c17eed20ac` (**M2+M3** gizmo mode/UI/apply +
+  MCP), `9157b0b926` docs, `d2832ade96` preview/drag/clipper UX, `9ca1b8a26a` crash fix (ObjectClipper
+  plane left null in shape mode), `d2d74bc9db` carry over the parts the shape misses,
+  `1749c97350`/`f7783fa654`/`04f14383b6` Shape follow-up (below).
+- **Library** (`CutUtils.{hpp,cpp}`):
+  - `perform_split(std::function<...>)` — shared driver extracted from `perform_with_plane`; a
+    splitter fills the keep-upper/lower objects for one solid volume and sets `ok=false` on failure,
+    which aborts the whole cut and leaves the model untouched. `perform_with_plane` now just supplies
+    the plane `process_solid_part_cut` splitter (behaviour unchanged — old tests still pass).
+  - `perform_with_shape(const TriangleMesh& cutter)` — splitter runs `MeshBoolean::mcut::make_boolean`
+    (`INTERSECTION` -> inside, `A_NOT_B` -> outside) per model part, merges the returned pieces, and
+    reuses the plane path's post-processing (KeepAsParts single object, `post_process`, paint remap,
+    `finalize`). Returns **empty** if either side is empty (boolean failed / shape misses the part).
+  - `make_cookie_cutter(CutShapeKind, size, half_height)` — closed origin-centred prism in cut space:
+    `its_make_cylinder(r, 2H, 64)` (circle), `its_make_cube` (square), `its_make_cylinder(size/sqrt3,
+    2H, 6)` (hexagon, across-flats = size). No star/polygon helper needed for this profile set.
+- **Gizmo** (`GLGizmoCut`): `CutMode::cutShape` appended (index **2**, so 0=Planar / 1=Dovetail are
+  unchanged); `m_shape_kind` (0 circle, 1 square, 2 hexagon), `m_shape_size`. Shape UI adds a profile
+  combo + size slider, keeps *Cut position* / *Pick flat face*, and disables connectors and *Place on
+  cut* (keep / cut-to-parts / flip still apply). Preview is **outline only** (`render_shape_outline`,
+  a cached `LineLoop`, run only while shape mode is active) — the boolean runs on Apply. The clipper
+  cross-section is disabled in shape mode. Single-part selection reuses the CUT-2 volume filter.
+  `perform_cut` captures the mode before `reset_all_gizmos` and dispatches to `perform_with_shape`;
+  on an empty result it warns and returns without touching the model (the undo snapshot is still
+  pushed — minor).
+- **MCP**: `cut_gizmo` gained `set_shape` (`shape_kind`, `shape_size`; also switches to mode 2),
+  `status` reports `shape_kind`/`shape_size`, mode description is now "0=Planar, 1=Dovetail, 2=Shape".
+- **Tests**: `[CutUtils]` was 12 cases / 55 assertions at M1-M3 (14 / 63 after the follow-up below). New: cutter prisms are closed/centred;
+  a cylinder cutter splits a cube into an inside plug (~1568 mm³, a 64-gon) + outside body with the
+  volumes tiling the cube; single-part shape cut leaves the other part untouched; a shape that misses
+  the   object returns no objects. The split test also asserts the pieces are closed
+  (`its_num_open_edges == 0`) and have positive volume.
+- **MCP end-to-end** (two-cube assembly, `twoparts2.3mf`):
+  - single-part circle D6 on part 0 -> one object with `Object_1_A` (vol 282.29 = 64-gon r3 x h10),
+    `Object_1_B` (717.71 = 1000-282.29), untouched `Object_1_2` (1000).
+  - whole-object hexagon D20 -> two objects, inside 750 each + outside 250 each (exactly the
+    `2.5x10x10` slab cut by the hexagon flat), total 2000 = the two cubes.
+- **Shape follow-up** (`1749c97350`, `f7783fa654`, `04f14383b6`):
+  - the cutter preview is rotation-proof: `shape_half_height()` is the max distance from the plane to
+    the bbox corners (not a projection along the normal), and `init_picking_models()` builds the
+    pickable prism from the depth-aware `make_cut_shape()`, so it always pierces and matches the
+    applied boolean.
+  - Shape mode drops the planar cross-section and plane part-preview; instead it highlights only the
+    region the shape will cut (`object ∩ cutter`). `render_shape_highlight()` runs the mcut
+    `INTERSECTION` in the cut frame (no-offset instance matrix), bakes it back with
+    `translation_transform(m_plane_center) * m_rotation_m`, and draws it as a translucent cyan
+    overlay with polygon offset. It is cached by a signature over plane center/rotation/profile/
+    size/through/depth and rebuilt on a 40 ms throttle so it tracks dragging.
+  - *Through* checkbox (default on) + *Depth* slider: `make_cookie_cutter(kind, size, z_min, z_max)`
+    builds a one-sided prism reaching `depth` into the object (side picked from the bbox-vs-plane
+    normal), so the cut is a blind pocket whose plug is only `depth` tall. MCP `set_shape` accepts
+    optional `through`/`depth`.
+  - tests: `[CutUtils]` is now 14 cases / 63 assertions (adds the per-volume carry-over and the
+    depth-limited pocket cases).
+- **Caveats**: mcut needs closed manifold input; open meshes can still return garbage rather than an
+  empty result, so the existing non-manifold repair dialog in `perform_cut` still applies. Modifiers
+  reuse the plane-based `process_modifier_cut`. Paint remap is the CUT-2 simplification. `cut_id` is
+  invalidated (the profile is not stored) — not a re-editable parametric cut.
+
