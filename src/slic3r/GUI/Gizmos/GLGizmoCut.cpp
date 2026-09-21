@@ -400,7 +400,8 @@ bool GLGizmoCut3D::on_mouse(const wxMouseEvent &mouse_event)
                 }
 
             }
-            else if (mouse_event.LeftUp() && !m_was_cut_plane_dragged && !m_was_contour_selected)
+            else if (mouse_event.LeftUp() && !m_was_cut_plane_dragged && !m_was_contour_selected
+                     && CutMode(m_mode) != CutMode::cutShape)
                 flip_cut_plane();
         }
 
@@ -525,17 +526,20 @@ void GLGizmoCut3D::update_clipper()
     normal.normalize();
     m_cut_normal = normal;
 
-    // CUT-3: Shape mode shows only the cutter solid - no planar cross-section / cyan-pink halves.
-    if (CutMode(m_mode) != CutMode::cutShape) {
-        // calculate normal and offset for clipping plane
-        Vec3d beg = m_bb_center;
-        beg[Z] -= m_radius;
-        rotate_vec3d_around_plane_center(beg);
+    // calculate normal and offset for clipping plane
+    Vec3d beg = m_bb_center;
+    beg[Z] -= m_radius;
+    rotate_vec3d_around_plane_center(beg);
 
-        m_clp_normal  = normal;
-        double offset = normal.dot(m_plane_center);
-        double dist   = normal.dot(beg);
+    m_clp_normal  = normal;
+    double offset = normal.dot(m_plane_center);
+    double dist   = normal.dot(beg);
 
+    // CUT-3: Shape mode shows only the cutter solid - the planar colour clip plane (cyan/pink
+    // halves) and the connectors projection are planar-only. The ObjectClipper plane is still
+    // kept up to date, because unproject_on_cut_plane() reads it (it is null until this call).
+    const bool shape_mode = CutMode(m_mode) == CutMode::cutShape;
+    if (!shape_mode) {
         m_parent.set_color_clip_plane(normal, offset);
 
         if (!is_looking_forward()) {
@@ -551,11 +555,12 @@ void GLGizmoCut3D::update_clipper()
             offset       = normal.dot(m_plane_center);
             dist         = normal.dot(beg);
         }
-
-        m_c->object_clipper()->set_range_and_pos(normal, offset, dist);
-
-        put_connectors_on_cut_plane(normal, offset);
     }
+
+    m_c->object_clipper()->set_range_and_pos(normal, offset, dist);
+
+    if (!shape_mode)
+        put_connectors_on_cut_plane(normal, offset);
 
     if (m_raycasters.empty())
         on_register_raycasters_for_picking();
@@ -4310,6 +4315,10 @@ bool GLGizmoCut3D::unproject_on_cut_plane(const Vec2d& mouse_position, Vec3d& po
 
     // Calculate intersection with the clipping plane.
     const ClippingPlane* cp = m_c->object_clipper()->get_clipping_plane(true);
+    // The clipping plane is null until ObjectClipper::set_range_and_pos() has run; guard against
+    // dereferencing it (e.g. Shape mode before the first clipper update).
+    if (cp == nullptr)
+        return false;
     Vec3d point;
     Vec3d direction;
     Vec3d hit;
