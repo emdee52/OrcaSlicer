@@ -4,6 +4,7 @@
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 
 #include <cmath>
 
@@ -164,5 +165,35 @@ TEST_CASE("Cutting without a volume filter still cuts every part", "[CutUtils]")
     REQUIRE(results.size() == 1);
     // Both cubes straddle z = 5, so each is split -> four pieces.
     CHECK(results.front()->volumes.size() == 4);
+}
+
+TEST_CASE("A volume-filtered cut keeps painting on the untouched parts", "[CutUtils]")
+{
+    Model        model;
+    ModelObject *obj = make_two_part_object(model);
+
+    // Paint a facet of the part that will NOT be cut (volume 1). reset_extra_facets() wipes paint
+    // on every volume during the cut, so this guards the KeepPaint remap for carried-over parts.
+    {
+        TriangleSelector selector(obj->volumes[1]->mesh());
+        selector.set_facet(0, EnforcerBlockerType::ENFORCER);
+        obj->volumes[1]->supported_facets.set_data(selector.serialize());
+    }
+    REQUIRE(obj->volumes[1]->is_fdm_support_painted());
+
+    const ModelObjectCutAttributes attrs = ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower |
+                                           ModelObjectCutAttribute::KeepAsParts | ModelObjectCutAttribute::KeepPaint;
+    Cut                    cut(obj, 0, translation_transform(Vec3d(0., 0., 5.)), attrs, { 0 });
+    const ModelObjectPtrs &results = cut.perform_with_plane();
+
+    REQUIRE(results.size() == 1);
+    const ModelObject *result = results.front();
+
+    int painted_parts = 0;
+    for (const ModelVolume *v : result->volumes)
+        if (v->is_fdm_support_painted())
+            ++painted_parts;
+
+    CHECK(painted_parts == 1);
 }
 

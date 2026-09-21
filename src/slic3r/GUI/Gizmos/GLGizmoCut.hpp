@@ -117,6 +117,12 @@ class GLGizmoCut3D : public GLGizmoBase
     bool m_rotate_upper{ false };
     bool m_rotate_lower{ false };
 
+    // CUT-2: when the user selected a single MODEL_PART volume of a multi-part object, only that
+    // part is cut and every other part is carried into the single result object untouched. Empty
+    // means the whole object/instance is cut (stock behaviour). Requires KeepAsParts.
+    std::vector<int> m_cut_volume_idxs;
+    bool is_single_part_cut() const { return !m_cut_volume_idxs.empty(); }
+
     // Input params for cut with tongue and groove
     Cut::Groove m_groove;
     bool m_groove_editing { false };
@@ -266,6 +272,10 @@ public:
     void   gizmo_set_keep_lower(bool keep) { m_keep_lower = keep; }
     bool   gizmo_keep_as_parts() const { return m_keep_as_parts; }
     void   gizmo_set_keep_as_parts(bool keep) { m_keep_as_parts = keep; }
+    // CUT-2 single-part cut: -1 = whole object, otherwise a MODEL_PART volume index.
+    bool   gizmo_single_part() const { return is_single_part_cut(); }
+    int    gizmo_cut_volume() const { return m_cut_volume_idxs.empty() ? -1 : m_cut_volume_idxs.front(); }
+    void   gizmo_set_cut_volume(int part_index);
     Vec3d  gizmo_plane_center() const { return m_plane_center; }
     Vec3d  gizmo_plane_normal() const { return m_cut_normal; }
     double gizmo_plane_offset() const { return m_cut_normal.dot(m_plane_center); }
@@ -437,6 +447,12 @@ private:
     void render_face_highlight();
 
     void toggle_model_objects_visibility();
+
+    // True when exactly one MODEL_PART volume (not a modifier/connector) of a multi-part object is
+    // selected. Drives whether the Cut tool cuts a single part.
+    bool is_single_model_part_selection() const;
+    // Derives m_cut_volume_idxs from the current selection (empty when the whole object is selected).
+    void update_cut_volume_idxs();
 
     std::vector<Vec3i32> offset_indices(const std::vector<Vec3i32>& base_indices, size_t vo);
     indexed_triangle_set its_make_groove_plane();

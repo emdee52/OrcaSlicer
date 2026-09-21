@@ -241,6 +241,11 @@ public:
     void set_position_by_ratio(double pos, bool keep_normal, bool vertical_normal=false);
     void set_range_and_pos(const Vec3d& cpl_normal, double cpl_offset, double pos);
     void set_behavior(bool hide_clipped, bool fill_cut, double contour_width);
+
+    // Restricts clipping and contour queries to a subset of the object's model-volume indices
+    // (indices into selection_info()->model_object()->volumes). Empty = all volumes. Used by the
+    // Cut tool to preview only the part that is being cut (CUT-2).
+    void set_volume_filter(std::vector<int> idxs) { m_volume_idxs = std::move(idxs); }
     
     int get_number_of_contours() const;
     std::vector<Vec3d> point_per_contour() const;
@@ -260,6 +265,18 @@ private:
     double m_clp_ratio = 0.;
     double m_active_inst_bb_radius = 0.;
     bool m_hide_clipped = true;
+    // Empty = clip every volume. m_clippers is always built for all volumes (index aligned with
+    // the model object's volumes), so this filter is applied when reading them, not when building.
+    std::vector<int> m_volume_idxs;
+
+    bool is_volume_included(size_t volume_idx) const {
+        if (m_volume_idxs.empty())
+            return true;
+        for (int i : m_volume_idxs)
+            if (i == int(volume_idx))
+                return true;
+        return false;
+    }
 };
 
 } // namespace CommonGizmosDataObjects

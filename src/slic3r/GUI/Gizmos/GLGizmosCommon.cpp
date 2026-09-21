@@ -305,7 +305,10 @@ void ObjectClipper::render_cut(const std::vector<size_t>* ignore_idxs) const
     
     std::vector<size_t> ignore_idxs_local = ignore_idxs ? *ignore_idxs : std::vector<size_t>();
 
-    for (auto& clipper : m_clippers) {
+    for (size_t vol_idx = 0; vol_idx < m_clippers.size(); ++vol_idx) {
+        if (!is_volume_included(vol_idx))
+            continue;
+        auto& clipper = m_clippers[vol_idx];
         Geometry::Transformation trafo = inst_trafo * clipper.second;
         trafo.set_offset(trafo.get_offset() + Vec3d(0., 0., sel_info->get_sla_shift()));
         clipper.first->set_plane(*m_clp);
@@ -333,8 +336,9 @@ void ObjectClipper::set_position_to_init_layer()
 int ObjectClipper::get_number_of_contours() const
 {
     int sum = 0;
-    for (const auto& [clipper, trafo] : m_clippers)
-        sum += clipper->get_number_of_contours();
+    for (size_t i = 0; i < m_clippers.size(); ++i)
+        if (is_volume_included(i))
+            sum += m_clippers[i].first->get_number_of_contours();
     return sum;
 }
 
@@ -343,25 +347,34 @@ int ObjectClipper::is_projection_inside_cut(const Vec3d& point) const
     if (m_clp_ratio == 0.)
         return -1;
     int idx_offset = 0;
-    for (const auto& [clipper, trafo] : m_clippers) {
-        if (int idx = clipper->is_projection_inside_cut(point); idx != -1)
+    for (size_t i = 0; i < m_clippers.size(); ++i) {
+        if (!is_volume_included(i))
+            continue;
+        if (int idx = m_clippers[i].first->is_projection_inside_cut(point); idx != -1)
             return idx_offset + idx;
-        idx_offset += clipper->get_number_of_contours();
+        idx_offset += m_clippers[i].first->get_number_of_contours();
     }
     return -1;
 }
 
 bool ObjectClipper::has_valid_contour() const
 {
-    return m_clp_ratio != 0. && std::any_of(m_clippers.begin(), m_clippers.end(), [](const auto& cl) { return cl.first->has_valid_contour(); });
+    if (m_clp_ratio == 0.)
+        return false;
+    for (size_t i = 0; i < m_clippers.size(); ++i)
+        if (is_volume_included(i) && m_clippers[i].first->has_valid_contour())
+            return true;
+    return false;
 }
 
 std::vector<Vec3d> ObjectClipper::point_per_contour() const
 {
     std::vector<Vec3d> pts;
 
-    for (const auto& clipper : m_clippers) {
-        const std::vector<Vec3d> pts_clipper = clipper.first->point_per_contour();
+    for (size_t i = 0; i < m_clippers.size(); ++i) {
+        if (!is_volume_included(i))
+            continue;
+        const std::vector<Vec3d> pts_clipper = m_clippers[i].first->point_per_contour();
         pts.insert(pts.end(), pts_clipper.begin(), pts_clipper.end());;
     }
     return pts;

@@ -226,7 +226,7 @@ GLGizmoCut3D *active_cut_gizmo(bool open_if_needed)
 
     if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Cut) {
         Selection &sel = canvas->get_selection();
-        if (!sel.is_single_full_instance() && !plater->model().objects.empty()) {
+        if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
             int oid = sel.get_object_idx();
             if (oid < 0)
                 oid = 0;
@@ -247,6 +247,16 @@ GLGizmoCut3D *active_cut_gizmo(bool open_if_needed)
 
 nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
 {
+    // CUT-2: list the model parts that can be cut individually.
+    nlohmann::json parts = nlohmann::json::array();
+    int            object_id = canvas != nullptr ? canvas->get_selection().get_object_idx() : -1;
+    if (canvas != nullptr && object_id >= 0 && object_id < int(canvas->get_selection().get_model()->objects.size())) {
+        const ModelObject *mo = canvas->get_selection().get_model()->objects[object_id];
+        for (size_t i = 0; i < mo->volumes.size(); ++i)
+            if (mo->volumes[i]->is_model_part() && !mo->volumes[i]->is_cut_connector())
+                parts.push_back({{"index", int(i)}, {"name", mo->volumes[i]->name}});
+    }
+
     return {
         {"mode", g.gizmo_get_mode()},
         {"keep_upper", g.gizmo_keep_upper()},
@@ -256,7 +266,10 @@ nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
         {"plane_center", vec3_json(g.gizmo_plane_center())},
         {"plane_offset", g.gizmo_plane_offset()},
         {"pick_face_mode", g.gizmo_pick_face_mode()},
-        {"object_id", canvas != nullptr ? canvas->get_selection().get_object_idx() : -1},
+        {"single_part", g.gizmo_single_part()},
+        {"part", g.gizmo_cut_volume()},
+        {"parts", parts},
+        {"object_id", object_id},
     };
 }
 
@@ -412,8 +425,10 @@ void OrcaMCPServer::register_gizmo_tools()
 
     register_tool({
         "cut_gizmo",
-        "Control the Cut tool. Actions: 'open' (activate it; selects the object if needed), "
-        "'status' (plane pose, keep flags, mode), 'set_plane_normal' (align the cut plane to a "
+        "Control the Cut tool. Actions: 'open' (activate it; selects the object if needed; optional "
+        "'part' selects a single part), "
+        "'status' (plane pose, keep flags, mode, cut part), 'set_part' (cut only one model part of "
+        "a multi-part object; -1 = whole object), 'set_plane_normal' (align the cut plane to a "
         "normal, e.g. a face normal - the same path as the interactive 'Pick flat face' mode), "
         "'set_plane_center' (plane point), 'shift_cut' (move the plane along its normal by delta mm), "
         "'set_mode' (0=Planar, 1=Dovetail), 'set_keep' (keep_upper/keep_lower/keep_as_parts), "
@@ -427,8 +442,9 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | pick_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_part | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | pick_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
+                {"part", {{"type", "integer"}, {"description", "Model-volume index (see status.parts) to cut alone, for action=set_part or open. -1 = whole object."}}},
                 {"normal", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space cut-plane normal, for action=set_plane_normal."}}},
                 {"center", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space plane point, for action=set_plane_center."}}},
                 {"delta", {{"type", "number"}, {"description", "Signed distance mm to move the plane along its normal, for action=shift_cut."}}},
@@ -471,7 +487,13 @@ void OrcaMCPServer::register_gizmo_tools()
 
                 auto need = [&](const char *key) { return params.contains(key); };
 
-                if (action == "set_plane_normal") {
+                if (action == "set_part") {
+                    if (!need("part"))
+                        return {{"status", "error"}, {"error", "needs 'part' (model-volume index; -1 = whole object)"}};
+                    g->gizmo_set_cut_volume(params["part"].get<int>());
+                } else if (action == "open" && need("part")) {
+                    g->gizmo_set_cut_volume(params["part"].get<int>());
+                } else if (action == "set_plane_normal") {
                     Vec3d n;
                     if (!need("normal") || !json_vec3(params["normal"], n))
                         return {{"status", "error"}, {"error", "needs 'normal': [x,y,z]"}};
