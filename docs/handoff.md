@@ -227,32 +227,46 @@ Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` 
 
 ---
 
-## 8. CUT-2 — cut a single part of a multi-part object (IN PROGRESS — resume at Milestone 2)
+## 8. CUT-2 — cut a single part of a multi-part object ✅ DONE (branch `port/CUT-2`, pushed)
 
-The user wants to cut **one part** of a merged "Assembly" object without cutting the whole
-assembly. Full design + milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md`
-(gitignored); summary in `docs/superpowers/ME-roadmap.md`. **Read the plan doc first.**
+Cut **one part** of a merged "Assembly" object without cutting the whole assembly. Full design +
+milestone tracker: `docs/superpowers/CUT-2-single-part-cut-plan.md` (gitignored); summary in
+`docs/superpowers/ME-roadmap.md`.
 
-- **Branch**: `port/CUT-2`, stacked on `port/CUT-1` (CUT-1 is not merged yet — merge CUT-1 into
-  `port/integration` first, then CUT-2, both `--no-ff`).
-- **Agreed UX**: select a part in the ObjectList/canvas, then open Cut; only that part is cut; the
-  assembly stays **one object** with the part replaced by its two pieces; preview shows only the
+- **Branch**: `port/CUT-2`, stacked on `port/CUT-1` (CUT-1 is **not merged yet** — merge CUT-1
+  into `port/integration` first, then CUT-2, both `--no-ff`).
+- **UX**: select a part in the ObjectList/canvas, then open Cut; only that part is cut; the assembly
+  stays **one object** with the part replaced by its two pieces; the preview shows only the
   selected part.
-- **Commits so far**:
-  - `bc00ed12ba` — MCP: auto-decline the startup restore prompt when MCP is enabled.
-  - `dda15801eb` — **Milestone 1**: `Cut` volume filter + `process_untouched_volume` + tests.
-- **Milestone 1 is DONE and verified** (`[CutUtils]` 7/7). The library API is:
-  `Cut(object, instance, cut_matrix, attributes, const std::vector<int>& cut_volume_idxs = {})`.
-  Empty list = old behaviour (cut all parts). Non-empty = only those model parts are cut; the rest
-  are carried into the single result object untouched. **Requires `KeepAsParts`.**
-- **Resume at Milestone 2** (gizmo): allow `on_is_activable()` on `selection.is_single_volume()`;
-  track `m_cut_volume_idxs`; in `perform_cut` force
-  `KeepAsParts | KeepPaint | InvalidateCutInfo`, drop connectors/place/flip, pass the filter;
-  scope the preview/`PartSelection` to the selected part and show only it; add a "Cutting part"
-  note and disable the now-meaningless controls. File refs in the plan doc §2/M2.
-- **Watch out**: `reset_extra_facets()` wipes paint on *all* volumes — rely on `KeepPaint`+`finalize`
-  and test the untouched parts; connectors are disabled in single-part mode (ill-defined across
-  parts); a part is object-level so all instances of the object get it cut; invalidate `cut_id`.
+- **Commits**: `bc00ed12ba` (MCP startup restore-prompt auto-decline), `dda15801eb` (**M1**:
+  `Cut` volume filter + `process_untouched_volume` + tests), `13acddef21` (**M2+M3**: gizmo
+  activation/apply/UI/preview + MCP `set_part`).
+- **Library API** (M1): `Cut(object, instance, cut_matrix, attributes, const std::vector<int>&
+  cut_volume_idxs = {})`. Empty = old behaviour (cut all parts); non-empty = only those model
+  parts are cut and the rest are carried into the single result object untouched. **Requires
+  `KeepAsParts`.**
+- **M2 (gizmo)**: `on_is_activable()` also accepts `is_single_model_part_selection()` (one
+  `MODEL_PART` volume of a multi-part object — modifiers/connectors excluded). `m_cut_volume_idxs`
+  is derived from the selection on activate and in `data_changed`. `perform_cut` forces
+  `KeepUpper|KeepLower|KeepAsParts|KeepPaint|InvalidateCutInfo`, drops connectors/place/flip and
+  invalidates the result `cut_id`. Preview: the other volumes are hidden via
+  `toggle_selected_volume_visibility`, and `ObjectClipper` gained a `set_volume_filter()` so only
+  the selected part's cross-section is drawn. UI shows "Cutting part: <name>" and disables the
+  meaningless controls (mode combo, connectors, after-cut, cut-to-parts is shown forced on).
+  Right-click contour mode is suppressed in single-part mode.
+- **M3 (MCP)**: `cut_gizmo` gained `set_part` (`part` = model-volume index, `-1` = whole object)
+  and an optional `part` on `open`; `status` reports `part`, `single_part` and `parts`
+  (index + name). `set_part` changes the volume selection, so `on_is_activable` is what makes a
+  part openable.
+- **Verified**: `[CutUtils]` 8 cases / 26 assertions (added a filtered-cut paint-preservation
+  case). MCP end-to-end on a hand-built two-cube assembly: `set_part 0` scopes the plane to that
+  part (center x=128 vs 143 for part 1); `apply` yields one object with 3 parts
+  (`_A`, `_B`, untouched `_1_2`), untouched part world bbox unchanged; whole-object apply still
+  produces two objects (stock). Interactive rendering/click is a user click-test.
+- **Watch-outs kept**: `reset_extra_facets()` wipes paint on all volumes — `KeepPaint`+`finalize`
+  remap restores the untouched part (now tested); connectors are disabled in single-part mode; a
+  part is object-level so all instances of the object get it cut; the result `cut_id` is
+  invalidated so it is not a restorable parametric cut.
 
 ## 9. Restore-prompt automation (`bc00ed12ba`)
 
