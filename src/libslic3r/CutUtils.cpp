@@ -3,6 +3,7 @@
 #include "Geometry.hpp"
 #include "libslic3r.h"
 #include "Model.hpp"
+#include "TriangleMesh.hpp"
 #include "TriangleMeshSlicer.hpp"
 #include "TriangleSelector.hpp"
 #include "ObjectID.hpp"
@@ -12,6 +13,17 @@
 namespace Slic3r {
 
 using namespace Geometry;
+
+Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, const Transform3d& trafo)
+{
+    if (facet_idx < 0 || facet_idx >= int(its.indices.size()))
+        return Vec3d::UnitZ();
+
+    const Vec3d    local         = its_face_normal(its, facet_idx).cast<double>();
+    const Matrix3d normal_matrix = trafo.linear().inverse().transpose();
+    Vec3d          world         = normal_matrix * local;
+    return world.norm() > 1e-12 ? world.normalized() : Vec3d::UnitZ();
+}
 
 static void apply_tolerance(ModelVolume* vol)
 {

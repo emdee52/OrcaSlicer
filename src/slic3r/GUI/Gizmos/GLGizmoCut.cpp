@@ -275,10 +275,65 @@ std::string GLGizmoCut3D::get_tooltip() const
     return tooltip;
 }
 
+// --- MCP control surface (see OrcaMCPGizmoTools.cpp) ---
+
+void GLGizmoCut3D::gizmo_set_mode(int mode)
+{
+    if (mode < 0 || mode >= int(m_modes.size()) || mode == int(m_mode))
+        return;
+    switch_to_mode(size_t(mode));
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoCut3D::gizmo_set_plane_normal(const Vec3d& normal)
+{
+    apply_plane_orientation(normal, m_plane_center);
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_set_plane_center(const Vec3d& center)
+{
+    set_center(center);
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoCut3D::gizmo_flip_plane()
+{
+    flip_cut_plane();
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_reset_plane()
+{
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Reset cutting plane"), UndoRedo::SnapshotType::GizmoAction);
+    reset_cut_plane();
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::gizmo_apply()
+{
+    perform_cut(m_parent.get_selection());
+}
+
 bool GLGizmoCut3D::on_mouse(const wxMouseEvent &mouse_event)
 {
     Vec2i32 mouse_coord(mouse_event.GetX(), mouse_event.GetY());
     Vec2d mouse_pos = mouse_coord.cast<double>();
+
+    // Face-pick mode: the next left click aligns the cut plane to the clicked facet.
+    if (m_pick_face_mode) {
+        if (mouse_event.LeftDown()) {
+            pick_face_at(mouse_pos);
+            return true;
+        }
+        if (mouse_event.RightDown()) {
+            m_pick_face_mode = false;
+            m_parent.set_as_dirty();
+            return true;
+        }
+    }
 
     if (mouse_event.ShiftDown() && mouse_event.LeftDown())
         return gizmo_event(SLAGizmoEventType::LeftDown, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), mouse_event.CmdDown());
@@ -1094,6 +1149,8 @@ void GLGizmoCut3D::render_model(GLModel& model, const ColorRGBA& color, Transfor
         shader->set_uniform("view_model_matrix", view_model_matrix);
         shader->set_uniform("emission_factor", 0.2f);
         shader->set_uniform("projection_matrix", wxGetApp().plater()->get_camera().get_projection_matrix());
+        // gouraud_light shades from view_normal_matrix; set it for this model's own transform.
+        shader->set_uniform("view_normal_matrix", Matrix3d(view_model_matrix.matrix().block(0, 0, 3, 3).inverse().transpose()));
 
         model.set_color(color);
         model.render();
@@ -1418,6 +1475,11 @@ void GLGizmoCut3D::on_set_state()
             oc->set_behavior(true, true, 0.);
             oc->release();
         }
+        m_pick_face_mode = false;
+        m_face_highlight.reset();
+        m_hover_volume = nullptr;
+        m_hover_mv     = nullptr;
+        m_hover_facet  = -1;
         m_selected.clear();
         m_parent.set_use_color_clip_plane(false);
         //m_c->selection_info()->set_use_shift(false);
@@ -2143,7 +2205,14 @@ void GLGizmoCut3D::PartSelection::render(const Vec3d* normal, GLModel& sphere_mo
             if (!m_parts[id].is_modifier && normal && ((is_looking_forward && m_parts[id].selected) ||
                                                       (!is_looking_forward && !m_parts[id].selected)   ) )
                 continue;
-            shader->set_uniform("view_model_matrix", view_inst_matrix * model_object()->volumes[id]->get_matrix());
+            const Transform3d part_matrix = model_object()->volumes[id]->get_matrix();
+            shader->set_uniform("view_model_matrix", view_inst_matrix * part_matrix);
+            // gouraud_light needs the normal matrix. The real object volumes are hidden while the parts
+            // are drawn, so without setting it the parts keep a stale (previous camera) normal matrix
+            // and the lighting appears frozen in object space.
+            const Matrix3d view_normal_matrix = view_inst_matrix.matrix().block(0, 0, 3, 3) *
+                                                part_matrix.matrix().block(0, 0, 3, 3).inverse().transpose();
+            shader->set_uniform("view_normal_matrix", view_normal_matrix);
             if (m_parts[id].is_modifier) {
                 glsafe(::glEnable(GL_BLEND));
                 glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
@@ -2304,6 +2373,11 @@ void GLGizmoCut3D::on_render()
     }
 
     render_cut_line();
+
+    if (m_pick_face_mode) {
+        update_face_highlight();
+        render_face_highlight();
+    }
 
     m_selection_rectangle.render(m_parent);
 }
@@ -2491,6 +2565,234 @@ void GLGizmoCut3D::reset_cut_plane()
 
     reset_cut_by_contours();
     m_parent.request_extra_frame();
+}
+
+// Sets the cut-plane orientation so its +Z matches `normal` (world space) and rebuilds the
+// derived state around `center`. Used by face picking and by the MCP control surface.
+void GLGizmoCut3D::apply_plane_orientation(const Vec3d& normal, const Vec3d& center)
+{
+    const Vec3d n = (normal.allFinite() && normal.norm() > 1e-9) ? normal.normalized() : Vec3d::UnitZ();
+
+    Vec3d    axis;
+    double   angle = 0.;
+    Matrix3d rotation;
+    rotation_from_two_vectors(Vec3d::UnitZ(), n, axis, angle, &rotation);
+
+    m_rotation_m               = Transform3d(rotation);
+    m_transformed_bounding_box = transformed_bounding_box(center, m_rotation_m);
+    m_start_dragging_m         = m_rotation_m;
+    reset_cut_by_contours();
+    update_clipper();
+    m_parent.request_extra_frame();
+}
+
+bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolume*& volume, const ModelVolume*& mv, size_t& facet, Vec3d& hit_world)
+{
+    volume = nullptr;
+    mv     = nullptr;
+    facet  = 0;
+    hit_world = Vec3d::Zero();
+
+    const CommonGizmosDataObjects::SelectionInfo* sel_info = m_c->selection_info();
+    const ModelObject* mo = sel_info != nullptr ? sel_info->model_object() : nullptr;
+    if (mo == nullptr)
+        return false;
+
+    const Selection& selection = m_parent.get_selection();
+    const Camera&    camera    = wxGetApp().plater()->get_camera();
+
+    // Respect the cut clipping plane so only the visible half of the object is pickable.
+    const ClippingPlane* clipping = nullptr;
+    if (auto oc = m_c->object_clipper())
+        clipping = oc->get_clipping_plane();
+
+    double closest = std::numeric_limits<double>::max();
+    for (unsigned int idx : selection.get_volume_idxs()) {
+        const GLVolume* v = selection.get_volume(idx);
+        if (v == nullptr || v->mesh_raycaster == nullptr || v->is_modifier || v->is_sla_pad() || v->is_sla_support())
+            continue;
+        const int vi = v->volume_idx();
+        if (vi < 0 || vi >= int(mo->volumes.size()))
+            continue;
+
+        Vec3f  hit, normal;
+        size_t f = 0;
+        if (v->mesh_raycaster->unproject_on_mesh(mouse_position, v->world_matrix(), camera, hit, normal, clipping, &f)) {
+            const Vec3d  p = v->world_matrix() * hit.cast<double>();
+            const double d = (camera.get_position() - p).squaredNorm();
+            if (d < closest) {
+                closest   = d;
+                volume    = v;
+                mv        = mo->volumes[vi];
+                facet     = f;
+                hit_world = p;
+            }
+        }
+    }
+    return volume != nullptr;
+}
+
+bool GLGizmoCut3D::pick_face_at(const Vec2d& mouse_position)
+{
+    const GLVolume*    hit_volume = nullptr;
+    const ModelVolume* hit_mv     = nullptr;
+    size_t             hit_facet  = 0;
+    Vec3d              hit_world  = Vec3d::Zero();
+    if (!raycast_object_face(mouse_position, hit_volume, hit_mv, hit_facet, hit_world))
+        return false;
+
+    const Vec3d normal = facet_normal_in_world(hit_mv->mesh().its, int(hit_facet), hit_volume->world_matrix());
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Align cut plane to face"), UndoRedo::SnapshotType::GizmoAction);
+    apply_plane_orientation(normal, hit_world);
+    set_center(hit_world);
+
+    m_pick_face_mode = false;
+    m_face_highlight.reset();
+    m_hover_facet = -1;
+    return true;
+}
+
+// Facets coplanar with `facet`, reached by edge adjacency. Coplanarity uses the same
+// component-wise normal equality as the measure tool's plane grouping, so adjacent faces at even a
+// shallow angle are not merged.
+std::vector<int> GLGizmoCut3D::coplanar_region(const ModelVolume* mv, size_t facet)
+{
+    std::vector<int> region;
+    if (mv == nullptr)
+        return region;
+    const indexed_triangle_set& its      = mv->mesh().its;
+    const int                   n_facets = int(its.indices.size());
+    if (facet >= size_t(n_facets))
+        return region;
+
+    if (m_hover_mv != mv) {
+        m_hover_mv        = mv;
+        m_hover_normals   = its_face_normals(its);
+        m_hover_neighbors = its_face_neighbors(its);
+    }
+    if (int(m_hover_normals.size()) != n_facets || int(m_hover_neighbors.size()) != n_facets)
+        return region;
+
+    const size_t max_facets = 40000;
+    const Vec3f  seed_n     = m_hover_normals[facet];
+    const auto   is_same_normal = [&seed_n](const Vec3f& n) {
+        return std::abs(n.x() - seed_n.x()) < 0.001f && std::abs(n.y() - seed_n.y()) < 0.001f && std::abs(n.z() - seed_n.z()) < 0.001f;
+    };
+
+    std::vector<char> visited(n_facets, 0);
+    std::vector<int>  stack{ int(facet) };
+    region.reserve(256);
+    visited[facet] = 1;
+    while (!stack.empty() && region.size() < max_facets) {
+        const int f = stack.back();
+        stack.pop_back();
+        region.push_back(f);
+        for (int e = 0; e < 3; ++e) {
+            const int nb = m_hover_neighbors[f][e];
+            if (nb < 0 || nb >= n_facets || visited[nb])
+                continue;
+            if (is_same_normal(m_hover_normals[nb])) {
+                visited[nb] = 1;
+                stack.push_back(nb);
+            }
+        }
+    }
+    return region;
+}
+
+// Build a translucent patch over the coplanar region, lifted slightly along the normals to beat
+// z-fighting.
+void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
+{
+    m_face_highlight.reset();
+    const std::vector<int> region = coplanar_region(mv, facet);
+    if (region.empty())
+        return;
+
+    const Vec3f seed_n = m_hover_normals[facet];
+    const float lift   = 0.10f;
+    indexed_triangle_set highlight;
+    highlight.vertices.reserve(region.size() * 3);
+    highlight.indices.reserve(region.size());
+    int base = 0;
+    for (int f : region) {
+        const Vec3i32 tri = mv->mesh().its.indices[f];
+        Vec3f         n   = m_hover_normals[f];
+        const float   nl  = n.norm();
+        n = (nl > 1e-6f) ? (n / nl) : seed_n;
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[0]] + n * lift);
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[1]] + n * lift);
+        highlight.vertices.push_back(mv->mesh().its.vertices[tri[2]] + n * lift);
+        highlight.indices.emplace_back(base, base + 1, base + 2);
+        base += 3;
+    }
+    if (highlight.indices.empty())
+        return;
+    m_face_highlight.init_from(highlight);
+    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+}
+
+bool GLGizmoCut3D::gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal)
+{
+    const GLVolume*    volume = nullptr;
+    const ModelVolume* mv     = nullptr;
+    size_t             f      = 0;
+    Vec3d              hit    = Vec3d::Zero();
+    if (!raycast_object_face(screen_pos, volume, mv, f, hit))
+        return false;
+
+    facet         = int(f);
+    region_facets = int(coplanar_region(mv, f).size());
+    normal        = facet_normal_in_world(mv->mesh().its, facet, volume->world_matrix());
+    return true;
+}
+
+void GLGizmoCut3D::update_face_highlight()
+{
+    const GLVolume*    hover_volume = nullptr;
+    const ModelVolume* hover_mv     = nullptr;
+    size_t             hover_facet  = 0;
+    Vec3d              hit_world    = Vec3d::Zero();
+    const bool         hit = raycast_object_face(m_parent.get_local_mouse_position(), hover_volume, hover_mv, hover_facet, hit_world);
+
+    if (!hit) {
+        if (m_hover_volume != nullptr || m_face_highlight.is_initialized())
+            m_face_highlight.reset();
+        m_hover_volume = nullptr;
+        m_hover_mv     = nullptr;
+        m_hover_facet  = -1;
+        return;
+    }
+    if (hover_volume == m_hover_volume && int(hover_facet) == m_hover_facet)
+        return;
+
+    m_hover_volume = hover_volume;
+    m_hover_facet  = int(hover_facet);
+    build_face_highlight(hover_mv, hover_facet);
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoCut3D::render_face_highlight()
+{
+    if (!m_face_highlight.is_initialized() || m_hover_volume == nullptr)
+        return;
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    shader->start_using();
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_hover_volume->world_matrix());
+    m_face_highlight.render();
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
+    shader->stop_using();
 }
 
 void GLGizmoCut3D::invalidate_cut_plane()
@@ -2878,6 +3180,15 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
 
         if (mode == CutMode::cutPlanar) {
             ImGui::Separator();
+
+            if (m_imgui->button(m_pick_face_mode ? _L("Cancel face pick") : _L("Pick flat face"))) {
+                m_pick_face_mode = !m_pick_face_mode;
+                m_parent.set_as_dirty();
+            }
+            if (m_pick_face_mode) {
+                ImGui::SameLine();
+                m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, _L("Click a flat face to align the cut plane"));
+            }
 
             m_imgui->disabled_begin(!m_keep_upper || !m_keep_lower || m_keep_as_parts || (m_part_selection.valid() && m_part_selection.is_one_object()));
                 if (m_imgui->button(has_connectors ? _L("Edit connectors") : _L("Add connectors")))

@@ -94,7 +94,7 @@ class GLGizmoCut3D : public GLGizmoBase
     GLModel m_reference_radius;
     GLModel m_angle_arc;
 
-    Vec3d   m_cut_normal;
+    Vec3d   m_cut_normal{ Vec3d::UnitZ() };
 
     struct InvalidConnectorsStatistics
     {
@@ -136,6 +136,16 @@ class GLGizmoCut3D : public GLGizmoBase
     bool m_hide_cut_plane{ false };
     bool m_connectors_editing{ false };
     bool m_cut_plane_as_circle{ false };
+    // When on, the next left click on the object aligns the cut plane to the clicked facet.
+    bool m_pick_face_mode{ false };
+
+    // Translucent highlight of the flat face under the cursor while in pick-face mode.
+    GLModel              m_face_highlight;
+    const GLVolume*      m_hover_volume{ nullptr };
+    const ModelVolume*   m_hover_mv{ nullptr };
+    int                  m_hover_facet{ -1 };
+    std::vector<Vec3f>   m_hover_normals;
+    std::vector<Vec3i32> m_hover_neighbors;
 
     float m_connector_depth_ratio{ 3.f };
     float m_connector_size{ 2.5f };
@@ -247,6 +257,30 @@ class GLGizmoCut3D : public GLGizmoBase
 public:
     GLGizmoCut3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
 
+    // --- control surface for the embedded MCP cut_gizmo tool (see OrcaMCPGizmoTools.cpp) ---
+    int    gizmo_get_mode() const { return int(m_mode); }
+    void   gizmo_set_mode(int mode);
+    bool   gizmo_keep_upper() const { return m_keep_upper; }
+    void   gizmo_set_keep_upper(bool keep) { m_keep_upper = keep; }
+    bool   gizmo_keep_lower() const { return m_keep_lower; }
+    void   gizmo_set_keep_lower(bool keep) { m_keep_lower = keep; }
+    bool   gizmo_keep_as_parts() const { return m_keep_as_parts; }
+    void   gizmo_set_keep_as_parts(bool keep) { m_keep_as_parts = keep; }
+    Vec3d  gizmo_plane_center() const { return m_plane_center; }
+    Vec3d  gizmo_plane_normal() const { return m_cut_normal; }
+    double gizmo_plane_offset() const { return m_cut_normal.dot(m_plane_center); }
+    void   gizmo_set_plane_normal(const Vec3d& normal);
+    void   gizmo_set_plane_center(const Vec3d& center);
+    void   gizmo_flip_plane();     // swaps upper/lower
+    void   gizmo_reset_plane();
+    void   gizmo_apply();          // performs the cut with the current plane and options
+    bool   gizmo_pick_face_mode() const { return m_pick_face_mode; }
+    // Aligns the cut plane to the face at a screen position (same path as the interactive pick).
+    bool   gizmo_pick_face_at(const Vec2d& screen_pos) { return pick_face_at(screen_pos); }
+    // Introspection for the MCP tool: the face under a screen point and the size of its coplanar
+    // region (the hover highlight). Returns false if the ray missed the object.
+    bool   gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal);
+
     std::string get_tooltip() const override;
     bool unproject_on_cut_plane(const Vec2d& mouse_pos, Vec3d& pos, Vec3d& pos_world, bool respect_contours = true);
     bool gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down);
@@ -254,6 +288,9 @@ public:
     bool is_in_editing_mode() const override { return m_connectors_editing; }
     bool is_selection_rectangle_dragging() const override { return m_selection_rectangle.is_dragging(); }
     bool is_looking_forward() const;
+
+    // The face highlight follows the cursor, so the rendered frame must not be reused from cache.
+    bool render_follows_cursor() const override { return get_state() == On && m_pick_face_mode; }
 
     /// <summary>
     /// Drag of plane
@@ -383,6 +420,21 @@ private:
     void validate_connector_settings();
     bool process_cut_line(SLAGizmoEventType action, const Vec2d& mouse_position);
     void check_and_update_connectors_state();
+
+    // Aligns the cut-plane normal (from a face) and places its center. Used by face picking and MCP.
+    void apply_plane_orientation(const Vec3d& normal, const Vec3d& center);
+    // Raycasts the selected object and returns the closest visible volume, its model volume, the
+    // hit facet and the hit point (world space). Returns false if the ray did not hit the object.
+    bool raycast_object_face(const Vec2d& mouse_position, const GLVolume*& volume, const ModelVolume*& mv, size_t& facet, Vec3d& hit_world);
+    // Aligns the cut plane to the facet under the mouse. Returns false if the ray missed.
+    bool pick_face_at(const Vec2d& mouse_position);
+    // Facets coplanar with `facet` (same component-wise normal as the measure tool's plane
+    // grouping), reached by edge adjacency. Caches the per-volume normals/adjacency.
+    std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet);
+    // Hover highlight of the flat face under the cursor while in pick-face mode.
+    void update_face_highlight();
+    void build_face_highlight(const ModelVolume* mv, size_t facet);
+    void render_face_highlight();
 
     void toggle_model_objects_visibility();
 

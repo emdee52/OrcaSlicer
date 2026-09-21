@@ -159,3 +159,68 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
 - Next feature candidates (see the roadmap): cut-tool shape cuts (independent), bosses/ribs, local
   tolerance adjuster, mesh rim chamfer.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
+
+---
+
+## 7. CUT-1 — align the cut plane to a picked face (branch `port/CUT-1`, pushed)
+
+Built after ME-2 was merged (`port/integration` @ `cfc22945a8`). Independent of the holes work.
+
+Commits: `df87f01c06` (helper + test), `49431c3c6b` (gizmo + MCP), `242e670f48` (hover highlight
++ `pick_face`), `07bdf43b61` (coplanar-only highlight + `hover_face`).
+
+- **`facet_normal_in_world`** (`src/libslic3r/CutUtils.{hpp,cpp}`) — world-space outward normal
+  of a mesh facet via the inverse-transpose of the object-to-world linear part; correct under
+  non-uniform scale and mirrors. Tested in `tests/libslic3r/test_cututils.cpp` (perpendicularity
+  property + exact value + out-of-range fallback).
+- **`GLGizmoCut3D`** — "Pick flat face" button (planar mode) toggles a pick mode; the next left
+  click raycasts the selected object's volumes with `GLVolume::mesh_raycaster`/`world_matrix()`,
+  takes the closest hit and its world normal, then sets the plane orientation
+  (`Geometry::rotation_from_two_vectors(UnitZ, n)`) and the center to the click point. Right-click
+  cancels; snapshot "Align cut plane to face". `m_cut_normal` now defaults to `UnitZ` (it was
+  read before first `update_clipper()`).
+- **Hover highlight** (`242e670f48`, refined by `07bdf43b61`) — while pick mode is on,
+  `on_render` raycasts on each frame and draws a translucent patch over the facets **coplanar**
+  with the hovered facet, grown by edge adjacency. Coplanarity is the measure tool's component-wise
+  normal equality (`|Δn| < 0.001`, `Measure.cpp::is_same_normal`), so adjacent faces at even a
+  shallow angle are not merged (a 20° normal cone merged a chamfer with its wall — do not loosen
+  it). `render_follows_cursor()` disables frame skipping so it tracks the cursor; adjacency/normals
+  are cached per volume. The raycast respects the cut clipping plane (only the visible half is
+  pickable). `coplanar_region()` is the pure growth helper.
+- **MCP `cut_gizmo`** (`OrcaMCPGizmoTools.cpp`) — `open | status | set_plane_normal |
+  set_plane_center | shift_cut | set_mode | set_keep | flip | reset | apply | pick_face | hover_face
+  | close`; public control surface on `GLGizmoCut3D`. `apply` is wrapped in
+  `McpDialogSuppressionGuard` (the non-manifold repair dialog would deadlock the main-thread call).
+  `pick_face` runs the same raycast-and-align path at `screen_x`/`screen_y` (default: viewport
+  centre). `hover_face` reports the facet under a screen point and how many coplanar facets its
+  highlight covers.
+- **Verified**: `[CutUtils]` tests pass; MCP end-to-end on a 20 mm box (normal +X, center on the
+  +X face, shift −10 → two 10 mm halves); on `Cut tool testing.3mf` a `hover_face` sweep shows each
+  face as its own region (flat top 52/302 facets, vertical wall 2, 45° chamfer 2, a ~14° face 2) —
+  no cross-face merging. Highlight rendering and the click itself are user click-tests.
+- **Design note**: the measure tool's `Measure::Measuring` face grouping was studied but is not
+  needed for the plane itself — the plane uses the clicked point and a single facet's plane. The
+  hover highlight borrows the AlignStack patch-growth idea instead; `Measure`'s plane GL model was
+  not reused.
+- **Not done**: CUT-2 shaped "cookie cutter" split (cut the object into shaped pieces). Needs a
+  profile→prism boolean split plus `Cut::post_process` integration. This is what the user meant
+  by "keep section shapes".
+
+### Shading fix (`5007ef7949`)
+
+- **Symptom** (user): in the Cut tool, orbiting the camera made whichever side faced the camera
+  look dark while other sides stayed bright.
+- **Cause**: `GLGizmoCut3D::PartSelection::render` draws the split parts with the `gouraud_light`
+  shader but never set `view_normal_matrix`. The real object volumes are hidden while the parts are
+  drawn, so the shader kept a **stale** normal matrix from a previous camera/frame; the lighting
+  appeared frozen in object space and whichever side was orbited to face the camera looked dark.
+  Upstream bug (present in `main` too), not a fork regression. The same omission was in
+  `GLGizmoCut3D::render_model` (connector/part markers) and `GLGizmoBrimEars` (brim-ear markers).
+- **Fix**: set `view_normal_matrix = view_linear * model_part_linear^{-T}` per part/marker, the
+  same inverse-transpose form `3DScene.cpp` uses for the main object.
+- **Not the cause**: the main prepare-view object shader (`3DScene.cpp`) already sets the normal
+  matrix; the cut cross-section (`MeshClipper::render_cut`) uses the unlit `flat` shader. The shadow
+  map and outline are upstream features.
+- **Caveat**: not visually confirmed end-to-end (the fix was built and code-verified; the user
+  should re-check). If the symptom persists on the *main* object (not the cyan/magenta cut parts),
+  the remaining suspect is the upstream shadow map.
