@@ -4,6 +4,7 @@
 #include <glad/gl.h>
 
 #include <algorithm>
+#include <chrono>
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -12,6 +13,7 @@
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/TriangleMeshSlicer.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include "GLGizmoUtils.hpp"
 
 #include "imgui/imgui_internal.h"
@@ -1303,8 +1305,8 @@ void GLGizmoCut3D::render_shape_outline()
     glsafe(::glEnable(GL_DEPTH_TEST));
 }
 
-// CUT-3: translucent overlay marking the part(s) the shaped cut will act on, replacing the planar
-// cross-section which has no meaning for a shaped cut.
+// CUT-3: translucent overlay of the region the shaped cut will remove (object ∩ cutter), replacing
+// the planar cross-section which has no meaning for a shaped cut.
 void GLGizmoCut3D::render_shape_highlight()
 {
     const auto*        sel_info = m_c->selection_info();
@@ -1329,30 +1331,61 @@ void GLGizmoCut3D::render_shape_highlight()
     if (vol_idxs.empty())
         return;
 
-    // Rebuild the overlay only when the highlighted set actually changes.
+    // The overlay depends on the part set and on the cutter pose/shape, not only on the selection.
     size_t sig = size_t(reinterpret_cast<uintptr_t>(mo)) ^ (instance_idx << 8) ^ (vol_idxs.size() << 1) ^ (is_single_part_cut() ? 1u : 0u);
+    auto mix = [&sig](double v) { sig = sig * 1000003u ^ size_t(std::llround(v * 1000.)); };
+    mix(m_plane_center.x());
+    mix(m_plane_center.y());
+    mix(m_plane_center.z());
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            mix(m_rotation_m.linear()(r, c));
+    mix(double(m_shape_size));
+    mix(double(m_shape_depth));
+    sig = sig * 31 + size_t(m_shape_kind);
+    sig = sig * 31 + size_t(m_shape_through ? 1 : 0);
     for (size_t i : vol_idxs) {
         sig = sig * 31 + i;
         sig = sig * 31 + mo->volumes[i]->mesh().its.indices.size();
     }
-    if (sig != m_shape_highlight_sig) {
-        m_shape_highlight_sig = sig;
+
+    // Intersecting the part with the cutter needs a mesh boolean, so throttle the rebuild instead of
+    // running it every frame while the cutter is dragged or rotated.
+    const auto now = std::chrono::steady_clock::now();
+    if (sig != m_shape_highlight_sig && (now - m_shape_highlight_time) >= std::chrono::milliseconds(150)) {
+        m_shape_highlight_sig  = sig;
+        m_shape_highlight_time = now;
         m_shape_highlight.reset();
 
-        indexed_triangle_set combined;
+        const TriangleMesh cutter(make_cut_shape());
+        const Transform3d  cut_matrix          = get_cut_matrix(m_parent.get_selection());
+        const Transformation cut_transformation(cut_matrix);
+        const Transform3d  invert_cut_matrix = cut_transformation.get_rotation_matrix().inverse() *
+                                              translation_transform(-cut_transformation.get_offset());
         const Transform3d  instance_matrix = mo->instances[instance_idx]->get_matrix();
+
+        indexed_triangle_set combined;
         for (size_t i : vol_idxs) {
-            indexed_triangle_set its = mo->volumes[i]->mesh().its;
-            const Transform3d  matrix = instance_matrix * mo->volumes[i]->get_matrix();
-            for (Vec3f& v : its.vertices)
-                v = (matrix * v.cast<double>()).cast<float>();
-            const int base = int(combined.vertices.size());
-            combined.vertices.insert(combined.vertices.end(), its.vertices.begin(), its.vertices.end());
-            for (const Vec3i32& f : its.indices)
-                combined.indices.emplace_back(f + Vec3i32(base, base, base));
+            const ModelVolume* volume = mo->volumes[i];
+            TriangleMesh       mesh(volume->mesh());
+            mesh.transform(invert_cut_matrix * instance_matrix * volume->get_matrix(), true);
+
+            std::vector<TriangleMesh> inside_parts;
+            MeshBoolean::mcut::make_boolean(mesh, cutter, inside_parts, "INTERSECTION");
+            for (TriangleMesh& part : inside_parts) {
+                // Bake the cut-space result back into world coordinates.
+                part.transform(cut_matrix);
+                const int base = int(combined.vertices.size());
+                combined.vertices.insert(combined.vertices.end(), part.its.vertices.begin(), part.its.vertices.end());
+                for (const Vec3i32& f : part.its.indices)
+                    combined.indices.emplace_back(f + Vec3i32(base, base, base));
+            }
         }
-        m_shape_highlight.init_from(combined);
-        m_shape_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+
+        if (!combined.indices.empty()) {
+            m_shape_highlight.init_from(combined);
+            m_shape_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+        }
     }
 
     if (!m_shape_highlight.is_initialized())
@@ -1365,9 +1398,12 @@ void GLGizmoCut3D::render_shape_highlight()
         glsafe(::glDisable(GL_CULL_FACE));
         glsafe(::glEnable(GL_BLEND));
         glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+        glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+        glsafe(::glPolygonOffset(-1.f, -1.f));
         shader->set_uniform("projection_matrix", camera.get_projection_matrix());
         shader->set_uniform("view_model_matrix", camera.get_view_matrix());
         m_shape_highlight.render();
+        glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
         glsafe(::glDisable(GL_BLEND));
         glsafe(::glEnable(GL_CULL_FACE));
         shader->stop_using();
@@ -2319,8 +2355,10 @@ void GLGizmoCut3D::init_picking_models()
     if (!m_plane.model.is_initialized() && !m_hide_cut_plane && !m_connectors_editing) {
         indexed_triangle_set its;
         if (CutMode(m_mode) == CutMode::cutShape) {
-            // The cutter prism doubles as the visual tool and the pick/drag handle.
-            its = make_cookie_cutter(CutShapeKind(m_shape_kind), double(std::max(m_shape_size, 1.f)), shape_half_height());
+            // The cutter prism doubles as the visual tool and the pick/drag handle, so it must
+            // match the solid actually used for the cut (through vs. depth-limited pocket).
+            its = m_shape_size > 0.f ? make_cut_shape()
+                                     : make_cookie_cutter(CutShapeKind(m_shape_kind), 1., shape_half_height());
         } else {
             const double cp_width = 0.02 * get_grabber_mean_size(m_bounding_box);
             its = m_mode == size_t(CutMode::cutTongueAndGroove) ? its_make_groove_plane() :

@@ -9,6 +9,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CutUtils.hpp"
 #include "imgui/imgui.h"
+#include <chrono>
 
 namespace Slic3r {
 
@@ -151,6 +152,8 @@ class GLGizmoCut3D : public GLGizmoBase
     // Translucent overlay of the part(s) the shape will cut, shown in Shape mode.
     GLModel m_shape_highlight;
     size_t  m_shape_highlight_sig { 0 };
+    // The intersection overlay needs a mesh boolean, so it is throttled rather than rebuilt per frame.
+    std::chrono::steady_clock::time_point m_shape_highlight_time {};
 
     // Input params for cut with snaps
     float m_snap_bulge_proportion{ 0.15f };
