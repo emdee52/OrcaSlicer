@@ -35,6 +35,8 @@ namespace {
 constexpr const char *TEARDROP_NAME = "Teardrop";
 constexpr const char *POCKET_NAME   = "HolePocket";
 constexpr const char *FACE_POCKET_NAME = "FacePocket";
+constexpr const char *RIM_CHAMFER_NAME = "RimChamfer";
+constexpr const char *RIM_FILLET_NAME  = "RimFillet";
 // |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
 constexpr double HORIZONTAL_COS = 0.5;
 // How long the face highlight and the snap markers survive after the cursor leaves the face.
@@ -159,6 +161,9 @@ bool GLGizmoHoles::on_init()
     m_desc["operation"]        = _L("Operation");
     m_desc["op_teardrop"]      = _L("Teardrop");
     m_desc["op_bore"]          = _L("Bore / pocket");
+    m_desc["op_rim_chamfer"]   = _L("Rim chamfer");
+    m_desc["op_rim_fillet"]    = _L("Rim fillet");
+    m_desc["rim_size"]         = _L("Rim size");
     m_desc["apex"]             = _L("Apex angle");
     m_desc["standard"]         = _L("Standard");
     m_desc["head"]             = _L("Head");
@@ -364,9 +369,23 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
     return its_make_tube(outer_d, target_d, depth, dir, entry);
 }
 
+indexed_triangle_set GLGizmoHoles::rim_mesh(const DetectedHole &h) const
+{
+    Vec3d dir, entry;
+    feature_frame(h, dir, entry);
+    // A rim ring only meets material for radii >= the hole radius and for a positive size.
+    const double size = std::max(0.01, m_rim_size / object_scale());
+    return m_operation == HoleOperation::RimFillet ? its_make_rim_fillet(h.radius, size, dir, entry)
+                                                   : its_make_rim_chamfer(h.radius, size, dir, entry);
+}
+
 indexed_triangle_set GLGizmoHoles::shape_mesh(const DetectedHole &h) const
 {
-    return m_operation == HoleOperation::Teardrop ? teardrop_mesh(h) : bore_negative_mesh(h);
+    if (m_operation == HoleOperation::Teardrop)
+        return teardrop_mesh(h);
+    if (m_operation == HoleOperation::Bore)
+        return bore_negative_mesh(h);
+    return rim_mesh(h);
 }
 
 bool GLGizmoHoles::on_is_activable() const
@@ -400,6 +419,8 @@ void GLGizmoHoles::data_changed(bool /*is_serializing*/)
         m_holes.clear();
         m_teardrop.clear();
         m_bore.clear();
+        m_rim_chamfer.clear();
+        m_rim_fillet.clear();
         m_pick_its.clear();
         m_preview_all.reset();
         m_preview_applied.reset();
@@ -460,6 +481,8 @@ void GLGizmoHoles::detect()
     m_holes.clear();
     m_teardrop.clear();
     m_bore.clear();
+    m_rim_chamfer.clear();
+    m_rim_fillet.clear();
     m_pick_its.clear();
     m_preview_all.reset();
     m_preview_applied.reset();
@@ -530,6 +553,8 @@ void GLGizmoHoles::refresh_applied()
 {
     m_teardrop.assign(m_holes.size(), 0);
     m_bore.assign(m_holes.size(), 0);
+    m_rim_chamfer.assign(m_holes.size(), 0);
+    m_rim_fillet.assign(m_holes.size(), 0);
     const ModelObject *mo = model_object();
     if (mo == nullptr)
         return;
@@ -545,6 +570,14 @@ void GLGizmoHoles::refresh_applied()
         const int i = parsed_hole_index(v->name, POCKET_NAME);
         if (i >= 0 && i < int(m_holes.size()))
             m_bore[i] = 1;
+        if (v->is_negative_volume()) {
+            const int rc = parsed_hole_index(v->name, RIM_CHAMFER_NAME);
+            if (rc >= 0 && rc < int(m_holes.size()))
+                m_rim_chamfer[rc] = 1;
+            const int rf = parsed_hole_index(v->name, RIM_FILLET_NAME);
+            if (rf >= 0 && rf < int(m_holes.size()))
+                m_rim_fillet[rf] = 1;
+        }
     }
 }
 
@@ -565,7 +598,8 @@ void GLGizmoHoles::rebuild_previews()
             if (v == nullptr || !v->is_negative_volume())
                 continue;
             if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0 &&
-                parsed_hole_index(v->name, FACE_POCKET_NAME) < 0)
+                parsed_hole_index(v->name, FACE_POCKET_NAME) < 0 && parsed_hole_index(v->name, RIM_CHAMFER_NAME) < 0 &&
+                parsed_hole_index(v->name, RIM_FILLET_NAME) < 0)
                 continue;
             indexed_triangle_set its = v->mesh().its;
             const Transform3d    m   = v->get_matrix();
@@ -577,7 +611,10 @@ void GLGizmoHoles::rebuild_previews()
     }
 
     for (size_t i = 0; i < m_holes.size(); ++i) {
-        const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] : m_bore[i];
+        const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] != 0
+                           : m_operation == HoleOperation::Bore      ? m_bore[i] != 0
+                           : m_operation == HoleOperation::RimChamfer ? m_rim_chamfer[i] != 0
+                                                                      : m_rim_fillet[i] != 0;
         if (applied)
             continue; // already drawn from the actual volume
         indexed_triangle_set ghost = shape_mesh(m_holes[i].hole);
@@ -1140,6 +1177,22 @@ void GLGizmoHoles::toggle_bore(int idx)
         add_named_volume(idx, neg, ModelVolumeType::NEGATIVE_VOLUME, name, tube.empty());
 }
 
+void GLGizmoHoles::toggle_rim(int idx, bool chamfer)
+{
+    const char *prefix    = chamfer ? RIM_CHAMFER_NAME : RIM_FILLET_NAME;
+    const char *other     = chamfer ? RIM_FILLET_NAME : RIM_CHAMFER_NAME;
+    std::vector<char> &on  = chamfer ? m_rim_chamfer : m_rim_fillet;
+    if (on[idx]) {
+        remove_named_volumes(idx, prefix, _u8L("Remove rim feature"));
+        return;
+    }
+    // A chamfer and a fillet on the same rim would cut twice; drop the other one first.
+    remove_named_volumes(idx, other, _u8L("Remove rim feature"));
+    indexed_triangle_set neg = rim_mesh(m_holes[idx].hole);
+    if (!neg.empty())
+        add_named_volume(idx, neg, ModelVolumeType::NEGATIVE_VOLUME, feature_name(prefix, idx), true);
+}
+
 void GLGizmoHoles::clear_all()
 {
     ModelObject *mo = model_object();
@@ -1151,7 +1204,8 @@ void GLGizmoHoles::clear_all()
     for (size_t vi = 0; vi < mo->volumes.size(); ++vi) {
         const ModelVolume *v = mo->volumes[vi];
         if ((v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0) || v->name.rfind(POCKET_NAME, 0) == 0 ||
-            v->name.rfind(FACE_POCKET_NAME, 0) == 0)
+            v->name.rfind(FACE_POCKET_NAME, 0) == 0 || v->name.rfind(RIM_CHAMFER_NAME, 0) == 0 ||
+            v->name.rfind(RIM_FILLET_NAME, 0) == 0)
             items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
     m_placed.clear();
@@ -1198,6 +1252,13 @@ void GLGizmoHoles::set_operation(HoleOperation op)
 void GLGizmoHoles::set_angle(float deg)
 {
     m_angle_deg     = std::clamp(deg, ANGLE_MIN, ANGLE_MAX);
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_rim_size(double size)
+{
+    m_rim_size      = std::max(0.01, size);
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -1353,8 +1414,10 @@ void GLGizmoHoles::gizmo_toggle_hole(int idx)
         if (!m_holes[idx].horizontal)
             return; // a vertical hole has no teardrop
         toggle_teardrop(idx);
-    } else {
+    } else if (m_operation == HoleOperation::Bore) {
         toggle_bore(idx);
+    } else {
+        toggle_rim(idx, m_operation == HoleOperation::RimChamfer);
     }
     refresh_applied();
     m_preview_dirty = true;
@@ -1369,8 +1432,14 @@ void GLGizmoHoles::gizmo_apply_all()
         if (m_operation == HoleOperation::Teardrop) {
             if (m_holes[i].horizontal && !m_teardrop[i])
                 toggle_teardrop(int(i));
-        } else if (!m_bore[i]) {
-            toggle_bore(int(i));
+        } else if (m_operation == HoleOperation::Bore) {
+            if (!m_bore[i])
+                toggle_bore(int(i));
+        } else if (m_operation == HoleOperation::RimChamfer) {
+            if (!m_rim_chamfer[i])
+                toggle_rim(int(i), true);
+        } else if (!m_rim_fillet[i]) {
+            toggle_rim(int(i), false);
         }
     }
     refresh_applied();
@@ -1464,6 +1533,10 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         op_button(m_desc.at("op_teardrop"), HoleOperation::Teardrop);
         ImGui::SameLine();
         op_button(m_desc.at("op_bore"), HoleOperation::Bore);
+        ImGui::SameLine();
+        op_button(m_desc.at("op_rim_chamfer"), HoleOperation::RimChamfer);
+        ImGui::SameLine();
+        op_button(m_desc.at("op_rim_fillet"), HoleOperation::RimFillet);
     }
 
     // Place a new pocket on any flat face, instead of only reworking detected holes.
@@ -1500,7 +1573,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
             set_angle(angle);
         ImGui::PopItemWidth();
-    } else {
+    } else if (m_operation == HoleOperation::Bore) {
         // Category buttons (image buttons in Orca's toolbar style).
         const HoleCategory categories[] = {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet,
                                            HoleCategory::Insert, HoleCategory::Custom};
@@ -1735,13 +1808,30 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::SameLine(left_width);
         if (m_imgui->button(m_desc.at("entry")))
             set_flip(!m_flip);
+    } else {
+        // Rim chamfer / fillet: one size, the chamfer leg or the fillet radius at the hole edge.
+        ImGui::AlignTextToFramePadding();
+        m_imgui->text(m_desc.at("rim_size"));
+        ImGui::SameLine(left_width);
+        ImGui::PushItemWidth(sliders_width);
+        float rim = float(m_rim_size);
+        if (m_imgui->bbl_slider_float_style("##rim_size", &rim, 0.05f, 10.0f, "%.2f", 0.05f, true))
+            set_rim_size(rim);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(m_imgui->scaled(4.0f));
+        if (ImGui::InputFloat("##rim_size_in", &rim, 0.1f, 1.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+            set_rim_size(rim);
+        ImGui::PopItemWidth();
     }
 
     ImGui::Separator();
 
-    const int applied = int(std::count_if(m_operation == HoleOperation::Teardrop ? m_teardrop.begin() : m_bore.begin(),
-                                          m_operation == HoleOperation::Teardrop ? m_teardrop.end() : m_bore.end(),
-                                          [](char a) { return a != 0; }));
+    const std::vector<char> &flags = m_operation == HoleOperation::Teardrop   ? m_teardrop
+                                   : m_operation == HoleOperation::Bore        ? m_bore
+                                   : m_operation == HoleOperation::RimChamfer  ? m_rim_chamfer
+                                                                               : m_rim_fillet;
+    const int applied = int(std::count_if(flags.begin(), flags.end(), [](char a) { return a != 0; }));
     m_imgui->text(wxString::Format("%s: %d (%d applied)", m_desc.at("holes").c_str(), int(m_holes.size()), applied));
 
     m_imgui->disabled_begin(m_holes.empty());

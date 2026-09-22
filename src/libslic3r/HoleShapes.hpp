@@ -61,6 +61,19 @@ indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_dept
                                          const Vec3d &axis, const Vec3d &entry,
                                          int segments = HOLE_SHAPE_SEGMENTS);
 
+// --- Rim dress-up -----------------------------------------------------------------------------
+// A chamfer or fillet on the circular edge where a hole meets a flat face. Both are closed rings
+// (torus topology) whose inner radius is `hole_radius`; `size` is the chamfer leg / fillet radius
+// and therefore the ring's radial and axial extent. Placed like the bores above: origin at `entry`
+// (a point on the axis at the face), growing in the +axis direction into the material. Use as
+// negative volumes; they only meet material for r >= `hole_radius`.
+
+indexed_triangle_set its_make_rim_chamfer(double hole_radius, double size, const Vec3d &axis,
+                                          const Vec3d &entry, int segments = HOLE_SHAPE_SEGMENTS);
+
+indexed_triangle_set its_make_rim_fillet(double hole_radius, double size, const Vec3d &axis,
+                                         const Vec3d &entry, int segments = HOLE_SHAPE_SEGMENTS);
+
 // Distance from `entry` to the far side of `its` along `dir`, plus `margin`. `dir` must point into
 // the material. Used to make a through-hole reach the opposite wall exactly. Returns 0 when the ray
 // leaves without hitting anything, so the caller can fall back to a fixed depth.

@@ -187,6 +187,64 @@ indexed_triangle_set make_tube_solid(double r_out, double r_in, double h, int n)
     return its;
 }
 
+// Revolve a closed (r,z) profile around the local +Z axis. The profile must be CCW in the (r,z)
+// plane and stay clear of the axis (r > 0), which makes the result a closed ring. The profile is
+// not closed explicitly: the last vertex connects back to the first.
+indexed_triangle_set revolve_profile(const std::vector<Vec2d> &profile, int n)
+{
+    indexed_triangle_set its;
+    const int            m = int(profile.size());
+    if (m < 3 || n < 8)
+        return its;
+    its.vertices.reserve(size_t(m) * n);
+    its.indices.reserve(size_t(2 * m) * n);
+    for (const Vec2d &p : profile) {
+        for (int j = 0; j < n; ++j) {
+            const double th = 2. * PI * j / n;
+            const float  c = float(std::cos(th)), s = float(std::sin(th));
+            its.vertices.emplace_back(float(p(0)) * c, float(p(0)) * s, float(p(1)));
+        }
+    }
+    for (int i = 0; i < m; ++i) {
+        const int k = (i + 1) % m;
+        for (int j = 0; j < n; ++j) {
+            const int jn = (j + 1) % n;
+            const int v0 = i * n + j;   // profile i, angle j
+            const int v1 = i * n + jn;  // profile i, angle j+1
+            const int v2 = k * n + j;   // profile i+1, angle j
+            const int v3 = k * n + jn;  // profile i+1, angle j+1
+            its.indices.emplace_back(v0, v1, v3);
+            its.indices.emplace_back(v0, v3, v2);
+        }
+    }
+    return its;
+}
+
+// Chamfer rim profile: the triangle cut at the hole corner (r,0), level with the face at
+// (r + size, 0) and down the wall at (r, size). CCW in (r,z).
+std::vector<Vec2d> chamfer_rim_profile(double r, double size)
+{
+    return {Vec2d(r, 0.), Vec2d(r + size, 0.), Vec2d(r, size)};
+}
+
+// Fillet rim profile: the lune left by removing the quarter disc of radius `size` centred at
+// (r + size, size) from the corner square. CCW in (r,z).
+std::vector<Vec2d> fillet_rim_profile(double r, double size, int segments)
+{
+    const int          arc_segs = std::max(8, segments / 4);
+    const double       cx = r + size, cz = size; // arc centre
+    std::vector<Vec2d> profile;
+    profile.reserve(arc_segs + 2);
+    profile.emplace_back(r, 0.);        // hole corner on the face
+    profile.emplace_back(r + size, 0.); // tangent point on the face
+    for (int i = 1; i <= arc_segs; ++i) {
+        const double phi = -0.5 * PI - 0.5 * PI * double(i) / double(arc_segs); // -90 -> -180 degrees
+        profile.emplace_back(cx + size * std::cos(phi), cz + size * std::sin(phi));
+    }
+    // The last arc point is (r, size); the closing wall edge is implicit.
+    return profile;
+}
+
 } // namespace
 
 indexed_triangle_set its_make_bore(double diameter, double depth, const Vec3d &axis, const Vec3d &entry, int segments)
@@ -232,6 +290,31 @@ indexed_triangle_set its_make_countersink(double clearance_d, double csink_d, do
             its_merge(its, cone);
         }
     }
+    place_on_axis(its, axis, entry);
+    return its;
+}
+
+indexed_triangle_set its_make_rim_chamfer(double hole_radius, double size, const Vec3d &axis,
+                                          const Vec3d &entry, int segments)
+{
+    if (hole_radius <= 0. || size <= 0.)
+        return {};
+    indexed_triangle_set its = revolve_profile(chamfer_rim_profile(hole_radius, size), std::max(segments, 8));
+    if (its.indices.empty())
+        return {};
+    place_on_axis(its, axis, entry);
+    return its;
+}
+
+indexed_triangle_set its_make_rim_fillet(double hole_radius, double size, const Vec3d &axis,
+                                         const Vec3d &entry, int segments)
+{
+    if (hole_radius <= 0. || size <= 0.)
+        return {};
+    indexed_triangle_set its = revolve_profile(fillet_rim_profile(hole_radius, size, std::max(segments, 8)),
+                                               std::max(segments, 8));
+    if (its.indices.empty())
+        return {};
     place_on_axis(its, axis, entry);
     return its;
 }
