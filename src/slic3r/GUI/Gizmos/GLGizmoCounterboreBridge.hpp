@@ -127,7 +127,7 @@ private:
     PickingModel            m_preview_applied;
     bool                    m_preview_dirty = true;
     bool                    m_dirty = false;
-    double                  m_reinforce_thickness = 1.5;
+    double                  m_reinforce_thickness = 0.8;
     int                     m_reinforce_loops     = 1;
     ModelObject*            m_old_model_object = nullptr;
     int                     m_old_volume_count  = -1;
