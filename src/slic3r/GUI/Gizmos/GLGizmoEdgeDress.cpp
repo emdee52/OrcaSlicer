@@ -239,7 +239,8 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
         if (raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world)) {
             const Camera    &camera   = wxGetApp().plater()->get_camera();
             const Transform3d to_world = instance_matrix();
-            const double     tol      = 12.0;
+            // A generous screen-space grab radius, so the edge does not have to be hit exactly.
+            const double     tol      = std::max(24.0, 0.04 * double(camera.get_viewport()[3]));
 
             double best = tol;
             for (const HoverEdge &e : cached_edges()) {
