@@ -4847,21 +4847,29 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 std::optional<ObjectSnap::SnapHit> mover_hit, target_hit;
                 _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
 
-                Vec3d snap_disp = Vec3d::Zero();
-                if (target_hit) {
-                    // Selection::translate writes each offset absolutely from the drag-start cache, so
-                    // the displacement below is the total since the drag began. The anchor's drag-start
-                    // world position is therefore its current position minus the displacement already
-                    // applied. Anchoring on the mover's own coordinate (rather than on the raw cursor)
-                    // is what makes a corner grabbed a few pixels off land dead on the target; with no
-                    // mover hit the drag-start grab point is the anchor, i.e. the raw cursor.
-                    const Vec3d base_anchor = mover_hit ? (mover_hit->point.world - m_objsnap_disp)
-                                                        : m_mouse.drag.start_position_3D;
-                    snap_disp = target_hit->point.world - base_anchor - (cur_pos - m_mouse.drag.start_position_3D);
+                // Total displacement since the drag began. Selection::translate applies it absolutely
+                // from the drag-start cache, so it is recomputed here, never accumulated onto the
+                // previous frame.
+                Vec3d drag_disp = cur_pos - m_mouse.drag.start_position_3D;
+                if (target_hit && target_hit->has_point()) {
+                    const Vec3d target_world = target_hit->point().world;
+                    if (mover_hit && mover_hit->has_point()) {
+                        // translate moves the instance by R*displacement, R being the instance
+                        // rotation, so landing one of the object's own coordinates on the target
+                        // needs the correction premultiplied by R^-1 (R is orthonormal, so its
+                        // transpose is the inverse). Adding it to the displacement already in force
+                        // makes the anchor reach the target exactly and stay there, however the
+                        // cursor moved in between.
+                        drag_disp = m_objsnap_disp +
+                                    mover_hit->rotation.transpose() * (target_world - mover_hit->point().world);
+                    } else {
+                        // Cursor is off the dragged object, so there is no anchor feature to trust:
+                        // fall back to putting the drag-start grab point on the target.
+                        drag_disp = target_world - m_mouse.drag.start_position_3D;
+                    }
                 }
                 // [ORCAPORT:SNAP-8] END
 
-                const Vec3d drag_disp = cur_pos - m_mouse.drag.start_position_3D + snap_disp;
                 m_selection.translate(drag_disp, trafo_type);
                 m_objsnap_disp = drag_disp; // [ORCAPORT:SNAP-8] the total displacement the cache-absolute translate just applied
 
@@ -5298,8 +5306,12 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         _set_overlay_as_dirty();
 
         // [ORCAPORT:SNAP-8] Alt-hover preview: show the object-snap spheres for the face under the
-        // cursor without having to start a drag. Gizmos that already own Alt (Holes, Cut) keep it.
-        if (!m_mouse.dragging && m_gizmos.get_current_type() == GLGizmosManager::EType::Undefined) {
+        // cursor without having to start a drag. Only the gizmos that own Alt for their own snap
+        // (Holes, Cut) are skipped; the Move/Rotate/Scale gizmos, which are up whenever an object is
+        // selected, leave Alt to this.
+        const GLGizmosManager::EType objsnap_gizmo = m_gizmos.get_current_type();
+        if (!m_mouse.dragging && objsnap_gizmo != GLGizmosManager::EType::Holes &&
+            objsnap_gizmo != GLGizmosManager::EType::Cut) {
             const std::set<std::pair<int, int>> moving = _objsnap_moving_set();
             std::optional<ObjectSnap::SnapHit>  target_hit, mover_hit;
             _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
@@ -5882,27 +5894,18 @@ void GLCanvas3D::_objsnap_update(const Vec2d& mouse, const std::set<std::pair<in
 
     const Camera& camera = wxGetApp().plater()->get_camera();
 
-    // The dragged object's own nearest coordinate; anchoring on the raw cursor is only approximate.
-    // Only meaningful while something is selected.
+    // The dragged object's own coordinates; the drag is anchored on the one the cursor is on instead
+    // of on the raw cursor, which is only approximate. Only meaningful while something is selected.
     if (!moving.empty()) {
         mover = OrcaExt::Gui::ObjectSnap::mover_hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
-        if (mover) {
-            size_t active = 0;
-            for (size_t i = 0; i < mover->candidates.size(); ++i)
-                if ((mover->candidates[i].world - mover->point.world).squaredNorm() < 1e-12)
-                    active = i;
-            m_objsnap_mover_markers.set(mover->candidates, active, OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
-        }
+        if (mover)
+            m_objsnap_mover_markers.set(mover->candidates, mover->active,
+                                        OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
     }
 
     target = OrcaExt::Gui::ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
-    if (target) {
-        size_t active = 0;
-        for (size_t i = 0; i < target->candidates.size(); ++i)
-            if ((target->candidates[i].world - target->point.world).squaredNorm() < 1e-12)
-                active = i;
-        m_objsnap_markers.set(target->candidates, active);
-    }
+    if (target)
+        m_objsnap_markers.set(target->candidates, target->active);
 }
 
 void GLCanvas3D::do_move(const std::string& snapshot_type)

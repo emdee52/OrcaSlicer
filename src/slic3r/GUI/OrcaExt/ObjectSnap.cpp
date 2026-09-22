@@ -156,11 +156,15 @@ std::optional<SnapHit> hit_filtered(const Model &model, const GLVolumeCollection
     if (out.candidates.empty()) // cannot happen: the fallback always holds one point
         return std::nullopt;
 
-    size_t active = 0;
-    if (!pick_by_sphere(out.candidates, camera, candidate_radius(out.candidates), mouse, active))
-        return std::nullopt;
+    out.rotation = hit_volume->get_instance_transformation().get_rotation_matrix().linear();
 
-    out.point = out.candidates[active];
+    // Whether the face is shown does not depend on the cursor sitting on one of its spheres: report
+    // the face either way and leave `active` at no_candidate until the cursor is actually on one, so
+    // Alt-hover shows the coordinates without forcing the user to hit one first.
+    size_t active = SnapHit::no_candidate;
+    pick_by_sphere(out.candidates, camera, candidate_radius(out.candidates), mouse, active);
+    out.active = active;
+
     return out;
 }
 

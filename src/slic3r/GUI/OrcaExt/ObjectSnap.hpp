@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include <Eigen/Core> // Matrix3d
+
 #include "libslic3r/CutUtils.hpp" // FaceSnapKind
 #include "libslic3r/Point.hpp"
 #include "slic3r/GUI/GLModel.hpp" // marker spheres
@@ -35,26 +37,38 @@ struct SnapCandidate
     FaceSnapKind kind{ FaceSnapKind::None };
 };
 
-// The chosen coordinate plus every coordinate of the face it came from, so the caller can show them.
+// Every snap coordinate of the face the cursor is over, plus the one the grab point lands on.
 struct SnapHit
 {
-    SnapCandidate              point;      // the coordinate the grab point lands on
     std::vector<SnapCandidate> candidates; // all snap coordinates of that face, in world space
+    // Rotation of the hit volume's instance. Selection::translate moves an instance by R*displacement,
+    // so landing a point of that instance on a world position needs the correction premultiplied by
+    // R^-1; without it a rotated object settles short of the target. Identity for the mover's purpose
+    // when the object is not rotated.
+    Eigen::Matrix3d            rotation{ Eigen::Matrix3d::Identity() };
+    // Index into `candidates` of the coordinate the cursor is on, or no_candidate when it is not on
+    // any of them. The face is still reported then, so its markers show; the snap just does not
+    // engage.
+    static constexpr size_t    no_candidate = static_cast<size_t>(-1);
+    size_t                     active{ no_candidate };
+    const SnapCandidate       &point() const { return candidates[active]; }
+    bool                       has_point() const { return active < candidates.size(); }
 };
 
 // Nearest snap coordinate of a flat face of any object that is NOT part of `moving`, under `mouse`
 // (device pixels). `moving` lists the (object, instance) pairs being dragged, so a drag never snaps
 // to itself. A face with no usable coplanar region falls back to the raw hit, so a curved surface
-// still snaps point-to-point. Returns nullopt when the ray hits nothing or the nearest coordinate is
-// farther than the face's own stick radius (the same adaptive radius the Holes and Cut gizmos use).
+// still snaps point-to-point. Returns nullopt when the ray hits nothing; the hit is returned even
+// when the cursor is not on any of that face's coordinates (`active` is then no_candidate) so the
+// caller can show the face's spheres either way.
 std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
                                         const GUI::Camera &camera,
                                         const std::set<std::pair<int, int>> &moving, const Vec2d &mouse);
 
-// Same, but for the object being dragged: the nearest snap coordinate of the mover itself. The drag
-// is anchored on that coordinate instead of on the raw cursor, so grabbing a corner a few pixels off
-// still lands the corner exactly on the target. Returns nullopt when the cursor is off the dragged
-// object or no coordinate is inside its stick radius.
+// Same, but for the object being dragged: the snap coordinates of the mover itself. The drag is
+// anchored on the one the cursor is on instead of on the raw cursor, so grabbing a corner a few
+// pixels off still lands the corner exactly on the target. Returns nullopt when the ray misses the
+// dragged object entirely.
 std::optional<SnapHit> mover_hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
                                               const GUI::Camera &camera,
                                               const std::set<std::pair<int, int>> &moving, const Vec2d &mouse);
