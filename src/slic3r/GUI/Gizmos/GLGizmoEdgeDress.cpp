@@ -29,6 +29,7 @@ namespace {
 
 constexpr const char *EDGE_CHAMFER_NAME = "EdgeChamfer";
 constexpr const char *EDGE_FILLET_NAME  = "EdgeFillet";
+constexpr const char *EDGE_LOOP_NAME    = "EdgeLoop";
 
 const ColorRGBA ALL_COLOR{ 0.25f, 0.70f, 1.00f, 0.40f };
 const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
@@ -67,6 +68,16 @@ bool face_contains_vertex(const indexed_triangle_set &its, int face, int vertex)
 {
     const auto &tri = its.indices[face];
     return tri(0) == vertex || tri(1) == vertex || tri(2) == vertex;
+}
+
+const ModelVolume *first_model_part(const ModelObject *mo)
+{
+    if (mo == nullptr)
+        return nullptr;
+    for (const ModelVolume *v : mo->volumes)
+        if (v != nullptr && v->is_model_part())
+            return v;
+    return nullptr;
 }
 
 double point_segment_distance(const Vec2d &p, const Vec2d &a, const Vec2d &b)
@@ -185,7 +196,8 @@ int GLGizmoEdgeDress::applied_count() const
         return 0;
     int n = 0;
     for (const ModelVolume *v : mo->volumes)
-        if (v != nullptr && (parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 || parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0))
+        if (v != nullptr && (parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 || parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0 ||
+                             parsed_feature_index(v->name, EDGE_LOOP_NAME) >= 0))
             ++n;
     return n;
 }
@@ -201,6 +213,7 @@ int GLGizmoEdgeDress::next_feature_id() const
             continue;
         next = std::max(next, parsed_feature_index(v->name, EDGE_CHAMFER_NAME) + 1);
         next = std::max(next, parsed_feature_index(v->name, EDGE_FILLET_NAME) + 1);
+        next = std::max(next, parsed_feature_index(v->name, EDGE_LOOP_NAME) + 1);
     }
     return next;
 }
@@ -217,14 +230,17 @@ const std::vector<GLGizmoEdgeDress::HoverEdge> &GLGizmoEdgeDress::cached_edges()
 void GLGizmoEdgeDress::clear_hover()
 {
     m_hover         = HoverEdge();
+    m_hover_loop.clear();
     m_preview_dirty = true;
     m_preview.reset();
 }
 
 void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
 {
-    const HoverEdge previous = m_hover;
-    m_hover                  = HoverEdge();
+    const HoverEdge              previous      = m_hover;
+    const std::vector<LoopFrame> previous_loop = m_hover_loop;
+    m_hover = HoverEdge();
+    m_hover_loop.clear();
 
     // The edge nearest to the cursor in screen space, not in 3D distance to the hit point: the
     // latter picks whichever edge happens to be close in space, so a far edge can win over the one
@@ -237,35 +253,91 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
         size_t               facet    = 0;
         Vec3d                hit_world;
         if (raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world)) {
-            const Camera    &camera   = wxGetApp().plater()->get_camera();
+            const Camera     &camera   = wxGetApp().plater()->get_camera();
             const Transform3d to_world = instance_matrix();
             // A generous screen-space grab radius, so the edge does not have to be hit exactly.
-            const double     tol      = std::max(24.0, 0.04 * double(camera.get_viewport()[3]));
+            const double      tol      = std::max(24.0, 0.04 * double(camera.get_viewport()[3]));
 
-            double best = tol;
-            for (const HoverEdge &e : cached_edges()) {
-                const Vec2d a = world_to_screen(camera, to_world * e.p0);
-                const Vec2d b = world_to_screen(camera, to_world * e.p1);
-                if (!a.allFinite() || !b.allFinite())
-                    continue;
-                const double d = point_segment_distance(screen_pos, a, b);
-                if (d < best) {
-                    best    = d;
-                    m_hover = e;
+            if (m_loop_mode) {
+                // The whole boundary loop of the patch under the cursor, so a rim is dressed as one
+                // feature instead of its tessellation segments.
+                double best = tol;
+                for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
+                    const size_t n = loop.size();
+                    if (n < 3)
+                        continue;
+                    for (size_t i = 0; i < n; ++i) {
+                        const Vec2d a = world_to_screen(camera, to_world * loop[i].p);
+                        const Vec2d b = world_to_screen(camera, to_world * loop[(i + 1) % n].p);
+                        if (!a.allFinite() || !b.allFinite())
+                            continue;
+                        const double d = point_segment_distance(screen_pos, a, b);
+                        if (d < best) {
+                            best         = d;
+                            m_hover_loop = loop;
+                        }
+                    }
+                }
+            } else {
+                double best = tol;
+                for (const HoverEdge &e : cached_edges()) {
+                    const Vec2d a = world_to_screen(camera, to_world * e.p0);
+                    const Vec2d b = world_to_screen(camera, to_world * e.p1);
+                    if (!a.allFinite() || !b.allFinite())
+                        continue;
+                    const double d = point_segment_distance(screen_pos, a, b);
+                    if (d < best) {
+                        best    = d;
+                        m_hover = e;
+                    }
                 }
             }
         }
     }
 
-    if (m_hover.valid != previous.valid ||
-        (m_hover.valid && ((m_hover.p0 - previous.p0).norm() > 1e-9 || (m_hover.p1 - previous.p1).norm() > 1e-9 ||
-                           (m_hover.n_a - previous.n_a).norm() > 1e-6 || (m_hover.n_b - previous.n_b).norm() > 1e-6)))
+    if (m_loop_mode) {
+        const bool loop_changed = m_hover_loop.size() != previous_loop.size() ||
+                                  (!m_hover_loop.empty() && ((m_hover_loop.front().p - previous_loop.front().p).norm() > 1e-9 ||
+                                                             (m_hover_loop.back().p - previous_loop.back().p).norm() > 1e-9));
+        if (loop_changed)
+            m_preview_dirty = true;
+    } else if (m_hover.valid != previous.valid ||
+               (m_hover.valid && ((m_hover.p0 - previous.p0).norm() > 1e-9 || (m_hover.p1 - previous.p1).norm() > 1e-9 ||
+                                  (m_hover.n_a - previous.n_a).norm() > 1e-6 || (m_hover.n_b - previous.n_b).norm() > 1e-6)))
         m_preview_dirty = true;
 }
 
 indexed_triangle_set GLGizmoEdgeDress::hover_mesh() const
 {
     return mesh_for_edge(m_hover);
+}
+
+indexed_triangle_set GLGizmoEdgeDress::active_mesh() const
+{
+    return m_loop_mode ? mesh_for_loop(m_hover_loop) : hover_mesh();
+}
+
+indexed_triangle_set GLGizmoEdgeDress::mesh_for_loop(const std::vector<LoopFrame> &loop) const
+{
+    if (loop.size() < 3)
+        return indexed_triangle_set();
+
+    const double size = std::max(0.01, m_size / object_scale());
+    if (m_mode == EdgeDressMode::Fillet)
+        return make_loop_fillet(loop, size);
+    return make_loop_chamfer(loop, size);
+}
+
+const std::vector<std::vector<LoopFrame>> &GLGizmoEdgeDress::loops_for_facet(const ModelVolume *mv, int facet) const
+{
+    if (mv != m_loops_volume || facet != m_loops_facet) {
+        m_loops.clear();
+        m_loops_volume = mv;
+        m_loops_facet  = facet;
+        if (mv != nullptr && facet >= 0 && facet < int(mv->mesh().its.indices.size()))
+            m_loops = its_face_patch_loops(mv->mesh().its, mv->get_matrix(), facet);
+    }
+    return m_loops;
 }
 
 indexed_triangle_set GLGizmoEdgeDress::mesh_for_edge(const HoverEdge &edge) const
@@ -289,12 +361,7 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
     const ModelObject *mo = model_object();
     if (mo == nullptr)
         return edges;
-    const ModelVolume *mv = nullptr;
-    for (const ModelVolume *v : mo->volumes)
-        if (v != nullptr && v->is_model_part()) {
-            mv = v;
-            break;
-        }
+    const ModelVolume *mv = first_model_part(mo);
     if (mv == nullptr)
         return edges;
 
@@ -388,7 +455,7 @@ bool GLGizmoEdgeDress::gizmo_apply_edge(int index)
 void GLGizmoEdgeDress::rebuild_preview()
 {
     m_preview_dirty = false;
-    indexed_triangle_set its = hover_mesh();
+    indexed_triangle_set its = active_mesh();
     if (its.indices.empty()) {
         m_preview.reset();
         return;
@@ -441,17 +508,18 @@ bool GLGizmoEdgeDress::gizmo_hover_at(const Vec2d &screen_pos)
     update_hover(screen_pos);
     rebuild_preview();
     m_parent.set_as_dirty();
-    return m_hover.valid;
+    return hover_edge_valid();
 }
 
 bool GLGizmoEdgeDress::gizmo_apply_hovered()
 {
-    if (!m_hover.valid)
+    if (!hover_edge_valid())
         return false;
-    const indexed_triangle_set its = hover_mesh();
+    const indexed_triangle_set its = active_mesh();
     if (its.indices.empty())
         return false;
-    add_named_negative(feature_name(m_mode == EdgeDressMode::Fillet ? EDGE_FILLET_NAME : EDGE_CHAMFER_NAME, next_feature_id()), its);
+    const char *prefix = m_loop_mode ? EDGE_LOOP_NAME : (m_mode == EdgeDressMode::Fillet ? EDGE_FILLET_NAME : EDGE_CHAMFER_NAME);
+    add_named_negative(feature_name(prefix, next_feature_id()), its);
     return true;
 }
 
@@ -474,7 +542,8 @@ void GLGizmoEdgeDress::gizmo_clear_all()
         const ModelVolume *v = mo->volumes[vi];
         if (v == nullptr)
             continue;
-        if (parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 || parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0)
+        if (parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 || parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0 ||
+            parsed_feature_index(v->name, EDGE_LOOP_NAME) >= 0)
             items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
     if (items.empty())
@@ -493,6 +562,55 @@ void GLGizmoEdgeDress::gizmo_refresh()
     m_parent.set_as_dirty();
 }
 
+void GLGizmoEdgeDress::set_loop_mode(bool on)
+{
+    if (m_loop_mode == on)
+        return;
+    m_loop_mode = on;
+    m_hover_loop.clear();
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+int GLGizmoEdgeDress::loop_count(int facet) const
+{
+    if (facet < 0)
+        facet = m_loops_facet;
+    return int(loops_for_facet(first_model_part(model_object()), facet).size());
+}
+
+std::vector<std::vector<std::array<double, 3>>> GLGizmoEdgeDress::gizmo_list_loops(int facet, int max_count) const
+{
+    std::vector<std::vector<std::array<double, 3>>> out;
+    if (facet < 0)
+        facet = m_loops_facet;
+    const std::vector<std::vector<LoopFrame>> &loops = loops_for_facet(first_model_part(model_object()), facet);
+    const size_t n = max_count > 0 ? std::min(size_t(max_count), loops.size()) : loops.size();
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        std::vector<std::array<double, 3>> pts;
+        pts.reserve(loops[i].size());
+        for (const LoopFrame &f : loops[i])
+            pts.push_back({ f.p.x(), f.p.y(), f.p.z() });
+        out.push_back(std::move(pts));
+    }
+    return out;
+}
+
+bool GLGizmoEdgeDress::gizmo_apply_loop(int facet, int index)
+{
+    if (facet < 0)
+        facet = m_loops_facet;
+    const std::vector<std::vector<LoopFrame>> &loops = loops_for_facet(first_model_part(model_object()), facet);
+    if (index < 0 || index >= int(loops.size()))
+        return false;
+    const indexed_triangle_set its = mesh_for_loop(loops[index]);
+    if (its.indices.empty())
+        return false;
+    add_named_negative(feature_name(EDGE_LOOP_NAME, next_feature_id()), its);
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 // GLGizmoBase callbacks
 // ---------------------------------------------------------------------------------------------
@@ -505,6 +623,7 @@ bool GLGizmoEdgeDress::on_init()
     m_desc["chamfer"]       = _L("Chamfer");
     m_desc["fillet"]        = _L("Fillet");
     m_desc["size"]          = _L("Size");
+    m_desc["loop"]          = _L("Whole loop / rim");
     m_desc["apply"]         = _L("Apply to hovered edge");
     m_desc["clear"]         = _L("Clear all");
     m_desc["hover_hint"]    = _L("Hover an edge, then click it or use Apply.");
@@ -600,7 +719,7 @@ bool GLGizmoEdgeDress::on_mouse(const wxMouseEvent &mouse_event)
     // Apply only when the cursor is actually on an edge, so a click on empty space still falls
     // through to the canvas.
     gizmo_hover_at(m_parent.get_local_mouse_position());
-    if (!m_hover.valid)
+    if (!hover_edge_valid())
         return false;
     gizmo_apply_hovered();
     return true;
@@ -649,6 +768,12 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
             set_mode(EdgeDressMode::Fillet);
     }
 
+    {
+        bool loop = m_loop_mode;
+        if (ImGui::Checkbox(m_desc.at("loop").utf8_str().data(), &loop))
+            set_loop_mode(loop);
+    }
+
     ImGui::AlignTextToFramePadding();
     m_imgui->text(m_desc.at("size"));
     ImGui::SameLine(left_width);
@@ -664,7 +789,7 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 
-    m_imgui->text(m_hover.valid ? m_desc.at("edge_hovered") : m_desc.at("no_edge"));
+    m_imgui->text(hover_edge_valid() ? m_desc.at("edge_hovered") : m_desc.at("no_edge"));
     m_imgui->text(m_desc.at("hover_hint"));
     const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), applied_count());
     m_imgui->text(applied);

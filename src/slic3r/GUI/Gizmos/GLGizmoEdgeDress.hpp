@@ -4,6 +4,7 @@
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
 
+#include "libslic3r/EdgeProfiles.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <array>
@@ -31,7 +32,7 @@ public:
     void          set_mode(EdgeDressMode mode);
     double        get_size() const { return m_size; }
     void          set_size(double size);
-    bool          hover_edge_valid() const { return m_hover.valid; }
+    bool          hover_edge_valid() const { return m_loop_mode ? !m_hover_loop.empty() : m_hover.valid; }
     double        object_scale() const;
     int           applied_count() const;
     bool          gizmo_hover_at(const Vec2d& screen_pos);
@@ -45,6 +46,16 @@ public:
     int                                 edge_count() const;
     std::vector<std::array<double, 6>>  gizmo_list_edges(int max_count) const;
     bool                                gizmo_apply_edge(int index);
+
+    // Whole-loop mode: a hole or boss rim is dressed as one closed feature instead of its
+    // tessellation segments. Off by default, so the edge behaviour is unchanged.
+    bool   loop_mode() const { return m_loop_mode; }
+    void   set_loop_mode(bool on);
+    // The boundary loops of the coplanar patch containing `facet`; -1 for the last hovered facet.
+    int    loop_count(int facet) const;
+    std::vector<std::vector<std::array<double, 3>>> gizmo_list_loops(int facet, int max_count) const;
+    bool   gizmo_apply_loop(int facet, int index);
+    int    loop_facet() const { return m_loops_facet; }
 
     void data_changed(bool is_serializing) override;
     bool render_follows_cursor() const override { return get_state() == On; }
@@ -78,21 +89,32 @@ private:
     std::vector<HoverEdge> collect_edges() const;
     // The merged geometric edges of the selected part, cached until the object changes.
     const std::vector<HoverEdge>& cached_edges() const;
+    indexed_triangle_set mesh_for_loop(const std::vector<LoopFrame>& loop) const;
+    // The coplanar patch loops around `facet`, cached for the last queried volume and facet.
+    const std::vector<std::vector<LoopFrame>>& loops_for_facet(const ModelVolume* mv, int facet) const;
+    indexed_triangle_set active_mesh() const;
     void               rebuild_preview();
     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
     int                next_feature_id() const;
 
     EdgeDressMode m_mode{EdgeDressMode::Chamfer};
     double        m_size{1.0};
+    bool          m_loop_mode{false};
     std::map<std::string, wxString> m_desc;
 
     HoverEdge    m_hover;
+    std::vector<LoopFrame> m_hover_loop;
     PickingModel m_preview;
     bool         m_preview_dirty{true};
 
     // Cached merged edges, in object space, rebuilt when the object or its volume list changes.
     mutable std::vector<HoverEdge> m_edges;
     mutable bool                   m_edges_dirty{true};
+
+    // Cached patch loops for the last queried (volume, facet) pair.
+    mutable std::vector<std::vector<LoopFrame>> m_loops;
+    mutable const ModelVolume*                  m_loops_volume{nullptr};
+    mutable int                                 m_loops_facet{-1};
 
     const ModelObject* m_old_object{nullptr};
     int                m_old_volume_count{-1};
