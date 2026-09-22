@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -440,7 +441,10 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
                 // feature instead of its tessellation segments. A rim often borders a smooth band (a
                 // bevel, or the rounded side of a low boss) and the cursor lands on that band, where
                 // the patch has no loop of its own; loops_for_facet rings outwards in that case.
-                double best = tol;
+                // No screen-space radius cap: the loop that comes back may belong to a neighbouring
+                // patch and sit some distance from the cursor, and picking the nearest visible rim is
+                // the point of whole-loop mode. The depth test keeps rims on the far side out.
+                double best = std::numeric_limits<double>::max();
                 for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
                     if (loop.size() < 3)
                         continue;
