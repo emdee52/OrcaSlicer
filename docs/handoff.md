@@ -905,7 +905,7 @@ writes a negative volume).
   briefly attached to it are gone. The counterbore gizmo took the new `toolbar_vertical_holes(_dark).svg`
   instead, so painters and strengtheners share one "vertical holes" tool as requested.
 - **Defaults.** Two parameters: **Wall thickness** (the radial thickness of the added ring, default
-  `1.5` mm) and **Extra loops** (wall loops added on top of the object's own count, default `1`). Off
+  `0.8` mm) and **Extra loops** (wall loops added on top of the object's own count, default `1`). Off
   by default: the mode is one of two and a fresh object starts in Bridging, so the G-code is untouched.
   Vertical holes only — a reinforcement ring around a horizontal hole would sit in mid-air.
 - **Ring geometry.** `GLGizmoCounterboreBridge::reinforce_mesh` builds a positive co-axial shell with
