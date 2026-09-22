@@ -429,8 +429,9 @@ Found while testing ME-2c, on branch `port/ME-2d` off `port/integration`; merged
 ## 13. SNAP-1 — Alt-snapped hole and cut placement
 
 With Alt held, the Holes tool's place-on-face mode and the Cut tool's "pick flat face" move the
-picked point onto a coordinate of the hovered face — a corner, an edge midpoint or the face centre.
-Without Alt the raw raycast hit is used, so the default behaviour is unchanged.
+picked point onto a coordinate of the face the cursor was on when Alt was pressed — a corner, an edge
+midpoint or the face centre. Without Alt the raw raycast hit is used, so the default behaviour is
+unchanged.
 
 **Geometry** lives in `libslic3r/CutUtils.{hpp,cpp}` as `face_snap_points(its, region)`, so it can be
 unit tested without the GUI. It takes the coplanar facet region the GUI already computes
@@ -481,14 +482,14 @@ The chosen tolerance is reported through `tolerance_px`.
 **Hysteresis** keeps the picked target stable: once a candidate is locked, the tool holds it until
 the cursor moves more than `1.25 * tolerance` past it, so the ghost no longer flickers between two
 neighbouring points while the cursor sits between them. The lock is dropped when Alt is released, the
-pick fails or the face changes.
+pick fails, the face changes, or the cursor leaves the session face (see section 16).
 
 **Snap markers.** While Alt is held, every candidate is drawn as a small sphere — one
 `its_make_sphere(radius, PI / 12.0)` per candidate, merged per kind with `its_merge` into one
 `GLModel` per `FaceSnapKind`, with the active target as a larger sphere on top. The radius is
 face-relative (1.2 % of the largest candidate-to-candidate distance), corners are magenta, edge
 midpoints teal and the face centre cyan, mirroring the sketch tool's inference hints. They are built
-once per hovered face, not per frame, and drawn with depth testing off because the surface and the
+once per session face, not per frame, and drawn with depth testing off because the surface and the
 lifted coplanar patch would otherwise hide them.
 
 **The Cut tool snaps while moving.** `snap_plane_center` is the only snap implementation and it is
@@ -508,8 +509,8 @@ Alt is held, not only while a face is being picked, so they also appear during a
   reject gate and the SNAP-1 cases. The builds producing `build/src/Release/orca-slicer.exe` are
   clean.
 - **Branch state**: SNAP-2 is merged into `port/integration` (`99ecff2432`); SNAP-3 is merged into
-  `port/integration` (`2e265a0d88`); SNAP-4 is on `port/SNAP-4`, unmerged until the user has tested
-  it (see section 0).
+  `port/integration` (`2e265a0d88`); SNAP-4 is on `port/SNAP-4` and SNAP-5 stacks on it, both unmerged
+  until the user has tested them (see section 0).
 - Still not implemented: snapping in the Measure tool.
 
 ## 15. SNAP-4 — edge quarters and face quarters
@@ -538,6 +539,71 @@ unchanged. This is the intended behaviour — a denser set of targets sticks fro
 - **Branch state**: on `port/SNAP-4`, unmerged until the user has tested it (see section 0).
 - Known ceiling: a curved face whose boundary is approximated by many edges (a drilled hole rim, a
   high-poly cylinder cap) emits two edge quarters and a face quarter per edge, so a 64-gon rim gives
-  about 320 candidates. They are built once per hovered face while Alt is held, which is acceptable,
+  about 320 candidates. They are built once per session face while Alt is held, which is acceptable,
   but a spacing threshold could trim them if a heavy scene ever shows it.
+
+## 16. SNAP-5 — one face per Alt press, no tap freeze, quiet place mode
+
+Three follow-ups on the Alt snap, all in the Holes tool plus the same gate in the Cut tool.
+
+**One face per Alt press.** The snap used to re-target whenever the cursor crossed onto another face
+while Alt was held, which reads as "it snapped to a face I am not pointing at". The session is now
+gated to the flat face under the cursor on the first Alt frame (`m_snap_mv`/`m_snap_region` hold both
+the gate and the candidate cache key; the Cut tool reuses
+`m_snap_points_mv`/`m_snap_points_region` for the same purpose — the gate is the coplanar region
+rather than the raycast triangle, see section 17). While Alt stays down the hole keeps following the
+cursor onto other faces — it simply never snaps there — and the marker spheres stay drawn on the
+session face. Releasing Alt ends the session, so the next press picks whatever face the cursor is
+on. The gate only applies while Alt is held, so the default paths are untouched.
+
+**The session is dropped on the Alt release edge.** The ghost is rebuilt only inside `update_face_highlight`,
+and only when the hit moved or the snapped kind changed; that made a brief Alt press able to leave
+the hole pinned to a coordinate until the next mouse move. `on_render` watches the Alt edge while in
+place mode and, on release, calls `clear_snap_session()`: the lock, the active marker, the session
+face and the cached hit are dropped, and `m_last_face_hit` is set past any real coordinate so the
+ghost is rebuilt from the raw cursor position on the very next pass. `exit_place_face_mode` uses the
+same helper. A tap whose release edge never arrives is handled in section 17.
+
+**Place mode is quiet.** The detected-hole previews — candidates, applied features and the hovered
+hole — are no longer drawn while picking a face; they competed with the face highlight and the ghost
+for attention. Their raycasters are unchanged and hovering is already suppressed in place mode.
+
+- **Verification**: no unit-testable logic changed (`face_snap_points` and `nearest_face_snap` are
+  untouched), so this is a manual click test: with Alt held, cross onto a second face and confirm the
+  hole follows it without snapping, that the markers stay on the first face, and that entering place
+  mode hides the hole previews. `[CutUtils]` still passes (126 assertions in 19 test cases) and the
+  `build/src/Release/orca-slicer.exe` build is clean.
+- **Branch state**: on `port/SNAP-5`, stacked on `port/SNAP-4`, both unmerged until the user has
+  tested them (see section 0).
+
+---
+
+## 17. SNAP-6 — one flat face across its triangles, and the Alt press
+
+Two defects found while testing SNAP-5, both on the same session gate.
+
+**The gate is the flat face, not the raycast triangle.** A flat face is normally split into several
+triangles, so keying the session — and the candidate cache — on the facet under the cursor made the
+snap die the moment the cursor crossed onto a sibling triangle: every coordinate on the far side of
+the face stopped responding. Both gizmos now keep the coplanar region of the session facet
+(`m_snap_region` in Holes, `m_snap_points_region` in Cut) and test membership through
+`region_has_facet` (new, in `GLGizmosCommon`), so one Alt press covers a whole flat face and all of
+its coordinates stay live. The facet is also gone from the hysteresis lock — the locked coordinate
+is mesh space and identical on every triangle of the face — and the `m_snap_lock_facet` member went
+with it.
+
+**The Alt press is swallowed while placing.** An Alt tap that nothing consumes reaches the frame and
+leaves the placement pinned as though Alt were still held. The Holes gizmo now consumes the Alt
+key-down in `GLGizmosManager::on_key` while place mode is on, the same handling BrimEars and Cut
+already use. It is scoped to place mode, so Alt keeps its usual meaning everywhere else (rectangle
+deselect included).
+
+- **Verification**: the gate change has no unit-testable surface (`face_snap_points` and
+  `nearest_face_snap` are untouched); `[CutUtils]` passes (126 assertions in 19 test cases) and the
+  build is clean. Manual click test: press Alt on one side of a large flat face and drag across to
+  the other side — the far-side corners, edge midpoints and quarters must all snap; then tap Alt
+  once without holding it and confirm the hole still follows the cursor.
+- **Branch state**: on `port/SNAP-5` (`3b1c8f6bfc`), stacked on `port/SNAP-4`, all unmerged until
+  the user has tested them (see section 0).
+
 

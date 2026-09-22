@@ -666,6 +666,11 @@ std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet, FaceRegion
     return region;
 }
 
+bool region_has_facet(const std::vector<int>& region, int facet)
+{
+    return std::find(region.begin(), region.end(), facet) != region.end();
+}
+
 indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vector<int>& region,
                                           const FaceRegionCache& cache, float lift)
 {
