@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <set>
+#include <string>
 
 namespace Slic3r {
 
@@ -315,22 +318,68 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
     return loops;
 }
 
+// Identity of a loop that does not depend on the vertex the chain happened to start at, so that
+// growing the patch at several tolerances does not report the same rim once per tolerance.
+static std::string loop_key(const std::vector<LoopFrame> &loop)
+{
+    std::vector<std::string> segments;
+    segments.reserve(loop.size());
+    char buf[160];
+    for (const LoopFrame &f : loop) {
+        std::snprintf(buf, sizeof(buf), "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f", f.p.x(), f.p.y(), f.p.z(), f.q.x(),
+                      f.q.y(), f.q.z());
+        std::string forward(buf);
+        std::snprintf(buf, sizeof(buf), "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f", f.q.x(), f.q.y(), f.q.z(), f.p.x(),
+                      f.p.y(), f.p.z());
+        std::string backward(buf);
+        segments.push_back(forward < backward ? forward : backward); // segment without its direction
+    }
+    std::sort(segments.begin(), segments.end());
+    std::string key;
+    for (const std::string &s : segments) {
+        key += s;
+        key += ';';
+    }
+    return key;
+}
+
 std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_triangle_set &its,
                                                                 const Transform3d &trafo,
                                                                 int seed_face, int max_rings,
-                                                                float normal_tol)
+                                                                const std::vector<float> &normal_tols)
 {
-    std::vector<std::vector<LoopFrame>> loops = its_face_patch_loops(its, trafo, seed_face, normal_tol);
-    if (!loops.empty() || max_rings <= 0 || seed_face < 0 || seed_face >= int(its.indices.size()))
+    std::vector<std::vector<LoopFrame>> loops;
+    if (seed_face < 0 || seed_face >= int(its.indices.size()))
+        return loops;
+
+    // Collect every distinct loop of the patch under `facet`, trying the tolerances in order. All of
+    // them are kept, not just the first that yields one: a coarse tolerance can reach a neighbouring
+    // rim before it reaches the one the cursor is on, and the caller picks by proximity. Returns
+    // true once the patch has yielded a loop at all.
+    std::set<std::string> seen;
+    const auto             collect = [&](const int facet) {
+        bool any = false;
+        for (const float tol : normal_tols) {
+            for (std::vector<LoopFrame> loop : its_face_patch_loops(its, trafo, facet, tol)) {
+                if (loop.size() < 3 || !seen.insert(loop_key(loop)).second)
+                    continue;
+                loops.push_back(std::move(loop));
+                any = true;
+            }
+        }
+        return any;
+    };
+
+    if (collect(seed_face) || max_rings <= 0)
         return loops;
 
     // A rim can border a smooth band, and a cursor on that band lands on a patch with no rim of its
     // own. Ring outwards from the seed face and return the loops of the first ring that has any:
-    // the patch beyond the band is the flat face the rim belongs to. Ringing stops at the first
-    // ring that yields a loop, so the cost stays local to the cursor.
+    // the patch beyond the band is the face the rim belongs to. Ringing stops at the first ring that
+    // yields a loop, so the cost stays local to the cursor.
     const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
-    std::vector<char>          seen(its.indices.size(), 0);
-    seen[seed_face] = 1;
+    std::vector<char>          seen_faces(its.indices.size(), 0);
+    seen_faces[seed_face] = 1;
     std::vector<int> frontier{ seed_face };
     for (int ring = 0; ring < max_rings && !frontier.empty(); ++ring) {
         std::vector<int> next;
@@ -339,18 +388,16 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_tr
                 continue;
             for (int k = 0; k < 3; ++k) {
                 const int n = neighbors[f][k];
-                if (n < 0 || seen[n])
+                if (n < 0 || n >= int(seen_faces.size()) || seen_faces[n])
                     continue;
-                seen[n] = 1;
+                seen_faces[n] = 1;
                 next.push_back(n);
             }
         }
-        for (const int n : next) {
-            std::vector<std::vector<LoopFrame>> found = its_face_patch_loops(its, trafo, n, normal_tol);
-            for (std::vector<LoopFrame> &loop : found)
-                loops.push_back(std::move(loop));
-        }
-        if (!loops.empty())
+        bool any = false;
+        for (const int n : next)
+            any |= collect(n);
+        if (any)
             return loops;
         frontier.swap(next);
     }

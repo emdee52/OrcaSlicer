@@ -59,16 +59,16 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
                                                          const Transform3d &trafo, int seed_face,
                                                          float normal_tol = 1e-3f);
 
-// As above, but when the patch of `seed_face` carries no loop the search is repeated for the facets
-// in the rings around it, up to `max_rings` rings out, and the loops of the first ring that has any
-// are returned. This is what makes a rim pickable from the smooth band that borders it (a bevel, or
-// the rounded side of a low boss), where the patch under the cursor has no rim of its own. Loops of
-// several patches in the same ring are concatenated, so the caller picks the one it wants;
-// `max_rings <= 0` reduces to `its_face_patch_loops`.
-std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_triangle_set &its,
-                                                                const Transform3d &trafo,
-                                                                int seed_face, int max_rings = 2,
-                                                                float normal_tol = 1e-3f);
+// As above, but the patch is grown at each tolerance in `normal_tols` in turn and every distinct
+// loop found is returned: a rim that borders a coarsely faceted or beveled surface only shows up
+// once the patch is allowed to step across the facets, while on a flat face the first tolerance
+// already yields the same loops. When none of them yields a loop the search is repeated for the
+// facets in the rings around the seed, up to `max_rings` rings out, and the loops of the first ring
+// that has any are returned. Loops of several patches are concatenated, so the caller picks the one
+// it wants; `max_rings <= 0` reduces to the tolerances of the seed's own patch.
+std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(
+    const indexed_triangle_set &its, const Transform3d &trafo, int seed_face, int max_rings = 3,
+    const std::vector<float> &normal_tols = { 1e-3f, 0.05f, 0.1f, 0.2f, 0.3f });
 
 // Sweep a CCW profile around a closed loop: profile point (a, b) of segment i is placed at
 // `p + a * u + b * v` at one end and at `q + a * u + b * v` at the other, and consecutive segments
