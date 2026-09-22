@@ -15,7 +15,10 @@ constexpr double MIN_CREASE_SIN = 0.2588; // 15 degrees
 // Creases shallower than this are treated as the same surface, so a patch is one region of the model
 // that only sharper creases interrupt, and the loops it is bounded by are always rims. Without it a
 // rim that crosses a round-over in small steps comes out as a staircase that wanders off the rim.
-constexpr double MAX_JOIN_DOT = 0.9063; // cos(25 degrees)
+// Measured on the lego head: at 25 degrees the mouth rim still stepped on and off round-over facets
+// (39 of 449 segments, 23-31 degrees); at 40 degrees those facets belong to the surface, so the rim
+// comes out at 54 degrees or crisper while the eyes, nose and flat faces keep their own regions.
+constexpr double MAX_JOIN_DOT = 0.766; // cos(40 degrees)
 
 double profile_signed_area(const std::vector<Vec2d> &pts)
 {

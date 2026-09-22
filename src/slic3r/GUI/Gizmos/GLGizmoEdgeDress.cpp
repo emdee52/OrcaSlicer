@@ -448,6 +448,17 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
                 for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
                     if (loop.size() < 3)
                         continue;
+                    // The region on the far side of a cut carries the loop that runs along the back
+                    // of the rim under the cursor, so offering it would dress the wrong side of the
+                    // hole. Only a loop whose segments mostly face the camera is a candidate.
+                    int n_segments = 0, n_visible = 0;
+                    for (const LoopFrame &f : loop) {
+                        ++n_segments;
+                        if (visible(f.p + 0.5 * (f.q - f.p)))
+                            ++n_visible;
+                    }
+                    if (n_segments > 0 && n_visible * 2 < n_segments)
+                        continue;
                     for (const LoopFrame &f : loop) {
                         const Vec2d a = world_to_screen(camera, to_world * f.p);
                         const Vec2d b = world_to_screen(camera, to_world * f.q);
