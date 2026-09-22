@@ -830,14 +830,16 @@ assembly.
   folded into the single `m_selection.translate(...)` call, because `Selection::translate` writes instance
   offsets ABSOLUTELY from the drag-start cache — a second call in the same frame would overwrite the first
   instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up.
-- **Anchoring.** The anchor is the dragged object's own nearest snap feature, not the cursor: grabbing a
-  corner a few pixels off always left that corner short of the target. `mover_hit_under_cursor` raycasts
-  only the moving volumes (same loop as `hit_under_cursor`, shared through a `want_moving` predicate); if
-  the cursor is off the dragged object, the drag-start grab point is the anchor instead. Because every
-  `translate` is absolute from the drag-start cache, the anchor's drag-start world position is
-  `current - displacement already applied` (kept in `m_objsnap_disp`, reset when the drag starts).
-  Correcting to `target - (anchor_current - applied)` is an exact, non-oscillating fixed point, so a moved
-  anchor and a newly found target both settle in the next frame.
+- **Anchoring.** The anchor is the dragged object's own coordinate the cursor is on, not the raw
+  cursor: grabbing a corner a few pixels off always left that corner short of the target.
+  `mover_hit_under_cursor` raycasts only the moving volumes (same loop as `hit_under_cursor`, shared
+  through a `want_moving` predicate). `Selection::translate` moves an instance by `R * displacement`,
+  with `R` its instance rotation (constant during an offset-only drag), so the correction is
+  premultiplied by `R⁻¹` — `SnapHit::rotation` carries it and, being orthonormal, its transpose is the
+  inverse. That matters: with a rotated object the naive correction settles short of the target. Each
+  frame's total is `displacement already applied + R⁻¹ * (target − anchor)`, which reaches the target
+  exactly and stays there; if the cursor is off the dragged object there is no anchor feature to trust
+  and the drag-start grab point is put on the target instead.
 - **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
   keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
   `coplanar_region` + `build_face_snap_points`). A non-planar face under the cursor falls back to the
@@ -850,13 +852,17 @@ assembly.
   measured in screen space (its centre and its rim, using the same `candidate_radius` the spheres are
   drawn with, so the picture and the pick agree), the cursor's distance to that rim is the score, and an
   8 px grab margin lets a near miss still grab. Strictly-closest wins, so candidates emitted first keep
-  the `FaceSnapKind` priority on ties. `nearest_face_snap` itself is untouched.
+  the `FaceSnapKind` priority on ties. `nearest_face_snap` itself is untouched. Picking does **not** gate
+  the hit: the face's coordinates are reported whenever the ray lands on it, and only `SnapHit::active`
+  is left at `no_candidate` when the cursor is not on a sphere — otherwise nothing would show until the
+  cursor happened to sit exactly on one.
 - **Markers.** While Alt is held both objects show their candidate points as spheres, the active one
   larger — white on the object the drag lands on, amber on the object being dragged, so the feature to
   grab is visible before the press and the two sets are tellable apart. Hovering with Alt over a
   selected object's face is enough to show them: `GLCanvas3D::_objsnap_update` is shared by the drag
-  path and by the `evt.Moving()` hover branch (skipped while a gizmo owns Alt, i.e. Holes and Cut), so
-  no drag has to be started first. `ObjectSnap::Markers` builds one
+  path and by the `evt.Moving()` hover branch, which only defers to the two gizmos that own Alt for
+  their own snap (Holes, Cut) — gating on "no gizmo open" instead would never fire, because the Move
+  gizmo is up whenever an object is selected. `ObjectSnap::Markers` builds one
   merged mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
   `[0.3, 1.5]` mm, and the same per-kind colours the Holes tool uses (`GLGizmoHoles::build_snap_markers`
   is the reference). `Markers::render` runs with the depth test off so the spheres read through the
