@@ -791,6 +791,15 @@ public:
     // Displacement the last cache-absolute Selection::translate applied in this drag, so the snap
     // can recover the anchor's drag-start position. Reset when the drag starts.
     Vec3d m_objsnap_disp{ Vec3d::Zero() };
+    // The dragged object's own coordinate the cursor was on when Alt was first held this drag. It is
+    // latched rather than re-picked every frame: the object slides under the cursor as the snap moves
+    // it, so re-picking made the anchor hop to a neighbouring coordinate and the object shimmy back
+    // and forth. Together with the displacement in force at that moment and the instance rotation, it
+    // pins the snap to a target with no feedback into the next frame.
+    bool            m_objsnap_anchor_valid{ false };
+    Vec3d           m_objsnap_anchor_world{ Vec3d::Zero() };
+    Eigen::Matrix3d m_objsnap_anchor_rot{ Eigen::Matrix3d::Identity() };
+    Vec3d           m_objsnap_anchor_disp{ Vec3d::Zero() };
 
     // [ORCAPORT:SU-5] What each support zone will catch (built in world coordinates, one model for
     // every instance). See Feature/SupportZones/SupportZoneProbe.hpp.

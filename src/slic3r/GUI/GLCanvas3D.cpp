@@ -4774,6 +4774,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                             m_mouse.drag.move_volume_idx = volume_idx;
                             m_snapdrag_engaged.clear(); // [ORCAPORT:AS-3] fresh hysteresis state this drag
                             m_objsnap_disp = Vec3d::Zero(); // [ORCAPORT:SNAP-8] no displacement applied yet
+                            m_objsnap_anchor_valid = false; // [ORCAPORT:SNAP-8] latch a fresh anchor if Alt is held
                             m_selection.setup_cache();
                             m_mouse.drag.start_position_3D = scene_position;
                             m_sequential_print_clearance_first_displacement = true;
@@ -4853,18 +4854,16 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 Vec3d drag_disp = cur_pos - m_mouse.drag.start_position_3D;
                 if (target_hit && target_hit->has_point()) {
                     const Vec3d target_world = target_hit->point().world;
-                    if (mover_hit && mover_hit->has_point()) {
-                        // translate moves the instance by R*displacement, R being the instance
-                        // rotation, so landing one of the object's own coordinates on the target
-                        // needs the correction premultiplied by R^-1 (R is orthonormal, so its
-                        // transpose is the inverse). Adding it to the displacement already in force
-                        // makes the anchor reach the target exactly and stay there, however the
-                        // cursor moved in between.
-                        drag_disp = m_objsnap_disp +
-                                    mover_hit->rotation.transpose() * (target_world - mover_hit->point().world);
+                    if (m_objsnap_anchor_valid) {
+                        // Put the latched anchor on the target. translate moves the instance by
+                        // R*displacement, so the correction is premultiplied by R^-1 (the rotation is
+                        // orthonormal, so its transpose is the inverse). Nothing here depends on the
+                        // previous frame, so the pair cannot feed back into itself.
+                        drag_disp = m_objsnap_anchor_disp +
+                                    m_objsnap_anchor_rot.transpose() * (target_world - m_objsnap_anchor_world);
                     } else {
-                        // Cursor is off the dragged object, so there is no anchor feature to trust:
-                        // fall back to putting the drag-start grab point on the target.
+                        // Alt was pressed with the cursor off the dragged object, so there is no anchor
+                        // feature to trust: put the drag-start grab point on the target instead.
                         drag_disp = target_world - m_mouse.drag.start_position_3D;
                     }
                 }
@@ -5889,8 +5888,10 @@ void GLCanvas3D::_objsnap_update(const Vec2d& mouse, const std::set<std::pair<in
     m_objsnap_markers.clear();
     m_objsnap_mover_markers.clear();
 
-    if (!wxGetKeyState(WXK_ALT) || m_model == nullptr || m_canvas_type == ECanvasType::CanvasAssembleView)
+    if (!wxGetKeyState(WXK_ALT) || m_model == nullptr || m_canvas_type == ECanvasType::CanvasAssembleView) {
+        m_objsnap_anchor_valid = false; // a later Alt press latches a fresh anchor
         return;
+    }
 
     const Camera& camera = wxGetApp().plater()->get_camera();
 
@@ -5901,6 +5902,17 @@ void GLCanvas3D::_objsnap_update(const Vec2d& mouse, const std::set<std::pair<in
         if (mover)
             m_objsnap_mover_markers.set(mover->candidates, mover->active,
                                         OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
+
+        // Latch the anchor on the first Alt frame of a drag. It has to stay fixed: the object slides
+        // under the cursor as the snap moves it, so re-picking every frame would let the anchor hop to
+        // a neighbouring coordinate, and each hop commands a different landing position (the shimmy),
+        // while an interior coordinate as the anchor pushes the real corner past the target.
+        if (mover && mover->has_point() && m_mouse.dragging && !m_objsnap_anchor_valid) {
+            m_objsnap_anchor_valid = true;
+            m_objsnap_anchor_world = mover->point().world;
+            m_objsnap_anchor_rot   = mover->rotation;
+            m_objsnap_anchor_disp  = m_objsnap_disp;
+        }
     }
 
     target = OrcaExt::Gui::ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
