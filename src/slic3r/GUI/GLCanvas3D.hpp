@@ -1441,6 +1441,14 @@ private:
     // [ORCAPORT:AS-3] landing shadow/beam while Snap & Drag is dragging
     void _render_snapdrag_indicator();
     void _render_objsnap_markers(); // [ORCAPORT:SNAP-8]
+    // [ORCAPORT:SNAP-8] Recompute the object-snap marker spheres for a cursor position and report the
+    // snap hits (target = the face the grab point lands on, mover = the dragged object's own
+    // coordinate). Clears both marker sets when Alt is not held or nothing is under the cursor.
+    void _objsnap_update(const Vec2d &mouse, const std::set<std::pair<int, int>> &moving,
+                         std::optional<OrcaExt::Gui::ObjectSnap::SnapHit> &target,
+                         std::optional<OrcaExt::Gui::ObjectSnap::SnapHit> &mover);
+    // [ORCAPORT:SNAP-8] (object, instance) pairs the current selection would drag.
+    std::set<std::pair<int, int>> _objsnap_moving_set() const;
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER

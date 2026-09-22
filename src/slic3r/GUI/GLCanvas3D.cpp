@@ -4840,51 +4840,24 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 // drag translation and would fight otherwise.
                 const bool alt_snap = wxGetKeyState(WXK_ALT);
 
-                std::set<std::pair<int, int>> moving; // (object, instance) pairs being dragged
-                for (unsigned int idx : m_selection.get_volume_idxs()) {
-                    const GLVolume* gv = m_volumes.volumes[idx];
-                    if (gv->is_wipe_tower || gv->is_modifier)
-                        continue;
-                    moving.insert({ gv->object_idx(), gv->instance_idx() });
-                }
+                std::set<std::pair<int, int>> moving = _objsnap_moving_set(); // (object, instance) pairs being dragged
 
-                m_objsnap_markers.clear();       // rebuilt below only while Alt is held over a face
-                m_objsnap_mover_markers.clear();
+                // Rebuild the marker spheres for this cursor position and get both snap hits: the
+                // dragged object's own coordinate, and the coordinate of the face it should land on.
+                std::optional<ObjectSnap::SnapHit> mover_hit, target_hit;
+                _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
+
                 Vec3d snap_disp = Vec3d::Zero();
-                if (alt_snap && m_model != nullptr) {
-                    const Camera& camera = wxGetApp().plater()->get_camera();
-                    // The dragged object's own nearest coordinate. Anchoring on the raw cursor is
-                    // only approximate: grabbing a corner a few pixels off left the corner short of
-                    // the target. With a mover coordinate the grabbed point becomes that coordinate.
-                    const std::optional<ObjectSnap::SnapHit> mover =
-                        ObjectSnap::mover_hit_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>());
-                    if (mover) {
-                        size_t active = 0;
-                        for (size_t i = 0; i < mover->candidates.size(); ++i)
-                            if ((mover->candidates[i].world - mover->point.world).squaredNorm() < 1e-12)
-                                active = i;
-                        m_objsnap_mover_markers.set(mover->candidates, active, ObjectSnap::MarkerRole::Mover);
-                    }
-
-                    if (const std::optional<ObjectSnap::SnapHit> hit =
-                            ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>())) {
-                        // Selection::translate writes each offset absolutely from the drag-start
-                        // cache, so the displacement below is the total since the drag began. The
-                        // anchor's drag-start world position is therefore its current position minus
-                        // the displacement already applied. Anchoring on the mover's own coordinate
-                        // (rather than on the raw cursor) is what makes a corner grabbed a few
-                        // pixels off land dead on the target; with no mover hit the drag-start grab
-                        // point is the anchor, i.e. the raw cursor.
-                        const Vec3d base_anchor = mover ? (mover->point.world - m_objsnap_disp)
+                if (target_hit) {
+                    // Selection::translate writes each offset absolutely from the drag-start cache, so
+                    // the displacement below is the total since the drag began. The anchor's drag-start
+                    // world position is therefore its current position minus the displacement already
+                    // applied. Anchoring on the mover's own coordinate (rather than on the raw cursor)
+                    // is what makes a corner grabbed a few pixels off land dead on the target; with no
+                    // mover hit the drag-start grab point is the anchor, i.e. the raw cursor.
+                    const Vec3d base_anchor = mover_hit ? (mover_hit->point.world - m_objsnap_disp)
                                                         : m_mouse.drag.start_position_3D;
-                        snap_disp = hit->point.world - base_anchor - (cur_pos - m_mouse.drag.start_position_3D);
-
-                        size_t active = 0;
-                        for (size_t i = 0; i < hit->candidates.size(); ++i)
-                            if ((hit->candidates[i].world - hit->point.world).squaredNorm() < 1e-12)
-                                active = i;
-                        m_objsnap_markers.set(hit->candidates, active);
-                    }
+                    snap_disp = target_hit->point.world - base_anchor - (cur_pos - m_mouse.drag.start_position_3D);
                 }
                 // [ORCAPORT:SNAP-8] END
 
@@ -5323,6 +5296,14 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             m_gizmos.reset_all_states();
 
         _set_overlay_as_dirty();
+
+        // [ORCAPORT:SNAP-8] Alt-hover preview: show the object-snap spheres for the face under the
+        // cursor without having to start a drag. Gizmos that already own Alt (Holes, Cut) keep it.
+        if (!m_mouse.dragging && m_gizmos.get_current_type() == GLGizmosManager::EType::Undefined) {
+            const std::set<std::pair<int, int>> moving = _objsnap_moving_set();
+            std::optional<ObjectSnap::SnapHit>  target_hit, mover_hit;
+            _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
+        }
     }
     else
         evt.Skip();
@@ -5864,9 +5845,64 @@ void GLCanvas3D::_render_snapdrag_indicator()
 
 void GLCanvas3D::_render_objsnap_markers() // [ORCAPORT:SNAP-8]
 {
+    // Alt released without any mouse event: the move/drag callbacks only run on input, so drop the
+    // spheres here.
+    if (!wxGetKeyState(WXK_ALT) && (m_objsnap_markers.is_visible() || m_objsnap_mover_markers.is_visible())) {
+        m_objsnap_markers.clear();
+        m_objsnap_mover_markers.clear();
+    }
     const Camera& camera = wxGetApp().plater()->get_camera();
     m_objsnap_mover_markers.render(camera);
     m_objsnap_markers.render(camera);
+}
+
+std::set<std::pair<int, int>> GLCanvas3D::_objsnap_moving_set() const // [ORCAPORT:SNAP-8]
+{
+    std::set<std::pair<int, int>> moving;
+    for (unsigned int idx : m_selection.get_volume_idxs()) {
+        const GLVolume* gv = m_volumes.volumes[idx];
+        if (gv == nullptr || gv->is_wipe_tower || gv->is_modifier)
+            continue;
+        moving.insert({ gv->object_idx(), gv->instance_idx() });
+    }
+    return moving;
+}
+
+void GLCanvas3D::_objsnap_update(const Vec2d& mouse, const std::set<std::pair<int, int>>& moving,
+                                 std::optional<OrcaExt::Gui::ObjectSnap::SnapHit>& target,
+                                 std::optional<OrcaExt::Gui::ObjectSnap::SnapHit>& mover) // [ORCAPORT:SNAP-8]
+{
+    target.reset();
+    mover.reset();
+    m_objsnap_markers.clear();
+    m_objsnap_mover_markers.clear();
+
+    if (!wxGetKeyState(WXK_ALT) || m_model == nullptr || m_canvas_type == ECanvasType::CanvasAssembleView)
+        return;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+
+    // The dragged object's own nearest coordinate; anchoring on the raw cursor is only approximate.
+    // Only meaningful while something is selected.
+    if (!moving.empty()) {
+        mover = OrcaExt::Gui::ObjectSnap::mover_hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
+        if (mover) {
+            size_t active = 0;
+            for (size_t i = 0; i < mover->candidates.size(); ++i)
+                if ((mover->candidates[i].world - mover->point.world).squaredNorm() < 1e-12)
+                    active = i;
+            m_objsnap_mover_markers.set(mover->candidates, active, OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
+        }
+    }
+
+    target = OrcaExt::Gui::ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
+    if (target) {
+        size_t active = 0;
+        for (size_t i = 0; i < target->candidates.size(); ++i)
+            if ((target->candidates[i].world - target->point.world).squaredNorm() < 1e-12)
+                active = i;
+        m_objsnap_markers.set(target->candidates, active);
+    }
 }
 
 void GLCanvas3D::do_move(const std::string& snapshot_type)

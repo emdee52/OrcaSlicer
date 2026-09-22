@@ -26,10 +26,6 @@ namespace ObjectSnap {
 
 namespace {
 
-// Same stick radius the Holes and Cut gizmos give nearest_face_snap.
-constexpr double SNAP_MIN_PX = 8.0;
-constexpr double SNAP_MAX_PX = 48.0;
-
 // Candidate cache for the face currently under the cursor. Canvas callbacks are single-threaded, so
 // the static is safe here; it exists to keep its_face_normals / its_face_neighbors off the per-frame
 // path, the same reason GLGizmoHoles caches its (mv, facet, region, points) quadruple.
@@ -50,6 +46,49 @@ const std::vector<FaceSnapPoint> &candidates_for(const ModelVolume *mv, size_t f
         cache.points = GUI::build_face_snap_points(mv, GUI::coplanar_region(mv, facet, cache.region_cache));
     }
     return cache.points;
+}
+
+// Radius of the drawn candidate spheres, in world units. Shared with Markers::set so the picture and
+// the pick agree: what you see is what you can grab.
+double candidate_radius(const std::vector<SnapCandidate> &candidates)
+{
+    double diag = 0.0;
+    for (size_t i = 0; i < candidates.size(); ++i)
+        for (size_t j = i + 1; j < candidates.size(); ++j)
+            diag = std::max(diag, (candidates[i].world - candidates[j].world).norm());
+    // Face-relative like the Holes gizmo; the floor keeps a lone raw hit (curved face) visible and the
+    // ceiling keeps a huge face from sprouting giant blobs.
+    return std::clamp(0.012 * diag, 0.3, 1.5);
+}
+
+// Pick the sphere the cursor is actually on: the candidate whose drawn disc comes closest to the
+// cursor, plus a small grab margin. A pure screen-distance test (the shared nearest_face_snap) can
+// hand the pick to a sphere tens of pixels away, which is what made aiming at one edge of a face
+// grab a feature of the neighbouring face and land the object offset.
+bool pick_by_sphere(const std::vector<SnapCandidate> &candidates, const GUI::Camera &camera, double radius,
+                    const Vec2d &mouse, size_t &active)
+{
+    constexpr double GRAB_MARGIN_PX = 8.0;
+    const Vec3d      dir_right      = camera.get_dir_right().normalized();
+
+    double best_score = std::numeric_limits<double>::max();
+    bool   found      = false;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const Vec2d center = GUI::world_to_screen(camera, candidates[i].world);
+        const Vec2d edge   = GUI::world_to_screen(camera, candidates[i].world + dir_right * radius);
+        if (!std::isfinite(center.x()) || !std::isfinite(center.y()) || !std::isfinite(edge.x()) || !std::isfinite(edge.y()))
+            continue; // behind the camera
+        const double score = (mouse - center).norm() - (edge - center).norm();
+        if (score > GRAB_MARGIN_PX)
+            continue;
+        // Strictly closer wins, so candidates emitted first (higher FaceSnapKind priority) hold ties.
+        if (score < best_score - 1e-9) {
+            best_score = score;
+            active     = i;
+            found      = true;
+        }
+    }
+    return found;
 }
 
 // Closest visible volume under the cursor whose (object, instance) is or is not in the drag set,
@@ -97,11 +136,10 @@ std::optional<SnapHit> hit_filtered(const Model &model, const GLVolumeCollection
     if (mo == nullptr || vol_idx < 0 || vol_idx >= int(mo->volumes.size()))
         return std::nullopt;
 
-    const Transform3d world   = hit_volume->world_matrix();
-    const auto        project = [&](const Vec3d &p) { return GUI::world_to_screen(camera, world * p); };
+    const Transform3d world = hit_volume->world_matrix();
 
     // Curved or otherwise ungroupable face: the raw hit is the one candidate. Kept in the volume's
-    // own mesh space so the projection and the resulting world position share one transform.
+    // own mesh space so it goes through the same transform as the grouped ones.
     std::vector<FaceSnapPoint>        fallback;
     const std::vector<FaceSnapPoint> *pts = &candidates_for(mo->volumes[vol_idx], hit_facet);
     if (pts->empty()) {
@@ -109,22 +147,17 @@ std::optional<SnapHit> hit_filtered(const Model &model, const GLVolumeCollection
         pts = &fallback;
     }
 
-    FaceSnapPoint best;
-    if (!nearest_face_snap(*pts, project, mouse, best, SNAP_MIN_PX, SNAP_MAX_PX, nullptr))
-        return std::nullopt;
-
     // Hand the whole face back, in world space, so the caller can draw every coordinate; `active` is
     // the one the grab point lands on.
     SnapHit out;
     out.candidates.reserve(pts->size());
+    for (const FaceSnapPoint &p : *pts)
+        out.candidates.push_back({ world * p.pos, p.kind });
+    if (out.candidates.empty()) // cannot happen: the fallback always holds one point
+        return std::nullopt;
+
     size_t active = 0;
-    for (size_t i = 0; i < pts->size(); ++i) {
-        const Vec3d p = world * pts->at(i).pos;
-        out.candidates.push_back({ p, pts->at(i).kind });
-        if ((p - (world * best.pos)).squaredNorm() < 1e-12)
-            active = i;
-    }
-    if (out.candidates.empty()) // cannot happen: nearest_face_snap matched one of them
+    if (!pick_by_sphere(out.candidates, camera, candidate_radius(out.candidates), mouse, active))
         return std::nullopt;
 
     out.point = out.candidates[active];
@@ -153,14 +186,7 @@ void Markers::set(const std::vector<SnapCandidate> &candidates, size_t active, M
     if (candidates.empty())
         return;
 
-    double diag = 0.0;
-    for (size_t i = 0; i < candidates.size(); ++i)
-        for (size_t j = i + 1; j < candidates.size(); ++j)
-            diag = std::max(diag, (candidates[i].world - candidates[j].world).norm());
-
-    // Face-relative like the Holes gizmo; the floor keeps a lone raw hit (curved face) visible and the
-    // ceiling keeps a huge face from sprouting giant blobs.
-    const double radius = std::clamp(0.012 * diag, 0.3, 1.5);
+    const double radius = candidate_radius(candidates);
 
     static const ColorRGBA KIND_COLOR[5] = {
         ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f), // corner
