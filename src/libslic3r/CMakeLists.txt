@@ -123,6 +123,8 @@ set(lisbslic3r_sources
     CustomGCode.hpp
     CutUtils.cpp
     CutUtils.hpp
+    EdgeProfiles.cpp
+    EdgeProfiles.hpp
     EdgeGrid.cpp
     EdgeGrid.hpp
     ElephantFootCompensation.cpp
