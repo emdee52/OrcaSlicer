@@ -178,7 +178,8 @@ class GLGizmoCut3D : public GLGizmoBase
     const ModelVolume*         m_snap_points_mv{ nullptr };
     const GLVolume*            m_snap_points_volume{ nullptr };
     int                        m_snap_points_facet{ -1 };
-    std::vector<int>           m_snap_points_region; // facets of the same flat face as that triangle
+    std::vector<int> m_snap_points_region; // facets of the same flat face as that triangle
+    size_t                     m_snap_points_mode{ size_t(-1) }; // mode the marker set was built for
     FaceSnapPoint              m_snap_lock; // mesh space
     double                     m_snap_lock_tol{ 0.0 };
     bool                       m_snap_locked{ false };

@@ -2951,8 +2951,11 @@ bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolu
 
 // Alt-held snapping of the cut-plane centre: the plane - and the shaped cut, which is built from it -
 // sticks to a snap coordinate of the flat face the cursor was on when Alt was pressed. Dragging onto
-// another face does not re-target; a fresh Alt press picks the face under the cursor. Without Alt
-// `center` is returned untouched, so every existing path stays exactly as it was.
+// another face does not re-target; a fresh Alt press picks the face under the cursor. In planar mode
+// only one coordinate is worth having, the point under the cursor, because every coordinate of the
+// face cuts the identical plane (see below); the shaped modes keep the whole coordinate set, since
+// their profile is centred on the plane centre. Without Alt `center` is returned untouched, so every
+// existing path stays exactly as it was.
 Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
 {
     if (!wxGetKeyState(WXK_ALT)) {
@@ -2987,6 +2990,35 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
         return world_to_screen(wxGetApp().plater()->get_camera(), to_world * p);
     };
 
+    // The candidates depend only on the flat face and the cut mode, so a drag held over one of its
+    // triangles does not re-walk it.
+    if (mv != m_snap_points_mv || m_snap_points_mode != m_mode ||
+        (mv != nullptr && !region_has_facet(m_snap_points_region, int(facet)))) {
+        m_snap_points_mv     = mv;
+        m_snap_points_volume = volume;
+        m_snap_points_facet  = int(facet);
+        m_snap_points_mode   = m_mode;
+        m_snap_points_region = coplanar_region(mv, facet);
+        m_snap_points        = build_face_snap_points(mv, m_snap_points_region);
+        build_snap_markers();
+    }
+
+    if (m_mode == size_t(CutMode::cutPlanar)) {
+        // A plane is `normal.x = offset`, so moving its centre in-plane - onto any other coordinate
+        // of the same flat face - cuts the identical plane. Every coordinate of the face is that one
+        // plane, so track a single target instead: the point under the cursor, the only one the user
+        // can point at. There is nothing to be magnetic about; release Alt to move the plane along
+        // its normal.
+        const FaceSnapPoint p{ FaceSnapKind::FaceCenter, to_world.inverse() * hit };
+        if (!m_snap_locked || m_snap_lock_mv != mv || (m_snap_lock.pos - p.pos).norm() > 1e-9) {
+            m_snap_lock    = p;
+            m_snap_locked  = true;
+            m_snap_lock_mv = mv;
+            set_active_snap_marker(p);
+        }
+        return hit;
+    }
+
     // Hysteresis: keep the target the cursor was locked to until it moves well away from it.
     if (m_snap_locked && m_snap_lock_mv == mv) {
         const Vec2d locked_px = project(m_snap_lock.pos);
@@ -2994,17 +3026,6 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
             return to_world * m_snap_lock.pos;
     }
 
-    // The candidates depend only on the flat face, so a drag held over one of its triangles does not
-    // re-walk it.
-    if (mv != m_snap_points_mv ||
-        (mv != nullptr && !region_has_facet(m_snap_points_region, int(facet)))) {
-        m_snap_points_mv     = mv;
-        m_snap_points_volume = volume;
-        m_snap_points_facet  = int(facet);
-        m_snap_points_region = coplanar_region(mv, facet);
-        m_snap_points        = build_face_snap_points(mv, m_snap_points_region);
-        build_snap_markers();
-    }
     if (m_snap_points.empty()) {
         m_snap_locked = false;
         return center;
@@ -3045,6 +3066,11 @@ void GLGizmoCut3D::build_snap_markers()
         for (const FaceSnapPoint& b : m_snap_points)
             diag = std::max(diag, (a.pos - b.pos).norm());
     m_snap_radius = std::max(1e-4, 0.012 * diag);
+
+    // Planar mode shows one marker only, the point under the cursor (see snap_plane_center); the
+    // radius above is what sizes it.
+    if (m_mode == size_t(CutMode::cutPlanar))
+        return;
 
     static const ColorRGBA KIND_COLOR[5] = { ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f),   // corner, magenta
                                              ColorRGBA(0.35f, 0.90f, 0.75f, 1.0f),   // edge midpoint, teal
