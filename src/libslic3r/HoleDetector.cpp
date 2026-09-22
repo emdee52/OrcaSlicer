@@ -222,6 +222,26 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
         if (max_gap > params.max_angular_gap_deg * PI / 180.)
             continue;
 
+        // A hole is a cavity: the solid lies outside the wall, so the outward face normals point
+        // TOWARD the axis. On a convex surface (a solid cylinder, or the outside of a boss) they
+        // point AWAY from it. The circle fit alone cannot tell the two apart, so reject the latter.
+        double radial_dot = 0.;
+        for (int f : patch) {
+            const Vec3f &n = normals[f];
+            const auto  &tri = its.indices[f];
+            const Vec3d  c = (its.vertices[tri[0]].cast<double>() + its.vertices[tri[1]].cast<double>() +
+                              its.vertices[tri[2]].cast<double>()) / 3.;
+            const double u = c(0) * frame.e1(0) + c(1) * frame.e1(1) + c(2) * frame.e1(2) - cu;
+            const double v = c(0) * frame.e2(0) + c(1) * frame.e2(1) + c(2) * frame.e2(2) - cv;
+            const double d = std::hypot(u, v);
+            if (d < 1e-9)
+                continue;
+            const Vec3d radial = (frame.e1 * u + frame.e2 * v) / d;
+            radial_dot += n(0) * radial(0) + n(1) * radial(1) + n(2) * radial(2);
+        }
+        if (radial_dot / double(patch.size()) > 0.5)
+            continue;
+
         const double t_mid = 0.5 * (t_min + t_max);
         DetectedHole h;
         h.axis   = canonical_axis(frame.axis);

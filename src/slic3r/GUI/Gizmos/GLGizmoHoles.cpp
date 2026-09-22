@@ -37,7 +37,6 @@ constexpr const char *POCKET_NAME   = "HolePocket";
 constexpr const char *FACE_POCKET_NAME = "FacePocket";
 constexpr const char *RIM_CHAMFER_NAME = "RimChamfer";
 constexpr const char *RIM_FILLET_NAME  = "RimFillet";
-constexpr const char *REINFORCE_NAME   = "HoleReinforce";
 // |axis . up| below this marks a hole as horizontal (the top of the wall is an overhang).
 constexpr double HORIZONTAL_COS = 0.5;
 // How long the face highlight and the snap markers survive after the cursor leaves the face.
@@ -164,10 +163,6 @@ bool GLGizmoHoles::on_init()
     m_desc["op_bore"]          = _L("Bore / pocket");
     m_desc["op_rim_chamfer"]   = _L("Rim chamfer");
     m_desc["op_rim_fillet"]    = _L("Rim fillet");
-    m_desc["op_reinforce"]     = _L("Reinforce");
-    m_desc["reinforce_thickness"] = _L("Wall thickness");
-    m_desc["reinforce_loops"]  = _L("Extra loops");
-    m_desc["reinforce_all"]    = _L("Reinforce all vertical holes");
     m_desc["rim_size"]         = _L("Rim size");
     m_desc["apex"]             = _L("Apex angle");
     m_desc["standard"]         = _L("Standard");
@@ -208,7 +203,7 @@ bool GLGizmoHoles::on_init()
     return true;
 }
 
-std::string GLGizmoHoles::on_get_name() const { return _u8L("Vertical holes"); }
+std::string GLGizmoHoles::on_get_name() const { return _u8L("Horizontal holes"); }
 
 ModelObject *GLGizmoHoles::model_object() const
 {
@@ -384,40 +379,12 @@ indexed_triangle_set GLGizmoHoles::rim_mesh(const DetectedHole &h) const
                                                    : its_make_rim_chamfer(h.radius, size, dir, entry);
 }
 
-indexed_triangle_set GLGizmoHoles::reinforce_mesh(const DetectedHole &h) const
-{
-    // A positive, co-axial ring that overlaps the hole wall; as a PARAMETER_MODIFIER it raises the
-    // local wall count so a screw bites into solid plastic instead of splitting the part.
-    const double thickness = std::max(0.05, m_reinforce_thickness / object_scale());
-    const double inner_d   = 2.0 * h.radius;
-    const double outer_d   = inner_d + 2.0 * thickness;
-    const double margin    = h.through ? std::max(0.5, 0.25 * h.radius) : 0.0;
-    const double depth     = h.depth + 2.0 * margin;
-    const Vec3d  axis      = h.axis.normalized();
-    const Vec3d  entry     = h.center - axis * (0.5 * h.depth + margin);
-    return its_make_tube(outer_d, inner_d, depth, axis, entry);
-}
-
-int GLGizmoHoles::effective_wall_loops() const
-{
-    if (const ModelObject *mo = model_object(); mo != nullptr && mo->config.has("wall_loops"))
-        return mo->config.opt_int("wall_loops");
-    if (wxGetApp().preset_bundle != nullptr) {
-        const DynamicPrintConfig &cfg = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        if (cfg.has("wall_loops"))
-            return cfg.opt_int("wall_loops");
-    }
-    return 2;
-}
-
 indexed_triangle_set GLGizmoHoles::shape_mesh(const DetectedHole &h) const
 {
     if (m_operation == HoleOperation::Teardrop)
         return teardrop_mesh(h);
     if (m_operation == HoleOperation::Bore)
         return bore_negative_mesh(h);
-    if (m_operation == HoleOperation::Reinforce)
-        return reinforce_mesh(h);
     return rim_mesh(h);
 }
 
@@ -588,7 +555,6 @@ void GLGizmoHoles::refresh_applied()
     m_bore.assign(m_holes.size(), 0);
     m_rim_chamfer.assign(m_holes.size(), 0);
     m_rim_fillet.assign(m_holes.size(), 0);
-    m_reinforce.assign(m_holes.size(), 0);
     const ModelObject *mo = model_object();
     if (mo == nullptr)
         return;
@@ -612,11 +578,6 @@ void GLGizmoHoles::refresh_applied()
             if (rf >= 0 && rf < int(m_holes.size()))
                 m_rim_fillet[rf] = 1;
         }
-        if (v->is_modifier()) {
-            const int ri = parsed_hole_index(v->name, REINFORCE_NAME);
-            if (ri >= 0 && ri < int(m_holes.size()))
-                m_reinforce[ri] = 1;
-        }
     }
 }
 
@@ -636,10 +597,9 @@ void GLGizmoHoles::rebuild_previews()
         for (const ModelVolume *v : mo->volumes) {
             if (v == nullptr)
                 continue;
-            const bool reinforce_vol = v->is_modifier() && parsed_hole_index(v->name, REINFORCE_NAME) >= 0;
-            if (!v->is_negative_volume() && !reinforce_vol)
+            if (!v->is_negative_volume())
                 continue;
-            if (!reinforce_vol && parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0 &&
+            if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0 &&
                 parsed_hole_index(v->name, FACE_POCKET_NAME) < 0 && parsed_hole_index(v->name, RIM_CHAMFER_NAME) < 0 &&
                 parsed_hole_index(v->name, RIM_FILLET_NAME) < 0)
                 continue;
@@ -656,7 +616,6 @@ void GLGizmoHoles::rebuild_previews()
         const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] != 0
                            : m_operation == HoleOperation::Bore      ? m_bore[i] != 0
                            : m_operation == HoleOperation::RimChamfer ? m_rim_chamfer[i] != 0
-                           : m_operation == HoleOperation::Reinforce  ? m_reinforce[i] != 0
                                                                       : m_rim_fillet[i] != 0;
         if (applied)
             continue; // already drawn from the actual volume
@@ -1155,13 +1114,13 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
 // Model edits
 // ---------------------------------------------------------------------------------------------
 
-ModelVolume *GLGizmoHoles::add_named_volume(int idx, const indexed_triangle_set &its, ModelVolumeType type, const std::string &name, bool snapshot)
+void GLGizmoHoles::add_named_volume(int idx, const indexed_triangle_set &its, ModelVolumeType type, const std::string &name, bool snapshot)
 {
     (void) idx;
     ModelObject *mo = model_object();
     const int    oi = object_idx();
     if (mo == nullptr || oi < 0 || its.indices.empty())
-        return nullptr;
+        return;
 
     Plater *plater = wxGetApp().plater();
     if (snapshot)
@@ -1174,7 +1133,6 @@ ModelVolume *GLGizmoHoles::add_named_volume(int idx, const indexed_triangle_set 
         ol->update_info_items(oi);
     }
     plater->update();
-    return v;
 }
 
 void GLGizmoHoles::remove_named_volumes(int idx, const char *prefix, const std::string &snapshot_name)
@@ -1237,24 +1195,6 @@ void GLGizmoHoles::toggle_rim(int idx, bool chamfer)
         add_named_volume(idx, neg, ModelVolumeType::NEGATIVE_VOLUME, feature_name(prefix, idx), true);
 }
 
-void GLGizmoHoles::toggle_reinforce(int idx)
-{
-    if (m_reinforce[idx]) {
-        remove_named_volumes(idx, REINFORCE_NAME, _u8L("Remove hole reinforcement"));
-        return;
-    }
-    if (idx < 0 || idx >= int(m_holes.size()))
-        return;
-    indexed_triangle_set ring = reinforce_mesh(m_holes[idx].hole);
-    if (ring.indices.empty())
-        return;
-    // A PARAMETER_MODIFIER does not cut the mesh; it only overrides region settings inside its
-    // footprint, so its wall_loops value is what thickens the hole wall.
-    ModelVolume *v = add_named_volume(idx, ring, ModelVolumeType::PARAMETER_MODIFIER, feature_name(REINFORCE_NAME, idx), true);
-    if (v != nullptr)
-        v->config.set_key_value("wall_loops", new ConfigOptionInt(effective_wall_loops() + m_reinforce_loops));
-}
-
 void GLGizmoHoles::clear_all()
 {
     ModelObject *mo = model_object();
@@ -1267,7 +1207,7 @@ void GLGizmoHoles::clear_all()
         const ModelVolume *v = mo->volumes[vi];
         if ((v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0) || v->name.rfind(POCKET_NAME, 0) == 0 ||
             v->name.rfind(FACE_POCKET_NAME, 0) == 0 || v->name.rfind(RIM_CHAMFER_NAME, 0) == 0 ||
-            v->name.rfind(RIM_FILLET_NAME, 0) == 0 || v->name.rfind(REINFORCE_NAME, 0) == 0)
+             v->name.rfind(RIM_FILLET_NAME, 0) == 0)
             items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
     m_placed.clear();
@@ -1301,7 +1241,6 @@ DetectedHole GLGizmoHoles::hole(int idx) const
 bool GLGizmoHoles::hole_horizontal(int idx) const { return idx >= 0 && idx < int(m_holes.size()) && m_holes[idx].horizontal; }
 bool GLGizmoHoles::hole_has_teardrop(int idx) const { return idx >= 0 && idx < int(m_teardrop.size()) && m_teardrop[idx] != 0; }
 bool GLGizmoHoles::hole_has_bore(int idx) const { return idx >= 0 && idx < int(m_bore.size()) && m_bore[idx] != 0; }
-bool GLGizmoHoles::hole_has_reinforce(int idx) const { return idx >= 0 && idx < int(m_reinforce.size()) && m_reinforce[idx] != 0; }
 
 void GLGizmoHoles::set_operation(HoleOperation op)
 {
@@ -1323,20 +1262,6 @@ void GLGizmoHoles::set_rim_size(double size)
 {
     m_rim_size      = std::max(0.01, size);
     m_preview_dirty = true;
-    m_parent.set_as_dirty();
-}
-
-void GLGizmoHoles::set_reinforce_thickness(double mm)
-{
-    m_reinforce_thickness = std::clamp(mm, 0.1, 20.0);
-    m_preview_dirty       = true;
-    m_parent.set_as_dirty();
-}
-
-void GLGizmoHoles::set_reinforce_loops(int n)
-{
-    m_reinforce_loops = std::clamp(n, 1, 20);
-    m_preview_dirty   = true;
     m_parent.set_as_dirty();
 }
 
@@ -1493,10 +1418,6 @@ void GLGizmoHoles::gizmo_toggle_hole(int idx)
         toggle_teardrop(idx);
     } else if (m_operation == HoleOperation::Bore) {
         toggle_bore(idx);
-    } else if (m_operation == HoleOperation::Reinforce) {
-        if (m_holes[idx].horizontal)
-            return; // only vertical holes are reinforced
-        toggle_reinforce(idx);
     } else {
         toggle_rim(idx, m_operation == HoleOperation::RimChamfer);
     }
@@ -1519,25 +1440,10 @@ void GLGizmoHoles::gizmo_apply_all()
         } else if (m_operation == HoleOperation::RimChamfer) {
             if (!m_rim_chamfer[i])
                 toggle_rim(int(i), true);
-        } else if (m_operation == HoleOperation::Reinforce) {
-            if (!m_holes[i].horizontal && !m_reinforce[i])
-                toggle_reinforce(int(i));
         } else if (!m_rim_fillet[i]) {
             toggle_rim(int(i), false);
         }
     }
-    refresh_applied();
-    m_preview_dirty = true;
-    m_parent.set_as_dirty();
-}
-
-void GLGizmoHoles::gizmo_reinforce_all()
-{
-    if (m_dirty)
-        detect();
-    for (size_t i = 0; i < m_holes.size(); ++i)
-        if (!m_holes[i].horizontal && !m_reinforce[i])
-            toggle_reinforce(int(i));
     refresh_applied();
     m_preview_dirty = true;
     m_parent.set_as_dirty();
@@ -1633,8 +1539,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         op_button(m_desc.at("op_rim_chamfer"), HoleOperation::RimChamfer);
         ImGui::SameLine();
         op_button(m_desc.at("op_rim_fillet"), HoleOperation::RimFillet);
-        ImGui::SameLine();
-        op_button(m_desc.at("op_reinforce"), HoleOperation::Reinforce);
     }
 
     // Place a new pocket on any flat face, instead of only reworking detected holes.
@@ -1916,25 +1820,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         if (ImGui::InputFloat("##rim_size", &rim, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
             set_rim_size(rim);
         ImGui::PopItemWidth();
-    } else {
-        // Reinforce: a localized wall_loops modifier sleeve around each vertical hole.
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("reinforce_thickness"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
-        float thickness = float(m_reinforce_thickness);
-        if (ImGui::InputFloat("##reinforce_thickness", &thickness, 0.1f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-            set_reinforce_thickness(thickness);
-        ImGui::PopItemWidth();
-
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("reinforce_loops"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
-        int loops = m_reinforce_loops;
-        if (ImGui::InputInt("##reinforce_loops", &loops, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue))
-            set_reinforce_loops(loops);
-        ImGui::PopItemWidth();
     }
 
     ImGui::Separator();
@@ -1942,7 +1827,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
     const std::vector<char> &flags = m_operation == HoleOperation::Teardrop   ? m_teardrop
                                    : m_operation == HoleOperation::Bore        ? m_bore
                                    : m_operation == HoleOperation::RimChamfer  ? m_rim_chamfer
-                                   : m_operation == HoleOperation::Reinforce   ? m_reinforce
                                                                                : m_rim_fillet;
     const int applied = int(std::count_if(flags.begin(), flags.end(), [](char a) { return a != 0; }));
     m_imgui->text(wxString::Format("%s: %d (%d applied)", m_desc.at("holes").c_str(), int(m_holes.size()), applied));
