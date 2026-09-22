@@ -24,7 +24,7 @@ enum class ModelVolumeType : int;
 
 namespace GUI {
 
-enum class HoleOperation { Teardrop, Bore, RimChamfer, RimFillet };
+enum class HoleOperation { Teardrop, Bore, RimChamfer, RimFillet, Reinforce };
 enum class BoreHead { None, SocketHead, ButtonHead, Countersink };
 enum class ScrewFit { Free, Tap };
 enum class HoleCategory { Screw, Nut, Magnet, Insert, Custom };
@@ -52,6 +52,14 @@ public:
     void          set_angle(float deg);
     double        get_rim_size() const { return m_rim_size; }
     void          set_rim_size(double size);
+
+    // [ORCAPORT:RF-1] Localized wall reinforcement around vertical holes.
+    double get_reinforce_thickness() const { return m_reinforce_thickness; }
+    void   set_reinforce_thickness(double mm);
+    int    get_reinforce_loops() const { return m_reinforce_loops; }
+    void   set_reinforce_loops(int n);
+    bool   hole_has_reinforce(int idx) const;
+    void   gizmo_reinforce_all();
 
     int         standard_count() const;              // includes the leading "Custom" entry
     std::string standard_name(int idx) const;        // idx 0 = Custom
@@ -132,6 +140,8 @@ private:
     indexed_triangle_set bore_tube_mesh(const DetectedHole& hole) const;     // empty unless shrinking
     indexed_triangle_set shape_mesh(const DetectedHole& hole) const;         // the preview shape for the operation
     indexed_triangle_set rim_mesh(const DetectedHole& hole) const;           // rim chamfer / fillet ring, empty when invalid
+    indexed_triangle_set reinforce_mesh(const DetectedHole& hole) const;     // positive co-axial ring, empty when invalid
+    int                  effective_wall_loops() const;                       // object/preset wall count the modifier adds to
 
     void detect();
     void refresh_applied();
@@ -141,6 +151,7 @@ private:
     void toggle_teardrop(int idx);
     void toggle_bore(int idx);
     void toggle_rim(int idx, bool chamfer);
+    void toggle_reinforce(int idx);
     void clear_all();
 
     // Face authoring: builds a synthetic hole from a picked face and adds it as a FacePocket volume.
@@ -165,7 +176,7 @@ private:
     void render_snap_markers();
     void set_active_snap_marker(const FaceSnapPoint& p);
 
-    void add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
+    ModelVolume* add_named_volume(int idx, const indexed_triangle_set& its, ModelVolumeType type, const std::string& name, bool snapshot);
     void remove_named_volumes(int idx, const char* name, const std::string& snapshot_name);
 
     std::vector<HoleView>             m_holes;
@@ -173,12 +184,16 @@ private:
     std::vector<char>                 m_bore;     // a pocket/bore volume matches this hole
     std::vector<char>                 m_rim_chamfer; // a rim chamfer ring matches this hole
     std::vector<char>                 m_rim_fillet;  // a rim fillet ring matches this hole
+    std::vector<char>                 m_reinforce;  // a wall-reinforcement modifier matches this hole
     std::vector<indexed_triangle_set> m_pick_its;
 
     bool  m_dirty{ true };
     bool  m_preview_dirty{ true };
     float m_angle_deg{ 45.f };
     double m_rim_size{ 1.0 }; // chamfer leg / fillet radius, mm
+
+    double m_reinforce_thickness{ 1.5 }; // wall reinforcement thickness around the hole, mm
+    int    m_reinforce_loops{ 3 };       // extra wall loops the modifier adds on top of the object count
 
     HoleOperation m_operation{ HoleOperation::Teardrop };
     HoleCategory  m_category{ HoleCategory::Screw };

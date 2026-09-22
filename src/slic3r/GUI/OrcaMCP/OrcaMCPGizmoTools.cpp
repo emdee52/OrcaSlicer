@@ -162,6 +162,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
     const char *op = g.get_operation() == HoleOperation::Teardrop   ? "teardrop"
                    : g.get_operation() == HoleOperation::Bore        ? "bore"
                    : g.get_operation() == HoleOperation::RimChamfer  ? "rim_chamfer"
+                   : g.get_operation() == HoleOperation::Reinforce   ? "reinforce"
                                                                      : "rim_fillet";
     const char *cat = "custom";
     switch (g.get_category()) {
@@ -173,7 +174,7 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
     }
 
     // Volume bookkeeping helps diagnose whether features are actually being added.
-    int         volume_count = -1, pocket_volumes = 0, face_pocket_volumes = 0;
+    int         volume_count = -1, pocket_volumes = 0, face_pocket_volumes = 0, reinforce_volumes = 0;
     Plater     *plater = wxGetApp().plater();
     GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
     if (plater != nullptr && canvas != nullptr) {
@@ -186,6 +187,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
                     ++pocket_volumes;
                 if (v->name.rfind("FacePocket", 0) == 0)
                     ++face_pocket_volumes;
+                if (v->name.rfind("HoleReinforce", 0) == 0)
+                    ++reinforce_volumes;
             }
         }
     }
@@ -224,6 +227,9 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"face_pocket_volumes", face_pocket_volumes},
+        {"reinforce_volumes", reinforce_volumes},
+        {"reinforce_thickness", g.get_reinforce_thickness()},
+        {"reinforce_loops", g.get_reinforce_loops()},
         {"object_scale", g.object_scale()},
         {"place_face_mode", g.place_face_mode()},
         {"placed_faces", placed},
@@ -373,21 +379,26 @@ void OrcaMCPServer::register_gizmo_tools()
         "holes_gizmo",
         "Control the Holes tool. Actions: 'open' (activate it; selects the object if needed), "
         "'status' (detected holes + which are teardropped / bored), 'set_operation' "
-        "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', 'set_standard' (0=Custom, else 1-based index into the "
+        "(teardrop|bore|rim_chamfer|rim_fillet|reinforce), 'set_angle', 'set_rim_size', 'set_reinforce_thickness', "
+        "'set_reinforce_loops', 'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
         "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
-        "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
+        "index), 'apply_all', 'clear_all', 'refresh', 'close'. 'reinforce' adds a localized "
+        "wall_loops modifier around each vertical hole so screws bite into solid plastic. "
+        "Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_reinforce_thickness | set_reinforce_loops | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
-                {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
+                {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet | reinforce, for action=set_operation."}}},
                 {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
+                {"reinforce_thickness", {{"type", "number"}, {"description", "Reinforcement ring wall thickness mm, for action=set_reinforce_thickness."}}},
+                {"reinforce_loops", {{"type", "integer"}, {"description", "Extra wall loops added around each vertical hole, for action=set_reinforce_loops."}}},
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
@@ -438,11 +449,18 @@ void OrcaMCPServer::register_gizmo_tools()
                     g->set_operation(o == "rim_chamfer" ? HoleOperation::RimChamfer
                                     : o == "rim_fillet"  ? HoleOperation::RimFillet
                                     : o == "bore"        ? HoleOperation::Bore
+                                    : o == "reinforce"   ? HoleOperation::Reinforce
                                                          : HoleOperation::Teardrop);
                 } else if (action == "set_rim_size") {
                     if (!need("size"))
                         return {{"status", "error"}, {"error", "needs 'size'"}};
                     g->set_rim_size(params["size"].get<double>());
+                } else if (action == "set_reinforce_thickness") {
+                    if (!need("reinforce_thickness")) return {{"status", "error"}, {"error", "needs 'reinforce_thickness'"}};
+                    g->set_reinforce_thickness(params["reinforce_thickness"].get<double>());
+                } else if (action == "set_reinforce_loops") {
+                    if (!need("reinforce_loops")) return {{"status", "error"}, {"error", "needs 'reinforce_loops'"}};
+                    g->set_reinforce_loops(params["reinforce_loops"].get<int>());
                 } else if (action == "set_category") {
                     const std::string c = params.value("category", std::string("custom"));
                     g->set_category(c == "screw" ? HoleCategory::Screw
