@@ -333,3 +333,31 @@ TEST_CASE("A cavity fill rejects bad input", "[HoleShapes]")
     CHECK(cavity_fill_hull(plate, Vec3d(10., 10., 2.), 0, 0.).empty());
 }
 
+TEST_CASE("Painting an outer wall does nothing", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                wall(0., 10., 2.);
+    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+    CHECK(cavity_fill_hull(plate, wall, facet, 8.).empty());
+}
+
+TEST_CASE("A brush stroke over the floor and a wall fills the pocket", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                floor(10., 10., 2.);
+    const Vec3d                wall(7., 10., 3.);
+    const int                  floor_facet = facet_near(plate, Vec3d::UnitZ(), floor);
+    const int                  wall_facet  = facet_near(plate, Vec3d::UnitX(), wall);
+    REQUIRE(floor_facet >= 0);
+    REQUIRE(wall_facet >= 0);
+
+    const indexed_triangle_set fill =
+        cavity_fill_hull(plate, std::vector<Vec3d>{floor, wall}, std::vector<int>{floor_facet, wall_facet}, 8.);
+    REQUIRE_FALSE(fill.empty());
+    CHECK(its_num_open_edges(fill) == 0);
+    CHECK_THAT(bounding_box(fill).min.z(), WithinAbs(2., 1e-3));
+    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
+    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
+}
+

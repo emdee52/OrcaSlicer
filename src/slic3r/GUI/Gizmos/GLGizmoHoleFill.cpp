@@ -203,22 +203,70 @@ void GLGizmoHoleFill::update_hover(const Vec2d &screen_pos)
 
 indexed_triangle_set GLGizmoHoleFill::fill_mesh(const Hover &hover) const
 {
-    if (!hover.valid || hover.mv == nullptr)
+    return fill_mesh(std::vector<Hover>{ hover });
+}
+
+indexed_triangle_set GLGizmoHoleFill::fill_mesh(const std::vector<Hover> &seeds) const
+{
+    if (seeds.empty())
         return indexed_triangle_set();
 
-    const double s = object_scale() * volume_scale(hover.mv);
+    // A stroke stays on one volume: the plug is built from that volume's own mesh.
+    const ModelVolume *mv = seeds.front().mv;
+    if (mv == nullptr)
+        return indexed_triangle_set();
+
+    std::vector<Vec3d> points;
+    std::vector<int>   facets;
+    points.reserve(seeds.size());
+    facets.reserve(seeds.size());
+    for (const Hover &h : seeds)
+        if (h.valid && h.mv == mv && h.facet >= 0) {
+            points.push_back(h.seed_local);
+            facets.push_back(h.facet);
+        }
+    if (points.empty())
+        return indexed_triangle_set();
+
+    const double s       = object_scale() * volume_scale(mv);
     const double r_local = m_radius / (s > 1e-9 ? s : 1.0);
-    indexed_triangle_set hull = cavity_fill_hull(hover.mv->mesh().its, hover.seed_local, hover.facet, r_local);
+    indexed_triangle_set hull = cavity_fill_hull(mv->mesh().its, points, facets, r_local);
     if (hull.indices.empty())
         return hull;
 
     // the hull is tessellated in the volume's own space: bring it into object space, where it is
     // added and rendered.
-    const Transform3d m = hover.mv->get_matrix();
+    const Transform3d m = mv->get_matrix();
     if (!m.isApprox(Transform3d::Identity()))
         for (stl_vertex &p : hull.vertices)
             p = (m * p.cast<double>()).cast<float>();
     return hull;
+}
+
+void GLGizmoHoleFill::record_stroke_sample()
+{
+    if (!m_hover.valid || m_hover.mv == nullptr)
+        return;
+    if (!m_stroke.empty() && m_stroke.front().mv != m_hover.mv)
+        return; // a stroke covers a single volume
+    for (const Hover &h : m_stroke)
+        if (h.facet == m_hover.facet)
+            return; // already part of this stroke
+    m_stroke.push_back(m_hover);
+    m_preview_dirty = true;
+}
+
+void GLGizmoHoleFill::commit_stroke()
+{
+    if (m_stroke.empty())
+        return;
+    const indexed_triangle_set its = fill_mesh(m_stroke);
+    m_stroke.clear();
+    if (its.indices.empty())
+        return; // painted a plain wall: nothing to fill
+    add_named_fill(feature_name(HOLE_FILL_NAME, next_feature_id()), its);
+    m_hover_applied = -1;
+    m_preview_dirty = true;
 }
 
 void GLGizmoHoleFill::rebuild_preview()
@@ -229,10 +277,16 @@ void GLGizmoHoleFill::rebuild_preview()
     m_preview.reset();
     m_preview_applied.reset();
 
-    // The hovered plug, unless the face already carries one: an applied plug is shown in the applied
-    // overlay instead, and must not look like something waiting to be applied.
-    if (m_hover.valid && m_hover_applied < 0) {
-        const indexed_triangle_set its = fill_mesh(m_hover);
+    // The plug for the current stroke, or the hovered one, unless the face already carries a plug:
+    // an applied plug is shown in the applied overlay instead, and must not look like something
+    // waiting to be applied.
+    std::vector<Hover> seeds;
+    if (m_painting && !m_stroke.empty())
+        seeds = m_stroke;
+    else if (m_hover.valid && m_hover_applied < 0)
+        seeds.push_back(m_hover);
+    if (!seeds.empty()) {
+        const indexed_triangle_set its = fill_mesh(seeds);
         if (!its.indices.empty()) {
             m_preview.model.init_from(its);
             m_preview.model.set_color(HOVER_COLOR);
@@ -399,10 +453,10 @@ bool GLGizmoHoleFill::on_init()
 
     m_desc["name"]        = _L("Cavity fill");
     m_desc["radius"]      = _L("Fill radius");
-    m_desc["apply"]       = _L("Fill hovered cavity");
+    m_desc["apply"]       = _L("Fill under cursor");
     m_desc["clear"]       = _L("Clear all");
-    m_desc["hover_hint"]  = _L("Hover a depression, then click it or use Fill.");
-    m_desc["no_cavity"]   = _L("No fillable cavity under the cursor.");
+    m_desc["hover_hint"]  = _L("Drag over a depression to fill it; a plain wall is left alone.");
+    m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
     m_desc["cavity"]      = _L("Cavity under the cursor.");
     m_desc["already"]     = _L("Already filled.");
     m_desc["remove_hint"] = _L("Right-click a filled cavity to remove it.");
@@ -509,14 +563,33 @@ bool GLGizmoHoleFill::on_mouse(const wxMouseEvent &mouse_event)
         gizmo_hover_at(m_parent.get_local_mouse_position());
         return gizmo_remove_hovered();
     }
+    if (mouse_event.LeftUp() && m_painting) {
+        m_painting = false;
+        commit_stroke();
+        m_parent.set_as_dirty();
+        m_parent.request_extra_frame();
+        return true;
+    }
+    if (m_painting && (mouse_event.Dragging() || mouse_event.Moving())) {
+        // Keep painting the cavity while the button is held; the stroke is committed on release.
+        update_hover(m_parent.get_local_mouse_position());
+        record_stroke_sample();
+        m_parent.set_as_dirty();
+        m_parent.request_extra_frame();
+        return true;
+    }
     if (!mouse_event.LeftDown())
         return false;
-    // Fill only when the cursor is actually on the object, so a click on empty space still falls
-    // through to the canvas. A face that is already covered is not filled again.
+    // Start a stroke only on the object, so a click on empty space still falls through to the canvas.
     gizmo_hover_at(m_parent.get_local_mouse_position());
     if (!m_hover.valid)
         return false;
-    return gizmo_apply_hovered() || true; // swallow the click while over the object
+    m_painting = true;
+    m_stroke.clear();
+    record_stroke_sample();
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+    return true; // swallow the press while over the object
 }
 
 void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limit)

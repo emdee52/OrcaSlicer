@@ -362,64 +362,103 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
     return far > 0. ? far + std::max(0., margin) : 0.;
 }
 
-indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
-                                      int seed_facet, double radius)
+indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
+                                      const std::vector<Vec3d> &seed_points,
+                                      const std::vector<int> &seed_facets, double radius)
 {
-    if (its.indices.empty() || seed_facet < 0 || seed_facet >= int(its.indices.size()) ||
-        radius <= 0. || !seed_point.allFinite())
+    if (its.indices.empty() || radius <= 0. || seed_points.empty() ||
+        seed_points.size() != seed_facets.size())
         return {};
 
     const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    const std::vector<Vec3f>   fnorm     = its_face_normals(its);
     const double               r2        = radius * radius;
 
     std::vector<char> in_region(its.indices.size(), 0);
     std::queue<int>   queue;
-    queue.push(seed_facet);
-    in_region[seed_facet] = 1;
+    for (size_t i = 0; i < seed_facets.size(); ++i) {
+        const int s = seed_facets[i];
+        if (s < 0 || s >= int(its.indices.size()) || !seed_points[i].allFinite())
+            continue;
+        if (!in_region[s]) {
+            in_region[s] = 1;
+            queue.push(s);
+        }
+    }
+    if (queue.empty())
+        return {};
 
-    // Geodesic growth: keep a facet when any of its vertices is within `radius` of the seed, and
-    // expand only through kept facets.
+    auto near_seed = [&](int f) {
+        for (const Vec3d &sp : seed_points)
+            for (int k = 0; k < 3; ++k) {
+                const Vec3f &v = its.vertices[its.indices[f](k)];
+                const Vec3d  d = Vec3d(v(0), v(1), v(2)) - sp;
+                if (d.squaredNorm() <= r2)
+                    return true;
+            }
+        return false;
+    };
+
+    // Geodesic growth: keep a facet when any of its vertices is within `radius` of a seed, and
+    // expand only through kept facets, crossing smooth and concave steps but stopping at convex
+    // ridges. That last rule is the rim of the cavity: the region stays inside the depression, so
+    // the hull caps the cavity instead of spanning the surrounding surface.
     std::vector<int> region;
-    constexpr int    MAX_REGION = 200000;
+    bool             crossed_concave = false;
+    constexpr int    MAX_REGION      = 200000;
     while (!queue.empty() && int(region.size()) < MAX_REGION) {
         const int f = queue.front();
         queue.pop();
-
-        bool near = false;
-        for (int k = 0; k < 3 && !near; ++k) {
-            const Vec3f &v = its.vertices[its.indices[f](k)];
-            const Vec3d  d = Vec3d(v(0), v(1), v(2)) - seed_point;
-            near           = d.squaredNorm() <= r2;
-        }
-        if (!near)
+        if (!near_seed(f))
             continue;
 
         region.push_back(f);
         for (int k = 0; k < 3; ++k) {
             const int g = neighbors[f](k);
-            if (g >= 0 && !in_region[g]) {
-                in_region[g] = 1;
-                queue.push(g);
-            }
+            if (g < 0 || in_region[g])
+                continue;
+
+            // Sign of the dihedral across f's edge (opposite vertex k), in f's winding order:
+            // cross(nf, ng) . edge > 0 => convex ridge, < 0 => concave valley.
+            const Vec3i32 &tf = its.indices[f];
+            const int      A  = tf[(k + 1) % 3];
+            const int      B  = tf[(k + 2) % 3];
+            const Vec3f    e  = its.vertices[B] - its.vertices[A];
+            const Vec3f cr = fnorm[f].cross(fnorm[g]);
+            const float conv = cr.dot(e);
+            const float  tol = 1e-4f * e.norm();
+            if (conv > tol) // convex ridge -> do not cross
+                continue;
+            if (conv < -tol)
+                crossed_concave = true;
+
+            in_region[g] = 1;
+            queue.push(g);
         }
     }
 
-    if (region.size() < 4)
+    // No concave junction means this is a flat or convex surface: nothing to fill.
+    if (region.size() < 4 || !crossed_concave)
         return {};
 
-    std::vector<char>           seen(its.vertices.size(), 0);
-    std::vector<Vec3f>          pts;
+    std::vector<char>  seen(its.vertices.size(), 0);
+    std::vector<Vec3f> pts;
     pts.reserve(region.size() * 3);
     for (const int f : region)
         for (int k = 0; k < 3; ++k) {
             const int    vi = its.indices[f](k);
             const Vec3f &v  = its.vertices[vi];
-            const Vec3d  d  = Vec3d(v(0), v(1), v(2)) - seed_point;
-            // Keep only the vertices inside the radius: a large triangle straddling the rim
-            // would otherwise drag a far corner into the hull.
-            if (!seen[vi] && d.squaredNorm() <= r2) {
-                seen[vi] = 1;
-                pts.push_back(v);
+            if (seen[vi])
+                continue;
+            // Keep only vertices within the brush radius of a seed: a large triangle straddling
+            // the rim would otherwise drag a far corner into the hull.
+            for (const Vec3d &sp : seed_points) {
+                const Vec3d d = Vec3d(v(0), v(1), v(2)) - sp;
+                if (d.squaredNorm() <= r2) {
+                    seen[vi] = 1;
+                    pts.push_back(v);
+                    break;
+                }
             }
         }
 
@@ -428,6 +467,13 @@ indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec
     if (hull.indices.empty() || std::abs(its_volume(hull)) < 1e-6 * radius * radius * radius)
         return {};
     return hull;
+}
+
+indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
+                                      int seed_facet, double radius)
+{
+    return cavity_fill_hull(its, std::vector<Vec3d>{seed_point}, std::vector<int>{seed_facet},
+                            radius);
 }
 
 } // namespace Slic3r

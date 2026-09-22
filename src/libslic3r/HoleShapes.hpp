@@ -82,12 +82,15 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
 
 // --- Cavity fill ------------------------------------------------------------------------------
 // A positive plug that fills a depression (engraving, watermark, pocket). Grows the facet region
-// geodesically from `seed_facet` (a face on the cavity floor or wall) out to `radius` around
-// `seed_point` (a point on that face, mesh space), then returns the convex hull of the region's
-// vertices. The hull lies inside the solid everywhere except across the concavity, so a positive
-// volume combined with the object fills the cavity without a boolean. Assumes a roughly convex or
-// flat outer surface; on a strongly concave surface the hull can add a small bump. Returns an empty
-// mesh when the region is too flat to enclose a volume (nothing to fill).
+// geodesically from the seed facets (on the cavity floor or walls) out to `radius` around their
+// seed points (mesh space), stopping where the surface turns over a convex ridge (the cavity rim),
+// then returns the convex hull of the region's vertices. The hull lies inside the solid everywhere
+// except across the concavity, so a positive volume combined with the object fills the cavity
+// without a boolean. Returns an empty mesh when no concave junction was crossed, so painting a flat
+// or convex wall adds nothing.
+indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
+                                      const std::vector<Vec3d> &seed_points,
+                                      const std::vector<int> &seed_facets, double radius);
 indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
                                       int seed_facet, double radius);
 

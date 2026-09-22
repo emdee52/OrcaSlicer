@@ -2,10 +2,11 @@
 #define slic3r_GLGizmoHoleFill_hpp_
 
 // [ORCAPORT:HF-1] Cavity fill tool. Fills a depression cut into the mesh (an engraving, a watermark,
-// a pocket) by adding a positive MODEL_PART volume over it. The plug is the convex hull of the mesh
-// facets under the cursor, so it works both on a flat face and on a curved wall. Works on the mesh
-// directly - no boolean and no CAD reconstruction. Handling strongly concave outer surfaces, and
-// full through-holes, is deliberately deferred: the hull can bridge a valley or a hole.
+// a pocket) by adding a positive MODEL_PART volume over it. Paint over the depression: the plug is
+// the convex hull of the painted facets and the cavity walls, and growth stops at the rim, so it
+// sits flush and never bridges the surrounding surface. Painting a plain wall does nothing. Works on
+// the mesh directly - no boolean and no CAD reconstruction. Handling strongly concave outer
+// surfaces, and full through-holes, is deliberately deferred: the hull can bridge a valley or a hole.
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
@@ -79,8 +80,12 @@ private:
     double       volume_scale(const ModelVolume* mv) const;
     void         update_hover(const Vec2d& screen_pos);
     void         clear_hover();
-    // The plug for the hovered face, in object space; empty when there is nothing to fill.
+    // The plug for the hovered face, or for a whole brush stroke, in object space; empty when there
+    // is nothing to fill.
     indexed_triangle_set fill_mesh(const Hover& hover) const;
+    indexed_triangle_set fill_mesh(const std::vector<Hover>& seeds) const;
+    void                 record_stroke_sample();
+    void                 commit_stroke();
     // Volume index of an applied plug that already covers `hit_world`, or -1.
     int          find_covering_fill(const Vec3d& hit_world) const;
     void         rebuild_preview();
@@ -92,6 +97,8 @@ private:
 
     Hover        m_hover;
     int          m_hover_applied{ -1 };
+    bool         m_painting{ false };
+    std::vector<Hover> m_stroke;
     PickingModel m_preview;
     PickingModel m_preview_applied;
     bool         m_preview_dirty{ true };
