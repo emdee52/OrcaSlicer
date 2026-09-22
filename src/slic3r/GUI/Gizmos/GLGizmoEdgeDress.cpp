@@ -670,13 +670,15 @@ std::vector<std::array<int, 2>> GLGizmoEdgeDress::applied_loop_indices(int facet
 void GLGizmoEdgeDress::rebuild_preview()
 {
     m_preview_dirty = false;
+    // GLModel::init_from only builds a model once: an already initialized one has to be reset, or
+    // the preview would keep showing whatever it was first built from.
+    m_preview.reset();
+    m_preview_applied.reset();
 
     // The hovered edge or loop, unless it already carries a feature: an applied one is shown in the
     // applied overlay instead, and must not look like something waiting to be applied.
     indexed_triangle_set its = m_hover_applied_volume >= 0 ? indexed_triangle_set() : active_mesh();
-    if (its.indices.empty())
-        m_preview.reset();
-    else {
+    if (!its.indices.empty()) {
         m_preview.model.init_from(its);
         m_preview.model.set_color(HOVER_COLOR);
     }
@@ -685,7 +687,7 @@ void GLGizmoEdgeDress::rebuild_preview()
     indexed_triangle_set applied;
     if (const ModelObject *mo = model_object(); mo != nullptr) {
         for (const ModelVolume *v : mo->volumes) {
-            if (v == nullptr || v->is_negative_volume() == false)
+            if (v == nullptr || !v->is_negative_volume())
                 continue;
             const bool ours = parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 ||
                               parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0 ||
@@ -693,12 +695,14 @@ void GLGizmoEdgeDress::rebuild_preview()
             if (!ours)
                 continue;
             indexed_triangle_set part = v->mesh().its;
+            const Transform3d    m    = v->get_matrix();
+            if (!m.isApprox(Transform3d::Identity()))
+                for (stl_vertex &p : part.vertices)
+                    p = (m * Eigen::Vector3d(p(0), p(1), p(2))).cast<float>();
             its_merge(applied, part);
         }
     }
-    if (applied.indices.empty())
-        m_preview_applied.reset();
-    else {
+    if (!applied.indices.empty()) {
         m_preview_applied.model.init_from(applied);
         m_preview_applied.model.set_color(APPLIED_COLOR);
     }
