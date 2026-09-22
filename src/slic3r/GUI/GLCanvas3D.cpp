@@ -30,6 +30,7 @@
 #include "OpenGLManager.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
+#include "OrcaExt/ObjectSnap.hpp" // [ORCAPORT:SNAP-8] Alt-drag object-to-object point snap
 #include "WipeTowerDialog.hpp"
 #include "GUI_App.hpp"
 #include "GUI_ObjectList.hpp"
@@ -2277,6 +2278,7 @@ void GLCanvas3D::_render_scene(const Camera& camera, const Size& cnv_size)
 
     _render_sequential_clearance();
     _render_snapdrag_indicator(); // [ORCAPORT:AS-3]
+    _render_objsnap_markers(); // [ORCAPORT:SNAP-8]
 #if ENABLE_RENDER_SELECTION_CENTER
     _render_selection_center();
 #endif // ENABLE_RENDER_SELECTION_CENTER
@@ -4321,6 +4323,7 @@ void GLCanvas3D::on_gesture(wxGestureEvent &evt)
 // "stacked on" when grouping a multi-object drag.
 namespace {
 namespace GravitySnap = OrcaExt::Gui::GravitySnap;
+namespace ObjectSnap = OrcaExt::Gui::ObjectSnap; // [ORCAPORT:SNAP-8]
 
 constexpr double SNAPDRAG_ENGAGE_RATIO  = 0.20;
 constexpr double SNAPDRAG_RELEASE_RATIO = 0.08;
@@ -4770,6 +4773,8 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                             // The dragging operation is initiated.
                             m_mouse.drag.move_volume_idx = volume_idx;
                             m_snapdrag_engaged.clear(); // [ORCAPORT:AS-3] fresh hysteresis state this drag
+                            m_objsnap_disp = Vec3d::Zero(); // [ORCAPORT:SNAP-8] no displacement applied yet
+                            m_objsnap_anchor_valid = false; // [ORCAPORT:SNAP-8] latch a fresh anchor if Alt is held
                             m_selection.setup_cache();
                             m_mouse.drag.start_position_3D = scene_position;
                             m_sequential_print_clearance_first_displacement = true;
@@ -4828,20 +4833,49 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
 
                 TransformationType trafo_type;
                 trafo_type.set_relative();
-                m_selection.translate(cur_pos - m_mouse.drag.start_position_3D, trafo_type);
+
+                // [ORCAPORT:SNAP-8] BEGIN - object-to-object point snap: with Alt held the grabbed
+                // point is moved onto the nearest snap coordinate of another object's flat face
+                // under the cursor. The Alt gesture is the whole opt-in (no app key, no free-Z),
+                // and it takes precedence over Snap & Drag: the two gestures both want to own the
+                // drag translation and would fight otherwise.
+                const bool alt_snap = wxGetKeyState(WXK_ALT);
+
+                std::set<std::pair<int, int>> moving = _objsnap_moving_set(); // (object, instance) pairs being dragged
+
+                // Rebuild the marker spheres for this cursor position and get both snap hits: the
+                // dragged object's own coordinate, and the coordinate of the face it should land on.
+                std::optional<ObjectSnap::SnapHit> mover_hit, target_hit;
+                _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
+
+                // Total displacement since the drag began. Selection::translate applies it absolutely
+                // from the drag-start cache, so it is recomputed here, never accumulated onto the
+                // previous frame.
+                Vec3d drag_disp = cur_pos - m_mouse.drag.start_position_3D;
+                if (target_hit && target_hit->has_point()) {
+                    const Vec3d target_world = target_hit->point().world;
+                    if (m_objsnap_anchor_valid) {
+                        // Put the latched anchor on the target. translate moves the instance by
+                        // R*displacement, so the correction is premultiplied by R^-1 (the rotation is
+                        // orthonormal, so its transpose is the inverse). Nothing here depends on the
+                        // previous frame, so the pair cannot feed back into itself.
+                        drag_disp = m_objsnap_anchor_disp +
+                                    m_objsnap_anchor_rot.transpose() * (target_world - m_objsnap_anchor_world);
+                    } else {
+                        // Alt was pressed with the cursor off the dragged object, so there is no anchor
+                        // feature to trust: put the drag-start grab point on the target instead.
+                        drag_disp = target_world - m_mouse.drag.start_position_3D;
+                    }
+                }
+                // [ORCAPORT:SNAP-8] END
+
+                m_selection.translate(drag_disp, trafo_type);
+                m_objsnap_disp = drag_disp; // [ORCAPORT:SNAP-8] the total displacement the cache-absolute translate just applied
 
                 // [ORCAPORT:AS-3] BEGIN - live floor snap: rest the dragged instances on the real
                 // surface found under their footprint. GLVolume-only: the ModelObject is written once
                 // on mouse-up in do_move, so an interrupted drag never leaves the model inconsistent.
-                if (current_printer_technology() == ptFFF && GravitySnap::enabled()) {
-                    std::set<std::pair<int, int>> moving;
-                    for (unsigned int idx : m_selection.get_volume_idxs()) {
-                        const GLVolume* gv = m_volumes.volumes[idx];
-                        if (gv->is_wipe_tower || gv->is_modifier)
-                            continue;
-                        moving.insert({ gv->object_idx(), gv->instance_idx() });
-                    }
-
+                if (current_printer_technology() == ptFFF && GravitySnap::enabled() && !alt_snap) {
                     // "Move selection as one block" replaces the by-stacks resolution with a single
                     // rigid shift (see _snapdrag_rigid_frame). Same trigger as the commit in do_move:
                     // instance count, so the selection does not jump on mouse-up.
@@ -5269,6 +5303,18 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             m_gizmos.reset_all_states();
 
         _set_overlay_as_dirty();
+
+        // [ORCAPORT:SNAP-8] Alt-hover preview: show the object-snap spheres for the face under the
+        // cursor without having to start a drag. Only the gizmos that own Alt for their own snap
+        // (Holes, Cut) are skipped; the Move/Rotate/Scale gizmos, which are up whenever an object is
+        // selected, leave Alt to this.
+        const GLGizmosManager::EType objsnap_gizmo = m_gizmos.get_current_type();
+        if (!m_mouse.dragging && objsnap_gizmo != GLGizmosManager::EType::Holes &&
+            objsnap_gizmo != GLGizmosManager::EType::Cut) {
+            const std::set<std::pair<int, int>> moving = _objsnap_moving_set();
+            std::optional<ObjectSnap::SnapHit>  target_hit, mover_hit;
+            _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
+        }
     }
     else
         evt.Skip();
@@ -5806,6 +5852,72 @@ void GLCanvas3D::SnapDragIndicator::render()
 void GLCanvas3D::_render_snapdrag_indicator()
 {
     m_snapdrag_indicator.render();
+}
+
+void GLCanvas3D::_render_objsnap_markers() // [ORCAPORT:SNAP-8]
+{
+    // Alt released without any mouse event: the move/drag callbacks only run on input, so drop the
+    // spheres here.
+    if (!wxGetKeyState(WXK_ALT) && (m_objsnap_markers.is_visible() || m_objsnap_mover_markers.is_visible())) {
+        m_objsnap_markers.clear();
+        m_objsnap_mover_markers.clear();
+    }
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    m_objsnap_mover_markers.render(camera);
+    m_objsnap_markers.render(camera);
+}
+
+std::set<std::pair<int, int>> GLCanvas3D::_objsnap_moving_set() const // [ORCAPORT:SNAP-8]
+{
+    std::set<std::pair<int, int>> moving;
+    for (unsigned int idx : m_selection.get_volume_idxs()) {
+        const GLVolume* gv = m_volumes.volumes[idx];
+        if (gv == nullptr || gv->is_wipe_tower || gv->is_modifier)
+            continue;
+        moving.insert({ gv->object_idx(), gv->instance_idx() });
+    }
+    return moving;
+}
+
+void GLCanvas3D::_objsnap_update(const Vec2d& mouse, const std::set<std::pair<int, int>>& moving,
+                                 std::optional<OrcaExt::Gui::ObjectSnap::SnapHit>& target,
+                                 std::optional<OrcaExt::Gui::ObjectSnap::SnapHit>& mover) // [ORCAPORT:SNAP-8]
+{
+    target.reset();
+    mover.reset();
+    m_objsnap_markers.clear();
+    m_objsnap_mover_markers.clear();
+
+    if (!wxGetKeyState(WXK_ALT) || m_model == nullptr || m_canvas_type == ECanvasType::CanvasAssembleView) {
+        m_objsnap_anchor_valid = false; // a later Alt press latches a fresh anchor
+        return;
+    }
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+
+    // The dragged object's own coordinates; the drag is anchored on the one the cursor is on instead
+    // of on the raw cursor, which is only approximate. Only meaningful while something is selected.
+    if (!moving.empty()) {
+        mover = OrcaExt::Gui::ObjectSnap::mover_hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
+        if (mover)
+            m_objsnap_mover_markers.set(mover->candidates, mover->active,
+                                        OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
+
+        // Latch the anchor on the first Alt frame of a drag. It has to stay fixed: the object slides
+        // under the cursor as the snap moves it, so re-picking every frame would let the anchor hop to
+        // a neighbouring coordinate, and each hop commands a different landing position (the shimmy),
+        // while an interior coordinate as the anchor pushes the real corner past the target.
+        if (mover && mover->has_point() && m_mouse.dragging && !m_objsnap_anchor_valid) {
+            m_objsnap_anchor_valid = true;
+            m_objsnap_anchor_world = mover->point().world;
+            m_objsnap_anchor_rot   = mover->rotation;
+            m_objsnap_anchor_disp  = m_objsnap_disp;
+        }
+    }
+
+    target = OrcaExt::Gui::ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, mouse);
+    if (target)
+        m_objsnap_markers.set(target->candidates, target->active);
 }
 
 void GLCanvas3D::do_move(const std::string& snapshot_type)
@@ -6535,6 +6647,8 @@ void GLCanvas3D::mouse_up_cleanup()
     m_camera_movement = false;
     m_mouse.drag.move_volume_idx = -1;
     m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
+    m_objsnap_markers.clear(); // [ORCAPORT:SNAP-8] drop the snap candidate spheres on mouse-up
+    m_objsnap_mover_markers.clear();
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;

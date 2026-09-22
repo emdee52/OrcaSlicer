@@ -51,7 +51,8 @@ $env:CMAKE_TLS_VERIFY = "0"
 ## 2. Branches / commits
 
 Everything below is merged into `port/integration` unless its row says otherwise. The ME, CUT, SNAP,
-PF, SU and AS branches are done; the two newest are the rim dress and the edge dress tools.
+PF, SU and AS branches are done, as are the rim dress and edge dress tools, and the object-to-object
+Alt-drag snap (SNAP-8) is the newest of them.
 
 | Branch | State | Contents |
 |---|---|---|
@@ -63,6 +64,7 @@ PF, SU and AS branches are done; the two newest are the rim dress and the edge d
 | `port/EF-1` | merged (`b6803f53b4`) | Edge chamfer / fillet gizmo, straight edges |
 | `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
 | `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
+| `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -136,6 +138,11 @@ the branch too but was superseded by `656714103a`.
   `OrcaMCPServer::register_builtin_tools`. Also `edge_dress_gizmo` (`open | status | set_mode |
   set_size | apply | apply_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop |
   list_loops | apply_loop | remove_loop | applied_loops | clear_all | close`).
+- `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` — Alt-drag object-to-object snap. Hold Alt while
+  dragging a selected object in the regular preview and the grabbed point lands on the nearest snap
+  feature (face corner / edge midpoint / face centre / edge quarter / face quarter) of the object under
+  the cursor. Pure GUI, off unless Alt is held: no app key, no free-Z, byte-identical to stock with Alt
+  up. See section 21.
 
 ### Tests
 - `tests/libslic3r/test_holedetector.cpp`, `test_holeshapes.cpp`, `test_holestandards.cpp`,
@@ -803,5 +810,83 @@ algorithm (scratch, not in the repo), then confirmed in the app.
 
 - **Chamfer-crease skin check done**: the user checked the top face beside a 45° chamfer crease and
   found no skin artifact, so there is nothing left to fix there.
+
+---
+
+## 21. SNAP-8 — snap one object onto another while dragging with Alt (branch `port/SNAP-8`)
+
+The Snap & Drag line (AS-3) only rests an object on a surface (Z). This is the first *object-to-object*
+snap in the regular preview: hold Alt while dragging a selected object and the dragged object's own
+nearest snap feature (face corner, edge midpoint, face centre, edge quarter, face quarter) lands on the
+nearest snap feature of the object under the cursor, so separately printed parts drop together in an
+assembly.
+
+- **Gesture / defaults.** Pure GUI, off unless Alt is held — no app key, no free-Z, so at defaults
+  nothing changes and the G-code is untouched. Alt-snap and Snap & Drag both want the drag translation,
+  so the GravitySnap block now also requires `!alt_snap`; Alt wins while it is held.
+- **Where.** `GLCanvas3D::on_mouse`'s volume-drag branch (`GLCanvas3D.cpp:4786`). The snap correction is
+  folded into the single `m_selection.translate(...)` call, because `Selection::translate` writes instance
+  offsets ABSOLUTELY from the drag-start cache — a second call in the same frame would overwrite the first
+  instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up.
+- **Anchoring.** The anchor is a coordinate of the dragged object itself, not the raw cursor: grabbing
+  a corner a few pixels off always left that corner short of the target. `mover_hit_under_cursor`
+  raycasts only the moving volumes (same loop as `hit_under_cursor`, shared through a `want_moving`
+  predicate), and the anchor is **latched on the first Alt frame of the drag** rather than re-picked
+  every frame: once the snap moves the object the cursor sits on a different coordinate of it, so
+  re-picking let the anchor hop between neighbours, and each hop commanded a different landing position
+  — the side-to-side shimmy. An interior coordinate winning the pick also pushed the real corner past
+  the target, which is the tip intersection. Latched with the displacement in force and the instance
+  rotation at that moment, the landing is `anchor_disp + R⁻¹ * (target − anchor_world)`, which depends
+  on nothing from the previous frame and so cannot feed back into itself; it relatches when Alt is
+  pressed again or the drag restarts. `R⁻¹` matters because `Selection::translate` moves an instance by
+  `R * displacement` (`R` is orthonormal, so its transpose is the inverse) — without it a rotated
+  object settles short of the target. With no latched anchor (Alt pressed while the cursor was off the
+  dragged object) there is no anchor feature to trust and the drag-start grab point is put on the
+  target instead.
+- **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
+  keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
+  `coplanar_region` + `build_face_snap_points`). A non-planar face under the cursor falls back to the
+  raw hit point, so curved surfaces snap too. The per-facet candidate list is cached and rebuilt only
+  when the volume/facet changes.
+- **Picking.** The candidate is chosen by `pick_by_sphere`, not by `CutUtils::nearest_face_snap`: a pure
+  screen-distance test hands the pick to whichever snap coordinate projects nearest, which near a shared
+  edge is often a feature of the *neighbouring* face, and the object then lands offset from the flush
+  face the user was aiming at. Instead the drawn disc is the hit target — every candidate's disc is
+  measured in screen space (its centre and its rim, using the same `candidate_radius` the spheres are
+  drawn with, so the picture and the pick agree), the cursor's distance to that rim is the score, and an
+  8 px grab margin lets a near miss still grab. Strictly-closest wins, so candidates emitted first keep
+  the `FaceSnapKind` priority on ties. `nearest_face_snap` itself is untouched. Picking does **not** gate
+  the hit: the face's coordinates are reported whenever the ray lands on it, and only `SnapHit::active`
+  is left at `no_candidate` when the cursor is not on a sphere — otherwise nothing would show until the
+  cursor happened to sit exactly on one.
+- **Markers.** While Alt is held both objects show their candidate points as spheres, the active one
+  larger — white on the object the drag lands on, amber on the object being dragged, so the feature to
+  grab is visible before the press and the two sets are tellable apart. Hovering with Alt over a
+  selected object's face is enough to show them: `GLCanvas3D::_objsnap_update` is shared by the drag
+  path and by the `evt.Moving()` hover branch, which only defers to the two gizmos that own Alt for
+  their own snap (Holes, Cut) — gating on "no gizmo open" instead would never fire, because the Move
+  gizmo is up whenever an object is selected. `ObjectSnap::Markers` builds one
+  merged mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
+  `[0.3, 1.5]` mm, and the same per-kind colours the Holes tool uses (`GLGizmoHoles::build_snap_markers`
+  is the reference). `Markers::render` runs with the depth test off so the spheres read through the
+  object they belong to. `GLCanvas3D` clears both sets on every mouse event, sets them in
+  `_objsnap_update`, and clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag
+  branch, so without that they would linger) and in `_render_objsnap_markers` when Alt is released
+  without any mouse event. The draw call sits next to `_render_snapdrag_indicator`.
+- **Three lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
+  match `Camera.hpp`; MSVC mangles a `class` forward declaration differently (`AEBVCamera` vs
+  `AEBUCamera`) and the mismatch is a permanent LNK2001/LNK2019 that survives every clean rebuild.
+  (b) The screen cursor is `Point` (`Vec2<coord_t>`), so the `Vec2d` argument needs `pos.cast<double>()`.
+  (c) `Slic3r::GUI` is a *sibling* of `Slic3r::OrcaExt::Gui`, not an enclosing namespace, so OrcaExt code
+  must qualify everything from it: `GUI::GLModel`, `GUI::wxGetApp()`. But `GLShaderProgram` lives in
+  `Slic3r` itself and `ColorRGBA` too, so those stay unqualified. Getting this wrong is only a compile
+  error, not a linker one.
+- **Verification.** Regression suites `[EdgeProfiles],[HoleShapes],[HoleDetector],[HoleStandards],
+  [CutUtils]` = 546 assertions in 61 cases, all passing (this feature adds no libslic3r geometry, so
+  those suites are unchanged). The live gesture had to be tested by hand, since MCP cannot hold Alt; the
+  user did, and confirmed the Alt-hover preview, the sphere picking and the corner-to-corner landing.
+  Manual protocol is in `docs/superpowers/SNAP-8-object-snap.md` (scratch, gitignored, not committed).
+- **Branch state**: on `port/SNAP-8`, branched from `port/integration` at `fa2d06d014`. Merged. See
+  section 0 for why a branch only merges once the user has tested it in the app.
 
 

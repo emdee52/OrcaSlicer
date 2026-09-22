@@ -25,6 +25,7 @@
 #include "IMToolbar.hpp"
 #include "slic3r/GUI/3DBed.hpp"
 #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] SnapDragIndicator draws a GravitySnap::FloorHit
+#include "OrcaExt/ObjectSnap.hpp"  // [ORCAPORT:SNAP-8] object-to-object Alt snap + its markers
 #include "libslic3r/Slicing.hpp"
 
 #include <float.h>
@@ -783,6 +784,23 @@ public:
 
     SnapDragIndicator m_snapdrag_indicator;
 
+    // [ORCAPORT:SNAP-8] Candidate spheres for the object-to-object Alt snap, rebuilt by on_mouse and
+    // drawn once per frame. Render-only; the snap decision lives in OrcaExt/ObjectSnap.cpp.
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_markers;    // on the object the drag lands on
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_mover_markers; // on the object being dragged
+    // Displacement the last cache-absolute Selection::translate applied in this drag, so the snap
+    // can recover the anchor's drag-start position. Reset when the drag starts.
+    Vec3d m_objsnap_disp{ Vec3d::Zero() };
+    // The dragged object's own coordinate the cursor was on when Alt was first held this drag. It is
+    // latched rather than re-picked every frame: the object slides under the cursor as the snap moves
+    // it, so re-picking made the anchor hop to a neighbouring coordinate and the object shimmy back
+    // and forth. Together with the displacement in force at that moment and the instance rotation, it
+    // pins the snap to a target with no feedback into the next frame.
+    bool            m_objsnap_anchor_valid{ false };
+    Vec3d           m_objsnap_anchor_world{ Vec3d::Zero() };
+    Eigen::Matrix3d m_objsnap_anchor_rot{ Eigen::Matrix3d::Identity() };
+    Vec3d           m_objsnap_anchor_disp{ Vec3d::Zero() };
+
     // [ORCAPORT:SU-5] What each support zone will catch (built in world coordinates, one model for
     // every instance). See Feature/SupportZones/SupportZoneProbe.hpp.
     GLModel m_support_zone_lit;
@@ -1431,6 +1449,15 @@ private:
     void _render_support_zones();
     // [ORCAPORT:AS-3] landing shadow/beam while Snap & Drag is dragging
     void _render_snapdrag_indicator();
+    void _render_objsnap_markers(); // [ORCAPORT:SNAP-8]
+    // [ORCAPORT:SNAP-8] Recompute the object-snap marker spheres for a cursor position and report the
+    // snap hits (target = the face the grab point lands on, mover = the dragged object's own
+    // coordinate). Clears both marker sets when Alt is not held or nothing is under the cursor.
+    void _objsnap_update(const Vec2d &mouse, const std::set<std::pair<int, int>> &moving,
+                         std::optional<OrcaExt::Gui::ObjectSnap::SnapHit> &target,
+                         std::optional<OrcaExt::Gui::ObjectSnap::SnapHit> &mover);
+    // [ORCAPORT:SNAP-8] (object, instance) pairs the current selection would drag.
+    std::set<std::pair<int, int>> _objsnap_moving_set() const;
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER
