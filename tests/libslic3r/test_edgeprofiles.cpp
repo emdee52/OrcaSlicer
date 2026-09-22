@@ -161,8 +161,8 @@ TEST_CASE("A loop chamfer follows a square face outline", "[EdgeProfiles]")
     CHECK(its_num_open_edges(chamfer) == 0);
     CHECK(its_volume(chamfer) > 0.f);
     // The section keeps the crease line, so the ring spans the whole top face outline and drops
-    // from the top down by `size`; the square corners remove a little of the perimeter sweep.
-    CHECK(double(its_volume(chamfer)) < 2. * size * size * 10.);
+    // from the top down by `size`. With a miter at each corner the volume is the perimeter sweep.
+    CHECK_THAT(double(its_volume(chamfer)), WithinRel(0.5 * size * size * 40., 0.05));
 
     const BoundingBoxf3 bb = bounding_box(chamfer);
     CHECK_THAT(bb.min.z(), WithinAbs(10. - size, 1e-3));

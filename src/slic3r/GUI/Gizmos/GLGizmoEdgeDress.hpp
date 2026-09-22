@@ -119,6 +119,11 @@ private:
     const ModelObject* m_old_object{nullptr};
     int                m_old_volume_count{-1};
     Transform3d        m_old_matrix{Transform3d::Identity()};
+
+    // The hover is rebuilt only when the cursor or the camera moved, so a still cursor costs nothing.
+    bool        m_hover_computed{false};
+    Vec2d       m_last_mouse{-1., -1.};
+    Transform3d m_last_view{Transform3d::Identity()};
 };
 
 } // namespace GUI

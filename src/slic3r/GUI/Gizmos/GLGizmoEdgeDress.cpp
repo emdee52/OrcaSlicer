@@ -34,6 +34,15 @@ constexpr const char *EDGE_LOOP_NAME    = "EdgeLoop";
 const ColorRGBA ALL_COLOR{ 0.25f, 0.70f, 1.00f, 0.40f };
 const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
 
+// Chamfer leg / fillet radius, in mm, that the panel offers.
+constexpr double EDGE_SIZE_MIN = 0.5;
+constexpr double EDGE_SIZE_MAX = 3.0;
+
+// How far behind the surface under the cursor an edge may sit and still count as visible, in world
+// mm. Edges on the far side of the model are tens of mm behind, edges on the visible side are at
+// most a wall thickness behind, so this separates the two without needing a depth buffer read.
+constexpr double EDGE_DEPTH_TOL = 0.5;
+
 // Feature volumes are named <prefix>#<id>; the id is matched by prefix, like the hole features.
 std::string feature_name(const char *prefix, int idx)
 {
@@ -80,11 +89,15 @@ const ModelVolume *first_model_part(const ModelObject *mo)
     return nullptr;
 }
 
-double point_segment_distance(const Vec2d &p, const Vec2d &a, const Vec2d &b)
+// Distance from p to the segment ab in screen space; t (when asked for) is where on the segment
+// the closest point sits, which the caller needs to test whether that part of the edge is visible.
+double point_segment_distance(const Vec2d &p, const Vec2d &a, const Vec2d &b, double *t_out = nullptr)
 {
     const Vec2d  ab = b - a;
     const double l2 = ab.squaredNorm();
     const double t  = l2 > 0. ? std::clamp((p - a).dot(ab) / l2, 0., 1.) : 0.;
+    if (t_out != nullptr)
+        *t_out = t;
     return (a + t * ab - p).norm();
 }
 
@@ -257,22 +270,30 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
             const Transform3d to_world = instance_matrix();
             // A generous screen-space grab radius, so the edge does not have to be hit exactly.
             const double      tol      = std::max(24.0, 0.04 * double(camera.get_viewport()[3]));
+            // Screen space alone would let an edge on the far side of the model win, so a candidate
+            // is only accepted when the part of it nearest to the cursor is not behind the surface
+            // the cursor is actually on.
+            const Transform3d view      = camera.get_view_matrix();
+            const double      hit_depth = (view * hit_world).z();
+            const auto visible = [&view, hit_depth, &to_world](const Vec3d &object_pt) {
+                return (view * (to_world * object_pt)).z() >= hit_depth - EDGE_DEPTH_TOL;
+            };
 
             if (m_loop_mode) {
                 // The whole boundary loop of the patch under the cursor, so a rim is dressed as one
                 // feature instead of its tessellation segments.
                 double best = tol;
                 for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
-                    const size_t n = loop.size();
-                    if (n < 3)
+                    if (loop.size() < 3)
                         continue;
-                    for (size_t i = 0; i < n; ++i) {
-                        const Vec2d a = world_to_screen(camera, to_world * loop[i].p);
-                        const Vec2d b = world_to_screen(camera, to_world * loop[(i + 1) % n].p);
+                    for (const LoopFrame &f : loop) {
+                        const Vec2d a = world_to_screen(camera, to_world * f.p);
+                        const Vec2d b = world_to_screen(camera, to_world * f.q);
                         if (!a.allFinite() || !b.allFinite())
                             continue;
-                        const double d = point_segment_distance(screen_pos, a, b);
-                        if (d < best) {
+                        double       t = 0.;
+                        const double d = point_segment_distance(screen_pos, a, b, &t);
+                        if (d < best && visible(f.p + t * (f.q - f.p))) {
                             best         = d;
                             m_hover_loop = loop;
                         }
@@ -285,8 +306,9 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
                     const Vec2d b = world_to_screen(camera, to_world * e.p1);
                     if (!a.allFinite() || !b.allFinite())
                         continue;
-                    const double d = point_segment_distance(screen_pos, a, b);
-                    if (d < best) {
+                    double       t = 0.;
+                    const double d = point_segment_distance(screen_pos, a, b, &t);
+                    if (d < best && visible(e.p0 + t * (e.p1 - e.p0))) {
                         best    = d;
                         m_hover = e;
                     }
@@ -498,7 +520,7 @@ void GLGizmoEdgeDress::set_mode(EdgeDressMode mode)
 
 void GLGizmoEdgeDress::set_size(double size)
 {
-    m_size          = std::max(0.01, size);
+    m_size          = std::clamp(size, EDGE_SIZE_MIN, EDGE_SIZE_MAX);
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -646,7 +668,8 @@ bool GLGizmoEdgeDress::on_is_activable() const
 void GLGizmoEdgeDress::on_set_state()
 {
     if (get_state() == On) {
-        m_preview_dirty = true;
+        m_preview_dirty  = true;
+        m_hover_computed = false;
         m_parent.set_as_dirty();
     } else {
         clear_hover();
@@ -662,8 +685,9 @@ void GLGizmoEdgeDress::data_changed(bool /*is_serializing*/)
 {
     const ModelObject *mo = model_object();
     if (mo == nullptr) {
-        m_edges_dirty  = true;
-        m_old_object   = nullptr;
+        m_edges_dirty    = true;
+        m_old_object     = nullptr;
+        m_hover_computed = false;
         clear_hover();
         return;
     }
@@ -674,6 +698,7 @@ void GLGizmoEdgeDress::data_changed(bool /*is_serializing*/)
         m_old_matrix       = instance_matrix();
         m_edges_dirty      = true; // the edge list is tied to the object's mesh
         m_preview_dirty    = true;
+        m_hover_computed   = false;
         m_parent.set_as_dirty();
     }
 }
@@ -683,8 +708,18 @@ void GLGizmoEdgeDress::on_render()
     if (get_state() != On)
         return;
 
-    // Track the cursor so the edge under it is highlighted before the click.
-    update_hover(m_parent.get_local_mouse_position());
+    // Track the cursor so the edge under it is highlighted before the click. The work is skipped
+    // while neither the cursor nor the camera moves, which keeps a still scene cheap.
+    const Camera     &camera = wxGetApp().plater()->get_camera();
+    const Vec2d       mouse  = m_parent.get_local_mouse_position();
+    const Transform3d view   = camera.get_view_matrix();
+    if (!m_hover_computed || mouse.x() != m_last_mouse.x() || mouse.y() != m_last_mouse.y() ||
+        !view.matrix().isApprox(m_last_view.matrix(), 1e-12)) {
+        update_hover(mouse);
+        m_last_mouse    = mouse;
+        m_last_view     = view;
+        m_hover_computed = true;
+    }
     if (m_preview_dirty)
         rebuild_preview();
 
@@ -700,7 +735,6 @@ void GLGizmoEdgeDress::on_render()
     glsafe(::glDisable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
 
-    const Camera   &camera            = wxGetApp().plater()->get_camera();
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
@@ -779,7 +813,7 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     ImGui::SameLine(left_width);
     ImGui::PushItemWidth(sliders_width);
     float size = float(m_size);
-    if (ImGui::InputFloat("##edge_size", &size, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+    if (m_imgui->bbl_slider_float_style("##edge_size", &size, float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", 0.05f, true))
         set_size(size);
     ImGui::PopItemWidth();
 

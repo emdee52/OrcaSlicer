@@ -255,30 +255,47 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
         frames.reserve(n);
         bool ok = true;
         for (size_t i = 0; i < n; ++i) {
-            const size_t pm = (i + n - 1) % n;
-            const Vec3d  p  = to_world(its.vertices[size_t(verts[i])]);
-            const Vec3d  in = p - to_world(its.vertices[size_t(verts[pm])]);
-            const Vec3d  out =
-                to_world(its.vertices[size_t(verts[(i + 1) % n])]) - p;
-            if (in.norm() < 1e-9 || out.norm() < 1e-9) {
+            const Vec3d p = to_world(its.vertices[size_t(verts[i])]);
+            const Vec3d q = to_world(its.vertices[size_t(verts[(i + 1) % n])]);
+            const Vec3d e = q - p;
+            if (e.norm() < 1e-9) {
                 ok = false;
                 break;
             }
-            const Vec3d dir = (in.normalized() + out.normalized()).normalized();
-            const Vec3d n_a =
-                (to_world_normal(normals[size_t(step_patch[pm])]) +
-                 to_world_normal(normals[size_t(step_patch[i])]))
-                    .normalized();
-            const Vec3d n_b =
-                (to_world_normal(normals[size_t(step_outside[pm])]) +
-                 to_world_normal(normals[size_t(step_outside[i])]))
-                    .normalized();
+            // The frame of this segment, from its own two faces: the same terms a straight edge
+            // gets, so the cross section stays perpendicular to the boundary all the way round.
+            const Vec3d dir = e.normalized();
+            const Vec3d n_a = to_world_normal(normals[size_t(step_patch[i])]);
+            const Vec3d n_b = to_world_normal(normals[size_t(step_outside[i])]);
             Vec3d u, vv;
             if (!face_inward_dir(dir, n_a, n_b, u) || !face_inward_dir(dir, n_b, n_a, vv)) {
                 ok = false;
                 break;
             }
-            frames.push_back(LoopFrame{ p, u, vv });
+            frames.push_back(LoopFrame{ p, q, u, vv });
+        }
+
+        // A boundary is normally tessellated, and only the corners need a miter: merge frames that
+        // continue in the same direction with the same faces into one straight run, so a flat side
+        // becomes a single frame and the seams between its segments do not add degenerate geometry.
+        const auto same_run = [](const LoopFrame &a, const LoopFrame &b) {
+            const Vec3d da = (a.q - a.p).normalized();
+            const Vec3d db = (b.q - b.p).normalized();
+            return da.cross(db).norm() < 1e-6 && (a.u - b.u).norm() < 1e-6 && (a.v - b.v).norm() < 1e-6;
+        };
+        if (ok) {
+            std::vector<LoopFrame> merged;
+            merged.reserve(frames.size());
+            for (const LoopFrame &f : frames)
+                if (!merged.empty() && same_run(merged.back(), f))
+                    merged.back().q = f.q;
+                else
+                    merged.push_back(f);
+            if (merged.size() > 1 && same_run(merged.back(), merged.front())) {
+                merged.front().p = merged.back().p;
+                merged.pop_back();
+            }
+            frames = std::move(merged);
         }
         if (ok && frames.size() >= 3)
             loops.push_back(std::move(frames));
@@ -292,20 +309,38 @@ indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::v
     const int n = int(loop.size()), m = int(profile.size());
     if (n < 3 || m < 3)
         return its;
-    its.vertices.reserve(size_t(n) * size_t(m));
-    its.indices.reserve(size_t(n) * size_t(m) * 2);
-    for (const LoopFrame &f : loop)
+
+    // Per segment, two rings of the profile: one at the segment start and one at its end, both in
+    // the frame of that segment, so the segment is a straight prism. Consecutive segments are then
+    // joined by a miter ring at their shared vertex. Rings are not capped, so the ring of a shared
+    // vertex closes the prism of one segment against the miter of the next and the solid is closed.
+    its.vertices.reserve(size_t(n) * size_t(m) * 2);
+    its.indices.reserve(size_t(n) * size_t(m) * 4);
+    for (const LoopFrame &f : loop) {
         for (const Vec2d &q : profile)
             its.vertices.emplace_back((f.p + q(0) * f.u + q(1) * f.v).cast<float>());
+        for (const Vec2d &q : profile)
+            its.vertices.emplace_back((f.q + q(0) * f.u + q(1) * f.v).cast<float>());
+    }
+
+    const auto quad = [&its](int a, int b, int c, int d) {
+        its.indices.emplace_back(a, b, c);
+        its.indices.emplace_back(a, c, d);
+    };
     for (int i = 0; i < n; ++i) {
-        const int j = (i + 1) % n;
+        const int start = i * 2 * m;
+        const int end   = start + m;
         for (int k = 0; k < m; ++k) {
             const int kn = (k + 1) % m;
-            const int a = i * m + k, b = i * m + kn, c = j * m + kn, d = j * m + k;
-            its.indices.emplace_back(a, b, c);
-            its.indices.emplace_back(a, c, d);
+            quad(start + k, start + kn, end + kn, end + k);
+        }
+        const int next_start = ((i + 1) % n) * 2 * m;
+        for (int k = 0; k < m; ++k) {
+            const int kn = (k + 1) % m;
+            quad(end + k, end + kn, next_start + kn, next_start + k);
         }
     }
+
     if (its_volume(its) < 0.f)
         its_flip_triangles(its);
     return its;
