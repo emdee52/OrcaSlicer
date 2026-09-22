@@ -227,8 +227,6 @@ the branch too but was superseded by `656714103a`.
 
 ## 6. Open items / likely next
 
-- Reliability of detection on a wider corpus; `HoleDetectorParams` may need tuning
-  (`min_facets`, `radial_tolerance`, `max_angular_gap_deg`).
 - **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
   0.16 mm on the pocket diameter.
 - Edge dress follow-ups (see section 20): a second look at the chamfer crease on a top face if a skin
