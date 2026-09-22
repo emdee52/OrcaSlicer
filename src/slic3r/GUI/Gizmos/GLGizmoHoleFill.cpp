@@ -252,6 +252,10 @@ void GLGizmoHoleFill::record_stroke_sample()
     for (const Hover &h : m_stroke)
         if (h.facet == m_hover.facet)
             return; // already part of this stroke
+    // Ignore samples that are not over a depression: painting a flat wall does nothing, and a drag
+    // across the wall to the next depression must not accumulate junk that would bridge the two.
+    if (fill_mesh(std::vector<Hover>{m_hover}).empty())
+        return;
     m_stroke.push_back(m_hover);
     m_preview_dirty = true;
 }
