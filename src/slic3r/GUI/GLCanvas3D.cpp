@@ -30,6 +30,7 @@
 #include "OpenGLManager.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
+#include "OrcaExt/ObjectSnap.hpp" // [ORCAPORT:SNAP-8] Alt-drag object-to-object point snap
 #include "WipeTowerDialog.hpp"
 #include "GUI_App.hpp"
 #include "GUI_ObjectList.hpp"
@@ -4321,6 +4322,7 @@ void GLCanvas3D::on_gesture(wxGestureEvent &evt)
 // "stacked on" when grouping a multi-object drag.
 namespace {
 namespace GravitySnap = OrcaExt::Gui::GravitySnap;
+namespace ObjectSnap = OrcaExt::Gui::ObjectSnap; // [ORCAPORT:SNAP-8]
 
 constexpr double SNAPDRAG_ENGAGE_RATIO  = 0.20;
 constexpr double SNAPDRAG_RELEASE_RATIO = 0.08;
@@ -4828,20 +4830,42 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
 
                 TransformationType trafo_type;
                 trafo_type.set_relative();
-                m_selection.translate(cur_pos - m_mouse.drag.start_position_3D, trafo_type);
+
+                // [ORCAPORT:SNAP-8] BEGIN - object-to-object point snap: with Alt held the grabbed
+                // point is moved onto the nearest snap coordinate of another object's flat face
+                // under the cursor. The Alt gesture is the whole opt-in (no app key, no free-Z),
+                // and it takes precedence over Snap & Drag: the two gestures both want to own the
+                // drag translation and would fight otherwise.
+                const bool alt_snap = wxGetKeyState(WXK_ALT);
+
+                std::set<std::pair<int, int>> moving; // (object, instance) pairs being dragged
+                for (unsigned int idx : m_selection.get_volume_idxs()) {
+                    const GLVolume* gv = m_volumes.volumes[idx];
+                    if (gv->is_wipe_tower || gv->is_modifier)
+                        continue;
+                    moving.insert({ gv->object_idx(), gv->instance_idx() });
+                }
+
+                Vec3d snap_disp = Vec3d::Zero();
+                if (alt_snap && m_model != nullptr) {
+                    const Camera& camera = wxGetApp().plater()->get_camera();
+                    if (const std::optional<ObjectSnap::SnapTarget> target =
+                            ObjectSnap::target_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>())) {
+                        // `cur_pos` is where the plain drag put the grabbed point, so this is the
+                        // remaining shift that lands it exactly on the snapped coordinate. Folded
+                        // into the single translate below: Selection::translate writes each offset
+                        // absolutely from the drag-start cache, so a second call would overwrite it.
+                        snap_disp = target->world - cur_pos;
+                    }
+                }
+                // [ORCAPORT:SNAP-8] END
+
+                m_selection.translate(cur_pos - m_mouse.drag.start_position_3D + snap_disp, trafo_type);
 
                 // [ORCAPORT:AS-3] BEGIN - live floor snap: rest the dragged instances on the real
                 // surface found under their footprint. GLVolume-only: the ModelObject is written once
                 // on mouse-up in do_move, so an interrupted drag never leaves the model inconsistent.
-                if (current_printer_technology() == ptFFF && GravitySnap::enabled()) {
-                    std::set<std::pair<int, int>> moving;
-                    for (unsigned int idx : m_selection.get_volume_idxs()) {
-                        const GLVolume* gv = m_volumes.volumes[idx];
-                        if (gv->is_wipe_tower || gv->is_modifier)
-                            continue;
-                        moving.insert({ gv->object_idx(), gv->instance_idx() });
-                    }
-
+                if (current_printer_technology() == ptFFF && GravitySnap::enabled() && !alt_snap) {
                     // "Move selection as one block" replaces the by-stacks resolution with a single
                     // rigid shift (see _snapdrag_rigid_frame). Same trigger as the commit in do_move:
                     // instance count, so the selection does not jump on mouse-up.

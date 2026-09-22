@@ -223,6 +223,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/GLCanvas3D.hpp
     GUI/OrcaExt/GravitySnap.cpp
     GUI/OrcaExt/GravitySnap.hpp
+    GUI/OrcaExt/ObjectSnap.cpp
+    GUI/OrcaExt/ObjectSnap.hpp
     GUI/OrcaExt/PreviewClipController.cpp
     GUI/OrcaExt/PreviewClipController.hpp
     GUI/GLModel.cpp
