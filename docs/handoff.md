@@ -214,10 +214,11 @@ right-click removal), `0f14403ee1` (reset preview models before rebuilding).
   (`min_facets`, `radial_tolerance`, `max_angular_gap_deg`).
 - **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
   0.16 mm on the pocket diameter.
-- Edge dress follow-ups (see section 20): a true miter at corner vertices of straight-edge sweeps,
-  dressing irregular / non-circular hole rims (the loop sweep already handles any closed boundary
-  loop, but picking one that is not a face outline is not offered), and a second look at the chamfer
-  crease on a top face if a skin artifact shows up there.
+- Edge dress follow-ups (see section 20): dressing irregular / non-circular hole rims (the loop sweep
+  already handles any closed boundary loop, but picking one that is not a face outline is not offered),
+  and a second look at the chamfer crease on a top face if a skin artifact shows up there.
+- EF-3 (miter corner vertices between separate straight-edge sweeps) was investigated and closed as
+  redundant — see section 20.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
 
 ---
@@ -761,11 +762,16 @@ made the prism twist, which showed as a taper at a square rim's corner.
   Headless checks exported the applied negatives and confirmed watertight, correctly sized rings
   (square 79.33 vs 80 analytic, rim 16.75 vs 16.76, fillet 22.01 vs 22.0), and G-code A/B: edge
   chamfer 343,554 B and rim chamfer 358,481 B against a 346,965 B baseline.
-- **Known limits**: each straight edge is swept on its own, so a corner junction between two sweeps of
-  one object is not mitred (the loop sweep is). Concave edges return an empty section and are
-  refused. Nothing here touches the CAD fillet/chamfer in the Design tab.
-- **Next (EF-3 candidates)**: miter corner vertices between separate sweeps; offer irregular hole rims
-  explicitly; if a skin artifact ever shows on the top face beside a 45° chamfer crease, look there
-  first.
+- **Known limits**: concave edges return an empty section and are refused. Nothing here touches the
+  CAD fillet/chamfer in the Design tab.
+- **EF-3 closed as redundant** (investigated after EF-2): two equal-size 45° chamfers on a 90° corner
+  are cut by the planes `z = y + 1 - s` and `z = x + 1 - s`, which meet along a single straight edge
+  (`x = y, z = x + 1 - s`); the miter plane `z = x + y + 1 - s` is redundant given both. So the union
+  of the two independently swept prisms is already a clean mitre on a cube corner — no corner filler
+  or chain sweep is needed for chamfers. **The fillet corner was not verified**: two 90° fillet sweeps
+  union two quarter-cylinders, which may leave a crease instead of a spherical corner patch; check that
+  case before claiming fillet corners are correct.
+- **Next (EF candidates)**: offer irregular hole rims explicitly; if a skin artifact ever shows on the
+  top face beside a 45° chamfer crease, look there first.
 
 
