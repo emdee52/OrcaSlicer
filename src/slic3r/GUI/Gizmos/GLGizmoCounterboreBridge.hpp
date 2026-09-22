@@ -58,6 +58,7 @@ public:
 
 protected:
     void        on_render_input_window(float x, float y, float bottom_limit) override;
+    void        on_render() override;
     std::string on_get_name() const override;
 
     void on_set_hover_id() override;
@@ -103,6 +104,7 @@ private:
 
     void detect();
     void refresh_applied();
+    void rebuild_hole_previews();
     void register_pickers();
     ModelVolume* add_named_volume(const indexed_triangle_set& its, const std::string& name, bool snapshot);
     void remove_named_volumes(const std::string& prefix, const std::string& snapshot_name);
@@ -119,6 +121,11 @@ private:
     std::vector<indexed_triangle_set> m_pick_its;
     std::vector<std::unique_ptr<MeshRaycaster>>         m_pick_raycasters;
     std::vector<std::shared_ptr<SceneRaycasterItem>>    m_pick_items;
+    // Hole highlight ghosts: available / hovered / already strengthened.
+    PickingModel            m_preview_avail;
+    PickingModel            m_preview_hover;
+    PickingModel            m_preview_applied;
+    bool                    m_preview_dirty = true;
     bool                    m_dirty = false;
     double                  m_reinforce_thickness = 1.5;
     int                     m_reinforce_loops     = 1;

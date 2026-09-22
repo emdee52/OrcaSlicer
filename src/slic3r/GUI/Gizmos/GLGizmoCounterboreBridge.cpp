@@ -288,6 +288,21 @@ constexpr const char *REINFORCE_NAME = "HoleReinforce";
 // A hole whose axis is within 60 deg of the build direction can be strengthened.
 constexpr double HORIZONTAL_COS = 0.5;
 
+// Hole highlight colours, mirroring the holes gizmo.
+const ColorRGBA AVAIL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};
+const ColorRGBA APPLIED_COLOR{1.00f, 0.15f, 0.15f, 0.80f};
+const ColorRGBA HOVER_COLOR{0.10f, 1.00f, 0.20f, 0.90f};
+
+void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
+{
+    if (src.indices.empty())
+        return;
+    if (dst.indices.empty())
+        dst = std::move(src);
+    else
+        its_merge(dst, src);
+}
+
 std::string feature_name(const char *prefix, int idx)
 {
     return std::string(prefix) + "#" + std::to_string(idx);
@@ -409,6 +424,7 @@ void GLGizmoCounterboreBridge::detect()
     ModelObject *mo = model_object();
     if (mo == nullptr) {
         register_pickers();
+        m_preview_dirty = true;
         return;
     }
 
@@ -442,6 +458,7 @@ void GLGizmoCounterboreBridge::detect()
     m_old_volume_count    = int(mo->volumes.size());
     m_old_instance_matrix = instance_matrix();
     register_pickers();
+    m_preview_dirty = true;
 }
 
 void GLGizmoCounterboreBridge::refresh_applied()
@@ -457,6 +474,7 @@ void GLGizmoCounterboreBridge::refresh_applied()
         if (i >= 0 && i < int(m_holes.size()))
             m_reinforce[i] = 1;
     }
+    m_preview_dirty = true;
 }
 
 void GLGizmoCounterboreBridge::register_pickers()
@@ -494,6 +512,7 @@ void GLGizmoCounterboreBridge::on_set_hover_id()
         m_hover_id = -1;
     if (m_hover_id >= int(m_holes.size()))
         m_hover_id = -1;
+    m_preview_dirty = true;
 }
 
 void GLGizmoCounterboreBridge::on_set_state()
@@ -503,6 +522,7 @@ void GLGizmoCounterboreBridge::on_set_state()
         m_holes.clear();
         m_reinforce.clear();
         m_pick_its.clear();
+        m_preview_dirty = true;
         m_dirty = true;
     }
 }
@@ -609,6 +629,7 @@ void GLGizmoCounterboreBridge::set_strengthen_mode(bool on)
         m_reinforce.clear();
         m_pick_its.clear();
         register_pickers();
+        m_preview_dirty = true;
     }
     m_parent.set_as_dirty();
 }
@@ -700,6 +721,89 @@ bool GLGizmoCounterboreBridge::on_mouse(const wxMouseEvent &mouse_event)
         return false;
     }
     return GLGizmoPainterBase::on_mouse(mouse_event);
+}
+
+// [ORCAPORT:RF-1] Highlight the detected holes so it is obvious which ones can be clicked:
+// available (blue), hovered (green) and already strengthened (red).
+void GLGizmoCounterboreBridge::rebuild_hole_previews()
+{
+    m_preview_dirty = false;
+    m_preview_avail.reset();
+    m_preview_hover.reset();
+    m_preview_applied.reset();
+
+    if (!m_strengthen)
+        return;
+
+    const Vec3d          up = object_up();
+    indexed_triangle_set avail_its, hover_its, applied_its;
+    for (size_t i = 0; i < m_holes.size(); ++i) {
+        const HoleView &hv = m_holes[i];
+        if (hv.hole.radius <= 0.)
+            continue;
+        if (i < m_reinforce.size() && m_reinforce[i] != 0) {
+            indexed_triangle_set ring = reinforce_mesh(hv.hole);
+            merge_into(applied_its, ring);
+            continue;
+        }
+        if (!hv.vertical)
+            continue;
+        indexed_triangle_set ghost = make_pick_cylinder(hv.hole, up);
+        merge_into(avail_its, ghost);
+        if (int(i) == m_hover_id) {
+            indexed_triangle_set hover = make_pick_cylinder(hv.hole, up);
+            merge_into(hover_its, hover);
+        }
+    }
+
+    if (!avail_its.indices.empty()) {
+        m_preview_avail.model.init_from(avail_its);
+        m_preview_avail.model.set_color(AVAIL_COLOR);
+    }
+    if (!hover_its.indices.empty()) {
+        m_preview_hover.model.init_from(hover_its);
+        m_preview_hover.model.set_color(HOVER_COLOR);
+    }
+    if (!applied_its.indices.empty()) {
+        m_preview_applied.model.init_from(applied_its);
+        m_preview_applied.model.set_color(APPLIED_COLOR);
+    }
+}
+
+void GLGizmoCounterboreBridge::on_render()
+{
+    if (!m_strengthen)
+        return;
+    if (m_dirty)
+        detect();
+    if (m_preview_dirty)
+        rebuild_hole_previews();
+
+    GLShaderProgram *shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    const Camera &camera = wxGetApp().plater()->get_camera();
+
+    shader->start_using();
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * instance_matrix());
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDepthMask(GL_TRUE));
+    glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+
+    m_preview_avail.model.render(shader);
+    m_preview_hover.model.render(shader);
+    m_preview_applied.model.render(shader);
+
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    shader->stop_using();
 }
 
 } // namespace Slic3r::GUI
