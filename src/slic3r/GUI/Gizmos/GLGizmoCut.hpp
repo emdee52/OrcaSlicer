@@ -180,6 +180,12 @@ class GLGizmoCut3D : public GLGizmoBase
     int                        m_snap_points_facet{ -1 };
     std::vector<int> m_snap_points_region; // facets of the same flat face as that triangle
     size_t                     m_snap_points_mode{ size_t(-1) }; // mode the marker set was built for
+    // Planar mode snaps to the coordinates that actually move the plane, one per distinct cut, and
+    // recomputes that shorter list when the plane pose it was derived from changes.
+    std::vector<FaceSnapPoint> m_snap_points_visible;
+    bool                       m_snap_visible_valid{ false };
+    Vec3d                      m_snap_visible_normal{ Vec3d::Zero() };
+    Vec3d                      m_snap_visible_center{ Vec3d::Zero() };
     FaceSnapPoint              m_snap_lock; // mesh space
     double                     m_snap_lock_tol{ 0.0 };
     bool                       m_snap_locked{ false };

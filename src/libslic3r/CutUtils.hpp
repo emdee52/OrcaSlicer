@@ -43,6 +43,15 @@ void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis);
 // back to the raw raycast hit.
 std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region);
 
+// The input points that snap the cut plane to a distinct cut. The plane is `plane_normal . x =
+// plane_normal . plane_point`, so snapping to a point already in the plane does not change the cut
+// at all: points whose signed distance to the plane is within `tol` of each other are the same cut.
+// Keeps the first point of each such group, preserving the input order, so the caller's pick
+// priority decides which coordinate represents the group. `to_world` maps the points' mesh space to
+// the space the plane lives in.
+std::vector<FaceSnapPoint> snap_points_distinct_cuts(const std::vector<FaceSnapPoint>& pts, const Transform3d& to_world,
+                                                     const Vec3d& plane_normal, const Vec3d& plane_point, double tol = 1e-3);
+
 // Nearest candidate to `screen_pos`, measured through `project` (mesh space to device pixels).
 // The stick distance scales with the local spacing of the candidates - half the distance to the
 // second nearest, clamped to `[min_px, max_px]` - so it grows with the face's on-screen size and
