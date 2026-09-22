@@ -524,6 +524,11 @@ void GLGizmoCounterboreBridge::on_set_state()
         m_pick_its.clear();
         m_preview_dirty = true;
         m_dirty = true;
+    } else if (m_strengthen) {
+        // [ORCAPORT:RF-1] the base turned picking off; strengthen mode needs the hover raycasters.
+        m_parent.enable_picking(true);
+        register_pickers();
+        m_preview_dirty = true;
     }
 }
 
@@ -622,9 +627,13 @@ void GLGizmoCounterboreBridge::set_strengthen_mode(bool on)
         return;
     m_strengthen = on;
     if (on) {
+        // [ORCAPORT:RF-1] The painter base disables the canvas picking pass on activation, and that
+        // pass is what feeds the gizmo hover id. Strengthen mode needs it for the pick raycasters.
+        m_parent.enable_picking(true);
         m_dirty = true;
         detect();
     } else {
+        m_parent.enable_picking(false);
         m_holes.clear();
         m_reinforce.clear();
         m_pick_its.clear();
