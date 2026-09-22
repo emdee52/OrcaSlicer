@@ -227,10 +227,6 @@ the branch too but was superseded by `656714103a`.
 
 ## 6. Open items / likely next
 
-- **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
-  0.16 mm on the pocket diameter.
-- Edge dress follow-ups (see section 20): a second look at the chamfer crease on a top face if a skin
-  artifact shows up there. Irregular / non-circular rims are done (EF-4).
 - EF-3 (miter corner vertices between separate straight-edge sweeps) was investigated and closed as
   redundant — see section 20. The fillet-corner case (the one unverified part) is now user-confirmed
   correct; SNAP-7 is user-tested and merged.
@@ -805,7 +801,7 @@ case is now "A curved surface is one region bounded by its rims"); the wider
 geometry was worked out offline against the lego mesh with python replicas of the region/loop
 algorithm (scratch, not in the repo), then confirmed in the app.
 
-- **Next (EF candidates)**: if a skin artifact ever shows on the top face beside a 45° chamfer crease,
-  look there first.
+- **Chamfer-crease skin check done**: the user checked the top face beside a 45° chamfer crease and
+  found no skin artifact, so there is nothing left to fix there.
 
 
