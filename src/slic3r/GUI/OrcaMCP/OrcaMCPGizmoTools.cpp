@@ -305,6 +305,7 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
         {"mode", g.get_mode() == EdgeDressMode::Chamfer ? "chamfer" : "fillet"},
         {"size", g.get_size()},
         {"hover_edge_valid", g.hover_edge_valid()},
+        {"hover_applied_volume", g.hover_applied_volume()},
         {"loop_mode", g.loop_mode()},
         {"loop_facet", g.loop_facet()},
         {"applied_count", g.applied_count()},
@@ -694,17 +695,19 @@ void OrcaMCPServer::register_gizmo_tools()
         }
     });
     register_tool(
-        {"edge_dress_gizmo",
-         "[ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet tool. Actions: 'open', 'status', "
-         "'set_mode' (chamfer|fillet), 'set_size', 'apply' (dress the edge under the cursor), "
-         "'apply_at' (screen_x/screen_y), 'list_edges', 'apply_edge' (index), 'set_loop' (whole rim), "
-         "'list_loops' (facet), 'apply_loop' (facet + index), 'clear_all', 'close'.",
-         {{"type", "object"},
-          {"properties",
-           {{"action",
-             {{"type", "string"},
-              {"description",
-               "open | status | set_mode | set_size | apply | apply_at | list_edges | apply_edge | set_loop | list_loops | apply_loop | clear_all | close"}}},
+         {"edge_dress_gizmo",
+          "[ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet tool. Actions: 'open', 'status', "
+          "'set_mode' (chamfer|fillet), 'set_size', 'apply' (dress the edge under the cursor), "
+          "'apply_at' (screen_x/screen_y), 'list_edges', 'apply_edge' (index), 'remove_edge' (index), "
+          "'applied_edges', 'set_loop' (whole rim), 'list_loops' (facet), 'apply_loop' (facet + index), "
+          "'remove_loop', 'applied_loops' (facet), 'clear_all', 'close'. An edge or loop that already "
+          "carries a feature is not dressed twice; remove it first (right-click in the UI).",
+          {{"type", "object"},
+           {"properties",
+            {{"action",
+              {{"type", "string"},
+               {"description",
+                "open | status | set_mode | set_size | apply | apply_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop | list_loops | apply_loop | remove_loop | applied_loops | clear_all | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
             {"mode", {{"type", "string"}, {"description", "chamfer | fillet, for action=set_mode."}}},
             {"size",
@@ -796,7 +799,40 @@ void OrcaMCPServer::register_gizmo_tools()
                     if (!need("index"))
                         return {{"status", "error"}, {"error", "Missing index"}};
                     if (!g->gizmo_apply_edge(params["index"].get<int>()))
-                        return {{"status", "error"}, {"error", "No edge with that index"}};
+                        return {{"status", "error"},
+                                {"error", "Edge could not be dressed: no such index, no valid section there, or a feature is already applied"}};
+                } else if (action == "remove_edge") {
+                    if (!need("index"))
+                        return {{"status", "error"}, {"error", "Missing index"}};
+                    if (!g->gizmo_remove_edge(params["index"].get<int>()))
+                        return {{"status", "error"}, {"error", "That edge has no applied feature"}};
+                } else if (action == "applied_edges") {
+                    nlohmann::json hits = nlohmann::json::array();
+                    for (const int i : g->applied_edge_indices())
+                        hits.push_back(i);
+                    nlohmann::json result = edge_dress_gizmo_state(*g);
+                    result["status"]  = "ok";
+                    result["open"]    = true;
+                    result["action"]  = action;
+                    result["applied"] = std::move(hits);
+                    return result;
+                } else if (action == "remove_loop") {
+                    if (!need("index"))
+                        return {{"status", "error"}, {"error", "Missing index"}};
+                    const int facet = params.value("facet", -1);
+                    if (!g->gizmo_remove_loop(facet, params["index"].get<int>()))
+                        return {{"status", "error"}, {"error", "That loop has no applied feature"}};
+                } else if (action == "applied_loops") {
+                    const int facet = params.value("facet", -1);
+                    nlohmann::json hits = nlohmann::json::array();
+                    for (const std::array<int, 2> &h : g->applied_loop_indices(facet))
+                        hits.push_back({{"facet", h[0]}, {"index", h[1]}});
+                    nlohmann::json result = edge_dress_gizmo_state(*g);
+                    result["status"]  = "ok";
+                    result["open"]    = true;
+                    result["action"]  = action;
+                    result["applied"] = std::move(hits);
+                    return result;
                 } else if (action == "list_loops") {
                     const int facet     = params.value("facet", -1);
                     const int max_count = params.value("max_count", 0);
@@ -820,7 +856,8 @@ void OrcaMCPServer::register_gizmo_tools()
                         return {{"status", "error"}, {"error", "Missing index"}};
                     const int facet = params.value("facet", -1);
                     if (!g->gizmo_apply_loop(facet, params["index"].get<int>()))
-                        return {{"status", "error"}, {"error", "No loop with that index"}};
+                        return {{"status", "error"},
+                                {"error", "Loop could not be dressed: no such index, no valid section there, or a feature is already applied"}};
                 } else if (action == "clear_all") {
                     g->gizmo_clear_all();
                 } else if (action != "status" && action != "open") {

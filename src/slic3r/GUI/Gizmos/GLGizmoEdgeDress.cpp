@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <string>
@@ -33,6 +35,8 @@ constexpr const char *EDGE_LOOP_NAME    = "EdgeLoop";
 
 const ColorRGBA ALL_COLOR{ 0.25f, 0.70f, 1.00f, 0.40f };
 const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
+// Applied features, the same red the hole gizmo uses for applied holes.
+const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
 
 // Chamfer leg / fillet radius, in mm, that the panel offers.
 constexpr double EDGE_SIZE_MIN = 0.5;
@@ -51,10 +55,35 @@ constexpr double EDGE_CURVE_DEG = 20.;
 // would be dressing noise.
 constexpr double EDGE_MIN_CREASE_DOT = 0.9659; // cos(15 degrees)
 
-// Feature volumes are named <prefix>#<id>; the id is matched by prefix, like the hole features.
+// Feature volumes are named <prefix>#<id>, or <prefix>#<id>@<tag> when the volume remembers which
+// edge or loop it came from; the id is matched by prefix, like the hole features.
 std::string feature_name(const char *prefix, int idx)
 {
     return std::string(prefix) + "#" + std::to_string(idx);
+}
+
+std::string feature_name(const char *prefix, int idx, const std::string &tag)
+{
+    return feature_name(prefix, idx) + (tag.empty() ? std::string() : "@" + tag);
+}
+
+// A short key for the source geometry of a feature, so an applied volume can be tied back to the
+// edge or loop it dresses, also after the project has been saved and reopened. The points are in
+// object space and quantized, which keeps the key stable across a reload of the same mesh.
+std::string feature_tag(const std::vector<Vec3d> &points)
+{
+    uint32_t h = 2166136261u;
+    for (const Vec3d &p : points)
+        for (int k = 0; k < 3; ++k) {
+            const int64_t q = int64_t(std::llround(p(k) * 10000.));
+            h ^= uint32_t(uint64_t(q) & 0xffffffffu);
+            h *= 16777619u;
+            h ^= uint32_t((uint64_t(q) >> 32) & 0xffffffffu);
+            h *= 16777619u;
+        }
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%08x", unsigned(h));
+    return buf;
 }
 
 int parsed_feature_index(const std::string &name, const char *prefix)
@@ -62,11 +91,19 @@ int parsed_feature_index(const std::string &name, const char *prefix)
     const size_t n = std::strlen(prefix);
     if (name.size() <= n || name.compare(0, n, prefix) != 0 || name[n] != '#')
         return -1;
+    const size_t end = name.find('@', n + 1);
     try {
-        return std::stoi(name.substr(n + 1));
+        return std::stoi(name.substr(n + 1, end == std::string::npos ? std::string::npos : end - n - 1));
     } catch (...) {
         return -1;
     }
+}
+
+// The source key a feature volume carries, empty when it has none.
+std::string parsed_feature_tag(const std::string &name)
+{
+    const size_t at = name.find('@');
+    return at == std::string::npos ? std::string() : name.substr(at + 1);
 }
 
 int object_idx_of(const Selection &selection, const ModelObject *mo)
@@ -286,11 +323,76 @@ const std::vector<GLGizmoEdgeDress::HoverEdge> &GLGizmoEdgeDress::cached_edges()
     return m_edges;
 }
 
+std::string GLGizmoEdgeDress::tag_for_edge(const HoverEdge &edge)
+{
+    return edge.valid ? feature_tag({ edge.p0, edge.p1 }) : std::string();
+}
+
+std::string GLGizmoEdgeDress::tag_for_loop(const std::vector<LoopFrame> &loop) const
+{
+    if (loop.size() < 3)
+        return std::string();
+    std::vector<Vec3d> points;
+    points.reserve(loop.size() * 2);
+    for (const LoopFrame &f : loop) {
+        points.push_back(f.p);
+        points.push_back(f.q);
+    }
+    return feature_tag(points);
+}
+
+// The feature volume that already dresses this source, or -1. One feature per source: the tag is
+// written into the volume name when it is applied.
+int GLGizmoEdgeDress::find_applied_volume(const std::string &tag) const
+{
+    if (tag.empty())
+        return -1;
+    const ModelObject *mo = model_object();
+    if (mo == nullptr)
+        return -1;
+    for (size_t i = 0; i < mo->volumes.size(); ++i) {
+        const ModelVolume *v = mo->volumes[i];
+        if (v == nullptr)
+            continue;
+        const bool ours = parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 ||
+                          parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0 ||
+                          parsed_feature_index(v->name, EDGE_LOOP_NAME) >= 0;
+        if (ours && parsed_feature_tag(v->name) == tag)
+            return int(i);
+    }
+    return -1;
+}
+
+bool GLGizmoEdgeDress::remove_applied_volume(const std::string &tag)
+{
+    const int at = find_applied_volume(tag);
+    if (at < 0)
+        return false;
+    ModelObject *mo = const_cast<ModelObject *>(model_object());
+    if (mo == nullptr)
+        return false;
+    const int oi = object_idx_of(m_parent.get_selection(), mo);
+    if (oi < 0)
+        return false;
+    std::vector<ItemForDelete> items;
+    items.emplace_back(ItemType::itVolume, oi, at);
+    Plater *plater = wxGetApp().plater();
+    Plater::TakeSnapshot snapshot(plater, _u8L("Remove edge feature"), UndoRedo::SnapshotType::GizmoAction);
+    if (ObjectList *ol = wxGetApp().obj_list())
+        ol->delete_from_model_and_list(items);
+    plater->update();
+    m_edges_dirty = true;
+    m_preview_dirty = true;
+    m_hover_applied_volume = -1;
+    return true;
+}
+
 void GLGizmoEdgeDress::clear_hover()
 {
     m_hover         = HoverEdge();
     m_hover_loop.clear();
     m_preview_dirty = true;
+    m_hover_applied_volume = -1;
     m_preview.reset();
 }
 
@@ -373,6 +475,14 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
                (m_hover.valid && ((m_hover.p0 - previous.p0).norm() > 1e-9 || (m_hover.p1 - previous.p1).norm() > 1e-9 ||
                                   (m_hover.n_a - previous.n_a).norm() > 1e-6 || (m_hover.n_b - previous.n_b).norm() > 1e-6)))
         m_preview_dirty = true;
+
+    // Whether the hovered source already carries a feature: shown red, and not applied a second time.
+    const int applied = m_loop_mode ? find_applied_volume(tag_for_loop(m_hover_loop))
+                                    : find_applied_volume(tag_for_edge(m_hover));
+    if (applied != m_hover_applied_volume) {
+        m_hover_applied_volume = applied;
+        m_preview_dirty        = true;
+    }
 }
 
 indexed_triangle_set GLGizmoEdgeDress::hover_mesh() const
@@ -488,6 +598,8 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
             e.p1    = trafo * its.vertices[size_t(eb)].cast<double>();
             e.n_a   = (normal_trafo * na).normalized();
             e.n_b   = (normal_trafo * nb).normalized();
+            e.tag   = feature_tag({ its.vertices[size_t(ea)].cast<double>(),
+                                    its.vertices[size_t(eb)].cast<double>() });
             if ((e.p1 - e.p0).norm() < 1e-9)
                 continue;
             edges.push_back(e);
@@ -519,23 +631,77 @@ bool GLGizmoEdgeDress::gizmo_apply_edge(int index)
     const std::vector<HoverEdge> &edges = cached_edges();
     if (index < 0 || index >= int(edges.size()))
         return false;
-    const indexed_triangle_set its = mesh_for_edge(edges[index]);
+    const HoverEdge &edge = edges[index];
+    // One feature per edge: an edge that is already dressed is not dressed again, it is removed by
+    // right-clicking it (or through remove_edge).
+    if (find_applied_volume(tag_for_edge(edge)) >= 0)
+        return false;
+    const indexed_triangle_set its = mesh_for_edge(edge);
     if (its.indices.empty())
         return false; // concave edge: the sweep has no valid cross section
-    add_named_negative(feature_name(m_mode == EdgeDressMode::Fillet ? EDGE_FILLET_NAME : EDGE_CHAMFER_NAME, next_feature_id()), its);
+    add_named_negative(feature_name(m_mode == EdgeDressMode::Fillet ? EDGE_FILLET_NAME : EDGE_CHAMFER_NAME,
+                                    next_feature_id(), tag_for_edge(edge)),
+                       its);
     return true;
+}
+
+std::vector<int> GLGizmoEdgeDress::applied_edge_indices() const
+{
+    std::vector<int> out;
+    const std::vector<HoverEdge> &edges = cached_edges();
+    for (size_t i = 0; i < edges.size(); ++i)
+        if (find_applied_volume(tag_for_edge(edges[i])) >= 0)
+            out.push_back(int(i));
+    return out;
+}
+
+std::vector<std::array<int, 2>> GLGizmoEdgeDress::applied_loop_indices(int facet) const
+{
+    std::vector<std::array<int, 2>> out;
+    const ModelVolume *mv = first_model_part(model_object());
+    const int          f  = facet >= 0 ? facet : m_loops_facet;
+    const std::vector<std::vector<LoopFrame>> &loops = loops_for_facet(mv, f);
+    for (size_t i = 0; i < loops.size(); ++i)
+        if (find_applied_volume(tag_for_loop(loops[i])) >= 0)
+            out.push_back({ f, int(i) });
+    return out;
 }
 
 void GLGizmoEdgeDress::rebuild_preview()
 {
     m_preview_dirty = false;
-    indexed_triangle_set its = active_mesh();
-    if (its.indices.empty()) {
+
+    // The hovered edge or loop, unless it already carries a feature: an applied one is shown in the
+    // applied overlay instead, and must not look like something waiting to be applied.
+    indexed_triangle_set its = m_hover_applied_volume >= 0 ? indexed_triangle_set() : active_mesh();
+    if (its.indices.empty())
         m_preview.reset();
-        return;
+    else {
+        m_preview.model.init_from(its);
+        m_preview.model.set_color(HOVER_COLOR);
     }
-    m_preview.model.init_from(its);
-    m_preview.model.set_color(HOVER_COLOR);
+
+    // Every applied feature, in the same red the hole gizmo marks applied holes with.
+    indexed_triangle_set applied;
+    if (const ModelObject *mo = model_object(); mo != nullptr) {
+        for (const ModelVolume *v : mo->volumes) {
+            if (v == nullptr || v->is_negative_volume() == false)
+                continue;
+            const bool ours = parsed_feature_index(v->name, EDGE_CHAMFER_NAME) >= 0 ||
+                              parsed_feature_index(v->name, EDGE_FILLET_NAME) >= 0 ||
+                              parsed_feature_index(v->name, EDGE_LOOP_NAME) >= 0;
+            if (!ours)
+                continue;
+            indexed_triangle_set part = v->mesh().its;
+            its_merge(applied, part);
+        }
+    }
+    if (applied.indices.empty())
+        m_preview_applied.reset();
+    else {
+        m_preview_applied.model.init_from(applied);
+        m_preview_applied.model.set_color(APPLIED_COLOR);
+    }
 }
 
 void GLGizmoEdgeDress::add_named_negative(const std::string &name, const indexed_triangle_set &its)
@@ -589,11 +755,16 @@ bool GLGizmoEdgeDress::gizmo_apply_hovered()
 {
     if (!hover_edge_valid())
         return false;
+    // Already dressed: it is removed by right-click, not dressed a second time.
+    if (m_hover_applied_volume >= 0)
+        return false;
     const indexed_triangle_set its = active_mesh();
     if (its.indices.empty())
         return false;
     const char *prefix = m_loop_mode ? EDGE_LOOP_NAME : (m_mode == EdgeDressMode::Fillet ? EDGE_FILLET_NAME : EDGE_CHAMFER_NAME);
-    add_named_negative(feature_name(prefix, next_feature_id()), its);
+    add_named_negative(feature_name(prefix, next_feature_id(),
+                                    m_loop_mode ? tag_for_loop(m_hover_loop) : tag_for_edge(m_hover)),
+                       its);
     return true;
 }
 
@@ -602,6 +773,31 @@ bool GLGizmoEdgeDress::gizmo_apply_at(const Vec2d &screen_pos)
     if (!gizmo_hover_at(screen_pos))
         return false;
     return gizmo_apply_hovered();
+}
+
+bool GLGizmoEdgeDress::gizmo_remove_hovered()
+{
+    if (!hover_edge_valid())
+        return false;
+    return remove_applied_volume(m_loop_mode ? tag_for_loop(m_hover_loop) : tag_for_edge(m_hover));
+}
+
+bool GLGizmoEdgeDress::gizmo_remove_edge(int index)
+{
+    const std::vector<HoverEdge> &edges = cached_edges();
+    if (index < 0 || index >= int(edges.size()))
+        return false;
+    return remove_applied_volume(tag_for_edge(edges[index]));
+}
+
+bool GLGizmoEdgeDress::gizmo_remove_loop(int facet, int index)
+{
+    if (facet < 0)
+        facet = m_loops_facet;
+    const std::vector<std::vector<LoopFrame>> &loops = loops_for_facet(first_model_part(model_object()), facet);
+    if (index < 0 || index >= int(loops.size()))
+        return false;
+    return remove_applied_volume(tag_for_loop(loops[index]));
 }
 
 void GLGizmoEdgeDress::gizmo_clear_all()
@@ -642,6 +838,7 @@ void GLGizmoEdgeDress::set_loop_mode(bool on)
         return;
     m_loop_mode = on;
     m_hover_loop.clear();
+    m_hover_applied_volume = -1;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -678,10 +875,12 @@ bool GLGizmoEdgeDress::gizmo_apply_loop(int facet, int index)
     const std::vector<std::vector<LoopFrame>> &loops = loops_for_facet(first_model_part(model_object()), facet);
     if (index < 0 || index >= int(loops.size()))
         return false;
+    if (find_applied_volume(tag_for_loop(loops[index])) >= 0)
+        return false; // already dressed: remove_loop is how it goes away
     const indexed_triangle_set its = mesh_for_loop(loops[index]);
     if (its.indices.empty())
         return false;
-    add_named_negative(feature_name(EDGE_LOOP_NAME, next_feature_id()), its);
+    add_named_negative(feature_name(EDGE_LOOP_NAME, next_feature_id(), tag_for_loop(loops[index])), its);
     return true;
 }
 
@@ -703,6 +902,8 @@ bool GLGizmoEdgeDress::on_init()
     m_desc["hover_hint"]    = _L("Hover an edge, then click it or use Apply.");
     m_desc["no_edge"]       = _L("No edge under the cursor.");
     m_desc["edge_hovered"]  = _L("Edge under the cursor.");
+    m_desc["already_done"]  = _L("Already chamfered or filleted.");
+    m_desc["remove_hint"]   = _L("Right-click an applied feature to remove it.");
     m_desc["applied"]       = _L("Applied");
     return true;
 }
@@ -790,6 +991,7 @@ void GLGizmoEdgeDress::on_render()
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    m_preview_applied.model.render(shader);
     m_preview.model.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
@@ -800,10 +1002,17 @@ void GLGizmoEdgeDress::on_render()
 
 bool GLGizmoEdgeDress::on_mouse(const wxMouseEvent &mouse_event)
 {
-    if (get_state() != On || !mouse_event.LeftDown())
+    if (get_state() != On)
+        return false;
+    if (mouse_event.RightDown()) {
+        // Right-click removes the feature the cursor is on, like the hole gizmo removes a hole.
+        gizmo_hover_at(m_parent.get_local_mouse_position());
+        return gizmo_remove_hovered();
+    }
+    if (!mouse_event.LeftDown())
         return false;
     // Apply only when the cursor is actually on an edge, so a click on empty space still falls
-    // through to the canvas.
+    // through to the canvas. An edge that is already dressed is not dressed again.
     gizmo_hover_at(m_parent.get_local_mouse_position());
     if (!hover_edge_valid())
         return false;
@@ -822,8 +1031,8 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     ImGuiWrapper::push_toolbar_style(scale);
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-    const float sliders_width = m_imgui->scaled(7.0f);
-    const float left_width    = m_imgui->calc_text_size(m_desc.at("size")).x + m_imgui->scaled(1.0f);
+    const float sliders_width = m_imgui->scaled(6.0f);
+    const float left_width    = m_imgui->calc_text_size(m_desc.at("size")).x + m_imgui->scaled(2.0f);
 
     // Mode: chamfer or fillet.
     {
@@ -869,7 +1078,7 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
         set_size(size);
     ImGui::PopItemWidth();
     // A field next to the slider, so an exact size can be typed instead of dragged.
-    ImGui::SameLine();
+    ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
     ImGui::PushItemWidth(m_imgui->scaled(4.5f));
     float typed = float(m_size);
     if (ImGui::InputFloat("##edge_size_in", &typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
@@ -882,8 +1091,13 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 
-    m_imgui->text(hover_edge_valid() ? m_desc.at("edge_hovered") : m_desc.at("no_edge"));
+    if (hover_edge_valid() && m_hover_applied_volume >= 0)
+        m_imgui->text(m_desc.at("already_done"));
+    else
+        m_imgui->text(hover_edge_valid() ? m_desc.at("edge_hovered") : m_desc.at("no_edge"));
     m_imgui->text(m_desc.at("hover_hint"));
+    if (applied_count() > 0)
+        m_imgui->text(m_desc.at("remove_hint"));
     const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), applied_count());
     m_imgui->text(applied);
 

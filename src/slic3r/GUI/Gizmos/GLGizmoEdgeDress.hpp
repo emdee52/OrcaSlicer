@@ -33,11 +33,16 @@ public:
     double        get_size() const { return m_size; }
     void          set_size(double size);
     bool          hover_edge_valid() const { return m_loop_mode ? !m_hover_loop.empty() : m_hover.valid; }
+    // The feature volume the hovered edge or loop already carries, or -1 when it carries none.
+    int           hover_applied_volume() const { return m_hover_applied_volume; }
     double        object_scale() const;
     int           applied_count() const;
     bool          gizmo_hover_at(const Vec2d& screen_pos);
     bool          gizmo_apply_hovered();
     bool          gizmo_apply_at(const Vec2d& screen_pos);
+    bool          gizmo_remove_hovered();
+    bool          gizmo_remove_edge(int index);
+    bool          gizmo_remove_loop(int facet, int index);
     void          gizmo_clear_all();
     void          gizmo_refresh();
 
@@ -46,6 +51,9 @@ public:
     int                                 edge_count() const;
     std::vector<std::array<double, 6>>  gizmo_list_edges(int max_count) const;
     bool                                gizmo_apply_edge(int index);
+    // Indices of the edges / loops that already have a feature, so a caller can skip them.
+    std::vector<int>                    applied_edge_indices() const;
+    std::vector<std::array<int, 2>>     applied_loop_indices(int facet) const;
 
     // Whole-loop mode: a hole or boss rim is dressed as one closed feature instead of its
     // tessellation segments. Off by default, so the edge behaviour is unchanged.
@@ -73,11 +81,13 @@ protected:
     void                on_unregister_raycasters_for_picking() override;
 
 private:
-    // The picked edge in object space: endpoints, edge direction and the two adjacent face normals.
+    // The picked edge in object space: endpoints, edge direction, the two adjacent face normals and
+    // the key that ties it back to a feature volume already applied to it.
     struct HoverEdge
     {
-        bool  valid{false};
-        Vec3d p0{Vec3d::Zero()}, p1{Vec3d::Zero()}, n_a{Vec3d::Zero()}, n_b{Vec3d::Zero()};
+        bool        valid{false};
+        Vec3d       p0{Vec3d::Zero()}, p1{Vec3d::Zero()}, n_a{Vec3d::Zero()}, n_b{Vec3d::Zero()};
+        std::string tag; // source key, a hash of the endpoints
     };
 
     const ModelObject* model_object() const;
@@ -96,6 +106,11 @@ private:
     void               rebuild_preview();
     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
     int                next_feature_id() const;
+    // Source key of an edge / loop, and the applied feature volume that carries it (-1 if none).
+    static std::string tag_for_edge(const HoverEdge& edge);
+    std::string        tag_for_loop(const std::vector<LoopFrame>& loop) const;
+    int                find_applied_volume(const std::string& tag) const;
+    bool               remove_applied_volume(const std::string& tag);
 
     EdgeDressMode m_mode{EdgeDressMode::Chamfer};
     double        m_size{1.0};
@@ -104,7 +119,10 @@ private:
 
     HoverEdge    m_hover;
     std::vector<LoopFrame> m_hover_loop;
+    // Volume the hovered edge or loop already carries, -1 if it carries none.
+    int          m_hover_applied_volume{-1};
     PickingModel m_preview;
+    PickingModel m_preview_applied;
     bool         m_preview_dirty{true};
 
     // Cached merged edges, in object space, rebuilt when the object or its volume list changes.
