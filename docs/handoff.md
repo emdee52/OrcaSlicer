@@ -603,7 +603,34 @@ deselect included).
   build is clean. Manual click test: press Alt on one side of a large flat face and drag across to
   the other side — the far-side corners, edge midpoints and quarters must all snap; then tap Alt
   once without holding it and confirm the hole still follows the cursor.
-- **Branch state**: on `port/SNAP-5` (`3b1c8f6bfc`), stacked on `port/SNAP-4`, all unmerged until
-  the user has tested them (see section 0).
+- **Branch state**: on `port/SNAP-5` (`3b1c8f6bfc`), stacked on `port/SNAP-4`, both merged into
+  `port/integration` (`2b323c1aca`) once the user confirmed them (see section 0).
+
+---
+
+## 18. SNAP-7 — one snap target in planar mode
+
+A flat face carries many coordinates — corners, edge midpoints, quarters and the centre — and in
+planar mode every one of them cuts the identical plane: the plane is `normal . x = offset`, so moving
+its centre in-plane does not move the plane. The Cut tool was showing a marker for each of those
+coordinates and snapping the centre onto any of them, which looks like a choice where there is none.
+
+In planar mode the snap now tracks a single target: the point under the cursor on the session face,
+the only coordinate the user can point at. `snap_plane_center` takes that point straight from the
+raycast hit, with no stick distance and no hysteresis — there is nothing to be magnetic about when
+every candidate is the same plane. `build_snap_markers` returns early for the mode, so only the
+active marker is drawn; it is still sized from the marker radius computed out of the candidate
+spacing, so it scales with the face. Release Alt to move the plane along its normal.
+
+Shape and tongue-and-groove keep the whole coordinate set: their profile is built around the plane
+centre, so there the position does matter. The candidate cache is keyed on the cut mode as well as
+on the flat face, so switching modes with Alt held rebuilds the markers.
+
+- **Verification**: no unit-testable logic changed; `[CutUtils]` passes (126 assertions in 19 test
+  cases) and the build is clean. Manual click test: in planar mode hold Alt over a flat face and drag
+  — exactly one sphere must follow the cursor and the plane must sit flush on the face; switch to
+  shape mode with Alt held and the full coordinate set must come back.
+- **Branch state**: on `port/SNAP-7`, branched from `port/integration` after SNAP-4, SNAP-5 and
+  SNAP-6 were merged (`2b323c1aca`), unmerged until the user has tested it (see section 0).
 
 
