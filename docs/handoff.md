@@ -835,10 +835,22 @@ of the object under the cursor, so separately printed parts drop together in an 
   `coplanar_region` + `build_face_snap_points`) and `CutUtils::nearest_face_snap`. A non-planar face
   under the cursor falls back to the raw hit point, so curved surfaces snap too. The per-facet
   candidate list is cached and rebuilt only when the volume/facet changes.
-- **Two lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
+- **Markers.** While Alt is held the candidate points of that face are drawn as spheres, the active one
+  larger and white, so the snap is visible instead of implied. `ObjectSnap::Markers` builds one merged
+  mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
+  `[0.3, 1.5]` mm, and the same per-kind colours the Holes tool uses (`GLGizmoHoles::build_snap_markers`
+  is the reference). `Markers::render` runs with the depth test off so the spheres read through the
+  object they belong to. `GLCanvas3D` clears them on every mouse event, sets them in the Alt branch, and
+  clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag branch, so without that
+  they would linger). The draw call sits next to `_render_snapdrag_indicator`.
+- **Three lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
   match `Camera.hpp`; MSVC mangles a `class` forward declaration differently (`AEBVCamera` vs
   `AEBUCamera`) and the mismatch is a permanent LNK2001/LNK2019 that survives every clean rebuild.
   (b) The screen cursor is `Point` (`Vec2<coord_t>`), so the `Vec2d` argument needs `pos.cast<double>()`.
+  (c) `Slic3r::GUI` is a *sibling* of `Slic3r::OrcaExt::Gui`, not an enclosing namespace, so OrcaExt code
+  must qualify everything from it: `GUI::GLModel`, `GUI::wxGetApp()`. But `GLShaderProgram` lives in
+  `Slic3r` itself and `ColorRGBA` too, so those stay unqualified. Getting this wrong is only a compile
+  error, not a linker one.
 - **Verification.** Regression suites `[EdgeProfiles],[HoleShapes],[HoleDetector],[HoleStandards],
   [CutUtils]` = 546 assertions in 61 cases, all passing (this feature adds no libslic3r geometry, so
   those suites are unchanged). The live gesture must be tested by the user: MCP cannot hold Alt. Manual
