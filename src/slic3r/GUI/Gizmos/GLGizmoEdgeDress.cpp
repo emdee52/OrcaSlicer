@@ -43,6 +43,14 @@ constexpr double EDGE_SIZE_MAX = 3.0;
 // most a wall thickness behind, so this separates the two without needing a depth buffer read.
 constexpr double EDGE_DEPTH_TOL = 0.5;
 
+// A boundary that bends by less than this at both ends is a tessellated curve, not a straight edge.
+constexpr double EDGE_CURVE_DEG = 20.;
+
+// Cosines of the smallest crease that counts as an edge at all. A pair of faces closer to coplanar
+// than this is a tessellation diagonal of a flat face or a seam of a smooth surface: dressing it
+// would be dressing noise.
+constexpr double EDGE_MIN_CREASE_DOT = 0.9659; // cos(15 degrees)
+
 // Feature volumes are named <prefix>#<id>; the id is matched by prefix, like the hole features.
 std::string feature_name(const char *prefix, int idx)
 {
@@ -104,16 +112,19 @@ double point_segment_distance(const Vec2d &p, const Vec2d &a, const Vec2d &b, do
 // Grow a mesh-edge segment (a, b) with the adjacent faces face/other into the full geometric edge:
 // a long edge is normally tessellated into many collinear mesh segments, and each of them must be
 // part of the same chamfer. The walk stops where the adjacent face normals change or the mesh turns
-// a corner. Returns false for a coplanar crease (the tessellation diagonal of a flat face), which is
-// not an edge that can be dressed.
+// a corner. `turn_a` / `turn_b` report, in degrees, how the boundary continues past either end when
+// it keeps the same pair of faces and only bends: a small value is the tell-tale of a tessellated
+// curve, where the edge is one segment of a round rim rather than a straight edge of its own.
+// Returns false for a coplanar crease (the tessellation diagonal of a flat face), which is not an
+// edge that can be dressed.
 bool extend_feature_edge(const indexed_triangle_set &its, const std::vector<std::vector<int>> &vertex_faces,
                          const std::vector<Vec3f> &normals, int a, int b, int face, int other, int &out_a,
-                         int &out_b, Vec3d &out_na, Vec3d &out_nb)
+                         int &out_b, Vec3d &out_na, Vec3d &out_nb, double &turn_a, double &turn_b)
 {
     const Vec3d na = normals[face].cast<double>();
     const Vec3d nb = normals[other].cast<double>();
-    if (na.dot(nb) > 1. - 1e-5)
-        return false; // flat crease
+    if (na.dot(nb) > EDGE_MIN_CREASE_DOT)
+        return false; // coplanar: a flat face's diagonal, or a seam of a smooth surface
 
     auto faces_of_edge = [&](int x, int y) {
         std::vector<int> fs;
@@ -160,6 +171,36 @@ bool extend_feature_edge(const indexed_triangle_set &its, const std::vector<std:
         }
         return cur;
     };
+    // The boundary keeps going past `end` while carrying the same two faces, but only bends. `in` is
+    // the direction the run travels as it reaches `end`. Face matching is loose here on purpose: on
+    // a smooth surface the next segment's faces are a few degrees off, and that is exactly the case
+    // worth reporting.
+    auto bend = [&](int end, const Vec3d &in) {
+        constexpr double LOOSE = 0.9397; // cos(20 degrees)
+        double           best  = 0.;
+        for (int g : vertex_faces[size_t(end)]) {
+            for (int k = 0; k < 3; ++k) {
+                const int w = its.indices[g](k);
+                if (w == end)
+                    continue;
+                const Vec3d out = (its.vertices[size_t(w)].cast<double>() - its.vertices[size_t(end)].cast<double>()).normalized();
+                if (out.dot(in) <= 0.)
+                    continue; // that edge goes back down the run, not onwards
+                const std::vector<int> fs = faces_of_edge(end, w);
+                if (fs.size() != 2)
+                    continue;
+                const Vec3d f0 = normals[fs[0]].cast<double>();
+                const Vec3d f1 = normals[fs[1]].cast<double>();
+                const bool  same = (f0.dot(na) > LOOSE && f1.dot(nb) > LOOSE) || (f0.dot(nb) > LOOSE && f1.dot(na) > LOOSE);
+                if (!same)
+                    continue;
+                const double turn = std::acos(std::clamp(in.dot(out), -1., 1.)) * 180. / PI;
+                if (best == 0. || turn < best)
+                    best = turn;
+            }
+        }
+        return best;
+    };
 
     const int a2 = walk(a, b);
     const int b2 = walk(b, a);
@@ -169,6 +210,11 @@ bool extend_feature_edge(const indexed_triangle_set &its, const std::vector<std:
     out_b  = b2;
     out_na = na;
     out_nb = nb;
+    // Both ends of the run are known, so the direction of travel is unambiguous even when the run
+    // is a single mesh segment (a2 == a and b2 == b).
+    const Vec3d along = (its.vertices[size_t(a2)].cast<double>() - its.vertices[size_t(b2)].cast<double>()).normalized();
+    turn_a = bend(a2, along);
+    turn_b = bend(b2, -along);
     return true;
 }
 
@@ -425,8 +471,14 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
 
             int   ea, eb;
             Vec3d na, nb;
-            if (!extend_feature_edge(its, vertex_faces, normals, a, b, int(f), other, ea, eb, na, nb))
+            double ta = 0., tb = 0.;
+            if (!extend_feature_edge(its, vertex_faces, normals, a, b, int(f), other, ea, eb, na, nb, ta, tb))
                 continue; // coplanar crease
+            // A run that only bends at both ends is a segment of a round rim, not an edge of its
+            // own: it is what whole-rim mode is for, and offering the segments here would fight for
+            // the cursor with each other and with every straight edge nearby.
+            if (ta > 0. && ta < EDGE_CURVE_DEG && tb > 0. && tb < EDGE_CURVE_DEG)
+                continue;
             if (!seen_full.insert({ std::min(ea, eb), std::max(ea, eb) }).second)
                 continue;
 
@@ -815,6 +867,13 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     float size = float(m_size);
     if (m_imgui->bbl_slider_float_style("##edge_size", &size, float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", 0.05f, true))
         set_size(size);
+    ImGui::PopItemWidth();
+    // A field next to the slider, so an exact size can be typed instead of dragged.
+    ImGui::SameLine();
+    ImGui::PushItemWidth(m_imgui->scaled(4.5f));
+    float typed = float(m_size);
+    if (ImGui::InputFloat("##edge_size_in", &typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+        set_size(typed);
     ImGui::PopItemWidth();
 
     if (m_imgui->button(m_desc.at("apply")))

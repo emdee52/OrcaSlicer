@@ -171,6 +171,25 @@ TEST_CASE("A loop chamfer follows a square face outline", "[EdgeProfiles]")
     CHECK_THAT(bb.max.x(), WithinAbs(10., 1e-3));
 }
 
+TEST_CASE("A piece of a curved surface is not a rim", "[EdgeProfiles]")
+{
+    // A face of the cylinder wall is coplanar only with the rest of its own quad, and its outline
+    // runs along the wall, where the next face is a few degrees away. Dressing such a boundary
+    // would sweep a section around a sliver of a smooth surface, so no loop may be offered. The
+    // top face, whose outline really is a rim, is still offered.
+    const indexed_triangle_set   cyl     = its_make_cylinder(5., 10., 2. * PI / 64.);
+    const std::vector<Vec3f>     normals = its_face_normals(cyl);
+    int                          walls   = 0;
+    for (size_t f = 0; f < cyl.indices.size(); ++f) {
+        if (std::abs(normals[f].z()) > 0.1f)
+            continue;
+        ++walls;
+        CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), int(f)).empty());
+    }
+    CHECK(walls > 0);
+    CHECK_FALSE(its_face_patch_loops(cyl, Transform3d::Identity(), top_face(cyl)).empty());
+}
+
 TEST_CASE("Loop dress rejects degenerate input", "[EdgeProfiles]")
 {
     const indexed_triangle_set cyl = its_make_cylinder(5., 10., 2. * PI / 32.);

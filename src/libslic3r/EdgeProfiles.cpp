@@ -7,6 +7,11 @@ namespace Slic3r {
 
 namespace {
 
+// Smallest crease, as the sine of the dihedral angle between the patch and the face across a
+// boundary run, that still counts as a real rim. Below this the two faces are near coplanar, which
+// means the run is an interior edge of a smooth surface rather than the outline of a face.
+constexpr double MIN_CREASE_SIN = 0.2588; // 15 degrees
+
 double profile_signed_area(const std::vector<Vec2d> &pts)
 {
     double a = 0.;
@@ -267,6 +272,13 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
             const Vec3d dir = e.normalized();
             const Vec3d n_a = to_world_normal(normals[size_t(step_patch[i])]);
             const Vec3d n_b = to_world_normal(normals[size_t(step_outside[i])]);
+            // A run whose neighbouring face is nearly coplanar with the patch is not a rim at all:
+            // it is an interior edge of a tessellated curved surface, such as one segment of a
+            // cylinder wall. Sweeping such a boundary gives a nonsense solid, so refuse the loop.
+            if (std::fabs(dir.cross(n_a).normalized().dot(n_b)) < MIN_CREASE_SIN) {
+                ok = false;
+                break;
+            }
             Vec3d u, vv;
             if (!face_inward_dir(dir, n_a, n_b, u) || !face_inward_dir(dir, n_b, n_a, vv)) {
                 ok = false;
