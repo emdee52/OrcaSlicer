@@ -1033,6 +1033,13 @@ bool GLGizmosManager::on_key(wxKeyEvent& evt)
         {
             processed = true;
         }
+        else if (m_current == Holes && keyCode == WXK_ALT)
+        {
+            // Swallow the Alt press while placing on a face: an unhandled Alt tap arms the menu bar
+            // and the canvas stops receiving mouse events, which reads as the placement freezing.
+            GLGizmoHoles* holes = dynamic_cast<GLGizmoHoles*>(get_current());
+            processed = holes != nullptr && holes->place_face_mode();
+        }
         else if (m_current == Cut)
         {
             auto do_move = [this, &processed](double delta_z) {

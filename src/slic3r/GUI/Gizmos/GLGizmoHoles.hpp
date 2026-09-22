@@ -213,10 +213,13 @@ private:
     int                  m_hover_face_facet{ -1 };
     Vec3d                m_last_face_hit{ Vec3d::Constant(1e30) }; // object space, to detect movement
     FaceRegionCache      m_face_cache;
-    // The face the Alt snap session is gated to, chosen on the first Alt frame; nullptr when no
-    // session is running. Also the key of the cached candidate list.
+    // The coplanar face the Alt snap session is gated to, chosen on the first Alt frame; nullptr
+    // when no session is running. `m_snap_region` is its facets and the key of the cached candidate
+    // list: a flat face is split into several triangles, so the raycast triangle under the cursor
+    // is not a stable key while the cursor crosses the face.
     const ModelVolume*   m_snap_mv{ nullptr };
     int                  m_snap_facet{ -1 };
+    std::vector<int>     m_snap_region;
     std::vector<FaceSnapPoint> m_snap_points;
     FaceSnapKind         m_hover_snap{ FaceSnapKind::None };
     bool                 m_alt_held{ false };
@@ -225,7 +228,6 @@ private:
     double               m_snap_lock_tol{ 0.0 };
     bool                 m_snap_locked{ false };
     const ModelVolume*   m_snap_lock_mv{ nullptr };
-    int                  m_snap_lock_facet{ -1 };
     double               m_snap_radius{ 0.0 };
     GLModel              m_snap_markers[5]; // indexed by int(FaceSnapKind) - 1
     GLModel              m_snap_marker_active;

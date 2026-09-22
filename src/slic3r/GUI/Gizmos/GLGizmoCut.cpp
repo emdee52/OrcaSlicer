@@ -2950,7 +2950,7 @@ bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolu
 }
 
 // Alt-held snapping of the cut-plane centre: the plane - and the shaped cut, which is built from it -
-// sticks to a snap coordinate of the face the cursor was on when Alt was pressed. Dragging onto
+// sticks to a snap coordinate of the flat face the cursor was on when Alt was pressed. Dragging onto
 // another face does not re-target; a fresh Alt press picks the face under the cursor. Without Alt
 // `center` is returned untouched, so every existing path stays exactly as it was.
 Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
@@ -2959,6 +2959,7 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
         m_snap_locked       = false;
         m_snap_points_mv    = nullptr; // a fresh Alt press picks a face under the cursor
         m_snap_points_facet = -1;
+        m_snap_points_region.clear();
         return center;
     }
 
@@ -2971,9 +2972,11 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
         return center;
     }
 
-    // Gated to the face picked when Alt was pressed: moving the cursor onto another face must not
-    // re-target the snap.
-    if (m_snap_points_mv != nullptr && (mv != m_snap_points_mv || int(facet) != m_snap_points_facet)) {
+    // Gated to the flat face picked when Alt was pressed: moving the cursor onto another face must
+    // not re-target the snap. The gate is the coplanar region, not the raycast triangle, so crossing
+    // between the triangles of one face keeps snapping to all of its coordinates.
+    if (m_snap_points_mv != nullptr &&
+        (mv != m_snap_points_mv || !region_has_facet(m_snap_points_region, int(facet)))) {
         m_snap_locked = false;
         return center;
     }
@@ -2985,18 +2988,21 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
     };
 
     // Hysteresis: keep the target the cursor was locked to until it moves well away from it.
-    if (m_snap_locked && m_snap_lock_mv == mv && m_snap_lock_facet == int(facet)) {
+    if (m_snap_locked && m_snap_lock_mv == mv) {
         const Vec2d locked_px = project(m_snap_lock.pos);
         if (locked_px.allFinite() && (locked_px - mouse).norm() <= 1.25 * m_snap_lock_tol)
             return to_world * m_snap_lock.pos;
     }
 
-    // The candidates depend only on the face, so a drag held over one facet does not re-walk it.
-    if (mv != m_snap_points_mv || int(facet) != m_snap_points_facet) {
+    // The candidates depend only on the flat face, so a drag held over one of its triangles does not
+    // re-walk it.
+    if (mv != m_snap_points_mv ||
+        (mv != nullptr && !region_has_facet(m_snap_points_region, int(facet)))) {
         m_snap_points_mv     = mv;
         m_snap_points_volume = volume;
         m_snap_points_facet  = int(facet);
-        m_snap_points        = build_face_snap_points(mv, coplanar_region(mv, facet));
+        m_snap_points_region = coplanar_region(mv, facet);
+        m_snap_points        = build_face_snap_points(mv, m_snap_points_region);
         build_snap_markers();
     }
     if (m_snap_points.empty()) {
@@ -3011,12 +3017,11 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
         return center;
     }
 
-    const bool target_changed = !m_snap_locked || (m_snap_lock.pos - best.pos).norm() > 1e-9;
+    const bool target_changed = !m_snap_locked || m_snap_lock_mv != mv || (m_snap_lock.pos - best.pos).norm() > 1e-9;
     m_snap_lock       = best;
     m_snap_lock_tol   = tol;
     m_snap_locked     = true;
     m_snap_lock_mv    = mv;
-    m_snap_lock_facet = int(facet);
     if (target_changed)
         set_active_snap_marker(best);
     return to_world * best.pos;

@@ -697,6 +697,7 @@ void GLGizmoHoles::clear_snap_session()
     m_snap_locked       = false;
     m_snap_mv           = nullptr;
     m_snap_facet        = -1;
+    m_snap_region.clear();
     m_hover_snap        = FaceSnapKind::None;
     m_snap_marker_active.reset();
     m_last_face_hit     = Vec3d::Constant(1e30);
@@ -918,10 +919,11 @@ void GLGizmoHoles::render_face_highlight()
 // Candidates of the hovered face, rebuilt only when the face changes.
 const std::vector<FaceSnapPoint> &GLGizmoHoles::face_snap_points(const ModelVolume *mv, size_t facet)
 {
-    if (mv != m_snap_mv || int(facet) != m_snap_facet) {
-        m_snap_mv     = mv;
-        m_snap_facet  = int(facet);
-        m_snap_points = build_face_snap_points(mv, coplanar_region(mv, facet, m_face_cache));
+    if (mv != m_snap_mv || (mv != nullptr && !region_has_facet(m_snap_region, int(facet)))) {
+        m_snap_mv      = mv;
+        m_snap_facet   = int(facet);
+        m_snap_region  = coplanar_region(mv, facet, m_face_cache);
+        m_snap_points  = build_face_snap_points(mv, m_snap_region);
         build_snap_markers();
     }
     return m_snap_points;
@@ -1017,9 +1019,11 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
         return hit_obj;
     }
 
-    // Gated to the face the cursor was on when Alt was pressed: the hole keeps following the cursor
-    // onto another face, it just never snaps to coordinates of that face.
-    if (m_snap_mv != nullptr && (mv != m_snap_mv || int(facet) != m_snap_facet)) {
+    // Gated to the coplanar face the cursor was on when Alt was pressed: the hole keeps following
+    // the cursor onto another face, it just never snaps to coordinates of that face. The gate is the
+    // whole flat face and not the raycast triangle, so crossing between the triangles of one face
+    // keeps snapping to all of its coordinates.
+    if (m_snap_mv != nullptr && (mv != m_snap_mv || !region_has_facet(m_snap_region, int(facet)))) {
         m_snap_locked = false;
         m_snap_marker_active.reset();
         return hit_obj;
@@ -1039,7 +1043,7 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
 
     // Magnetic: hold the current coordinate until the cursor leaves its stick distance by a margin,
     // so neighbouring candidates do not flicker into each other at the boundary.
-    if (m_snap_locked && m_snap_lock_mv == mv && m_snap_lock_facet == int(facet)) {
+    if (m_snap_locked && m_snap_lock_mv == mv) {
         const Vec2d locked_px = project(m_snap_lock.pos);
         if (locked_px.allFinite() && (locked_px - screen_pos).norm() <= 1.25 * m_snap_lock_tol) {
             kind = m_snap_lock.kind;
@@ -1055,13 +1059,11 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
         return hit_obj;
     }
 
-    const bool target_changed = !m_snap_locked || m_snap_lock_mv != mv || m_snap_lock_facet != int(facet) ||
-                                (m_snap_lock.pos - best.pos).norm() > 1e-9;
-    m_snap_lock       = best;
-    m_snap_lock_tol   = tol;
-    m_snap_locked     = true;
-    m_snap_lock_mv    = mv;
-    m_snap_lock_facet = int(facet);
+    const bool target_changed = !m_snap_locked || m_snap_lock_mv != mv || (m_snap_lock.pos - best.pos).norm() > 1e-9;
+    m_snap_lock    = best;
+    m_snap_lock_tol = tol;
+    m_snap_locked   = true;
+    m_snap_lock_mv  = mv;
     if (target_changed)
         set_active_snap_marker(best);
 

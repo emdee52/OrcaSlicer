@@ -302,6 +302,9 @@ struct FaceRegionCache
 // plane grouping), reached by edge adjacency. Fills `cache` if needed.
 std::vector<int> coplanar_region(const ModelVolume* mv, size_t facet, FaceRegionCache& cache);
 
+// Whether `facet` is one of the facets of `region`.
+bool region_has_facet(const std::vector<int>& region, int facet);
+
 // Triangle patch covering `region`, each facet lifted `lift` along its own normal to avoid z-fighting.
 indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vector<int>& region,
                                           const FaceRegionCache& cache, float lift);
