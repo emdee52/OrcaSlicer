@@ -171,23 +171,24 @@ TEST_CASE("A loop chamfer follows a square face outline", "[EdgeProfiles]")
     CHECK_THAT(bb.max.x(), WithinAbs(10., 1e-3));
 }
 
-TEST_CASE("A piece of a curved surface is not a rim", "[EdgeProfiles]")
+TEST_CASE("A curved surface is one region bounded by its rims", "[EdgeProfiles]")
 {
-    // A face of the cylinder wall is coplanar only with the rest of its own quad, and its outline
-    // runs along the wall, where the next face is a few degrees away. Dressing such a boundary
-    // would sweep a section around a sliver of a smooth surface, so no loop may be offered. The
-    // top face, whose outline really is a rim, is still offered.
-    const indexed_triangle_set   cyl     = its_make_cylinder(5., 10., 2. * PI / 64.);
-    const std::vector<Vec3f>     normals = its_face_normals(cyl);
-    int                          walls   = 0;
+    // Faces that meet across a crease shallower than the join threshold belong to the same region,
+    // so the wall of a cylinder is one region and its boundary is the rims of the two caps. A cursor
+    // on the wall therefore still finds a rim, while a loop that ran along the inside of the smooth
+    // wall - the sliver that used to be offered there - cannot come out of the search any more.
+    const indexed_triangle_set cyl     = its_make_cylinder(5., 10., 2. * PI / 64.);
+    const std::vector<Vec3f>   normals = its_face_normals(cyl);
+    const int                  top     = top_face(cyl);
+    int                        walls   = 0;
     for (size_t f = 0; f < cyl.indices.size(); ++f) {
         if (std::abs(normals[f].z()) > 0.1f)
             continue;
         ++walls;
-        CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), int(f)).empty());
+        CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), int(f)).size() == 2);
     }
     CHECK(walls > 0);
-    CHECK_FALSE(its_face_patch_loops(cyl, Transform3d::Identity(), top_face(cyl)).empty());
+    CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), top).size() == 1);
 }
 
 TEST_CASE("Loop dress rejects degenerate input", "[EdgeProfiles]")
@@ -205,12 +206,12 @@ TEST_CASE("Loop dress rejects degenerate input", "[EdgeProfiles]")
     CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), int(cyl.indices.size())).empty());
 }
 
-TEST_CASE("A rim on a coarsely faceted surface is found by the tolerance ladder", "[EdgeProfiles]")
+TEST_CASE("A rim is found from the region that carries it", "[EdgeProfiles]")
 {
-    // The wall of a cylinder is a smooth band: a patch on it, grown at the tight tolerance that
-    // suits a flat face, carries no loop. Growing the same patch across the facet steps of the wall
-    // reaches the rims of the caps, which is how a rim cut into a beveled or coarsely faceted
-    // surface is offered at all.
+    // The wall of a cylinder and the cap are two regions, split by the rim's own sharp crease, so
+    // each carries its rim and the search does not have to ring out to a neighbour to find one. A
+    // rim cut into a beveled or coarsely faceted surface is reached the same way: the join threshold
+    // keeps the shallow facet steps inside one region instead of letting the rim walk along them.
     const indexed_triangle_set cyl       = its_make_cylinder(5., 10., 2. * PI / 64.);
     const std::vector<Vec3f>   normals   = its_face_normals(cyl);
     const std::vector<Vec3i32> neighbors = its_face_neighbors(cyl);
@@ -227,10 +228,9 @@ TEST_CASE("A rim on a coarsely faceted surface is found by the tolerance ladder"
     }
     REQUIRE(wall >= 0);
 
-    CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), wall).empty());
-    const std::vector<float> strict_only{ 1e-3f };
-    CHECK(its_face_patch_loops_around(cyl, Transform3d::Identity(), wall, 0, strict_only).empty());
-    CHECK_FALSE(its_face_patch_loops_around(cyl, Transform3d::Identity(), wall, 0).empty());
+    CHECK_FALSE(its_face_patch_loops(cyl, Transform3d::Identity(), wall).empty());
+    CHECK_FALSE(its_face_patch_loops(cyl, Transform3d::Identity(), top).empty());
     CHECK_FALSE(its_face_patch_loops_around(cyl, Transform3d::Identity(), top, 0).empty());
+    CHECK(its_face_patch_loops_around(cyl, Transform3d::Identity(), -1, 0).empty());
 }
 

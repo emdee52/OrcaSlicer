@@ -2,9 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <set>
-#include <string>
 
 namespace Slic3r {
 
@@ -14,6 +11,11 @@ namespace {
 // boundary run, that still counts as a real rim. Below this the two faces are near coplanar, which
 // means the run is an interior edge of a smooth surface rather than the outline of a face.
 constexpr double MIN_CREASE_SIN = 0.2588; // 15 degrees
+
+// Creases shallower than this are treated as the same surface, so a patch is one region of the model
+// that only sharper creases interrupt, and the loops it is bounded by are always rims. Without it a
+// rim that crosses a round-over in small steps comes out as a staircase that wanders off the rim.
+constexpr double MAX_JOIN_DOT = 0.9063; // cos(25 degrees)
 
 double profile_signed_area(const std::vector<Vec2d> &pts)
 {
@@ -140,8 +142,7 @@ bool face_has_vertex(const indexed_triangle_set &its, int face, int vertex)
 } // namespace
 
 std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_set &its,
-                                                         const Transform3d &trafo, int seed_face,
-                                                         float normal_tol)
+                                                         const Transform3d &trafo, int seed_face)
 {
     std::vector<std::vector<LoopFrame>> loops;
     const int face_count = int(its.indices.size());
@@ -162,7 +163,7 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
             const int g = neighbors[size_t(f)](k);
             if (g < 0 || in_patch[size_t(g)])
                 continue;
-            if ((normals[size_t(g)] - normals[size_t(f)]).cwiseAbs().maxCoeff() <= normal_tol) {
+            if (double(normals[size_t(f)].dot(normals[size_t(g)])) >= MAX_JOIN_DOT) {
                 in_patch[size_t(g)] = 1;
                 patch.push_back(g);
             }
@@ -318,59 +319,12 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
     return loops;
 }
 
-// Identity of a loop that does not depend on the vertex the chain happened to start at, so that
-// growing the patch at several tolerances does not report the same rim once per tolerance.
-static std::string loop_key(const std::vector<LoopFrame> &loop)
-{
-    std::vector<std::string> segments;
-    segments.reserve(loop.size());
-    char buf[160];
-    for (const LoopFrame &f : loop) {
-        std::snprintf(buf, sizeof(buf), "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f", f.p.x(), f.p.y(), f.p.z(), f.q.x(),
-                      f.q.y(), f.q.z());
-        std::string forward(buf);
-        std::snprintf(buf, sizeof(buf), "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f", f.q.x(), f.q.y(), f.q.z(), f.p.x(),
-                      f.p.y(), f.p.z());
-        std::string backward(buf);
-        segments.push_back(forward < backward ? forward : backward); // segment without its direction
-    }
-    std::sort(segments.begin(), segments.end());
-    std::string key;
-    for (const std::string &s : segments) {
-        key += s;
-        key += ';';
-    }
-    return key;
-}
-
 std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_triangle_set &its,
                                                                 const Transform3d &trafo,
-                                                                int seed_face, int max_rings,
-                                                                const std::vector<float> &normal_tols)
+                                                                int seed_face, int max_rings)
 {
-    std::vector<std::vector<LoopFrame>> loops;
-    if (seed_face < 0 || seed_face >= int(its.indices.size()))
-        return loops;
-
-    // Collect every distinct loop of the patch under `facet`, trying the tolerances in order. All of
-    // them are kept, not just the first that yields one: a coarse tolerance can reach a neighbouring
-    // rim before it reaches the one the cursor is on, and the caller picks by proximity. Returns
-    // true once the patch has yielded a loop at all.
-    std::set<std::string> seen;
-    const auto             collect = [&](const int facet) {
-        bool any = false;
-        for (const float tol : normal_tols) {
-            for (std::vector<LoopFrame> loop : its_face_patch_loops(its, trafo, facet, tol)) {
-                if (loop.size() < 3 || !seen.insert(loop_key(loop)).second)
-                    continue;
-                loops.push_back(std::move(loop));
-                any = true;
-            }
-        }
-        return any;
-    };
-
-    if (collect(seed_face) || max_rings <= 0)
+    std::vector<std::vector<LoopFrame>> loops = its_face_patch_loops(its, trafo, seed_face);
+    if (!loops.empty() || max_rings <= 0)
         return loops;
 
     // A rim can border a smooth band, and a cursor on that band lands on a patch with no rim of its
@@ -395,8 +349,13 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_tr
             }
         }
         bool any = false;
-        for (const int n : next)
-            any |= collect(n);
+        for (const int n : next) {
+            std::vector<std::vector<LoopFrame>> found = its_face_patch_loops(its, trafo, n);
+            for (std::vector<LoopFrame> &loop : found) {
+                loops.push_back(std::move(loop));
+                any = true;
+            }
+        }
         if (any)
             return loops;
         frontier.swap(next);
