@@ -177,12 +177,19 @@ std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, con
         centroid = origin + px * (cx / (6. * signed_area)) + py * (cy / (6. * signed_area));
     }
 
-    out.reserve(loop.size() * 2 + 1);
+    out.reserve(loop.size() * 5 + 1);
     for (int vi : loop)
         out.push_back({ FaceSnapKind::Corner, vertex(vi) });
     for (size_t j = 0; j < loop.size(); ++j)
         out.push_back({ FaceSnapKind::EdgeMid, 0.5 * (vertex(loop[j]) + vertex(loop[(j + 1) % loop.size()])) });
     out.push_back({ FaceSnapKind::FaceCenter, centroid });
+    for (size_t j = 0; j < loop.size(); ++j) {
+        const Vec3d a = vertex(loop[j]), b = vertex(loop[(j + 1) % loop.size()]);
+        out.push_back({ FaceSnapKind::EdgeQuarter, (0.75 * a + 0.25 * b) });
+        out.push_back({ FaceSnapKind::EdgeQuarter, (0.25 * a + 0.75 * b) });
+    }
+    for (int vi : loop)
+        out.push_back({ FaceSnapKind::FaceQuarter, 0.5 * (centroid + vertex(vi)) });
     return out;
 }
 

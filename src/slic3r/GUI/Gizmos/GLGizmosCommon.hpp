@@ -313,7 +313,8 @@ bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection
                          size_t& facet, Vec3d& hit_world);
 
 
-// Snap coordinates of the coplanar `region` of `mv`: corners, edge midpoints and the face centre.
+// Snap coordinates of the coplanar `region` of `mv`: corners, edge midpoints, edge quarters, face
+// quarters and the face centre.
 // The geometry lives in libslic3r/CutUtils; this is a thin wrapper over the volume's mesh.
 std::vector<FaceSnapPoint> build_face_snap_points(const ModelVolume* mv, const std::vector<int>& region);
 

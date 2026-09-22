@@ -24,7 +24,7 @@ Vec3d facet_normal_in_world(const indexed_triangle_set& its, int facet_idx, cons
 
 // Coordinates on a picked flat face that the cursor can snap to. Ordered by pick priority: an
 // earlier kind wins a tie at the same screen distance.
-enum class FaceSnapKind : unsigned char { None = 0, Corner, EdgeMid, FaceCenter };
+enum class FaceSnapKind : unsigned char { None = 0, Corner, EdgeMid, FaceCenter, EdgeQuarter, FaceQuarter };
 
 struct FaceSnapPoint
 {
@@ -36,9 +36,11 @@ struct FaceSnapPoint
 // axes.
 void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis);
 
-// Corners and edge midpoints of the outer boundary loop of `region`, plus the loop's area centroid.
-// The region must be planar enough to trust (see the check in the implementation); returns an empty
-// vector otherwise, so the caller can fall back to the raw raycast hit.
+// Corners, edge midpoints, edge quarters and face quarters of the outer boundary loop of `region`,
+// plus the loop's area centroid. An edge quarter sits midway between a corner and an edge midpoint;
+// a face quarter midway between the centroid and a corner. The region must be planar enough to trust
+// (see the check in the implementation); returns an empty vector otherwise, so the caller can fall
+// back to the raw raycast hit.
 std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region);
 
 // Nearest candidate to `screen_pos`, measured through `project` (mesh space to device pixels).

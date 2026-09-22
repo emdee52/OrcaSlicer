@@ -376,14 +376,15 @@ TEST_CASE("A depth-limited shaped cut removes only a pocket", "[CutUtils]")
     CHECK_THAT(inside + outside, WithinRel(8000., 1e-3));
 }
 
-TEST_CASE("Face snap points cover the corners, edge midpoints and centre of a square face", "[CutUtils]")
+TEST_CASE("Face snap points cover the corners, edge midpoints, quarters and centre of a square face",
+          "[CutUtils]")
 {
     indexed_triangle_set square;
     square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(10.f, 10.f, 0.f), Vec3f(0.f, 10.f, 0.f) };
     square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
 
     const std::vector<FaceSnapPoint> pts = face_snap_points(square, { 0, 1 });
-    REQUIRE(pts.size() == 9);
+    REQUIRE(pts.size() == 21);
 
     const auto count_of = [&pts](FaceSnapKind kind) {
         return std::count_if(pts.begin(), pts.end(), [kind](const FaceSnapPoint &p) { return p.kind == kind; });
@@ -391,6 +392,13 @@ TEST_CASE("Face snap points cover the corners, edge midpoints and centre of a sq
     CHECK(count_of(FaceSnapKind::Corner) == 4);
     CHECK(count_of(FaceSnapKind::EdgeMid) == 4);
     CHECK(count_of(FaceSnapKind::FaceCenter) == 1);
+    CHECK(count_of(FaceSnapKind::EdgeQuarter) == 8);
+    CHECK(count_of(FaceSnapKind::FaceQuarter) == 4);
+
+    // Emitted in pick-priority order, so the first kind of a tie wins in nearest_face_snap.
+    CHECK(std::is_sorted(pts.begin(), pts.end(), [](const FaceSnapPoint &a, const FaceSnapPoint &b) {
+        return int(a.kind) < int(b.kind);
+    }));
 
     const auto has_point = [&pts](const Vec3d &expected) {
         return std::any_of(pts.begin(), pts.end(),
@@ -405,12 +413,31 @@ TEST_CASE("Face snap points cover the corners, edge midpoints and centre of a sq
     CHECK(has_point(Vec3d(5., 10., 0.)));
     CHECK(has_point(Vec3d(0., 5., 0.)));
     CHECK(has_point(Vec3d(5., 5., 0.)));
+    // Edge quarters, a quarter and three quarters along each edge.
+    CHECK(has_point(Vec3d(2.5, 0., 0.)));
+    CHECK(has_point(Vec3d(7.5, 0., 0.)));
+    CHECK(has_point(Vec3d(10., 2.5, 0.)));
+    CHECK(has_point(Vec3d(10., 7.5, 0.)));
+    CHECK(has_point(Vec3d(2.5, 10., 0.)));
+    CHECK(has_point(Vec3d(7.5, 10., 0.)));
+    CHECK(has_point(Vec3d(0., 7.5, 0.)));
+    CHECK(has_point(Vec3d(0., 2.5, 0.)));
+    // Face quarters, midway from the centre to each corner.
+    CHECK(has_point(Vec3d(2.5, 2.5, 0.)));
+    CHECK(has_point(Vec3d(7.5, 2.5, 0.)));
+    CHECK(has_point(Vec3d(7.5, 7.5, 0.)));
+    CHECK(has_point(Vec3d(2.5, 7.5, 0.)));
 
     CHECK(pts.front().kind == FaceSnapKind::Corner);
-    REQUIRE(pts.back().kind == FaceSnapKind::FaceCenter);
-    CHECK_THAT(pts.back().pos.x(), WithinAbs(5.0, 1e-9));
-    CHECK_THAT(pts.back().pos.y(), WithinAbs(5.0, 1e-9));
-    CHECK_THAT(pts.back().pos.z(), WithinAbs(0.0, 1e-9));
+    REQUIRE(pts.back().kind == FaceSnapKind::FaceQuarter);
+
+    const auto centre = std::find_if(pts.begin(), pts.end(), [](const FaceSnapPoint &p) {
+        return p.kind == FaceSnapKind::FaceCenter;
+    });
+    REQUIRE(centre != pts.end());
+    CHECK_THAT(centre->pos.x(), WithinAbs(5.0, 1e-9));
+    CHECK_THAT(centre->pos.y(), WithinAbs(5.0, 1e-9));
+    CHECK_THAT(centre->pos.z(), WithinAbs(0.0, 1e-9));
 }
 
 TEST_CASE("Face snap points are empty for a closed surface", "[CutUtils]")
@@ -445,17 +472,23 @@ TEST_CASE("Nearest face snap picks the closest candidate within tolerance", "[Cu
 
     CHECK(!nearest_face_snap(pts, project, Vec2d(30., 30.), best));
 
-    // Equidistant from a corner, two edge midpoints and the centre: the first kind emitted wins.
+    // The cursor sits exactly on a quarter, which is only a quarter's worth of a step from the
+    // coarser kinds, yet the quarter wins because it is the closest candidate.
     REQUIRE(nearest_face_snap(pts, project, Vec2d(2.5, 2.5), best));
-    CHECK(best.kind == FaceSnapKind::Corner);
+    CHECK(best.kind == FaceSnapKind::FaceQuarter);
+    CHECK_THAT((best.pos - Vec3d(2.5, 2.5, 0.)).norm(), WithinAbs(0.0, 1e-9));
+
+    REQUIRE(nearest_face_snap(pts, project, Vec2d(7.5, 0.2), best));
+    CHECK(best.kind == FaceSnapKind::EdgeQuarter);
+    CHECK_THAT((best.pos - Vec3d(7.5, 0., 0.)).norm(), WithinAbs(0.0, 1e-9));
 }
 
 TEST_CASE("Face snap tolerance grows with the spacing of the candidates and stays inside its bounds", "[CutUtils]")
 {
     const auto project = [](const Vec3d &p) { return Vec2d(p.x(), p.y()); };
 
-    // A face scaled by `side / 10` has its candidates `side / 2` pixels apart, so the stick distance
-    // is half that gap, bounded by the floor and the cap.
+    // A face scaled by `side / 10` has its candidates a fraction of `side` apart, so the stick
+    // distance is half the gap to the next candidate, bounded by the floor and the cap.
     const auto tolerance_for = [&project](double side) {
         const double u = side / 10.;
         indexed_triangle_set square;
@@ -480,8 +513,8 @@ TEST_CASE("Face snap tolerance grows with the spacing of the candidates and stay
     CHECK(mid < big);
     CHECK_THAT(big, WithinAbs(48.0, 1e-6));  // and is capped
 
-    // Half the distance from the cursor to the next candidate over.
-    CHECK_THAT(mid, WithinAbs(0.5 * (Vec2d(50., 50.) - Vec2d(52., 4.)).norm(), 1e-6));
+    // Half the distance from the cursor to the next candidate over, the edge quarter at 3/4.
+    CHECK_THAT(mid, WithinAbs(0.5 * (Vec2d(75., 0.) - Vec2d(52., 4.)).norm(), 1e-6));
 }
 
 TEST_CASE("A candidate beyond the stick distance is not snapped", "[CutUtils]")

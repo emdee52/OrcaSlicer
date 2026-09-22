@@ -461,13 +461,13 @@ snapped world point to `apply_plane_orientation` and `set_center`; the cut tool 
 the holes tool in object space.
 
 Alt is the modifier because the canvas already uses Ctrl for additive selection and Shift for
-rectangle selection. Edge quarters and face quarters are deliberately not part of this snap set yet,
-and the Measure tool does not snap.
+rectangle selection. The Measure tool does not snap. The candidate set started with corners, edge
+midpoints and the face centre; the quarters were added afterwards, in section 15.
 
 - **Verification**: the geometry is covered by `[CutUtils]` cases in `tests/libslic3r/test_cututils.cpp`
-  (corners, edge midpoints and centre of a square face; nothing for a closed cube; nearest candidate
-  within tolerance, including the priority tie-break). Manually, holding Alt over a square face
-  makes the ghost — or the cut plane centre — jump to the corner, the edge midpoint or the centre.
+  (corners, edge midpoints, quarters and centre of a square face; nothing for a closed cube; nearest
+  candidate within tolerance). Manually, holding Alt over a square face makes the ghost — or the cut
+  plane centre — jump to the nearest of those coordinates.
 
 ## 14. SNAP-2 / SNAP-3 — adaptive stick distance, snap markers and two follow-ups
 
@@ -484,8 +484,8 @@ neighbouring points while the cursor sits between them. The lock is dropped when
 pick fails or the face changes.
 
 **Snap markers.** While Alt is held, every candidate is drawn as a small sphere — one
-`its_make_sphere(radius, PI / 12.0)` per candidate, merged per kind with `its_merge` into
-`GLModel m_snap_markers[3]`, with the active target as a larger sphere on top. The radius is
+`its_make_sphere(radius, PI / 12.0)` per candidate, merged per kind with `its_merge` into one
+`GLModel` per `FaceSnapKind`, with the active target as a larger sphere on top. The radius is
 face-relative (1.2 % of the largest candidate-to-candidate distance), corners are magenta, edge
 midpoints teal and the face centre cyan, mirroring the sketch tool's inference hints. They are built
 once per hovered face, not per frame, and drawn with depth testing off because the surface and the
@@ -505,10 +505,39 @@ window expires; any successful hit resets the timer. In the Cut tool the markers
 Alt is held, not only while a face is being picked, so they also appear during a drag.
 
 - **Verification**: `[CutUtils]` covers tolerance growth with candidate spacing, both clamps, the
-  reject gate and the SNAP-1 cases — 106 assertions in 19 test cases. The builds producing
-  `build/src/Release/orca-slicer.exe` are clean.
-- **Branch state**: SNAP-2 is merged into `port/integration` (`99ecff2432`); SNAP-3 is on
-  `port/SNAP-3`, unmerged until the user has tested it (see section 0).
-- Still not implemented: edge quarters and face quarters as snap kinds, and snapping in the Measure
-  tool.
+  reject gate and the SNAP-1 cases. The builds producing `build/src/Release/orca-slicer.exe` are
+  clean.
+- **Branch state**: SNAP-2 is merged into `port/integration` (`99ecff2432`); SNAP-3 is merged into
+  `port/integration` (`2e265a0d88`); SNAP-4 is on `port/SNAP-4`, unmerged until the user has tested
+  it (see section 0).
+- Still not implemented: snapping in the Measure tool.
+
+## 15. SNAP-4 — edge quarters and face quarters
+
+**Two more kinds.** `FaceSnapKind` gained `EdgeQuarter` and `FaceQuarter` after `FaceCenter`, so the
+existing values (and the marker colours indexed by them) are unchanged. An edge quarter sits at a
+quarter and three quarters along a boundary edge, that is midway between a corner and the edge
+midpoint; a face quarter sits midway between the face centre and a corner. On a square face the
+candidate list grows from 9 to 21: 4 corners, 4 edge midpoints, 8 edge quarters, 4 face quarters and
+the centre.
+
+**Priority is unchanged and still by emission order.** `face_snap_points` emits corners, edge
+midpoints, the centre, then the edge quarters and finally the face quarters — matching the enum
+order — and `nearest_face_snap` only replaces the winner with a strictly closer candidate, so a tie
+resolves to the higher-priority kind. Markers are drawn from one `GLModel` per kind, so the two new
+kinds simply widen `m_snap_markers[3]` to `[5]` and `KIND_COLOR[3]` to `[5]`: edge quarters are
+green, face quarters pale blue.
+
+**Effect on the stick distance.** Quarters sit between the old candidates, so the gap to the next
+candidate is smaller and the adaptive tolerance tightens on the same face; the `[8, 48]` px clamp is
+unchanged. This is the intended behaviour — a denser set of targets sticks from closer.
+
+- **Verification**: `[CutUtils]` now covers the 21-point square face with the count and position of
+  every kind, the emission order, a pick that lands exactly on an edge quarter and on a face quarter,
+  and the tightened tolerance. 126 assertions in 19 test cases pass.
+- **Branch state**: on `port/SNAP-4`, unmerged until the user has tested it (see section 0).
+- Known ceiling: a curved face whose boundary is approximated by many edges (a drilled hole rim, a
+  high-poly cylinder cap) emits two edge quarters and a face quarter per edge, so a 64-gon rim gives
+  about 320 candidates. They are built once per hovered face while Alt is held, which is acceptable,
+  but a spacing threshold could trim them if a heavy scene ever shows it.
 
