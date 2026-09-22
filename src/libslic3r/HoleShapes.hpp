@@ -80,6 +80,17 @@ indexed_triangle_set its_make_rim_fillet(double hole_radius, double size, const 
 double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, const Vec3d &dir,
                           double margin = 0.5);
 
+// --- Cavity fill ------------------------------------------------------------------------------
+// A positive plug that fills a depression (engraving, watermark, pocket). Grows the facet region
+// geodesically from `seed_facet` (a face on the cavity floor or wall) out to `radius` around
+// `seed_point` (a point on that face, mesh space), then returns the convex hull of the region's
+// vertices. The hull lies inside the solid everywhere except across the concavity, so a positive
+// volume combined with the object fills the cavity without a boolean. Assumes a roughly convex or
+// flat outer surface; on a strongly concave surface the hull can add a small bump. Returns an empty
+// mesh when the region is too flat to enclose a volume (nothing to fill).
+indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
+                                      int seed_facet, double radius);
+
 } // namespace Slic3r
 
 #endif // libslic3r_HoleShapes_hpp_

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <queue>
+#include <vector>
 
 namespace Slic3r {
 
@@ -358,6 +360,74 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
         if (h.is_hit() && h.distance() > far)
             far = h.distance();
     return far > 0. ? far + std::max(0., margin) : 0.;
+}
+
+indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
+                                      int seed_facet, double radius)
+{
+    if (its.indices.empty() || seed_facet < 0 || seed_facet >= int(its.indices.size()) ||
+        radius <= 0. || !seed_point.allFinite())
+        return {};
+
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    const double               r2        = radius * radius;
+
+    std::vector<char> in_region(its.indices.size(), 0);
+    std::queue<int>   queue;
+    queue.push(seed_facet);
+    in_region[seed_facet] = 1;
+
+    // Geodesic growth: keep a facet when any of its vertices is within `radius` of the seed, and
+    // expand only through kept facets.
+    std::vector<int> region;
+    constexpr int    MAX_REGION = 200000;
+    while (!queue.empty() && int(region.size()) < MAX_REGION) {
+        const int f = queue.front();
+        queue.pop();
+
+        bool near = false;
+        for (int k = 0; k < 3 && !near; ++k) {
+            const Vec3f &v = its.vertices[its.indices[f](k)];
+            const Vec3d  d = Vec3d(v(0), v(1), v(2)) - seed_point;
+            near           = d.squaredNorm() <= r2;
+        }
+        if (!near)
+            continue;
+
+        region.push_back(f);
+        for (int k = 0; k < 3; ++k) {
+            const int g = neighbors[f](k);
+            if (g >= 0 && !in_region[g]) {
+                in_region[g] = 1;
+                queue.push(g);
+            }
+        }
+    }
+
+    if (region.size() < 4)
+        return {};
+
+    std::vector<char>           seen(its.vertices.size(), 0);
+    std::vector<Vec3f>          pts;
+    pts.reserve(region.size() * 3);
+    for (const int f : region)
+        for (int k = 0; k < 3; ++k) {
+            const int    vi = its.indices[f](k);
+            const Vec3f &v  = its.vertices[vi];
+            const Vec3d  d  = Vec3d(v(0), v(1), v(2)) - seed_point;
+            // Keep only the vertices inside the radius: a large triangle straddling the rim
+            // would otherwise drag a far corner into the hull.
+            if (!seen[vi] && d.squaredNorm() <= r2) {
+                seen[vi] = 1;
+                pts.push_back(v);
+            }
+        }
+
+    indexed_triangle_set hull = its_convex_hull(pts);
+    // A flat region yields a degenerate (near-zero) hull: nothing to fill.
+    if (hull.indices.empty() || std::abs(its_volume(hull)) < 1e-6 * radius * radius * radius)
+        return {};
+    return hull;
 }
 
 } // namespace Slic3r

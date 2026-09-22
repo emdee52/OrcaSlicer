@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "libslic3r/HoleShapes.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <algorithm>
@@ -22,6 +23,41 @@ double teardrop_area(double r, double angle_deg)
 }
 
 double apex_height(double r, double angle_deg) { return r / std::sin(angle_deg * PI / 180.); }
+
+// A 20x20x4 plate with a 6x6x2 pocket carved into the top face (open upward).
+indexed_triangle_set plate_with_pocket()
+{
+    TriangleMesh plate(its_make_cube(20., 20., 4.));
+    TriangleMesh cutter(its_make_cube(6., 6., 3.));
+    cutter.translate(Vec3f(7.f, 7.f, 2.f)); // z in [2, 5], pokes above the plate top
+    MeshBoolean::cgal::minus(plate, cutter);
+    its_merge_vertices(plate.its);
+    return plate.its;
+}
+
+// The facet whose normal is closest to `normal` and whose centroid is closest to `point`.
+int facet_near(const indexed_triangle_set &its, const Vec3d &normal, const Vec3d &point)
+{
+    const std::vector<Vec3f> normals = its_face_normals(its);
+    int                      best    = -1;
+    double                   best_d  = 1e30;
+    for (int f = 0; f < int(its.indices.size()); ++f) {
+        if (Vec3d(normals[f](0), normals[f](1), normals[f](2)).dot(normal) < 0.99)
+            continue;
+        Vec3d c = Vec3d::Zero();
+        for (int k = 0; k < 3; ++k) {
+            const Vec3f &v = its.vertices[its.indices[f](k)];
+            c += Vec3d(v(0), v(1), v(2));
+        }
+        c /= 3.;
+        const double d = (c - point).norm();
+        if (d < best_d) {
+            best_d = d;
+            best   = f;
+        }
+    }
+    return best;
+}
 
 } // namespace
 
@@ -244,5 +280,56 @@ TEST_CASE("Rim shapes reject non-positive inputs", "[HoleShapes]")
     CHECK(its_make_rim_chamfer(0., 1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
     CHECK(its_make_rim_chamfer(2., 0., Vec3d::UnitZ(), Vec3d::Zero()).empty());
     CHECK(its_make_rim_fillet(2., -1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
+}
+
+TEST_CASE("A pocket is filled by the cavity hull", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d              floor(10., 10., 2.);
+    const int                facet = facet_near(plate, Vec3d::UnitZ(), floor);
+    REQUIRE(facet >= 0);
+
+    const indexed_triangle_set fill = cavity_fill_hull(plate, floor, facet, 8.);
+    REQUIRE_FALSE(fill.empty());
+    CHECK(its_num_open_edges(fill) == 0);
+    CHECK(its_volume(fill) > 0.f);
+
+    // The hull caps the 6x6x2 pocket at the plate top: z in [2, 4], footprint 6x6.
+    const BoundingBoxf3 bb = bounding_box(fill);
+    CHECK_THAT(bb.min.z(), WithinAbs(2., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(4., 1e-3));
+    CHECK_THAT(bb.min.x(), WithinAbs(7., 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(13., 1e-3));
+    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
+}
+
+TEST_CASE("Seeding a pocket wall fills the same cavity", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d              wall(7., 10., 3.);
+    const int                facet = facet_near(plate, Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+
+    const indexed_triangle_set fill = cavity_fill_hull(plate, wall, facet, 8.);
+    REQUIRE_FALSE(fill.empty());
+    CHECK(its_num_open_edges(fill) == 0);
+    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
+}
+
+TEST_CASE("A cavity fill over a flat region has no volume", "[HoleShapes]")
+{
+    const indexed_triangle_set cube = its_make_cube(20., 20., 20.);
+    const Vec3d                top(2., 2., 20.);
+    const int                  facet = facet_near(cube, Vec3d::UnitZ(), top);
+    REQUIRE(facet >= 0);
+    CHECK(cavity_fill_hull(cube, top, facet, 5.).empty());
+}
+
+TEST_CASE("A cavity fill rejects bad input", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    CHECK(cavity_fill_hull(indexed_triangle_set{}, Vec3d::Zero(), 0, 5.).empty());
+    CHECK(cavity_fill_hull(plate, Vec3d(10., 10., 2.), -1, 5.).empty());
+    CHECK(cavity_fill_hull(plate, Vec3d(10., 10., 2.), 0, 0.).empty());
 }
 
