@@ -818,30 +818,39 @@ algorithm (scratch, not in the repo), then confirmed in the app.
 ## 21. SNAP-8 — snap one object onto another while dragging with Alt (branch `port/SNAP-8`)
 
 The Snap & Drag line (AS-3) only rests an object on a surface (Z). This is the first *object-to-object*
-snap in the regular preview: hold Alt while dragging a selected object and the point under the drag
-land on the nearest snap feature (face corner, edge midpoint, face centre, edge quarter, face quarter)
-of the object under the cursor, so separately printed parts drop together in an assembly.
+snap in the regular preview: hold Alt while dragging a selected object and the dragged object's own
+nearest snap feature (face corner, edge midpoint, face centre, edge quarter, face quarter) lands on the
+nearest snap feature of the object under the cursor, so separately printed parts drop together in an
+assembly.
 
 - **Gesture / defaults.** Pure GUI, off unless Alt is held — no app key, no free-Z, so at defaults
   nothing changes and the G-code is untouched. Alt-snap and Snap & Drag both want the drag translation,
   so the GravitySnap block now also requires `!alt_snap`; Alt wins while it is held.
-- **Where.** `GLCanvas3D::on_mouse`'s volume-drag branch (`GLCanvas3D.cpp:4786`). The correction
-  `target_world - cur_pos` is folded into the single `m_selection.translate(...)` call, because
-  `Selection::translate` writes instance offsets ABSOLUTELY from the drag-start cache — a second call in
-  the same frame would overwrite the first instead of compounding. No new gizmo; hosting it in the Move
-  gizmo is a follow-up.
+- **Where.** `GLCanvas3D::on_mouse`'s volume-drag branch (`GLCanvas3D.cpp:4786`). The snap correction is
+  folded into the single `m_selection.translate(...)` call, because `Selection::translate` writes instance
+  offsets ABSOLUTELY from the drag-start cache — a second call in the same frame would overwrite the first
+  instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up.
+- **Anchoring.** The anchor is the dragged object's own nearest snap feature, not the cursor: grabbing a
+  corner a few pixels off always left that corner short of the target. `mover_hit_under_cursor` raycasts
+  only the moving volumes (same loop as `hit_under_cursor`, shared through a `want_moving` predicate); if
+  the cursor is off the dragged object, the drag-start grab point is the anchor instead. Because every
+  `translate` is absolute from the drag-start cache, the anchor's drag-start world position is
+  `current - displacement already applied` (kept in `m_objsnap_disp`, reset when the drag starts).
+  Correcting to `target - (anchor_current - applied)` is an exact, non-oscillating fixed point, so a moved
+  anchor and a newly found target both settle in the next frame.
 - **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
   keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
   `coplanar_region` + `build_face_snap_points`) and `CutUtils::nearest_face_snap`. A non-planar face
   under the cursor falls back to the raw hit point, so curved surfaces snap too. The per-facet
   candidate list is cached and rebuilt only when the volume/facet changes.
-- **Markers.** While Alt is held the candidate points of that face are drawn as spheres, the active one
-  larger and white, so the snap is visible instead of implied. `ObjectSnap::Markers` builds one merged
-  mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
+- **Markers.** While Alt is held both objects show their candidate points as spheres, the active one
+  larger — white on the object the drag lands on, amber on the object being dragged, so the feature to
+  grab is visible before the press and the two sets are tellable apart. `ObjectSnap::Markers` builds one
+  merged mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
   `[0.3, 1.5]` mm, and the same per-kind colours the Holes tool uses (`GLGizmoHoles::build_snap_markers`
   is the reference). `Markers::render` runs with the depth test off so the spheres read through the
-  object they belong to. `GLCanvas3D` clears them on every mouse event, sets them in the Alt branch, and
-  clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag branch, so without that
+  object they belong to. `GLCanvas3D` clears both sets on every mouse event, sets them in the Alt branch,
+  and clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag branch, so without that
   they would linger). The draw call sits next to `_render_snapdrag_indicator`.
 - **Three lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
   match `Camera.hpp`; MSVC mangles a `class` forward declaration differently (`AEBVCamera` vs
