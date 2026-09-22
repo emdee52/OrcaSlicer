@@ -234,7 +234,8 @@ the branch too but was superseded by `656714103a`.
 - Edge dress follow-ups (see section 20): a second look at the chamfer crease on a top face if a skin
   artifact shows up there. Irregular / non-circular rims are done (EF-4).
 - EF-3 (miter corner vertices between separate straight-edge sweeps) was investigated and closed as
-  redundant — see section 20.
+  redundant — see section 20. The fillet-corner case (the one unverified part) is now user-confirmed
+  correct; SNAP-7 is user-tested and merged.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
 
 ---
@@ -705,7 +706,8 @@ cut mode as well as on the flat face, so switching modes with Alt held rebuilds 
   Manual click test: in planar mode hold Alt over a face flush with the plane — one sphere, and it
   visibly moves the plane; tilt the plane off that face and several distinct spheres must appear.
 - **Branch state**: on `port/SNAP-7`, branched from `port/integration` after SNAP-4, SNAP-5 and
-  SNAP-6 were merged (`2b323c1aca`), unmerged until the user has tested it (see section 0).
+  SNAP-6 were merged (`2b323c1aca`). Merged into `port/integration`; the user tested it and confirmed
+  it works (see section 0).
 
 ---
 
@@ -784,9 +786,9 @@ made the prism twist, which showed as a taper at a square rim's corner.
   are cut by the planes `z = y + 1 - s` and `z = x + 1 - s`, which meet along a single straight edge
   (`x = y, z = x + 1 - s`); the miter plane `z = x + y + 1 - s` is redundant given both. So the union
   of the two independently swept prisms is already a clean mitre on a cube corner — no corner filler
-  or chain sweep is needed for chamfers. **The fillet corner was not verified**: two 90° fillet sweeps
-  union two quarter-cylinders, which may leave a crease instead of a spherical corner patch; check that
-  case before claiming fillet corners are correct.
+  or chain sweep is needed for chamfers. **The fillet corner is verified too**: the user checked two
+  90° fillet sweeps unioning into a cube corner and confirmed the result is correct (no crease where
+  the two quarter-cylinders meet) — so fillet corners need no spherical corner patch.
 **EF-4 — irregular rims.** Whole-loop mode used to find nothing on a face whose facets are each their
 own patch, which is what a hole cut into a round-over looks like. The region is now grown by CREASE
 ANGLE (`MAX_JOIN_DOT = cos 40°`), not by a normal tolerance, so the region stops only at real rims,
