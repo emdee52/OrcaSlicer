@@ -13,6 +13,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
 #include "slic3r/GUI/Selection.hpp"
 
 #include "libslic3r/Model.hpp"
@@ -299,6 +300,36 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
     return dynamic_cast<GLGizmoEdgeDress *>(mgr.get_current());
 }
 
+// [ORCAPORT:HF-1] Open and drive the Cavity fill tool.
+GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+{
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr)
+        return nullptr;
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HoleFill) {
+        Selection &sel = canvas->get_selection();
+        if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
+            int oid = sel.get_object_idx();
+            if (oid < 0)
+                oid = 0;
+            if (oid >= 0 && oid < int(plater->model().objects.size())) {
+                sel.clear();
+                sel.add_object(unsigned(oid), true);
+            }
+        }
+        mgr.open_gizmo(GLGizmosManager::EType::HoleFill);
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+    }
+
+    if (mgr.get_current_type() != GLGizmosManager::EType::HoleFill)
+        return nullptr;
+    return dynamic_cast<GLGizmoHoleFill *>(mgr.get_current());
+}
+
 nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
 {
     return nlohmann::json{
@@ -308,6 +339,15 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
         {"hover_applied_volume", g.hover_applied_volume()},
         {"loop_mode", g.loop_mode()},
         {"loop_facet", g.loop_facet()},
+        {"applied_count", g.applied_count()},
+        {"object_scale", g.object_scale()}};
+}
+
+nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
+{
+    return nlohmann::json{
+        {"radius", g.get_radius()},
+        {"hover_valid", g.hover_valid()},
         {"applied_count", g.applied_count()},
         {"object_scale", g.object_scale()}};
 }
@@ -872,6 +912,124 @@ void OrcaMCPServer::register_gizmo_tools()
                 }
 
                 nlohmann::json result = edge_dress_gizmo_state(*g);
+                result["status"] = "ok";
+                result["open"] = true;
+                result["action"] = action;
+                return result;
+            });
+        }
+    });
+    register_tool(
+        {"hole_fill_gizmo",
+         "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
+         "watermark, pocket) with a positive volume built as the convex hull of the surface around "
+         "the clicked face, so it fills without a boolean and also works on a curved wall. Actions: "
+         "'open', 'status', 'set_radius' (mm), 'hover_at' (screen_x/screen_y), 'apply_at' "
+         "(screen_x/screen_y), 'apply' (fill under the cursor), 'list_fills' (volume index + "
+         "object-space centre of each applied plug), 'remove_fill' (index), 'clear_all', 'refresh', "
+         "'close'. A face that is already covered is not filled twice; remove it first (right-click "
+         "in the UI).",
+         {{"type", "object"},
+          {"properties",
+           {{"action",
+             {{"type", "string"},
+              {"description",
+               "open | status | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
+            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
+            {"radius", {{"type", "number"}, {"description", "Fill radius in mm, for action=set_radius."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at."}}},
+            {"index",
+             {{"type", "integer"}, {"description", "Fill volume index from list_fills, for action=remove_fill."}}}}},
+         {"required", {"action"}}},
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string action = params.value("action", std::string("status"));
+            return run_on_main_thread([action, params]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                if (action == "close") {
+                    canvas->reset_all_gizmos();
+                    canvas->set_as_dirty();
+                    return {{"status", "ok"}, {"open", false}, {"action", action}};
+                }
+
+                if (params.contains("object_id")) {
+                    const int oid = params["object_id"].get<int>();
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
+                        return {{"status", "error"}, {"error", "Invalid object_id"}};
+                    Selection &sel = canvas->get_selection();
+                    sel.clear();
+                    sel.add_object(unsigned(oid), true);
+                }
+
+                GLGizmoHoleFill *g = active_hole_fill_gizmo(action == "open");
+                if (g == nullptr)
+                    return {{"status", "error"},
+                            {"error", "Cavity fill gizmo is not active. Load a model and pass object_id or "
+                                      "select a single object."}};
+
+                auto need = [&](const char *key) { return params.contains(key); };
+
+                if (action == "set_radius") {
+                    if (!need("radius"))
+                        return {{"status", "error"}, {"error", "Missing radius"}};
+                    g->set_radius(params["radius"].get<double>());
+                } else if (action == "hover_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    g->gizmo_hover_at(pos);
+                } else if (action == "apply_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    if (!g->gizmo_apply_at(pos))
+                        return {{"status", "error"},
+                                {"error", "No fillable cavity at that point (nothing under the cursor, the face is already covered, or the patch is too flat)."}};
+                } else if (action == "apply") {
+                    if (!g->gizmo_apply_hovered())
+                        return {{"status", "error"},
+                                {"error", "No fillable cavity is under the cursor (hover first, or the face is already covered / too flat)."}};
+                } else if (action == "list_fills") {
+                    nlohmann::json fills = nlohmann::json::array();
+                    const int      oi    = canvas->get_selection().get_object_idx();
+                    if (oi >= 0 && oi < int(plater->model().objects.size())) {
+                        const ModelObject *mo = plater->model().objects[oi];
+                        for (size_t i = 0; i < mo->volumes.size(); ++i) {
+                            const ModelVolume *v = mo->volumes[i];
+                            if (v == nullptr || v->name.rfind("HoleFill#", 0) != 0 || v->mesh().its.vertices.empty())
+                                continue;
+                            Vec3f c = Vec3f::Zero();
+                            for (const stl_vertex &p : v->mesh().its.vertices)
+                                c += p;
+                            c /= float(v->mesh().its.vertices.size());
+                            const Vec3d center = v->get_matrix() * c.cast<double>();
+                            fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
+                        }
+                    }
+                    nlohmann::json result = hole_fill_gizmo_state(*g);
+                    result["status"] = "ok";
+                    result["open"]   = true;
+                    result["action"] = action;
+                    result["fills"]  = std::move(fills);
+                    return result;
+                } else if (action == "remove_fill") {
+                    if (!need("index"))
+                        return {{"status", "error"}, {"error", "Missing index"}};
+                    if (!g->gizmo_remove_fill(params["index"].get<int>()))
+                        return {{"status", "error"}, {"error", "That volume is not a cavity fill"}};
+                } else if (action == "clear_all") {
+                    g->gizmo_clear_all();
+                } else if (action == "refresh") {
+                    g->gizmo_refresh();
+                } else if (action != "status" && action != "open") {
+                    return {{"status", "error"}, {"error", "Unknown action: " + action}};
+                }
+
+                nlohmann::json result = hole_fill_gizmo_state(*g);
                 result["status"] = "ok";
                 result["open"] = true;
                 result["action"] = action;
