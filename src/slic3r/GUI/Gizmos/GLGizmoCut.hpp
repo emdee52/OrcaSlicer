@@ -184,7 +184,7 @@ class GLGizmoCut3D : public GLGizmoBase
     const ModelVolume*         m_snap_lock_mv{ nullptr };
     int                        m_snap_lock_facet{ -1 };
     double                     m_snap_radius{ 0.0 };
-    GLModel                    m_snap_markers[3]; // indexed by int(FaceSnapKind) - 1
+    GLModel                    m_snap_markers[5]; // indexed by int(FaceSnapKind) - 1
     GLModel                    m_snap_marker_active;
 
     Vec3d snap_plane_center(const Vec3d& center);

@@ -148,12 +148,13 @@ private:
     void         render_face_highlight();
     void         exit_place_face_mode();
 
-    // Alt-held coordinate snap on the hovered face: corners, edge midpoints and the face centre.
+    // Alt-held coordinate snap on the hovered face: corners, edge midpoints, edge quarters, face
+    // quarters and the face centre.
     const std::vector<FaceSnapPoint>& face_snap_points(const ModelVolume* mv, size_t facet);
     Vec3d snap_face_hit(const Vec3d& hit_obj, const Vec2d& screen_pos, const ModelVolume* mv, size_t facet,
                         FaceSnapKind& kind);
-    // Markers for the snap coordinates, shown while Alt is held. The three kind models plus the
-    // bigger marker of the active one.
+    // Markers for the snap coordinates, shown while Alt is held. One model per kind plus the bigger
+    // marker of the active one.
     void build_snap_markers();
     void render_snap_markers();
     void set_active_snap_marker(const FaceSnapPoint& p);
@@ -221,7 +222,7 @@ private:
     const ModelVolume*   m_snap_lock_mv{ nullptr };
     int                  m_snap_lock_facet{ -1 };
     double               m_snap_radius{ 0.0 };
-    GLModel              m_snap_markers[3]; // indexed by int(FaceSnapKind) - 1
+    GLModel              m_snap_markers[5]; // indexed by int(FaceSnapKind) - 1
     GLModel              m_snap_marker_active;
     // Time the cursor last left the hovered face, so the highlight and markers linger a moment.
     double               m_face_leave_time{ 0.0 };

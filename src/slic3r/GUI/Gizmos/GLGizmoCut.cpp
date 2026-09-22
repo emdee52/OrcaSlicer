@@ -3031,19 +3031,21 @@ void GLGizmoCut3D::build_snap_markers()
             diag = std::max(diag, (a.pos - b.pos).norm());
     m_snap_radius = std::max(1e-4, 0.012 * diag);
 
-    static const ColorRGBA KIND_COLOR[3] = { ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f),   // corner, magenta
+    static const ColorRGBA KIND_COLOR[5] = { ColorRGBA(1.00f, 0.30f, 0.85f, 1.0f),   // corner, magenta
                                              ColorRGBA(0.35f, 0.90f, 0.75f, 1.0f),   // edge midpoint, teal
-                                             ColorRGBA(0.30f, 0.80f, 1.00f, 1.0f) }; // face centre, cyan
-    std::vector<indexed_triangle_set> acc(3);
+                                             ColorRGBA(0.30f, 0.80f, 1.00f, 1.0f),   // face centre, cyan
+                                             ColorRGBA(0.60f, 0.95f, 0.45f, 1.0f),   // edge quarter, green
+                                             ColorRGBA(0.55f, 0.72f, 1.00f, 1.0f) }; // face quarter, pale blue
+    std::vector<indexed_triangle_set> acc(5);
     for (const FaceSnapPoint& p : m_snap_points) {
         const int k = int(p.kind) - 1;
-        if (k < 0 || k > 2)
+        if (k < 0 || k > 4)
             continue;
         indexed_triangle_set sphere = its_make_sphere(m_snap_radius, PI / 12.0);
         its_translate(sphere, p.pos.cast<float>());
         its_merge(acc[k], sphere);
     }
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < 5; ++k) {
         if (acc[k].indices.empty())
             continue;
         m_snap_markers[k].init_from(acc[k]);
