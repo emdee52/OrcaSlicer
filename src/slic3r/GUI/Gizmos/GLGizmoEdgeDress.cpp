@@ -69,6 +69,77 @@ bool face_contains_vertex(const indexed_triangle_set &its, int face, int vertex)
     return tri(0) == vertex || tri(1) == vertex || tri(2) == vertex;
 }
 
+// Grow a mesh-edge segment (a, b) with the adjacent faces face/other into the full geometric edge:
+// a long edge is normally tessellated into many collinear mesh segments, and each of them must be
+// part of the same chamfer. The walk stops where the adjacent face normals change or the mesh turns
+// a corner. Returns false for a coplanar crease (the tessellation diagonal of a flat face), which is
+// not an edge that can be dressed.
+bool extend_feature_edge(const indexed_triangle_set &its, const std::vector<std::vector<int>> &vertex_faces,
+                         const std::vector<Vec3f> &normals, int a, int b, int face, int other, int &out_a,
+                         int &out_b, Vec3d &out_na, Vec3d &out_nb)
+{
+    const Vec3d na = normals[face].cast<double>();
+    const Vec3d nb = normals[other].cast<double>();
+    if (na.dot(nb) > 1. - 1e-5)
+        return false; // flat crease
+
+    auto faces_of_edge = [&](int x, int y) {
+        std::vector<int> fs;
+        for (int g : vertex_faces[size_t(x)])
+            if (face_contains_vertex(its, g, y))
+                fs.push_back(g);
+        return fs;
+    };
+    // A segment continues the edge when its two adjacent faces carry the same normal pair.
+    auto matching = [&](int x, int y) {
+        const std::vector<int> fs = faces_of_edge(x, y);
+        if (fs.size() != 2)
+            return false;
+        const Vec3d f0 = normals[fs[0]].cast<double>();
+        const Vec3d f1 = normals[fs[1]].cast<double>();
+        return (f0.dot(na) > 1. - 1e-5 && f1.dot(nb) > 1. - 1e-5) ||
+               (f0.dot(nb) > 1. - 1e-5 && f1.dot(na) > 1. - 1e-5);
+    };
+    auto walk = [&](int from, int towards) {
+        const Vec3d dir   = (its.vertices[size_t(from)].cast<double>() - its.vertices[size_t(towards)].cast<double>()).normalized();
+        int         cur   = from;
+        int         prev  = towards;
+        size_t      steps = 0;
+        for (;;) {
+            int next = -1;
+            for (int g : vertex_faces[size_t(cur)]) {
+                for (int k = 0; k < 3 && next < 0; ++k) {
+                    const int w = its.indices[g](k);
+                    if (w == cur || w == prev)
+                        continue;
+                    const Vec3d dd = (its.vertices[size_t(w)].cast<double>() - its.vertices[size_t(cur)].cast<double>()).normalized();
+                    if (dd.dot(dir) < 1. - 1e-6)
+                        continue;
+                    if (matching(cur, w))
+                        next = w;
+                }
+                if (next >= 0)
+                    break;
+            }
+            if (next < 0 || ++steps > its.vertices.size())
+                break;
+            prev = cur;
+            cur  = next;
+        }
+        return cur;
+    };
+
+    const int a2 = walk(a, b);
+    const int b2 = walk(b, a);
+    if (a2 == b2)
+        return false;
+    out_a  = a2;
+    out_b  = b2;
+    out_na = na;
+    out_nb = nb;
+    return true;
+}
+
 } // namespace
 
 GLGizmoEdgeDress::GLGizmoEdgeDress(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id)
@@ -153,66 +224,89 @@ void GLGizmoEdgeDress::clear_hover()
 
 void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
 {
-    m_hover = HoverEdge();
+    const HoverEdge previous = m_hover;
 
-    const ModelObject *mo = model_object();
-    if (mo == nullptr)
-        return;
+    auto resolve = [&]() -> HoverEdge {
+        HoverEdge result;
 
-    const ClippingPlane *clipping = m_c != nullptr && m_c->object_clipper() != nullptr ? m_c->object_clipper()->get_clipping_plane() : nullptr;
-    const GLVolume    *volume     = nullptr;
-    const ModelVolume *mv         = nullptr;
-    size_t             facet      = 0;
-    Vec3d              hit_world;
-    if (!raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world))
-        return;
+        const ModelObject *mo = model_object();
+        if (mo == nullptr)
+            return result;
 
-    rebuild_topology(mv);
-    if (facet >= m_face_normals.size())
-        return;
+        const ClippingPlane *clipping = m_c != nullptr && m_c->object_clipper() != nullptr ? m_c->object_clipper()->get_clipping_plane() : nullptr;
+        const GLVolume      *volume   = nullptr;
+        const ModelVolume   *mv       = nullptr;
+        size_t               facet    = 0;
+        Vec3d                hit_world;
+        if (!raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world))
+            return result;
 
-    const indexed_triangle_set &its     = mv->mesh().its;
-    const Vec3d                 hit_obj = instance_matrix().inverse() * hit_world;
+        rebuild_topology(mv);
+        if (facet >= m_face_normals.size())
+            return result;
 
-    // Nearest of the facet's three edges by point-to-segment distance.
-    int    best_e0 = -1, best_e1 = -1;
-    double best_d = std::numeric_limits<double>::max();
-    for (int k = 0; k < 3; ++k) {
-        const int    a  = its.indices[facet](k);
-        const int    b  = its.indices[facet]((k + 1) % 3);
-        const Vec3d  pa = its.vertices[a].cast<double>();
-        const Vec3d  pb = its.vertices[b].cast<double>();
-        const Vec3d  ab = pb - pa;
-        const double l2 = ab.squaredNorm();
-        const double t  = l2 > 0. ? std::clamp((hit_obj - pa).dot(ab) / l2, 0., 1.) : 0.;
-        const double d  = (pa + t * ab - hit_obj).norm();
-        if (d < best_d) {
-            best_d  = d;
-            best_e0 = a;
-            best_e1 = b;
+        const indexed_triangle_set &its     = mv->mesh().its;
+        const Vec3d                 hit_obj = instance_matrix().inverse() * hit_world;
+
+        // The facet's three edges, nearest first; the first one that is a real feature edge wins.
+        int    cand[3][2];
+        double dist[3];
+        for (int k = 0; k < 3; ++k) {
+            const int    a  = its.indices[facet](k);
+            const int    b  = its.indices[facet]((k + 1) % 3);
+            const Vec3d  pa = its.vertices[size_t(a)].cast<double>();
+            const Vec3d  pb = its.vertices[size_t(b)].cast<double>();
+            const Vec3d  ab = pb - pa;
+            const double l2 = ab.squaredNorm();
+            const double t  = l2 > 0. ? std::clamp((hit_obj - pa).dot(ab) / l2, 0., 1.) : 0.;
+            cand[k][0] = a;
+            cand[k][1] = b;
+            dist[k]    = (pa + t * ab - hit_obj).norm();
         }
-    }
-    if (best_e0 < 0)
-        return;
+        for (int pass = 0; pass < 3; ++pass) {
+            int best = -1;
+            for (int k = 0; k < 3; ++k)
+                if (dist[k] >= 0. && (best < 0 || dist[k] < dist[best]))
+                    best = k;
+            if (best < 0)
+                break;
+            const int a = cand[best][0];
+            const int b = cand[best][1];
+            dist[best]  = -1.;
 
-    // The other face sharing that edge. The two faces are the only ones containing both vertices.
-    int other = -1;
-    for (int f : m_vertex_faces[best_e0]) {
-        if (f == int(facet) || size_t(f) >= its.indices.size())
-            continue;
-        if (face_contains_vertex(its, f, best_e1)) {
-            other = f;
+            // The other face sharing that edge: the two faces are the only ones with both vertices.
+            int other = -1;
+            for (int f : m_vertex_faces[size_t(a)]) {
+                if (f == int(facet) || size_t(f) >= its.indices.size())
+                    continue;
+                if (face_contains_vertex(its, f, b)) {
+                    other = f;
+                    break;
+                }
+            }
+            if (other < 0)
+                continue; // open edge
+
+            int   ea, eb;
+            Vec3d na, nb;
+            if (!extend_feature_edge(its, m_vertex_faces, m_face_normals, a, b, int(facet), other, ea, eb, na, nb))
+                continue; // coplanar crease
+
+            result.valid = true;
+            result.p0    = its.vertices[size_t(ea)].cast<double>();
+            result.p1    = its.vertices[size_t(eb)].cast<double>();
+            result.n_a   = na;
+            result.n_b   = nb;
             break;
         }
-    }
-    if (other < 0)
-        return; // open edge
+        return result;
+    };
 
-    m_hover.valid = true;
-    m_hover.p0    = its.vertices[best_e0].cast<double>();
-    m_hover.p1    = its.vertices[best_e1].cast<double>();
-    m_hover.n_a   = m_face_normals[facet].cast<double>();
-    m_hover.n_b   = m_face_normals[other].cast<double>();
+    m_hover = resolve();
+    if (m_hover.valid != previous.valid ||
+        (m_hover.valid && ((m_hover.p0 - previous.p0).norm() > 1e-9 || (m_hover.p1 - previous.p1).norm() > 1e-9 ||
+                           (m_hover.n_a - previous.n_a).norm() > 1e-6 || (m_hover.n_b - previous.n_b).norm() > 1e-6)))
+        m_preview_dirty = true;
 }
 
 indexed_triangle_set GLGizmoEdgeDress::hover_mesh() const
@@ -263,7 +357,8 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
         for (int k = 0; k < 3; ++k)
             vertex_faces[its.indices[f](k)].push_back(int(f));
 
-    std::set<std::pair<int, int>> seen;
+    std::set<std::pair<int, int>> seen;      // mesh segments already walked
+    std::set<std::pair<int, int>> seen_full; // merged geometric edges already emitted
     for (size_t f = 0; f < its.indices.size(); ++f) {
         for (int k = 0; k < 3; ++k) {
             const int a  = its.indices[f](k);
@@ -274,7 +369,7 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
                 continue;
 
             int other = -1;
-            for (int g : vertex_faces[lo]) {
+            for (int g : vertex_faces[size_t(lo)]) {
                 if (g == int(f) || size_t(g) >= its.indices.size())
                     continue;
                 if (face_contains_vertex(its, g, hi)) {
@@ -285,12 +380,19 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
             if (other < 0)
                 continue; // open edge
 
+            int   ea, eb;
+            Vec3d na, nb;
+            if (!extend_feature_edge(its, vertex_faces, normals, a, b, int(f), other, ea, eb, na, nb))
+                continue; // coplanar crease
+            if (!seen_full.insert({ std::min(ea, eb), std::max(ea, eb) }).second)
+                continue;
+
             HoverEdge e;
             e.valid = true;
-            e.p0    = trafo * its.vertices[a].cast<double>();
-            e.p1    = trafo * its.vertices[b].cast<double>();
-            e.n_a   = (normal_trafo * normals[f].cast<double>()).normalized();
-            e.n_b   = (normal_trafo * normals[other].cast<double>()).normalized();
+            e.p0    = trafo * its.vertices[size_t(ea)].cast<double>();
+            e.p1    = trafo * its.vertices[size_t(eb)].cast<double>();
+            e.n_a   = (normal_trafo * na).normalized();
+            e.n_b   = (normal_trafo * nb).normalized();
             if ((e.p1 - e.p0).norm() < 1e-9)
                 continue;
             edges.push_back(e);
@@ -508,6 +610,8 @@ void GLGizmoEdgeDress::on_render()
     if (get_state() != On)
         return;
 
+    // Track the cursor so the edge under it is highlighted before the click.
+    update_hover(m_parent.get_local_mouse_position());
     if (m_preview_dirty)
         rebuild_preview();
 
