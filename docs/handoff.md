@@ -51,7 +51,8 @@ $env:CMAKE_TLS_VERIFY = "0"
 ## 2. Branches / commits
 
 Everything below is merged into `port/integration` unless its row says otherwise. The ME, CUT, SNAP,
-PF, SU and AS branches are done; the two newest are the rim dress and the edge dress tools.
+PF, SU and AS branches are done, as are the rim dress and edge dress tools; the newest branch is the
+object-to-object Alt-drag snap (SNAP-8).
 
 | Branch | State | Contents |
 |---|---|---|
@@ -63,6 +64,7 @@ PF, SU and AS branches are done; the two newest are the rim dress and the edge d
 | `port/EF-1` | merged (`b6803f53b4`) | Edge chamfer / fillet gizmo, straight edges |
 | `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
 | `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
+| `port/SNAP-8` | not merged | Alt-drag object-to-object point snap (see section 21) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -136,6 +138,11 @@ the branch too but was superseded by `656714103a`.
   `OrcaMCPServer::register_builtin_tools`. Also `edge_dress_gizmo` (`open | status | set_mode |
   set_size | apply | apply_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop |
   list_loops | apply_loop | remove_loop | applied_loops | clear_all | close`).
+- `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` — Alt-drag object-to-object snap. Hold Alt while
+  dragging a selected object in the regular preview and the grabbed point lands on the nearest snap
+  feature (face corner / edge midpoint / face centre / edge quarter / face quarter) of the object under
+  the cursor. Pure GUI, off unless Alt is held: no app key, no free-Z, byte-identical to stock with Alt
+  up. See section 21.
 
 ### Tests
 - `tests/libslic3r/test_holedetector.cpp`, `test_holeshapes.cpp`, `test_holestandards.cpp`,
@@ -231,6 +238,8 @@ the branch too but was superseded by `656714103a`.
   redundant — see section 20. The fillet-corner case (the one unverified part) is now user-confirmed
   correct; SNAP-7 is user-tested and merged.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
+- SNAP-8 (snap one object onto another while dragging with Alt) is implemented and green on
+  `port/SNAP-8`; it merges once the user tests the live Alt+drag gesture — see section 21.
 
 ---
 
@@ -803,5 +812,38 @@ algorithm (scratch, not in the repo), then confirmed in the app.
 
 - **Chamfer-crease skin check done**: the user checked the top face beside a 45° chamfer crease and
   found no skin artifact, so there is nothing left to fix there.
+
+---
+
+## 21. SNAP-8 — snap one object onto another while dragging with Alt (branch `port/SNAP-8`)
+
+The Snap & Drag line (AS-3) only rests an object on a surface (Z). This is the first *object-to-object*
+snap in the regular preview: hold Alt while dragging a selected object and the point under the drag
+land on the nearest snap feature (face corner, edge midpoint, face centre, edge quarter, face quarter)
+of the object under the cursor, so separately printed parts drop together in an assembly.
+
+- **Gesture / defaults.** Pure GUI, off unless Alt is held — no app key, no free-Z, so at defaults
+  nothing changes and the G-code is untouched. Alt-snap and Snap & Drag both want the drag translation,
+  so the GravitySnap block now also requires `!alt_snap`; Alt wins while it is held.
+- **Where.** `GLCanvas3D::on_mouse`'s volume-drag branch (`GLCanvas3D.cpp:4786`). The correction
+  `target_world - cur_pos` is folded into the single `m_selection.translate(...)` call, because
+  `Selection::translate` writes instance offsets ABSOLUTELY from the drag-start cache — a second call in
+  the same frame would overwrite the first instead of compounding. No new gizmo; hosting it in the Move
+  gizmo is a follow-up.
+- **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
+  keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
+  `coplanar_region` + `build_face_snap_points`) and `CutUtils::nearest_face_snap`. A non-planar face
+  under the cursor falls back to the raw hit point, so curved surfaces snap too. The per-facet
+  candidate list is cached and rebuilt only when the volume/facet changes.
+- **Two lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
+  match `Camera.hpp`; MSVC mangles a `class` forward declaration differently (`AEBVCamera` vs
+  `AEBUCamera`) and the mismatch is a permanent LNK2001/LNK2019 that survives every clean rebuild.
+  (b) The screen cursor is `Point` (`Vec2<coord_t>`), so the `Vec2d` argument needs `pos.cast<double>()`.
+- **Verification.** Regression suites `[EdgeProfiles],[HoleShapes],[HoleDetector],[HoleStandards],
+  [CutUtils]` = 546 assertions in 61 cases, all passing (this feature adds no libslic3r geometry, so
+  those suites are unchanged). The live gesture must be tested by the user: MCP cannot hold Alt. Manual
+  protocol is in `docs/superpowers/SNAP-8-object-snap.md` (scratch, gitignored, not committed).
+- **Branch state**: on `port/SNAP-8`, branched from `port/integration` at `fa2d06d014`. Not merged;
+  merges after the user tests the Alt+drag gesture in the app (see section 0).
 
 
