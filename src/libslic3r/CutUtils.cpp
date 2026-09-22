@@ -193,6 +193,28 @@ std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, con
     return out;
 }
 
+std::vector<FaceSnapPoint> snap_points_distinct_cuts(const std::vector<FaceSnapPoint>& pts, const Transform3d& to_world,
+                                                     const Vec3d& plane_normal, const Vec3d& plane_point, double tol)
+{
+    std::vector<FaceSnapPoint> out;
+    std::vector<double>        offsets; // one per kept point, same order
+    out.reserve(pts.size());
+    for (const FaceSnapPoint& p : pts) {
+        const double d = plane_normal.dot(to_world * p.pos - plane_point);
+        bool         same_cut = false;
+        for (const double kept : offsets)
+            if (std::abs(kept - d) <= tol) {
+                same_cut = true;
+                break;
+            }
+        if (same_cut)
+            continue;
+        out.push_back(p);
+        offsets.push_back(d);
+    }
+    return out;
+}
+
 bool nearest_face_snap(const std::vector<FaceSnapPoint>& pts, const std::function<Vec2d(const Vec3d&)>& project,
                        const Vec2d& screen_pos, FaceSnapPoint& out, double min_px, double max_px,
                        double* tolerance_px)

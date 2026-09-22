@@ -531,3 +531,59 @@ TEST_CASE("A candidate beyond the stick distance is not snapped", "[CutUtils]")
     CHECK(!nearest_face_snap(pts, project, Vec2d(5.2, 0.4), best, 0.1, 0.1, nullptr));
 }
 
+TEST_CASE("Snap points that cut the same plane collapse to one", "[CutUtils]")
+{
+    indexed_triangle_set square;
+    square.vertices = { Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f), Vec3f(10.f, 10.f, 0.f), Vec3f(0.f, 10.f, 0.f) };
+    square.indices  = { Vec3i32(0, 1, 2), Vec3i32(0, 2, 3) };
+    const std::vector<FaceSnapPoint> pts = face_snap_points(square, { 0, 1 });
+    const Transform3d                id  = Transform3d::Identity();
+
+    const auto offset = [](const Vec3d &p, const Vec3d &n, const Vec3d &point) { return n.dot(p - point); };
+
+    // The plane passes through the face: every coordinate is already in the plane, so snapping to any
+    // of them cuts the same, unchanged, plane. One representative survives.
+    {
+        const Vec3d plane_point(5., 5., 0.);
+        const std::vector<FaceSnapPoint> kept = snap_points_distinct_cuts(pts, id, Vec3d(0., 0., 1.), plane_point);
+        REQUIRE(kept.size() == 1);
+        CHECK_THAT(std::abs(offset(kept.front().pos, Vec3d(0., 0., 1.), plane_point)), WithinAbs(0.0, 1e-9));
+    }
+
+    // The plane is parallel and 1 mm off the face: still one cut for the whole face, and no
+    // coordinate is in the plane, so this is not the degenerate "already cutting it" case.
+    {
+        const std::vector<FaceSnapPoint> kept =
+            snap_points_distinct_cuts(pts, id, Vec3d(0., 0., 1.), Vec3d(5., 5., 1.));
+        REQUIRE(kept.size() == 1);
+        CHECK_THAT(offset(kept.front().pos, Vec3d(0., 0., 1.), Vec3d(5., 5., 1.)), WithinAbs(-1.0, 1e-9));
+    }
+
+    // A tilted plane moves with the depth of the coordinate, so one snap per depth survives: the
+    // face's candidates sit at five distinct depths along the plane normal.
+    {
+        const Vec3d normal = Vec3d(0., 1., 1.).normalized();
+        const Vec3d point(5., 5., 0.);
+        const std::vector<FaceSnapPoint> kept = snap_points_distinct_cuts(pts, id, normal, point);
+        REQUIRE(kept.size() == 5);
+        for (size_t i = 0; i < kept.size(); ++i)
+            for (size_t j = i + 1; j < kept.size(); ++j)
+                CHECK(std::abs(offset(kept[i].pos, normal, point) - offset(kept[j].pos, normal, point)) > 1e-3);
+
+        // A subsequence of the input, so the pick priority of the original list is preserved.
+        size_t k = 0;
+        for (const FaceSnapPoint &p : pts)
+            if (k < kept.size() && p.kind == kept[k].kind && (p.pos - kept[k].pos).norm() < 1e-9)
+                ++k;
+        CHECK(k == kept.size());
+    }
+
+    // Depths closer together than the tolerance are the same cut and collapse.
+    {
+        const Vec3d normal(0., 1., 0.);
+        const std::vector<FaceSnapPoint> kept =
+            snap_points_distinct_cuts(pts, id, normal, Vec3d(5., 5., 0.), 3.0);
+        CHECK(kept.size() == 3);
+    }
+}
+

@@ -603,7 +603,40 @@ deselect included).
   build is clean. Manual click test: press Alt on one side of a large flat face and drag across to
   the other side — the far-side corners, edge midpoints and quarters must all snap; then tap Alt
   once without holding it and confirm the hole still follows the cursor.
-- **Branch state**: on `port/SNAP-5` (`3b1c8f6bfc`), stacked on `port/SNAP-4`, all unmerged until
-  the user has tested them (see section 0).
+- **Branch state**: on `port/SNAP-5` (`3b1c8f6bfc`), stacked on `port/SNAP-4`, both merged into
+  `port/integration` (`2b323c1aca`) once the user confirmed them (see section 0).
+
+---
+
+## 18. SNAP-7 — one snap target per distinct cut in planar mode
+
+A flat face carries many coordinates — corners, edge midpoints, quarters and the centre — and in
+planar mode every one of them cuts the identical plane: the plane is `normal . x = offset`, so moving
+its centre in-plane does not move the plane. The Cut tool was showing a marker for each of those
+coordinates, so a face flush with the plane became a grid of spheres that all did the same thing.
+
+`snap_points_distinct_cuts` (in `libslic3r/CutUtils`, beside `face_snap_points`) reduces the
+coordinates of a face to one per distinct cut. It measures each coordinate's signed distance to the
+plane through `to_world` and keeps the first coordinate of every group whose distances are within
+`tol` (1e-3 mm) of each other. Input order is preserved, so the existing pick priority (Corner >
+EdgeMid > FaceCenter > EdgeQuarter > FaceQuarter) still chooses which coordinate represents a group,
+and the representative does not change as the cursor moves across the group.
+
+Planar mode runs the reduced list through the ordinary magnetic snap: `snap_plane_center` caches the
+full candidate list as before, then, while the mode is planar, recomputes the reduced list whenever
+the plane pose it was derived from (normal and centre) changes, and snaps and builds markers from
+that. The spheres that remain are the ones that visibly move the plane; snapping to a dropped
+coordinate was a no-op. Shape and tongue-and-groove keep the whole coordinate set: their profile is
+built around the plane centre, so there the position does matter. The candidate cache is keyed on the
+cut mode as well as on the flat face, so switching modes with Alt held rebuilds the markers.
+
+- **Verification**: `[CutUtils]` passes (143 assertions in 20 test cases), including the new
+  "Snap points that cut the same plane collapse to one": a plane through the face and a parallel
+  plane 1 mm off both keep a single coordinate, a tilted plane keeps one per depth with the kept
+  points a subsequence of the input, and depths closer than the tolerance collapse. Build is clean.
+  Manual click test: in planar mode hold Alt over a face flush with the plane — one sphere, and it
+  visibly moves the plane; tilt the plane off that face and several distinct spheres must appear.
+- **Branch state**: on `port/SNAP-7`, branched from `port/integration` after SNAP-4, SNAP-5 and
+  SNAP-6 were merged (`2b323c1aca`), unmerged until the user has tested it (see section 0).
 
 

@@ -2951,8 +2951,11 @@ bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolu
 
 // Alt-held snapping of the cut-plane centre: the plane - and the shaped cut, which is built from it -
 // sticks to a snap coordinate of the flat face the cursor was on when Alt was pressed. Dragging onto
-// another face does not re-target; a fresh Alt press picks the face under the cursor. Without Alt
-// `center` is returned untouched, so every existing path stays exactly as it was.
+// another face does not re-target; a fresh Alt press picks the face under the cursor. In planar mode
+// only the coordinates that move the plane are worth snapping to, since a plane is `normal . x =
+// offset` and every coordinate of the face already in it cuts the identical plane; the shaped modes
+// keep the whole coordinate set, their profile being centred on the plane centre. Without Alt `center`
+// is returned untouched, so every existing path stays exactly as it was.
 Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
 {
     if (!wxGetKeyState(WXK_ALT)) {
@@ -2987,6 +2990,37 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
         return world_to_screen(wxGetApp().plater()->get_camera(), to_world * p);
     };
 
+    // The candidates depend only on the flat face and the cut mode, so a drag held over one of its
+    // triangles does not re-walk it.
+    if (mv != m_snap_points_mv || m_snap_points_mode != m_mode ||
+        (mv != nullptr && !region_has_facet(m_snap_points_region, int(facet)))) {
+        m_snap_points_mv     = mv;
+        m_snap_points_volume = volume;
+        m_snap_points_facet  = int(facet);
+        m_snap_points_mode   = m_mode;
+        m_snap_points_region = coplanar_region(mv, facet);
+        m_snap_points        = build_face_snap_points(mv, m_snap_points_region);
+        m_snap_visible_valid = false;
+        if (m_mode != size_t(CutMode::cutPlanar))
+            build_snap_markers();
+    }
+
+    // Planar: drop the coordinates that cut the plane the plane already cuts, one surviving per
+    // distinct offset. Snapping to a dropped one would move nothing, so it is not worth a sphere.
+    // The cut moves as the plane does, so the list is recomputed whenever the pose it came from
+    // changes; the surviving sphere the cursor locks to always moves the plane.
+    if (m_mode == size_t(CutMode::cutPlanar)) {
+        const bool pose_changed = !m_snap_visible_valid || (m_snap_visible_normal - m_cut_normal).norm() > 1e-9 ||
+                                  (m_snap_visible_center - m_plane_center).norm() > 1e-9;
+        if (pose_changed) {
+            m_snap_points_visible = snap_points_distinct_cuts(m_snap_points, to_world, m_cut_normal, m_plane_center);
+            m_snap_visible_normal = m_cut_normal;
+            m_snap_visible_center = m_plane_center;
+            m_snap_visible_valid  = true;
+            build_snap_markers();
+        }
+    }
+
     // Hysteresis: keep the target the cursor was locked to until it moves well away from it.
     if (m_snap_locked && m_snap_lock_mv == mv) {
         const Vec2d locked_px = project(m_snap_lock.pos);
@@ -2994,25 +3028,16 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
             return to_world * m_snap_lock.pos;
     }
 
-    // The candidates depend only on the flat face, so a drag held over one of its triangles does not
-    // re-walk it.
-    if (mv != m_snap_points_mv ||
-        (mv != nullptr && !region_has_facet(m_snap_points_region, int(facet)))) {
-        m_snap_points_mv     = mv;
-        m_snap_points_volume = volume;
-        m_snap_points_facet  = int(facet);
-        m_snap_points_region = coplanar_region(mv, facet);
-        m_snap_points        = build_face_snap_points(mv, m_snap_points_region);
-        build_snap_markers();
-    }
-    if (m_snap_points.empty()) {
+    const std::vector<FaceSnapPoint>& candidates =
+        m_mode == size_t(CutMode::cutPlanar) ? m_snap_points_visible : m_snap_points;
+    if (candidates.empty()) {
         m_snap_locked = false;
         return center;
     }
 
     FaceSnapPoint best;
     double       tol = 0.0;
-    if (!nearest_face_snap(m_snap_points, project, mouse, best, 8.0, 48.0, &tol)) {
+    if (!nearest_face_snap(candidates, project, mouse, best, 8.0, 48.0, &tol)) {
         m_snap_locked = false;
         return center;
     }
@@ -3027,22 +3052,25 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
     return to_world * best.pos;
 }
 
-// Marker spheres for the snap coordinates of the hovered face, rebuilt with the candidate list.
+// Marker spheres for the snap coordinates of the hovered face, rebuilt with the candidate list. In
+// planar mode the list is the culled one, one sphere per distinct cut.
 void GLGizmoCut3D::build_snap_markers()
 {
     for (GLModel& m : m_snap_markers)
         m.reset();
     m_snap_marker_active.reset();
 
-    if (m_snap_points.empty()) {
+    const std::vector<FaceSnapPoint>& pts =
+        m_mode == size_t(CutMode::cutPlanar) ? m_snap_points_visible : m_snap_points;
+    if (pts.empty()) {
         m_snap_radius = 0.0;
         return;
     }
 
     // Face-relative size, so a big face gets markers you can see and a small one is not swamped.
     double diag = 0.0;
-    for (const FaceSnapPoint& a : m_snap_points)
-        for (const FaceSnapPoint& b : m_snap_points)
+    for (const FaceSnapPoint& a : pts)
+        for (const FaceSnapPoint& b : pts)
             diag = std::max(diag, (a.pos - b.pos).norm());
     m_snap_radius = std::max(1e-4, 0.012 * diag);
 
@@ -3052,7 +3080,7 @@ void GLGizmoCut3D::build_snap_markers()
                                              ColorRGBA(0.60f, 0.95f, 0.45f, 1.0f),   // edge quarter, green
                                              ColorRGBA(0.55f, 0.72f, 1.00f, 1.0f) }; // face quarter, pale blue
     std::vector<indexed_triangle_set> acc(5);
-    for (const FaceSnapPoint& p : m_snap_points) {
+    for (const FaceSnapPoint& p : pts) {
         const int k = int(p.kind) - 1;
         if (k < 0 || k > 4)
             continue;
