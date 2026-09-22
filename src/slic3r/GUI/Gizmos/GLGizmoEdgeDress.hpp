@@ -4,6 +4,7 @@
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
 
+#include "libslic3r/EdgeProfiles.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <array>
@@ -31,12 +32,17 @@ public:
     void          set_mode(EdgeDressMode mode);
     double        get_size() const { return m_size; }
     void          set_size(double size);
-    bool          hover_edge_valid() const { return m_hover.valid; }
+    bool          hover_edge_valid() const { return m_loop_mode ? !m_hover_loop.empty() : m_hover.valid; }
+    // The feature volume the hovered edge or loop already carries, or -1 when it carries none.
+    int           hover_applied_volume() const { return m_hover_applied_volume; }
     double        object_scale() const;
     int           applied_count() const;
     bool          gizmo_hover_at(const Vec2d& screen_pos);
     bool          gizmo_apply_hovered();
     bool          gizmo_apply_at(const Vec2d& screen_pos);
+    bool          gizmo_remove_hovered();
+    bool          gizmo_remove_edge(int index);
+    bool          gizmo_remove_loop(int facet, int index);
     void          gizmo_clear_all();
     void          gizmo_refresh();
 
@@ -45,6 +51,19 @@ public:
     int                                 edge_count() const;
     std::vector<std::array<double, 6>>  gizmo_list_edges(int max_count) const;
     bool                                gizmo_apply_edge(int index);
+    // Indices of the edges / loops that already have a feature, so a caller can skip them.
+    std::vector<int>                    applied_edge_indices() const;
+    std::vector<std::array<int, 2>>     applied_loop_indices(int facet) const;
+
+    // Whole-loop mode: a hole or boss rim is dressed as one closed feature instead of its
+    // tessellation segments. Off by default, so the edge behaviour is unchanged.
+    bool   loop_mode() const { return m_loop_mode; }
+    void   set_loop_mode(bool on);
+    // The boundary loops of the coplanar patch containing `facet`; -1 for the last hovered facet.
+    int    loop_count(int facet) const;
+    std::vector<std::vector<std::array<double, 3>>> gizmo_list_loops(int facet, int max_count) const;
+    bool   gizmo_apply_loop(int facet, int index);
+    int    loop_facet() const { return m_loops_facet; }
 
     void data_changed(bool is_serializing) override;
     bool render_follows_cursor() const override { return get_state() == On; }
@@ -62,11 +81,13 @@ protected:
     void                on_unregister_raycasters_for_picking() override;
 
 private:
-    // The picked edge in object space: endpoints, edge direction and the two adjacent face normals.
+    // The picked edge in object space: endpoints, edge direction, the two adjacent face normals and
+    // the key that ties it back to a feature volume already applied to it.
     struct HoverEdge
     {
-        bool  valid{false};
-        Vec3d p0{Vec3d::Zero()}, p1{Vec3d::Zero()}, n_a{Vec3d::Zero()}, n_b{Vec3d::Zero()};
+        bool        valid{false};
+        Vec3d       p0{Vec3d::Zero()}, p1{Vec3d::Zero()}, n_a{Vec3d::Zero()}, n_b{Vec3d::Zero()};
+        std::string tag; // source key, a hash of the endpoints
     };
 
     const ModelObject* model_object() const;
@@ -78,25 +99,49 @@ private:
     std::vector<HoverEdge> collect_edges() const;
     // The merged geometric edges of the selected part, cached until the object changes.
     const std::vector<HoverEdge>& cached_edges() const;
+    indexed_triangle_set mesh_for_loop(const std::vector<LoopFrame>& loop) const;
+    // The coplanar patch loops around `facet`, cached for the last queried volume and facet.
+    const std::vector<std::vector<LoopFrame>>& loops_for_facet(const ModelVolume* mv, int facet) const;
+    indexed_triangle_set active_mesh() const;
     void               rebuild_preview();
     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
     int                next_feature_id() const;
+    // Source key of an edge / loop, and the applied feature volume that carries it (-1 if none).
+    static std::string tag_for_edge(const HoverEdge& edge);
+    std::string        tag_for_loop(const std::vector<LoopFrame>& loop) const;
+    int                find_applied_volume(const std::string& tag) const;
+    bool               remove_applied_volume(const std::string& tag);
 
     EdgeDressMode m_mode{EdgeDressMode::Chamfer};
     double        m_size{1.0};
+    bool          m_loop_mode{false};
     std::map<std::string, wxString> m_desc;
 
     HoverEdge    m_hover;
+    std::vector<LoopFrame> m_hover_loop;
+    // Volume the hovered edge or loop already carries, -1 if it carries none.
+    int          m_hover_applied_volume{-1};
     PickingModel m_preview;
+    PickingModel m_preview_applied;
     bool         m_preview_dirty{true};
 
     // Cached merged edges, in object space, rebuilt when the object or its volume list changes.
     mutable std::vector<HoverEdge> m_edges;
     mutable bool                   m_edges_dirty{true};
 
+    // Cached patch loops for the last queried (volume, facet) pair.
+    mutable std::vector<std::vector<LoopFrame>> m_loops;
+    mutable const ModelVolume*                  m_loops_volume{nullptr};
+    mutable int                                 m_loops_facet{-1};
+
     const ModelObject* m_old_object{nullptr};
     int                m_old_volume_count{-1};
     Transform3d        m_old_matrix{Transform3d::Identity()};
+
+    // The hover is rebuilt only when the cursor or the camera moved, so a still cursor costs nothing.
+    bool        m_hover_computed{false};
+    Vec2d       m_last_mouse{-1., -1.};
+    Transform3d m_last_view{Transform3d::Identity()};
 };
 
 } // namespace GUI
