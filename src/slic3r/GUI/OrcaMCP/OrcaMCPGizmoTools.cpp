@@ -12,6 +12,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmosManager.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
 #include "slic3r/GUI/Selection.hpp"
 
 #include "libslic3r/Model.hpp"
@@ -266,6 +267,46 @@ GLGizmoCut3D *active_cut_gizmo(bool open_if_needed)
     if (mgr.get_current_type() != GLGizmosManager::EType::Cut)
         return nullptr;
     return dynamic_cast<GLGizmoCut3D *>(mgr.get_current());
+}
+
+// [ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet tool.
+GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
+{
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr)
+        return nullptr;
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::EdgeDress) {
+        Selection &sel = canvas->get_selection();
+        if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
+            int oid = sel.get_object_idx();
+            if (oid < 0)
+                oid = 0;
+            if (oid >= 0 && oid < int(plater->model().objects.size())) {
+                sel.clear();
+                sel.add_object(unsigned(oid), true);
+            }
+        }
+        mgr.open_gizmo(GLGizmosManager::EType::EdgeDress);
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+    }
+
+    if (mgr.get_current_type() != GLGizmosManager::EType::EdgeDress)
+        return nullptr;
+    return dynamic_cast<GLGizmoEdgeDress *>(mgr.get_current());
+}
+
+nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
+{
+    return nlohmann::json{
+        {"mode", g.get_mode() == EdgeDressMode::Chamfer ? "chamfer" : "fillet"},
+        {"size", g.get_size()},
+        {"hover_edge_valid", g.hover_edge_valid()},
+        {"applied_count", g.applied_count()},
+        {"object_scale", g.object_scale()}};
 }
 
 nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
@@ -645,6 +686,114 @@ void OrcaMCPServer::register_gizmo_tools()
                 nlohmann::json result = cut_gizmo_state(*g, canvas);
                 result["status"] = "ok";
                 result["open"]   = true;
+                result["action"] = action;
+                return result;
+            });
+        }
+    });
+    register_tool(
+        {"edge_dress_gizmo",
+         "[ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet tool. Actions: 'open', 'status', "
+         "'set_mode' (chamfer|fillet), 'set_size', 'apply' (dress the edge under the cursor), "
+         "'apply_at' (screen_x/screen_y), 'list_edges', 'apply_edge' (index), 'clear_all', 'close'.",
+         {{"type", "object"},
+          {"properties",
+           {{"action",
+             {{"type", "string"},
+              {"description",
+               "open | status | set_mode | set_size | apply | apply_at | list_edges | apply_edge | clear_all | close"}}},
+            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
+            {"mode", {{"type", "string"}, {"description", "chamfer | fillet, for action=set_mode."}}},
+            {"size",
+             {{"type", "number"},
+              {"description", "Chamfer leg / fillet radius in mm, for action=set_size."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at."}}},
+            {"max_count",
+             {{"type", "integer"}, {"description", "Maximum edges to return, for action=list_edges."}}},
+            {"index",
+             {{"type", "integer"}, {"description", "Edge index from list_edges, for action=apply_edge."}}}}},
+          {"required", {"action"}}},
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string action = params.value("action", std::string("status"));
+            return run_on_main_thread([action, params]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                if (action == "close") {
+                    canvas->reset_all_gizmos();
+                    canvas->set_as_dirty();
+                    return {{"status", "ok"}, {"open", false}, {"action", action}};
+                }
+
+                if (params.contains("object_id")) {
+                    const int oid = params["object_id"].get<int>();
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
+                        return {{"status", "error"}, {"error", "Invalid object_id"}};
+                    Selection &sel = canvas->get_selection();
+                    sel.clear();
+                    sel.add_object(unsigned(oid), true);
+                }
+
+                GLGizmoEdgeDress *g = active_edge_dress_gizmo(action == "open");
+                if (g == nullptr)
+                    return {{"status", "error"},
+                            {"error", "Edge dress gizmo is not active. Load a model and pass object_id or "
+                                      "select a single object."}};
+
+                auto need = [&](const char *key) { return params.contains(key); };
+
+                if (action == "set_mode") {
+                    if (!need("mode"))
+                        return {{"status", "error"}, {"error", "Missing mode (chamfer|fillet)"}};
+                    const std::string m = params["mode"].get<std::string>();
+                    if (m == "chamfer")
+                        g->set_mode(EdgeDressMode::Chamfer);
+                    else if (m == "fillet")
+                        g->set_mode(EdgeDressMode::Fillet);
+                    else
+                        return {{"status", "error"}, {"error", "Unknown mode: " + m}};
+                } else if (action == "set_size") {
+                    if (!need("size"))
+                        return {{"status", "error"}, {"error", "Missing size"}};
+                    g->set_size(params["size"].get<double>());
+                } else if (action == "apply") {
+                    if (!g->gizmo_apply_hovered())
+                        return {{"status", "error"}, {"error", "No edge is under the cursor"}};
+                } else if (action == "apply_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    if (!g->gizmo_apply_at(pos))
+                        return {{"status", "error"}, {"error", "No edge is under that point"}};
+                } else if (action == "list_edges") {
+                    const int max_count = params.value("max_count", 0);
+                    nlohmann::json edges = nlohmann::json::array();
+                    for (const std::array<double, 6> &e : g->gizmo_list_edges(max_count))
+                        edges.push_back({ e[0], e[1], e[2], e[3], e[4], e[5] });
+                    nlohmann::json result = edge_dress_gizmo_state(*g);
+                    result["status"]    = "ok";
+                    result["open"]      = true;
+                    result["action"]    = action;
+                    result["edge_count"] = g->edge_count();
+                    result["edges"]      = std::move(edges);
+                    return result;
+                } else if (action == "apply_edge") {
+                    if (!need("index"))
+                        return {{"status", "error"}, {"error", "Missing index"}};
+                    if (!g->gizmo_apply_edge(params["index"].get<int>()))
+                        return {{"status", "error"}, {"error", "No edge with that index"}};
+                } else if (action == "clear_all") {
+                    g->gizmo_clear_all();
+                } else if (action != "status" && action != "open") {
+                    return {{"status", "error"}, {"error", "Unknown action: " + action}};
+                }
+
+                nlohmann::json result = edge_dress_gizmo_state(*g);
+                result["status"] = "ok";
+                result["open"] = true;
                 result["action"] = action;
                 return result;
             });

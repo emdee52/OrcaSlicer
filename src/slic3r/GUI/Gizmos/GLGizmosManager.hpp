@@ -94,6 +94,7 @@ public:
         SupportZones, // [ORCAPORT:SU-5]
         CounterboreBridge, // [ORCAPORT:PF-2b]
         Holes, // [ORCAPORT:ME-2] holes tool (teardrop / bore-pocket)
+        EdgeDress, // [ORCAPORT:EF-1] chamfer / fillet a straight mesh edge
 #ifdef SLIC3R_CAD
         // Both need the CAD kernel (GeometryEngine); keep them last so that with
         // SLIC3R_CAD off the enum matches upstream's numbering exactly.
