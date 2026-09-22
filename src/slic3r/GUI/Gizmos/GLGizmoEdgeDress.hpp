@@ -71,12 +71,13 @@ private:
 
     const ModelObject* model_object() const;
     Transform3d        instance_matrix() const;
-    void               rebuild_topology(const ModelVolume* mv);
     void               update_hover(const Vec2d& screen_pos);
     void               clear_hover();
     indexed_triangle_set hover_mesh() const;
     indexed_triangle_set mesh_for_edge(const HoverEdge& edge) const;
     std::vector<HoverEdge> collect_edges() const;
+    // The merged geometric edges of the selected part, cached until the object changes.
+    const std::vector<HoverEdge>& cached_edges() const;
     void               rebuild_preview();
     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
     int                next_feature_id() const;
@@ -89,10 +90,9 @@ private:
     PickingModel m_preview;
     bool         m_preview_dirty{true};
 
-    // Cached object-space topology of the picked volume, rebuilt when the volume changes.
-    const ModelVolume*            m_cache_volume{nullptr};
-    std::vector<Vec3f>            m_face_normals;
-    std::vector<std::vector<int>> m_vertex_faces;
+    // Cached merged edges, in object space, rebuilt when the object or its volume list changes.
+    mutable std::vector<HoverEdge> m_edges;
+    mutable bool                   m_edges_dirty{true};
 
     const ModelObject* m_old_object{nullptr};
     int                m_old_volume_count{-1};

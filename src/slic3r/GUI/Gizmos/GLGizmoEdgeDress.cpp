@@ -69,6 +69,14 @@ bool face_contains_vertex(const indexed_triangle_set &its, int face, int vertex)
     return tri(0) == vertex || tri(1) == vertex || tri(2) == vertex;
 }
 
+double point_segment_distance(const Vec2d &p, const Vec2d &a, const Vec2d &b)
+{
+    const Vec2d  ab = b - a;
+    const double l2 = ab.squaredNorm();
+    const double t  = l2 > 0. ? std::clamp((p - a).dot(ab) / l2, 0., 1.) : 0.;
+    return (a + t * ab - p).norm();
+}
+
 // Grow a mesh-edge segment (a, b) with the adjacent faces face/other into the full geometric edge:
 // a long edge is normally tessellated into many collinear mesh segments, and each of them must be
 // part of the same chamfer. The walk stops where the adjacent face normals change or the mesh turns
@@ -197,22 +205,13 @@ int GLGizmoEdgeDress::next_feature_id() const
     return next;
 }
 
-void GLGizmoEdgeDress::rebuild_topology(const ModelVolume *mv)
+const std::vector<GLGizmoEdgeDress::HoverEdge> &GLGizmoEdgeDress::cached_edges() const
 {
-    if (mv == m_cache_volume)
-        return;
-    m_cache_volume = mv;
-    m_face_normals.clear();
-    m_vertex_faces.clear();
-    if (mv == nullptr)
-        return;
-
-    const indexed_triangle_set &its = mv->mesh().its;
-    m_face_normals = its_face_normals(its);
-    m_vertex_faces.assign(its.vertices.size(), std::vector<int>());
-    for (size_t f = 0; f < its.indices.size(); ++f)
-        for (int k = 0; k < 3; ++k)
-            m_vertex_faces[its.indices[f](k)].push_back(int(f));
+    if (m_edges_dirty) {
+        m_edges       = collect_edges();
+        m_edges_dirty = false;
+    }
+    return m_edges;
 }
 
 void GLGizmoEdgeDress::clear_hover()
@@ -225,84 +224,38 @@ void GLGizmoEdgeDress::clear_hover()
 void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
 {
     const HoverEdge previous = m_hover;
+    m_hover                  = HoverEdge();
 
-    auto resolve = [&]() -> HoverEdge {
-        HoverEdge result;
-
-        const ModelObject *mo = model_object();
-        if (mo == nullptr)
-            return result;
-
+    // The edge nearest to the cursor in screen space, not in 3D distance to the hit point: the
+    // latter picks whichever edge happens to be close in space, so a far edge can win over the one
+    // under the cursor. The cursor must be on the object, so empty space does not keep a highlight.
+    const ModelObject *mo = model_object();
+    if (mo != nullptr) {
         const ClippingPlane *clipping = m_c != nullptr && m_c->object_clipper() != nullptr ? m_c->object_clipper()->get_clipping_plane() : nullptr;
         const GLVolume      *volume   = nullptr;
         const ModelVolume   *mv       = nullptr;
         size_t               facet    = 0;
         Vec3d                hit_world;
-        if (!raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world))
-            return result;
+        if (raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world)) {
+            const Camera    &camera   = wxGetApp().plater()->get_camera();
+            const Transform3d to_world = instance_matrix();
+            const double     tol      = 12.0;
 
-        rebuild_topology(mv);
-        if (facet >= m_face_normals.size())
-            return result;
-
-        const indexed_triangle_set &its     = mv->mesh().its;
-        const Vec3d                 hit_obj = instance_matrix().inverse() * hit_world;
-
-        // The facet's three edges, nearest first; the first one that is a real feature edge wins.
-        int    cand[3][2];
-        double dist[3];
-        for (int k = 0; k < 3; ++k) {
-            const int    a  = its.indices[facet](k);
-            const int    b  = its.indices[facet]((k + 1) % 3);
-            const Vec3d  pa = its.vertices[size_t(a)].cast<double>();
-            const Vec3d  pb = its.vertices[size_t(b)].cast<double>();
-            const Vec3d  ab = pb - pa;
-            const double l2 = ab.squaredNorm();
-            const double t  = l2 > 0. ? std::clamp((hit_obj - pa).dot(ab) / l2, 0., 1.) : 0.;
-            cand[k][0] = a;
-            cand[k][1] = b;
-            dist[k]    = (pa + t * ab - hit_obj).norm();
-        }
-        for (int pass = 0; pass < 3; ++pass) {
-            int best = -1;
-            for (int k = 0; k < 3; ++k)
-                if (dist[k] >= 0. && (best < 0 || dist[k] < dist[best]))
-                    best = k;
-            if (best < 0)
-                break;
-            const int a = cand[best][0];
-            const int b = cand[best][1];
-            dist[best]  = -1.;
-
-            // The other face sharing that edge: the two faces are the only ones with both vertices.
-            int other = -1;
-            for (int f : m_vertex_faces[size_t(a)]) {
-                if (f == int(facet) || size_t(f) >= its.indices.size())
+            double best = tol;
+            for (const HoverEdge &e : cached_edges()) {
+                const Vec2d a = world_to_screen(camera, to_world * e.p0);
+                const Vec2d b = world_to_screen(camera, to_world * e.p1);
+                if (!a.allFinite() || !b.allFinite())
                     continue;
-                if (face_contains_vertex(its, f, b)) {
-                    other = f;
-                    break;
+                const double d = point_segment_distance(screen_pos, a, b);
+                if (d < best) {
+                    best    = d;
+                    m_hover = e;
                 }
             }
-            if (other < 0)
-                continue; // open edge
-
-            int   ea, eb;
-            Vec3d na, nb;
-            if (!extend_feature_edge(its, m_vertex_faces, m_face_normals, a, b, int(facet), other, ea, eb, na, nb))
-                continue; // coplanar crease
-
-            result.valid = true;
-            result.p0    = its.vertices[size_t(ea)].cast<double>();
-            result.p1    = its.vertices[size_t(eb)].cast<double>();
-            result.n_a   = na;
-            result.n_b   = nb;
-            break;
         }
-        return result;
-    };
+    }
 
-    m_hover = resolve();
     if (m_hover.valid != previous.valid ||
         (m_hover.valid && ((m_hover.p0 - previous.p0).norm() > 1e-9 || (m_hover.p1 - previous.p1).norm() > 1e-9 ||
                            (m_hover.n_a - previous.n_a).norm() > 1e-6 || (m_hover.n_b - previous.n_b).norm() > 1e-6)))
@@ -403,13 +356,13 @@ std::vector<GLGizmoEdgeDress::HoverEdge> GLGizmoEdgeDress::collect_edges() const
 
 int GLGizmoEdgeDress::edge_count() const
 {
-    return int(collect_edges().size());
+    return int(cached_edges().size());
 }
 
 std::vector<std::array<double, 6>> GLGizmoEdgeDress::gizmo_list_edges(int max_count) const
 {
     std::vector<std::array<double, 6>> out;
-    const std::vector<HoverEdge>       edges = collect_edges();
+    const std::vector<HoverEdge>      &edges = cached_edges();
     const size_t                       n     = max_count > 0 ? std::min(size_t(max_count), edges.size()) : edges.size();
     out.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -421,7 +374,7 @@ std::vector<std::array<double, 6>> GLGizmoEdgeDress::gizmo_list_edges(int max_co
 
 bool GLGizmoEdgeDress::gizmo_apply_edge(int index)
 {
-    const std::vector<HoverEdge> edges = collect_edges();
+    const std::vector<HoverEdge> &edges = cached_edges();
     if (index < 0 || index >= int(edges.size()))
         return false;
     const indexed_triangle_set its = mesh_for_edge(edges[index]);
@@ -589,7 +542,7 @@ void GLGizmoEdgeDress::data_changed(bool /*is_serializing*/)
 {
     const ModelObject *mo = model_object();
     if (mo == nullptr) {
-        m_cache_volume = nullptr;
+        m_edges_dirty  = true;
         m_old_object   = nullptr;
         clear_hover();
         return;
@@ -599,7 +552,7 @@ void GLGizmoEdgeDress::data_changed(bool /*is_serializing*/)
         m_old_object       = mo;
         m_old_volume_count = int(mo->volumes.size());
         m_old_matrix       = instance_matrix();
-        m_cache_volume     = nullptr; // topology cache is tied to the volume
+        m_edges_dirty      = true; // the edge list is tied to the object's mesh
         m_preview_dirty    = true;
         m_parent.set_as_dirty();
     }
