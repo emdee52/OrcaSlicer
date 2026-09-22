@@ -2950,12 +2950,15 @@ bool GLGizmoCut3D::raycast_object_face(const Vec2d& mouse_position, const GLVolu
 }
 
 // Alt-held snapping of the cut-plane centre: the plane - and the shaped cut, which is built from it -
-// sticks to a corner, an edge midpoint or the face centre under the cursor. Without Alt `center` is
-// returned untouched, so every existing path stays exactly as it was.
+// sticks to a snap coordinate of the face the cursor was on when Alt was pressed. Dragging onto
+// another face does not re-target; a fresh Alt press picks the face under the cursor. Without Alt
+// `center` is returned untouched, so every existing path stays exactly as it was.
 Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
 {
     if (!wxGetKeyState(WXK_ALT)) {
-        m_snap_locked = false;
+        m_snap_locked       = false;
+        m_snap_points_mv    = nullptr; // a fresh Alt press picks a face under the cursor
+        m_snap_points_facet = -1;
         return center;
     }
 
@@ -2964,6 +2967,13 @@ Vec3d GLGizmoCut3D::snap_plane_center(const Vec3d& center)
     size_t             facet  = 0;
     Vec3d              hit    = Vec3d::Zero();
     if (!raycast_object_face(m_parent.get_local_mouse_position(), volume, mv, facet, hit)) {
+        m_snap_locked = false;
+        return center;
+    }
+
+    // Gated to the face picked when Alt was pressed: moving the cursor onto another face must not
+    // re-target the snap.
+    if (m_snap_points_mv != nullptr && (mv != m_snap_points_mv || int(facet) != m_snap_points_facet)) {
         m_snap_locked = false;
         return center;
     }

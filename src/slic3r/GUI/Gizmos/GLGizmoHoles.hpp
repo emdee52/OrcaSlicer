@@ -148,11 +148,13 @@ private:
     void         render_face_highlight();
     void         exit_place_face_mode();
 
-    // Alt-held coordinate snap on the hovered face: corners, edge midpoints, edge quarters, face
-    // quarters and the face centre.
+    // Alt-held coordinate snap on the face the cursor was on when Alt was pressed: corners, edge
+    // midpoints, edge quarters, face quarters and the face centre. Held onto that face for as long
+    // as Alt stays down, so moving onto another face does not re-target the snap.
     const std::vector<FaceSnapPoint>& face_snap_points(const ModelVolume* mv, size_t facet);
     Vec3d snap_face_hit(const Vec3d& hit_obj, const Vec2d& screen_pos, const ModelVolume* mv, size_t facet,
                         FaceSnapKind& kind);
+    void clear_snap_session();
     // Markers for the snap coordinates, shown while Alt is held. One model per kind plus the bigger
     // marker of the active one.
     void build_snap_markers();
@@ -211,10 +213,13 @@ private:
     int                  m_hover_face_facet{ -1 };
     Vec3d                m_last_face_hit{ Vec3d::Constant(1e30) }; // object space, to detect movement
     FaceRegionCache      m_face_cache;
+    // The face the Alt snap session is gated to, chosen on the first Alt frame; nullptr when no
+    // session is running. Also the key of the cached candidate list.
     const ModelVolume*   m_snap_mv{ nullptr };
     int                  m_snap_facet{ -1 };
     std::vector<FaceSnapPoint> m_snap_points;
     FaceSnapKind         m_hover_snap{ FaceSnapKind::None };
+    bool                 m_alt_held{ false };
     // Hysteresis: hold the snapped coordinate while the cursor stays near it.
     FaceSnapPoint        m_snap_lock;
     double               m_snap_lock_tol{ 0.0 };

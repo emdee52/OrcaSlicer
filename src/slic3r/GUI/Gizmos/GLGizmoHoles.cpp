@@ -610,8 +610,17 @@ void GLGizmoHoles::on_render()
         detect();
     if (m_preview_dirty)
         rebuild_previews();
-    if (m_place_face_mode)
+    if (m_place_face_mode) {
+        // A tap of Alt must not leave the hole pinned to a coordinate: on release the snap session
+        // ends at once and the ghost goes back to the raw hit, without waiting for the mouse to move.
+        const bool alt = wxGetKeyState(WXK_ALT);
+        if (alt != m_alt_held) {
+            m_alt_held = alt;
+            if (!alt)
+                clear_snap_session();
+        }
         update_face_highlight();
+    }
 
     GLShaderProgram *shader = wxGetApp().get_shader("flat");
     if (shader == nullptr)
@@ -631,9 +640,12 @@ void GLGizmoHoles::on_render()
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
-    m_preview_all.model.render(shader);
-    m_preview_applied.model.render(shader);
-    m_preview_hover.model.render(shader);
+    // The detected-hole previews only get in the way of picking a face to place on.
+    if (!m_place_face_mode) {
+        m_preview_all.model.render(shader);
+        m_preview_applied.model.render(shader);
+        m_preview_hover.model.render(shader);
+    }
     if (m_place_face_mode)
         m_face_ghost.render(shader);
 
@@ -672,12 +684,22 @@ void GLGizmoHoles::exit_place_face_mode()
     m_face_ghost.reset();
     m_hover_face_mv    = nullptr;
     m_hover_face_facet = -1;
-    m_last_face_hit    = Vec3d::Constant(1e30);
-    m_hover_snap       = FaceSnapKind::None;
-    m_snap_locked      = false;
-    m_snap_marker_active.reset();
+    clear_snap_session();
+    m_alt_held = false;
     for (GLModel &m : m_snap_markers)
         m.reset();
+}
+
+// Ends the Alt snap session: the next Alt press picks the face under the cursor afresh. Dropping
+// the hit also makes the ghost rebuild from the raw cursor position on the next pass.
+void GLGizmoHoles::clear_snap_session()
+{
+    m_snap_locked       = false;
+    m_snap_mv           = nullptr;
+    m_snap_facet        = -1;
+    m_hover_snap        = FaceSnapKind::None;
+    m_snap_marker_active.reset();
+    m_last_face_hit     = Vec3d::Constant(1e30);
 }
 
 bool GLGizmoHoles::gizmo_place_face_at(const Vec2d &screen_pos)
@@ -905,14 +927,14 @@ const std::vector<FaceSnapPoint> &GLGizmoHoles::face_snap_points(const ModelVolu
     return m_snap_points;
 }
 
-// Marker spheres for the snap coordinates of the hovered face, rebuilt with the candidate list.
+// Marker spheres for the snap coordinates of the session face, rebuilt with the candidate list.
 void GLGizmoHoles::build_snap_markers()
 {
     for (GLModel &m : m_snap_markers)
         m.reset();
     m_snap_marker_active.reset();
 
-    if (m_snap_points.empty() || m_hover_face_mv == nullptr) {
+    if (m_snap_points.empty() || m_snap_mv == nullptr) {
         m_snap_radius = 0.0;
         return;
     }
@@ -958,11 +980,11 @@ void GLGizmoHoles::set_active_snap_marker(const FaceSnapPoint &p)
     m_snap_marker_active.set_color(HOVER_COLOR);
 }
 
-// Draws the marker spheres of the hovered face while Alt is held. Depth test is off so the surface
+// Draws the marker spheres of the session face while Alt is held. Depth test is off so the surface
 // and the lifted coplanar patch cannot hide them.
 void GLGizmoHoles::render_snap_markers()
 {
-    if (!wxGetKeyState(WXK_ALT) || m_hover_face_mv == nullptr)
+    if (!wxGetKeyState(WXK_ALT) || m_snap_mv == nullptr)
         return;
     GLShaderProgram *shader = wxGetApp().get_shader("flat");
     if (shader == nullptr)
@@ -974,7 +996,7 @@ void GLGizmoHoles::render_snap_markers()
     glsafe(::glDisable(GL_CULL_FACE));
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     shader->set_uniform("view_model_matrix",
-                        camera.get_view_matrix() * instance_matrix() * m_hover_face_mv->get_matrix());
+                        camera.get_view_matrix() * instance_matrix() * m_snap_mv->get_matrix());
     for (GLModel &m : m_snap_markers)
         m.render();
     m_snap_marker_active.render();
@@ -990,6 +1012,14 @@ Vec3d GLGizmoHoles::snap_face_hit(const Vec3d &hit_obj, const Vec2d &screen_pos,
 {
     kind = FaceSnapKind::None;
     if (mv == nullptr || !wxGetKeyState(WXK_ALT)) {
+        m_snap_locked = false;
+        m_snap_marker_active.reset();
+        return hit_obj;
+    }
+
+    // Gated to the face the cursor was on when Alt was pressed: the hole keeps following the cursor
+    // onto another face, it just never snaps to coordinates of that face.
+    if (m_snap_mv != nullptr && (mv != m_snap_mv || int(facet) != m_snap_facet)) {
         m_snap_locked = false;
         m_snap_marker_active.reset();
         return hit_obj;
