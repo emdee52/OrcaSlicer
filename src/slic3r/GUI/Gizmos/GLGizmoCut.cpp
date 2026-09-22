@@ -2721,6 +2721,11 @@ void GLGizmoCut3D::on_render()
     if (m_pick_face_mode) {
         update_face_highlight();
         render_face_highlight();
+    }
+    // The Alt snap works while the plane or the shape is dragged too, so the markers follow the
+    // cursor whether or not a face is being picked.
+    if (wxGetKeyState(WXK_ALT)) {
+        snap_plane_center(m_plane_center);
         render_snap_markers();
     }
 
