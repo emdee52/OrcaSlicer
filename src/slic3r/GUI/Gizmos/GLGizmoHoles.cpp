@@ -203,7 +203,7 @@ bool GLGizmoHoles::on_init()
     return true;
 }
 
-std::string GLGizmoHoles::on_get_name() const { return _u8L("Holes"); }
+std::string GLGizmoHoles::on_get_name() const { return _u8L("Horizontal holes"); }
 
 ModelObject *GLGizmoHoles::model_object() const
 {
@@ -595,7 +595,9 @@ void GLGizmoHoles::rebuild_previews()
     const ModelObject *mo = model_object();
     if (mo != nullptr) {
         for (const ModelVolume *v : mo->volumes) {
-            if (v == nullptr || !v->is_negative_volume())
+            if (v == nullptr)
+                continue;
+            if (!v->is_negative_volume())
                 continue;
             if (parsed_hole_index(v->name, TEARDROP_NAME) < 0 && parsed_hole_index(v->name, POCKET_NAME) < 0 &&
                 parsed_hole_index(v->name, FACE_POCKET_NAME) < 0 && parsed_hole_index(v->name, RIM_CHAMFER_NAME) < 0 &&
@@ -1205,7 +1207,7 @@ void GLGizmoHoles::clear_all()
         const ModelVolume *v = mo->volumes[vi];
         if ((v->is_negative_volume() && v->name.rfind(TEARDROP_NAME, 0) == 0) || v->name.rfind(POCKET_NAME, 0) == 0 ||
             v->name.rfind(FACE_POCKET_NAME, 0) == 0 || v->name.rfind(RIM_CHAMFER_NAME, 0) == 0 ||
-            v->name.rfind(RIM_FILLET_NAME, 0) == 0)
+             v->name.rfind(RIM_FILLET_NAME, 0) == 0)
             items.emplace_back(ItemType::itVolume, oi, int(vi));
     }
     m_placed.clear();
@@ -1808,7 +1810,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::SameLine(left_width);
         if (m_imgui->button(m_desc.at("entry")))
             set_flip(!m_flip);
-    } else {
+    } else if (m_operation == HoleOperation::RimChamfer || m_operation == HoleOperation::RimFillet) {
         // Rim chamfer / fillet: one size, the chamfer leg or the fillet radius at the hole edge.
         ImGui::AlignTextToFramePadding();
         m_imgui->text(m_desc.at("rim_size"));

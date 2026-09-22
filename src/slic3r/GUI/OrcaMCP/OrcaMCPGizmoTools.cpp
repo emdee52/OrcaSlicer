@@ -373,10 +373,12 @@ void OrcaMCPServer::register_gizmo_tools()
         "holes_gizmo",
         "Control the Holes tool. Actions: 'open' (activate it; selects the object if needed), "
         "'status' (detected holes + which are teardropped / bored), 'set_operation' "
-        "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', 'set_standard' (0=Custom, else 1-based index into the "
+        "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', "
+        "'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
         "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
-        "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
+        "index), 'apply_all', 'clear_all', 'refresh', 'close'. "
+        "Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {

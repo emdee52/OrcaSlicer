@@ -12,7 +12,8 @@ using Catch::Matchers::WithinAbs;
 
 namespace {
 
-// An open cylindrical wall (no caps): a through-hole wall in isolation.
+// An open cylindrical wall (no caps): a through-hole wall in isolation. The solid sits outside
+// the wall, so the outward normals point toward the axis (wound inward).
 indexed_triangle_set make_cylinder_wall(double r, double h, int n)
 {
     indexed_triangle_set its;
@@ -28,8 +29,8 @@ indexed_triangle_set make_cylinder_wall(double r, double h, int n)
     }
     for (int i = 0; i < n; ++i) {
         const int j = (i + 1) % n;
-        its.indices.emplace_back(bottom[i], bottom[j], top[j]);
-        its.indices.emplace_back(bottom[i], top[j], top[i]);
+        its.indices.emplace_back(bottom[i], top[j], bottom[j]);
+        its.indices.emplace_back(bottom[i], top[i], top[j]);
     }
     return its;
 }
@@ -107,14 +108,11 @@ TEST_CASE("Two separated cylindrical walls are detected as two holes", "[HoleDet
     CHECK(found == 2);
 }
 
-TEST_CASE("A solid cylinder wall is capped, not a through hole", "[HoleDetector]")
+TEST_CASE("A solid cylinder is not reported as a hole", "[HoleDetector]")
 {
+    // The wall is convex: its normals point away from the axis, so it is not a cavity.
     const TriangleMesh cylinder = make_cylinder(3., 12.);
-    const auto         holes    = detect_holes(cylinder.its);
-
-    const DetectedHole *h = hole_with_radius(holes, 3.);
-    REQUIRE(h != nullptr);
-    CHECK_FALSE(h->through);
+    CHECK(detect_holes(cylinder.its).empty());
 }
 
 TEST_CASE("A flat cube is not reported as a hole", "[HoleDetector]")

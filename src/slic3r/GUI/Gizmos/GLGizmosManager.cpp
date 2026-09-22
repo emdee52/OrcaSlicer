@@ -194,7 +194,7 @@ void GLGizmosManager::switch_gizmos_icon_filename()
             gizmo->set_icon_filename(m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg");
             break;
         case (EType::CounterboreBridge): // [ORCAPORT:PF-2b]
-            gizmo->set_icon_filename(m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg");
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_vertical_holes_dark.svg" : "toolbar_vertical_holes.svg");
             break;
         case (EType::Holes): // [ORCAPORT:ME-1]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg");
@@ -255,7 +255,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoBrimEars(m_parent, m_is_dark ? "toolbar_brimears_dark.svg" : "toolbar_brimears.svg", EType::BrimEars));
     m_gizmos.emplace_back(new GLGizmoAlignStack(m_parent, m_is_dark ? "toolbar_align_stack_dark.svg" : "toolbar_align_stack.svg", EType::AlignStack)); // [ORCAPORT:AS-2]
     m_gizmos.emplace_back(new GLGizmoSupportZones(m_parent, m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg", EType::SupportZones)); // [ORCAPORT:SU-5]
-    m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_counterbore_bridge_dark.svg" : "toolbar_counterbore_bridge.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
+    m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_vertical_holes_dark.svg" : "toolbar_vertical_holes.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
     m_gizmos.emplace_back(new GLGizmoHoles(m_parent, m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg", EType::Holes)); // [ORCAPORT:ME-1]
     m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "design_filletedge.svg" : "design_filletedge.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
 #ifdef SLIC3R_CAD
@@ -1599,7 +1599,7 @@ std::string get_name_from_gizmo_etype(GLGizmosManager::EType type)
     case GLGizmosManager::EType::FuzzySkin:
         return "Fuzzy Skin Painting";
     case GLGizmosManager::EType::CounterboreBridge: // [ORCAPORT:PF-2b]
-        return "Counterbore Bridge";
+        return "Vertical holes";
     default:
         return "";
     }

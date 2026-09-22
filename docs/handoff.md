@@ -889,4 +889,91 @@ assembly.
 - **Branch state**: on `port/SNAP-8`, branched from `port/integration` at `fa2d06d014`. Merged. See
   section 0 for why a branch only merges once the user has tested it in the app.
 
+## 22. RF-1 — strengthen vertical holes from the Vertical holes gizmo (branch `port/RF-1`)
+
+A screw driven into a thin-walled hole splits the part. This feature thickens the wall around a
+vertical hole by dropping a co-axial ring of material over it and giving that ring a *higher wall
+count* than the rest of the object, so the hole the screw cuts into is solid plastic. It is the
+first feature in this line that writes a `PARAMETER_MODIFIER` volume (every earlier hole feature
+writes a negative volume).
+
+- **Where.** The strengthening lives in the counterbore-bridge gizmo, renamed **Vertical holes**
+  (`GLGizmoCounterboreBridge::on_get_name`, `Ctrl+K`), which now has two top-level modes: **Bridging**
+  (the pre-existing painted bridge, with its smart-stepped / partial sub-options) and **Strengthen
+  hole**. The holes gizmo keeps its original identity — name **Horizontal holes**, icon
+  `toolbar_horizontal_holes(_dark).svg` (`Ctrl+J`, `GLGizmoHoles`); the RF-1 rename and icon that were
+  briefly attached to it are gone. The counterbore gizmo took the new `toolbar_vertical_holes(_dark).svg`
+  instead, so painters and strengtheners share one "vertical holes" tool as requested.
+- **Defaults.** Two parameters: **Wall thickness** (the radial thickness of the added ring, default
+  `0.8` mm) and **Extra loops** (wall loops added on top of the object's own count, default `1`). Off
+  by default: the mode is one of two and a fresh object starts in Bridging, so the G-code is untouched.
+  Vertical holes only — a reinforcement ring around a horizontal hole would sit in mid-air.
+- **Ring geometry.** `GLGizmoCounterboreBridge::reinforce_mesh` builds a positive co-axial shell with
+  `its_make_tube(outer_d, inner_d, depth, axis, entry)`: `inner_d = 2·radius`,
+  `outer_d = inner_d + 2·thickness` with `thickness = max(0.05, m_reinforce_thickness / object_scale)`,
+  and the axial span is the detected wall depth plus a `margin = through ? max(0.5, 0.25·radius) : 0`
+  at each end so a through hole is reinforced past both openings. `entry` is
+  `h.center − axis·(0.5·depth + margin)`; `DetectedHole::center` is the **absolute axial midpoint**
+  of the wall (`HoleDetector.cpp:228` sets `center = cu·e1 + cv·e2 + t_mid·axis`), not an entry point,
+  so the ring straddles the hole symmetrically. This mirrors the `teardrop_depth` margin convention.
+- **Detection.** The ring only makes sense on a real hole, and the detector used to report the
+  washer's *outer* cylinder wall as one too (index 0, r≈10, `through:false`). That false positive also
+  produced an enclosing pick cylinder, which is why the real hole could not be clicked. `HoleDetector`
+  now rejects a convex surface after the circle fit: it averages `face_normal · radial_unit` over the
+  patch and drops the patch when the mean exceeds `0.5`. A hole is a cavity, so its outward normals
+  point toward the axis (negative dot); a solid or outer cylinder is convex (positive). The
+  solid-cylinder detector test was rewritten to expect an empty result.
+- **The modifier.** `GLGizmoCounterboreBridge::toggle_reinforce` adds the ring as a
+  `ModelVolumeType::PARAMETER_MODIFIER` named
+  `HoleReinforce#<idx>` (feature-name convention shared with `Teardrop#i`, `HolePocket#i`), then sets
+  on that volume's config
+  `wall_loops = effective_wall_loops() + m_reinforce_loops`. `effective_wall_loops` reads the
+  `wall_loops` override on the `ModelObject` config first, then the selected print preset
+  (`wxGetApp().preset_bundle->prints.get_edited_preset().config`), and falls back to `2`; the `.has()`
+  guard is required because `opt_int` asserts on a missing key. The counterbore gizmo's
+  `add_named_volume` returns the created `ModelVolume*` so the caller can set the key in the same
+  snapshot.
+- **Why a modifier works.** `wall_loops` is declared on `PrintRegionConfig`
+  (`PrintConfig.hpp:1461`), so it is a valid modifier key. `Print::apply` builds a child `PrintRegion`
+  per modifier as parent region config + volume config (`region_config_from_model_volume`,
+  `PrintObject.cpp:3940` → `apply_to_print_region_config`, `:3868`), creates a distinct region only
+  when the merged config differs from the parent, and `slices_to_regions` assigns the
+  modifier ∩ parent polygon to it while diffing the parent. `LayerRegion::make_perimeters`
+  (`LayerRegion.cpp:528`) then reads `region().config().wall_loops`. Object- and print-scope keys
+  (`layer_height`, `raft_layers`, `support_*`, `spiral_mode`, …) are silently dropped by
+  `apply_to_print_region_config` and have no effect in a modifier, which is why this feature is
+  `wall_loops`-only. Unlike a negative volume, a modifier stays editable after placement.
+- **Applied state.** The strengthen mode keeps its own object-space hole list. `refresh_applied`
+  seeds `m_reinforce` and scans `v->is_modifier()` volumes for the `HoleReinforce` prefix. The applied
+  sleeves are drawn by the ordinary volume render path, so the painter stays out of the way:
+  `render_painter_gizmo` early-returns in strengthen mode. `gizmo_toggle_hole`, `gizmo_reinforce_all`
+  and `gizmo_clear_reinforce` restrict to vertical holes, and the pick raycasters are registered only
+  in strengthen mode (`register_pickers`), so Bridging keeps its brush behaviour.
+- **Icon.** The stock counterbore icon made no sense for a tool that now also strengthens holes, so it
+  took the new monochrome 40×40 SVGs `resources/images/toolbar_vertical_holes.svg` and
+  `toolbar_vertical_holes_dark.svg` (teal `#009688` thick-walled cylinder with a bore, accent
+  `#2b3436` light / `#b6b6b6` dark), wired in the `GLGizmosManager` ctor and the dark-mode filename
+  switch, with the tooltip name in `get_name_from_gizmo_etype`. The holes gizmo went back to
+  `toolbar_horizontal_holes(_dark).svg`.
+- **MCP.** Not exposed. The strengthen mode belongs to the counterbore gizmo, which has no MCP tool,
+  so the feature is UI-driven. The `holes_gizmo` `reinforce` operation and its two parameters were
+  reverted when the feature moved.
+- **Verification.** Build green and `libslic3r_tests` 904/904. A/B slice on a 64-segment washer
+  (inner r 3 mm, outer r 10 mm, height 10 mm; `cube_with_hole.obj` is useless here — its hole is
+  square, so the cylindrical detector correctly finds nothing): with `HoleReinforce#1` applied the
+  G-code grew 501,016 → 691,601 bytes, `;TYPE:Inner wall` runs 98 → 147, `;TYPE:Outer wall` runs
+  99 → 99 (unchanged, so the extra walls stay local to the hole), 50 layers, 0 warnings both legs.
+  Layer 1 shows the baseline hole boundary at r≈3.40/3.88 and the reinforced part adding co-axial
+  runs at r≈3.82, 4.75 and 5.23 — the hole wall is genuinely thicker. (A `;TYPE:` marker counts a
+  run, not a loop, so the byte delta is the signal to trust.) Measured before the feature moved into
+  the counterbore gizmo; the ring geometry and the modifier are unchanged. After the detector fix
+  `find_holes` returns only the real hole (index 1, r≈3, `through:true`) and no longer the outer-wall
+  false positive.
+- **Known limitations, do not re-fix.** The loop count is baked into the modifier when it is applied,
+  so changing the object/preset `wall_loops` afterwards does not re-bake it — clear and re-apply, same
+  as the other per-hole features. A hole lying at the edge of a part produces a ring that hangs
+  outside the part; it is left to the user rather than auto-clipped.
+- **Branch state**: on `port/RF-1`, branched from `port/integration` at `4e0c9f881d`. Not merged.
+  See section 0 for why a branch only merges once the user has tested it in the app.
+
 
