@@ -24,7 +24,7 @@ enum class ModelVolumeType : int;
 
 namespace GUI {
 
-enum class HoleOperation { Teardrop, Bore };
+enum class HoleOperation { Teardrop, Bore, RimChamfer, RimFillet };
 enum class BoreHead { None, SocketHead, ButtonHead, Countersink };
 enum class ScrewFit { Free, Tap };
 enum class HoleCategory { Screw, Nut, Magnet, Insert, Custom };
@@ -50,6 +50,8 @@ public:
     void          set_operation(HoleOperation op);
     float         get_angle() const { return m_angle_deg; }
     void          set_angle(float deg);
+    double        get_rim_size() const { return m_rim_size; }
+    void          set_rim_size(double size);
 
     int         standard_count() const;              // includes the leading "Custom" entry
     std::string standard_name(int idx) const;        // idx 0 = Custom
@@ -129,6 +131,7 @@ private:
     indexed_triangle_set bore_negative_mesh(const DetectedHole& hole) const; // empty when nothing to cut
     indexed_triangle_set bore_tube_mesh(const DetectedHole& hole) const;     // empty unless shrinking
     indexed_triangle_set shape_mesh(const DetectedHole& hole) const;         // the preview shape for the operation
+    indexed_triangle_set rim_mesh(const DetectedHole& hole) const;           // rim chamfer / fillet ring, empty when invalid
 
     void detect();
     void refresh_applied();
@@ -137,6 +140,7 @@ private:
 
     void toggle_teardrop(int idx);
     void toggle_bore(int idx);
+    void toggle_rim(int idx, bool chamfer);
     void clear_all();
 
     // Face authoring: builds a synthetic hole from a picked face and adds it as a FacePocket volume.
@@ -167,11 +171,14 @@ private:
     std::vector<HoleView>             m_holes;
     std::vector<char>                 m_teardrop; // a teardrop negative matches this hole
     std::vector<char>                 m_bore;     // a pocket/bore volume matches this hole
+    std::vector<char>                 m_rim_chamfer; // a rim chamfer ring matches this hole
+    std::vector<char>                 m_rim_fillet;  // a rim fillet ring matches this hole
     std::vector<indexed_triangle_set> m_pick_its;
 
     bool  m_dirty{ true };
     bool  m_preview_dirty{ true };
     float m_angle_deg{ 45.f };
+    double m_rim_size{ 1.0 }; // chamfer leg / fillet radius, mm
 
     HoleOperation m_operation{ HoleOperation::Teardrop };
     HoleCategory  m_category{ HoleCategory::Screw };

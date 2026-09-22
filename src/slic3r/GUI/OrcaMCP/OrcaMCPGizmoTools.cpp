@@ -158,7 +158,10 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
             {"has_bore", g.hole_has_bore(i)},
         });
     }
-    const char *op = g.get_operation() == HoleOperation::Teardrop ? "teardrop" : "bore";
+    const char *op = g.get_operation() == HoleOperation::Teardrop   ? "teardrop"
+                   : g.get_operation() == HoleOperation::Bore        ? "bore"
+                   : g.get_operation() == HoleOperation::RimChamfer  ? "rim_chamfer"
+                                                                     : "rim_fillet";
     const char *cat = "custom";
     switch (g.get_category()) {
     case HoleCategory::Screw:  cat = "screw"; break;
@@ -326,20 +329,21 @@ void OrcaMCPServer::register_gizmo_tools()
         "holes_gizmo",
         "Control the Holes tool. Actions: 'open' (activate it; selects the object if needed), "
         "'status' (detected holes + which are teardropped / bored), 'set_operation' "
-        "(teardrop|bore), 'set_angle', 'set_standard' (0=Custom, else 1-based index into the "
+        "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', 'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
         "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
         "index), 'apply_all', 'clear_all', 'refresh', 'close'. Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
-                {"operation", {{"type", "string"}, {"description", "teardrop | bore, for action=set_operation."}}},
+                {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
+                {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
@@ -386,8 +390,15 @@ void OrcaMCPServer::register_gizmo_tools()
                 auto need = [&](const char *key) { return params.contains(key); };
 
                 if (action == "set_operation") {
-                    g->set_operation(params.value("operation", std::string("teardrop")) == "bore" ? HoleOperation::Bore
-                                                                                                 : HoleOperation::Teardrop);
+                    const std::string o = params.value("operation", std::string("teardrop"));
+                    g->set_operation(o == "rim_chamfer" ? HoleOperation::RimChamfer
+                                    : o == "rim_fillet"  ? HoleOperation::RimFillet
+                                    : o == "bore"        ? HoleOperation::Bore
+                                                         : HoleOperation::Teardrop);
+                } else if (action == "set_rim_size") {
+                    if (!need("size"))
+                        return {{"status", "error"}, {"error", "needs 'size'"}};
+                    g->set_rim_size(params["size"].get<double>());
                 } else if (action == "set_category") {
                     const std::string c = params.value("category", std::string("custom"));
                     g->set_category(c == "screw" ? HoleCategory::Screw
