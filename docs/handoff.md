@@ -830,16 +830,21 @@ assembly.
   folded into the single `m_selection.translate(...)` call, because `Selection::translate` writes instance
   offsets ABSOLUTELY from the drag-start cache — a second call in the same frame would overwrite the first
   instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up.
-- **Anchoring.** The anchor is the dragged object's own coordinate the cursor is on, not the raw
-  cursor: grabbing a corner a few pixels off always left that corner short of the target.
-  `mover_hit_under_cursor` raycasts only the moving volumes (same loop as `hit_under_cursor`, shared
-  through a `want_moving` predicate). `Selection::translate` moves an instance by `R * displacement`,
-  with `R` its instance rotation (constant during an offset-only drag), so the correction is
-  premultiplied by `R⁻¹` — `SnapHit::rotation` carries it and, being orthonormal, its transpose is the
-  inverse. That matters: with a rotated object the naive correction settles short of the target. Each
-  frame's total is `displacement already applied + R⁻¹ * (target − anchor)`, which reaches the target
-  exactly and stays there; if the cursor is off the dragged object there is no anchor feature to trust
-  and the drag-start grab point is put on the target instead.
+- **Anchoring.** The anchor is a coordinate of the dragged object itself, not the raw cursor: grabbing
+  a corner a few pixels off always left that corner short of the target. `mover_hit_under_cursor`
+  raycasts only the moving volumes (same loop as `hit_under_cursor`, shared through a `want_moving`
+  predicate), and the anchor is **latched on the first Alt frame of the drag** rather than re-picked
+  every frame: once the snap moves the object the cursor sits on a different coordinate of it, so
+  re-picking let the anchor hop between neighbours, and each hop commanded a different landing position
+  — the side-to-side shimmy. An interior coordinate winning the pick also pushed the real corner past
+  the target, which is the tip intersection. Latched with the displacement in force and the instance
+  rotation at that moment, the landing is `anchor_disp + R⁻¹ * (target − anchor_world)`, which depends
+  on nothing from the previous frame and so cannot feed back into itself; it relatches when Alt is
+  pressed again or the drag restarts. `R⁻¹` matters because `Selection::translate` moves an instance by
+  `R * displacement` (`R` is orthonormal, so its transpose is the inverse) — without it a rotated
+  object settles short of the target. With no latched anchor (Alt pressed while the cursor was off the
+  dragged object) there is no anchor feature to trust and the drag-start grab point is put on the
+  target instead.
 - **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
   keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
   `coplanar_region` + `build_face_snap_points`). A non-planar face under the cursor falls back to the
