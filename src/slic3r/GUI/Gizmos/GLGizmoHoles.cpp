@@ -1815,12 +1815,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::SameLine(left_width);
         ImGui::PushItemWidth(sliders_width);
         float rim = float(m_rim_size);
-        if (m_imgui->bbl_slider_float_style("##rim_size", &rim, 0.05f, 10.0f, "%.2f", 0.05f, true))
-            set_rim_size(rim);
-        ImGui::PopItemWidth();
-        ImGui::SameLine();
-        ImGui::PushItemWidth(m_imgui->scaled(4.0f));
-        if (ImGui::InputFloat("##rim_size_in", &rim, 0.1f, 1.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+        if (ImGui::InputFloat("##rim_size", &rim, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
             set_rim_size(rim);
         ImGui::PopItemWidth();
     }
