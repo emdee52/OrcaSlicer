@@ -52,14 +52,14 @@ const std::vector<FaceSnapPoint> &candidates_for(const ModelVolume *mv, size_t f
     return cache.points;
 }
 
-} // namespace
-
-std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
-                                        const GUI::Camera &camera,
-                                        const std::set<std::pair<int, int>> &moving, const Vec2d &mouse)
+// Closest visible volume under the cursor whose (object, instance) is or is not in the drag set,
+// and its nearest snap coordinate. Same rule as GLGizmosCommon's raycast_object_face, except that
+// the target set is the drag set here rather than the selection.
+std::optional<SnapHit> hit_filtered(const Model &model, const GLVolumeCollection &volumes,
+                                    const GUI::Camera &camera,
+                                    const std::set<std::pair<int, int>> &moving, const Vec2d &mouse,
+                                    bool want_moving)
 {
-    // Closest visible volume under the cursor, over every object that is not being dragged. Same
-    // rule as GLGizmosCommon's raycast_object_face, but the selection is not the target set here.
     const GLVolume *hit_volume = nullptr;
     size_t          hit_facet  = 0;
     Vec3d           hit_world  = Vec3d::Zero();
@@ -69,7 +69,7 @@ std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollec
         if (v == nullptr || v->mesh_raycaster == nullptr || v->is_wipe_tower || v->is_modifier ||
             v->is_sla_pad() || v->is_sla_support())
             continue;
-        if (moving.count({ v->object_idx(), v->instance_idx() }) != 0)
+        if ((moving.count({ v->object_idx(), v->instance_idx() }) != 0) != want_moving)
             continue;
 
         Vec3f  hit, normal;
@@ -131,7 +131,23 @@ std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollec
     return out;
 }
 
-void Markers::set(const std::vector<SnapCandidate> &candidates, size_t active)
+} // namespace
+
+std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
+                                        const GUI::Camera &camera,
+                                        const std::set<std::pair<int, int>> &moving, const Vec2d &mouse)
+{
+    return hit_filtered(model, volumes, camera, moving, mouse, false);
+}
+
+std::optional<SnapHit> mover_hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
+                                              const GUI::Camera &camera,
+                                              const std::set<std::pair<int, int>> &moving, const Vec2d &mouse)
+{
+    return hit_filtered(model, volumes, camera, moving, mouse, true);
+}
+
+void Markers::set(const std::vector<SnapCandidate> &candidates, size_t active, MarkerRole role)
 {
     clear();
     if (candidates.empty())
@@ -174,7 +190,8 @@ void Markers::set(const std::vector<SnapCandidate> &candidates, size_t active)
         indexed_triangle_set sphere = its_make_sphere(radius * 1.4, PI / 12.0);
         its_translate(sphere, candidates[active].world.cast<float>());
         m_active.init_from(sphere);
-        m_active.set_color(ColorRGBA(1.00f, 1.00f, 1.00f, 1.0f));
+        m_active.set_color(role == MarkerRole::Mover ? ColorRGBA(1.00f, 0.55f, 0.10f, 1.0f)
+                                                     : ColorRGBA(1.00f, 1.00f, 1.00f, 1.0f));
     }
     m_visible = true;
 }

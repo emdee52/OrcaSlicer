@@ -51,13 +51,29 @@ std::optional<SnapHit> hit_under_cursor(const Model &model, const GLVolumeCollec
                                         const GUI::Camera &camera,
                                         const std::set<std::pair<int, int>> &moving, const Vec2d &mouse);
 
+// Same, but for the object being dragged: the nearest snap coordinate of the mover itself. The drag
+// is anchored on that coordinate instead of on the raw cursor, so grabbing a corner a few pixels off
+// still lands the corner exactly on the target. Returns nullopt when the cursor is off the dragged
+// object or no coordinate is inside its stick radius.
+std::optional<SnapHit> mover_hit_under_cursor(const Model &model, const GLVolumeCollection &volumes,
+                                              const GUI::Camera &camera,
+                                              const std::set<std::pair<int, int>> &moving, const Vec2d &mouse);
+
+// Which object a marker set belongs to, so the dragged object's spheres are told apart from the
+// target's at a glance.
+enum class MarkerRole
+{
+    Target, // where the grab point will land
+    Mover,  // the dragged object's own coordinates
+};
+
 // The candidate spheres shown while Alt is held, one colour per feature kind (same palette as the
-// Holes gizmo) and a larger one on the coordinate the grab point would land on. Pure render state:
-// it never feeds back into the snap decision.
+// Holes gizmo) and a larger one on the active coordinate. Pure render state: it never feeds back
+// into the snap decision.
 class Markers
 {
 public:
-    void set(const std::vector<SnapCandidate> &candidates, size_t active);
+    void set(const std::vector<SnapCandidate> &candidates, size_t active, MarkerRole role = MarkerRole::Target);
     void clear();
     bool is_visible() const { return m_visible; }
     void render(const GUI::Camera &camera);

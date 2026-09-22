@@ -786,7 +786,11 @@ public:
 
     // [ORCAPORT:SNAP-8] Candidate spheres for the object-to-object Alt snap, rebuilt by on_mouse and
     // drawn once per frame. Render-only; the snap decision lives in OrcaExt/ObjectSnap.cpp.
-    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_markers;
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_markers;    // on the object the drag lands on
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_mover_markers; // on the object being dragged
+    // Displacement the last cache-absolute Selection::translate applied in this drag, so the snap
+    // can recover the anchor's drag-start position. Reset when the drag starts.
+    Vec3d m_objsnap_disp{ Vec3d::Zero() };
 
     // [ORCAPORT:SU-5] What each support zone will catch (built in world coordinates, one model for
     // every instance). See Feature/SupportZones/SupportZoneProbe.hpp.

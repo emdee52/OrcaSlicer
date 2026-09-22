@@ -4773,6 +4773,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                             // The dragging operation is initiated.
                             m_mouse.drag.move_volume_idx = volume_idx;
                             m_snapdrag_engaged.clear(); // [ORCAPORT:AS-3] fresh hysteresis state this drag
+                            m_objsnap_disp = Vec3d::Zero(); // [ORCAPORT:SNAP-8] no displacement applied yet
                             m_selection.setup_cache();
                             m_mouse.drag.start_position_3D = scene_position;
                             m_sequential_print_clearance_first_displacement = true;
@@ -4847,17 +4848,36 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                     moving.insert({ gv->object_idx(), gv->instance_idx() });
                 }
 
-                m_objsnap_markers.clear(); // rebuilt below only while Alt is held over a face
+                m_objsnap_markers.clear();       // rebuilt below only while Alt is held over a face
+                m_objsnap_mover_markers.clear();
                 Vec3d snap_disp = Vec3d::Zero();
                 if (alt_snap && m_model != nullptr) {
                     const Camera& camera = wxGetApp().plater()->get_camera();
+                    // The dragged object's own nearest coordinate. Anchoring on the raw cursor is
+                    // only approximate: grabbing a corner a few pixels off left the corner short of
+                    // the target. With a mover coordinate the grabbed point becomes that coordinate.
+                    const std::optional<ObjectSnap::SnapHit> mover =
+                        ObjectSnap::mover_hit_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>());
+                    if (mover) {
+                        size_t active = 0;
+                        for (size_t i = 0; i < mover->candidates.size(); ++i)
+                            if ((mover->candidates[i].world - mover->point.world).squaredNorm() < 1e-12)
+                                active = i;
+                        m_objsnap_mover_markers.set(mover->candidates, active, ObjectSnap::MarkerRole::Mover);
+                    }
+
                     if (const std::optional<ObjectSnap::SnapHit> hit =
                             ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>())) {
-                        // `cur_pos` is where the plain drag put the grabbed point, so this is the
-                        // remaining shift that lands it exactly on the snapped coordinate. Folded
-                        // into the single translate below: Selection::translate writes each offset
-                        // absolutely from the drag-start cache, so a second call would overwrite it.
-                        snap_disp = hit->point.world - cur_pos;
+                        // Selection::translate writes each offset absolutely from the drag-start
+                        // cache, so the displacement below is the total since the drag began. The
+                        // anchor's drag-start world position is therefore its current position minus
+                        // the displacement already applied. Anchoring on the mover's own coordinate
+                        // (rather than on the raw cursor) is what makes a corner grabbed a few
+                        // pixels off land dead on the target; with no mover hit the drag-start grab
+                        // point is the anchor, i.e. the raw cursor.
+                        const Vec3d base_anchor = mover ? (mover->point.world - m_objsnap_disp)
+                                                        : m_mouse.drag.start_position_3D;
+                        snap_disp = hit->point.world - base_anchor - (cur_pos - m_mouse.drag.start_position_3D);
 
                         size_t active = 0;
                         for (size_t i = 0; i < hit->candidates.size(); ++i)
@@ -4868,7 +4888,9 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 }
                 // [ORCAPORT:SNAP-8] END
 
-                m_selection.translate(cur_pos - m_mouse.drag.start_position_3D + snap_disp, trafo_type);
+                const Vec3d drag_disp = cur_pos - m_mouse.drag.start_position_3D + snap_disp;
+                m_selection.translate(drag_disp, trafo_type);
+                m_objsnap_disp = drag_disp; // [ORCAPORT:SNAP-8] the total displacement the cache-absolute translate just applied
 
                 // [ORCAPORT:AS-3] BEGIN - live floor snap: rest the dragged instances on the real
                 // surface found under their footprint. GLVolume-only: the ModelObject is written once
@@ -5842,7 +5864,9 @@ void GLCanvas3D::_render_snapdrag_indicator()
 
 void GLCanvas3D::_render_objsnap_markers() // [ORCAPORT:SNAP-8]
 {
-    m_objsnap_markers.render(wxGetApp().plater()->get_camera());
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    m_objsnap_mover_markers.render(camera);
+    m_objsnap_markers.render(camera);
 }
 
 void GLCanvas3D::do_move(const std::string& snapshot_type)
@@ -6573,6 +6597,7 @@ void GLCanvas3D::mouse_up_cleanup()
     m_mouse.drag.move_volume_idx = -1;
     m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
     m_objsnap_markers.clear(); // [ORCAPORT:SNAP-8] drop the snap candidate spheres on mouse-up
+    m_objsnap_mover_markers.clear();
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;
