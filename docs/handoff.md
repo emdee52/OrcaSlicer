@@ -1,8 +1,10 @@
-# Handoff — mesh hole features (ME-1, ME-2)
+# Handoff — mesh features: holes, cut, snap, rim and edge dress
 
 Session summary so the next session can pick up: what was built, where it lives, and the failure
 modes already understood so they are not rediscovered. Work is mesh-only (no CAD reconstruction):
-Prepare-tab gizmos that add positive/negative volumes and paint-free edits to a loaded STL.
+Prepare-tab gizmos that add positive/negative volumes and paint-free edits to a loaded STL. Sections
+2-6 are the shared ground; 7 onward is one section per feature, oldest first, ending with sections 19
+and 20 for the rim dress and the edge chamfer / fillet tool.
 
 Living tracker with the full idea backlog lives in `docs/superpowers/ME-roadmap.md` (gitignored).
 
@@ -48,10 +50,18 @@ $env:CMAKE_TLS_VERIFY = "0"
 
 ## 2. Branches / commits
 
+Everything below is merged into `port/integration` unless its row says otherwise. The ME, CUT, SNAP,
+PF, SU and AS branches are done; the two newest are the rim dress and the edge dress tools.
+
 | Branch | State | Contents |
 |---|---|---|
-| `port/ME-1` | **merged** into `port/integration` (`eac3472582`) | detection, teardrop, gizmo, MCP |
-| `port/ME-2` | pushed, **unmerged** | shared standards, unified Holes tool, all categories |
+| `port/ME-1` | merged (`eac3472582`) | detection, teardrop, gizmo, MCP |
+| `port/ME-2` | merged | shared standards, unified Holes tool, all categories |
+| `port/CUT-1..3` | merged | face-aligned cut plane, single-part cut, shaped cut |
+| `port/SNAP-2..7` | merged | Alt face snapping and its follow-ups |
+| `port/RIM-1` | merged (`c39780e219`, `873710376f`) | rim chamfer / fillet ring solids + Holes operations |
+| `port/EF-1` | merged (`b6803f53b4`) | Edge chamfer / fillet gizmo, straight edges |
+| `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -61,7 +71,15 @@ ME-2 commits (oldest first): `b309f93851`, `6a920ee4d1`, `afd0aa5b9e`, `db3dddc3
 `f7439b423f`, `5993585a3f`, `1e9809e58a`, `9e3a47cdf3`, `4a404d4c6d`, `2cfa6412e3`, `c3faed5f2a`,
 `7e5f304b78`, `0a03d1d23a`, `3085e98a73`.
 
-Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
+RIM commits: `5ebd292061` (ring solids + tests), `dd053d811c` (Holes operations), `e7ab607390`
+(rim size field width).
+
+EF commits: `acd674d61b` (edge prism solids + tests), `df14bb9931` (gizmo), `7394150a7f` (follow
+cursor, merge collinear segments), `621ecd7bed` (screen-space pick, edge cache), `75ca053842` (wider
+grab); then on `port/EF-2`: `7325ad0776` (loop solids + tests), `602fffcf9a` (whole-loop mode),
+`ca02ef4629` (mitred loop sweep, hidden-edge depth test, hover only on motion, size slider),
+`1f8c897a62` (refuse slivers of smooth surfaces), `5bee105c1d` (applied marks, no re-dress,
+right-click removal), `0f14403ee1` (reset preview models before rebuilding).
 
 ---
 
@@ -75,6 +93,12 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
 - `src/libslic3r/HoleShapes.{hpp,cpp}` — `its_make_teardrop`, `its_make_teardrop_for_hole`,
   `its_make_bore`, `its_make_counterbore`, `its_make_countersink`, `its_make_tube` (shrink),
   `its_make_nut_pocket` (hex prism + clearance bore), plus a shared right-handed `place_on_axis`.
+  Also `its_make_rim_chamfer` / `its_make_rim_fillet` (closed ring negatives at a hole rim).
+- `src/libslic3r/EdgeProfiles.{hpp,cpp}` — chamfer / fillet cross sections as 2D polygons
+  (`chamfer_profile`, `fillet_profile`), `extrude_profile` (closed prism) and `make_edge_chamfer` /
+  `make_edge_fillet` for one straight mesh edge. Loop mode: `LoopFrame` (a straight run `p`→`q` with
+  the in-face directions `u`,`v`), `its_face_patch_loops` (boundary loops of the coplanar face patch
+  under a seed face), `sweep_loop`, `make_loop_chamfer`, `make_loop_fillet`.
 - `src/libslic3r/HoleStandards.{hpp,cpp}` — shared screw/insert/magnet/nut table + `HoleFit`
   (Tight/Slip) and `hole_fit_diameter_delta`, `screw_nominal_diameter`. Always compiled (works with
   `SLIC3R_CAD=OFF`). `CadDocument::add_hole_standard` consumes it (socket head is the CAD counterbore).
@@ -90,14 +114,23 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
     inserts; Head-fit (Flush / -0.08 / -0.16). Shrinking adds a positive tube.
   - Preview: candidate ghosts blue, applied volumes red, hover green.
   - Icons: `resources/images/hole_cat_{screw,nut,magnet,insert,custom}.svg`.
+- `src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.{hpp,cpp}` — "Edge chamfer / fillet" tool,
+  `EType::EdgeDress`, shortcut `Ctrl+D` (icon `design_filletedge.svg`). Chamfer / Fillet buttons, a
+  0.5-3.0 mm size slider with a typed field beside it, and a "Whole loop / rim" checkbox (off by
+  default). Straight edges are picked by screen-space distance; loop mode dresses the boundary loop
+  of the flat face under the cursor. Applied features are drawn red, are not dressed twice, and a
+  right-click removes the one under the cursor.
 - MCP: `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp` — `find_holes` and `holes_gizmo`
   (`open | status | set_operation | set_category | set_angle | set_standard | set_head |
   set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth |
   set_flip | toggle | apply_all | clear_all | refresh | close`). Registered from
-  `OrcaMCPServer::register_builtin_tools`.
+  `OrcaMCPServer::register_builtin_tools`. Also `edge_dress_gizmo` (`open | status | set_mode |
+  set_size | apply | apply_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop |
+  list_loops | apply_loop | remove_loop | applied_loops | clear_all | close`).
 
 ### Tests
-- `tests/libslic3r/test_holedetector.cpp`, `test_holeshapes.cpp`, `test_holestandards.cpp`.
+- `tests/libslic3r/test_holedetector.cpp`, `test_holeshapes.cpp`, `test_holestandards.cpp`,
+  `test_cututils.cpp`, `test_edgeprofiles.cpp`.
 
 ---
 
@@ -141,17 +174,35 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
     inserts are one row per size with a list of heights (buttons map to the editable depth).
 13. Users' 3mf may carry `counterbore_hole_bridging = partiallybridge` globally, which bridges all
     holes regardless of this tool.
+14. **`GLModel::init_from` builds a model once and then returns early** (it wants an explicit
+    `reset()` first). A preview that is rebuilt without resetting keeps the geometry it was first
+    built from, which looks like "only the first applied feature is highlighted" and like a hover
+    highlight that sticks to an old edge. Reset every preview model at the top of the rebuild, the
+    way `GLGizmoHoles::rebuild_previews` does.
+15. **A patch or edge whose boundary runs along a smooth surface is a sliver, not a rim.** One quad
+    of a cylinder wall is coplanar only with itself, so it looks like a face patch, and sweeping a
+    section around it gives a slab or a wedge instead of a chamfer. `its_face_patch_loops` refuses a
+    run whose crease with the neighbouring face is below ~15°, and `collect_edges` keeps a boundary
+    out of the single-edge list when it only bends (< 20°) at both ends and has a near-coplanar
+    crease. Hovering a hole wall used to produce exactly that slab.
+16. **A screen-space nearest candidate needs a depth test.** Without one, an edge on the far side of
+    the model wins over the edge under the cursor (the highlight jumps through the solid). Compare
+    view-space depth against the ray hit and reject candidates more than ~0.5 mm behind it.
 
 ---
 
 ## 5. Key code locations
 
 - Detection / shapes: `src/libslic3r/HoleDetector.cpp`, `HoleShapes.cpp`.
+- Edge dress geometry: `src/libslic3r/EdgeProfiles.cpp` (profiles, prism sweep, patch loops).
 - Shared data: `src/libslic3r/HoleStandards.cpp` (table + fit), `src/libslic3r/CAD/CadDocument.cpp`
   (`add_hole_standard` consumes it).
 - Gizmo: `src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp` (detect, feature_frame, bore_negative_mesh,
   bore_tube_mesh, rebuild_previews, on_render_input_window). Registration in
   `GLGizmosManager.{hpp,cpp}` (`EType::Holes`) and `src/slic3r/CMakeLists.txt`.
+- Gizmo: `src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp` (collect_edges, extend_feature_edge,
+  update_hover, loops_for_facet, mesh_for_edge/loop, rebuild_preview). Registration in
+  `GLGizmosManager.{hpp,cpp}` (`EType::EdgeDress`), `src/slic3r/CMakeLists.txt`.
 - MCP: `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp`.
 - Icons: `resources/images/hole_cat_*.svg`; magnet reuses the `plate_snapdrag.svg` horseshoe path.
 
@@ -159,14 +210,14 @@ Merge ME-2 into `port/integration` (`--no-ff`) once click-verified.
 
 ## 6. Open items / likely next
 
-- **Click-verify ME-2** (categories, heads, head fit, insert heights/nuts), then merge into
-  `port/integration`.
 - Reliability of detection on a wider corpus; `HoleDetectorParams` may need tuning
   (`min_facets`, `radial_tolerance`, `max_angular_gap_deg`).
 - **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
   0.16 mm on the pocket diameter.
-- Next feature candidates (see the roadmap): cut-tool shape cuts (independent), bosses/ribs, local
-  tolerance adjuster, mesh rim chamfer.
+- Edge dress follow-ups (see section 20): a true miter at corner vertices of straight-edge sweeps,
+  dressing irregular / non-circular hole rims (the loop sweep already handles any closed boundary
+  loop, but picking one that is not a face outline is not offered), and a second look at the chamfer
+  crease on a top face if a skin artifact shows up there.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
 
 ---
@@ -638,5 +689,83 @@ cut mode as well as on the flat face, so switching modes with Alt held rebuilds 
   visibly moves the plane; tilt the plane off that face and several distinct spheres must appear.
 - **Branch state**: on `port/SNAP-7`, branched from `port/integration` after SNAP-4, SNAP-5 and
   SNAP-6 were merged (`2b323c1aca`), unmerged until the user has tested it (see section 0).
+
+---
+
+## 19. RIM-1 / RIM-2 — chamfer and fillet a hole rim ✅ merged
+
+A rim chamfer is only a cone ring, and a rim fillet the same shape with a circular-arc section, so
+both are negatives that need no clearance bore and no 3D boolean. `its_make_rim_chamfer` and
+`its_make_rim_fillet` (in `libslic3r/HoleShapes`, beside the other shape solids) build them from a
+local `revolve_profile`: the 2D section is copied once per angular step, in **profile-major** vertex
+order so the triangle indexing lines up, and the winding is fixed against `its_volume`. The section
+keeps its first point on the crease, so the ring spans the hole radius outward by `size` on the face
+and down by `size` along the wall.
+
+RIM-2 added them to the Holes gizmo as `HoleOperation::RimChamfer` / `RimFillet`: its own operation
+buttons, a size field, a preview ghost and applied volumes named `RimChamfer#<id>` / `RimFillet#<id>`
+(a chamfer and a fillet cannot both sit on one rim). MCP: `holes_gizmo set_operation rim_chamfer |
+rim_fillet`, `set_rim_size`.
+
+- **Two bugs found and fixed, do not regress**: (a) the ring's vertices must be emitted
+  profile-major — angle-major scrambled the mesh, which still had zero open edges but a garbage
+  signed volume; (b) the fillet arc sweeps 90°, not 180°, or the ring reaches 2 × size.
+- **Verification**: `[HoleShapes]` asserts closed ring, positive volume, bounding box and, for the
+  chamfer, volume within 2 % of `PI * size^2 * (r + size/3)` (Pappus, triangle centroid), plus that
+  the fillet is smaller. Headless A/B on `hole_box.stl`: rim on → 360,935 B, rim off → 346,965 B.
+- One follow-up fix: the rim size **field** had to be a plain typed field sized like the other rows;
+  a slider plus a narrow `InputFloat` on the same line squeezed the value to one digit.
+
+---
+
+## 20. EF-1 / EF-2 — the Edge chamfer / fillet gizmo ✅ merged
+
+`GLGizmoEdgeDress` (`EType::EdgeDress`, `Ctrl+D`) dresses mesh edges with the same kind of negatives,
+so it works on dirty STLs that the CAD dress-up cannot repair. `libslic3r/EdgeProfiles` holds the
+geometry: `chamfer_profile` (right triangle), `fillet_profile` (tangent quarter-arc lune, the same
+shape as the rim fillet came from), `extrude_profile` (closed prism, winding fixed against
+`its_volume`), then `make_edge_chamfer` / `make_edge_fillet` for one straight edge and
+`make_loop_chamfer` / `make_loop_fillet` for a whole boundary.
+
+**EF-1 — straight edges.** A clicked edge is grown into the whole geometric edge: `extend_feature_edge`
+walks outward through mesh segments that are collinear and carry the same pair of face normals, so a
+40 mm box edge that is tessellated into 64 segments is one feature. The 2D section is framed by the
+two facing normals (`u` in the bordered face, `v` in the other), swept from `-margin` to
+`length + margin` so neighbouring sweeps overlap at corners. Picking is screen-space nearest over a
+cached edge list with a generous grab radius.
+
+**EF-2 — whole loop / rim.** With "Whole loop / rim" on, the gizmo takes the boundary loops of the
+coplanar face patch under the cursor (`its_face_patch_loops`, growing the patch by face-normal match)
+and dresses the loop nearest the cursor, so a round hole
+rim is one closed torus-topology feature instead of its 64 tessellation segments. This is how the
+original request to "chamfer and maybe even fillet holes" is answered without hole detection.
+
+The loop sweep is framed **per straight run**, not per vertex: each run gets its own `(u, v)` from its
+own two faces, consecutive runs are bridged by a miter ring at the shared vertex, and collinear runs
+are merged into one frame. A per-vertex bisector frame (the first version) rotated across a corner and
+made the prism twist, which showed as a taper at a square rim's corner.
+
+- **Refusals** (section 4.15): a run whose crease with the neighbour is below ~15°, or an edge that
+  only bends below 20° at both ends, is a piece of a smooth surface, not a rim or an edge; sweeping it
+  produced a slab (a "fin" on a hole) or a wedge. On `hole_box.stl` the single-edge list went from
+  140 to 12 (the box edges only) and a workaround loop on a hole wall became impossible.
+- **Applied state**: applied features are drawn red like the Holes gizmo does, the source is stored as
+  a short hash of the source geometry in the volume name (`EdgeChamfer#<id>@<tag>`, which survives
+  save/reopen), an applied edge is not dressed again, and a right-click removes it. MCP:
+  `remove_edge` / `remove_loop` / `applied_edges` / `applied_loops`.
+- **UI**: size slider 0.5-3.0 mm with a typed field beside it.
+- **Verification**: `[EdgeProfiles]` — 251 assertions in 9 cases, including "A loop chamfer rings the
+  whole hole or boss rim" (volume within 2 % of the Pappus value), "…follows a square face outline"
+  (mitred volume near `0.5 * size^2 * perimeter`), "A piece of a curved surface is not a rim", and the
+  edge-prism cases (closed, positive volume, over-extension by the margin, degenerate input refused).
+  Headless checks exported the applied negatives and confirmed watertight, correctly sized rings
+  (square 79.33 vs 80 analytic, rim 16.75 vs 16.76, fillet 22.01 vs 22.0), and G-code A/B: edge
+  chamfer 343,554 B and rim chamfer 358,481 B against a 346,965 B baseline.
+- **Known limits**: each straight edge is swept on its own, so a corner junction between two sweeps of
+  one object is not mitred (the loop sweep is). Concave edges return an empty section and are
+  refused. Nothing here touches the CAD fillet/chamfer in the Design tab.
+- **Next (EF-3 candidates)**: miter corner vertices between separate sweeps; offer irregular hole rims
+  explicitly; if a skin artifact ever shows on the top face beside a 45° chamfer crease, look there
+  first.
 
 
