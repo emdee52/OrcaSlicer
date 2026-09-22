@@ -38,6 +38,38 @@ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Ve
                                       const Vec3d &n_b, double size, double margin = 0.,
                                       int segments = EDGE_FILLET_SEGMENTS);
 
+// One vertex of a closed feature loop: the corner between two faces, with `u` lying in the
+// bordered face (pointing away from the crease) and `v` in the neighbouring face. The profile
+// is placed in that frame, so the same cross sections and the same `u`/`v` convention as a
+// straight edge apply.
+struct LoopFrame
+{
+    Vec3d p{ Vec3d::Zero() };
+    Vec3d u{ Vec3d::Zero() };
+    Vec3d v{ Vec3d::Zero() };
+};
+
+// Boundary loops of the coplanar face patch that contains `seed_face`, in world space after
+// `trafo` (normals are transformed with its inverse transpose). A patch can carry several loops,
+// e.g. a top face with holes; each loop is a closed ring of frames, and degenerate loops are
+// dropped, so the result may be empty. `normal_tol` is the component-wise normal match that
+// grows the patch.
+std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_set &its,
+                                                         const Transform3d &trafo, int seed_face,
+                                                         float normal_tol = 1e-3f);
+
+// Sweep a CCW profile around a closed loop: profile point (a, b) of frame i is placed at
+// `p + a * u + b * v`, and consecutive frames are joined into quads. The result is a closed
+// torus-topology solid with outward normals (the winding is corrected against its_volume).
+// Returns an empty mesh for a degenerate loop or profile.
+indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile);
+
+// Chamfer / fillet ring around a closed loop; `size` is the chamfer leg / fillet radius, as for
+// a straight edge. Returns an empty mesh for a degenerate loop or non-positive size.
+indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size);
+indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
+                                      int segments = EDGE_FILLET_SEGMENTS);
+
 } // namespace Slic3r
 
 #endif // libslic3r_EdgeProfiles_hpp_

@@ -121,4 +121,205 @@ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Ve
     return extrude_profile(profile, p0, u, v, w, -margin, len + margin);
 }
 
+namespace {
+
+bool face_has_vertex(const indexed_triangle_set &its, int face, int vertex)
+{
+    const Vec3i32 &idx = its.indices[face];
+    return idx(0) == vertex || idx(1) == vertex || idx(2) == vertex;
+}
+
+} // namespace
+
+std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_set &its,
+                                                         const Transform3d &trafo, int seed_face,
+                                                         float normal_tol)
+{
+    std::vector<std::vector<LoopFrame>> loops;
+    const int face_count = int(its.indices.size());
+    if (seed_face < 0 || seed_face >= face_count || its.vertices.empty())
+        return loops;
+
+    const std::vector<Vec3f>  normals = its_face_normals(its);
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+
+    // Grow the coplanar patch that holds the seed face.
+    std::vector<int>  patch;
+    std::vector<char> in_patch(size_t(face_count), 0);
+    patch.push_back(seed_face);
+    in_patch[size_t(seed_face)] = 1;
+    for (size_t head = 0; head < patch.size(); ++head) {
+        const int f = patch[head];
+        for (int k = 0; k < 3; ++k) {
+            const int g = neighbors[size_t(f)](k);
+            if (g < 0 || in_patch[size_t(g)])
+                continue;
+            if ((normals[size_t(g)] - normals[size_t(f)]).cwiseAbs().maxCoeff() <= normal_tol) {
+                in_patch[size_t(g)] = 1;
+                patch.push_back(g);
+            }
+        }
+    }
+
+    // An edge of the patch is on its boundary when the face on the other side is outside it.
+    struct BoundaryEdge
+    {
+        int a, b, patch_face, outside_face;
+    };
+    std::vector<BoundaryEdge> boundary;
+    for (const int f : patch) {
+        for (int k = 0; k < 3; ++k) {
+            const int a = its.indices[size_t(f)](k);
+            const int b = its.indices[size_t(f)]((k + 1) % 3);
+            if (a == b)
+                continue;
+            int g = -1;
+            for (int j = 0; j < 3; ++j) {
+                const int n = neighbors[size_t(f)](j);
+                if (n >= 0 && !in_patch[size_t(n)] && face_has_vertex(its, n, a) &&
+                    face_has_vertex(its, n, b)) {
+                    g = n;
+                    break;
+                }
+            }
+            if (g >= 0)
+                boundary.push_back(BoundaryEdge{ a, b, f, g });
+        }
+    }
+
+    std::vector<std::vector<int>> vertex_edges(its.vertices.size());
+    for (size_t e = 0; e < boundary.size(); ++e) {
+        vertex_edges[size_t(boundary[e].a)].push_back(int(e));
+        vertex_edges[size_t(boundary[e].b)].push_back(int(e));
+    }
+
+    const Eigen::Matrix3d normal_trafo = trafo.linear().inverse().transpose();
+    const auto to_world = [&trafo](const Vec3f &p) { return trafo * p.cast<double>(); };
+    const auto to_world_normal = [&normal_trafo](const Vec3f &n) {
+        return (normal_trafo * n.cast<double>()).normalized();
+    };
+
+    std::vector<char> used(boundary.size(), 0);
+    for (size_t s = 0; s < boundary.size(); ++s) {
+        if (used[s])
+            continue;
+        const int start_v = boundary[s].a;
+        if (vertex_edges[size_t(start_v)].size() != 2) { // corner of several loops: skip
+            used[s] = 1;
+            continue;
+        }
+
+        std::vector<int> chain;
+        int              entry = start_v;
+        int              cur   = int(s);
+        bool             closed = false;
+        for (int guard = int(boundary.size()) + 1; guard > 0; --guard) {
+            used[size_t(cur)] = 1;
+            chain.push_back(cur);
+            const int exit_v =
+                boundary[size_t(cur)].a == entry ? boundary[size_t(cur)].b : boundary[size_t(cur)].a;
+            if (exit_v == start_v) {
+                closed = true;
+                break;
+            }
+            if (vertex_edges[size_t(exit_v)].size() != 2)
+                break;
+            int next = -1;
+            for (const int e : vertex_edges[size_t(exit_v)])
+                if (!used[size_t(e)]) {
+                    next = e;
+                    break;
+                }
+            if (next < 0)
+                break;
+            entry = exit_v;
+            cur   = next;
+        }
+        if (!closed || chain.size() < 3)
+            continue;
+
+        // Ordered ring of vertices; step k is the edge verts[k] -> verts[k+1].
+        const size_t n = chain.size();
+        std::vector<int> verts(n);
+        std::vector<int> step_patch(n), step_outside(n);
+        int              v = start_v;
+        for (size_t k = 0; k < n; ++k) {
+            verts[k]        = v;
+            step_patch[k]   = boundary[size_t(chain[k])].patch_face;
+            step_outside[k] = boundary[size_t(chain[k])].outside_face;
+            v = boundary[size_t(chain[k])].a == v ? boundary[size_t(chain[k])].b
+                                                  : boundary[size_t(chain[k])].a;
+        }
+
+        std::vector<LoopFrame> frames;
+        frames.reserve(n);
+        bool ok = true;
+        for (size_t i = 0; i < n; ++i) {
+            const size_t pm = (i + n - 1) % n;
+            const Vec3d  p  = to_world(its.vertices[size_t(verts[i])]);
+            const Vec3d  in = p - to_world(its.vertices[size_t(verts[pm])]);
+            const Vec3d  out =
+                to_world(its.vertices[size_t(verts[(i + 1) % n])]) - p;
+            if (in.norm() < 1e-9 || out.norm() < 1e-9) {
+                ok = false;
+                break;
+            }
+            const Vec3d dir = (in.normalized() + out.normalized()).normalized();
+            const Vec3d n_a =
+                (to_world_normal(normals[size_t(step_patch[pm])]) +
+                 to_world_normal(normals[size_t(step_patch[i])]))
+                    .normalized();
+            const Vec3d n_b =
+                (to_world_normal(normals[size_t(step_outside[pm])]) +
+                 to_world_normal(normals[size_t(step_outside[i])]))
+                    .normalized();
+            Vec3d u, vv;
+            if (!face_inward_dir(dir, n_a, n_b, u) || !face_inward_dir(dir, n_b, n_a, vv)) {
+                ok = false;
+                break;
+            }
+            frames.push_back(LoopFrame{ p, u, vv });
+        }
+        if (ok && frames.size() >= 3)
+            loops.push_back(std::move(frames));
+    }
+    return loops;
+}
+
+indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile)
+{
+    indexed_triangle_set its;
+    const int n = int(loop.size()), m = int(profile.size());
+    if (n < 3 || m < 3)
+        return its;
+    its.vertices.reserve(size_t(n) * size_t(m));
+    its.indices.reserve(size_t(n) * size_t(m) * 2);
+    for (const LoopFrame &f : loop)
+        for (const Vec2d &q : profile)
+            its.vertices.emplace_back((f.p + q(0) * f.u + q(1) * f.v).cast<float>());
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        for (int k = 0; k < m; ++k) {
+            const int kn = (k + 1) % m;
+            const int a = i * m + k, b = i * m + kn, c = j * m + kn, d = j * m + k;
+            its.indices.emplace_back(a, b, c);
+            its.indices.emplace_back(a, c, d);
+        }
+    }
+    if (its_volume(its) < 0.f)
+        its_flip_triangles(its);
+    return its;
+}
+
+indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size)
+{
+    return sweep_loop(loop, chamfer_profile(size));
+}
+
+indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
+                                      int segments)
+{
+    return sweep_loop(loop, fillet_profile(size, segments));
+}
+
 } // namespace Slic3r
