@@ -189,3 +189,60 @@ TEST_CASE("A through-hole depth reaches the far wall", "[HoleShapes]")
     CHECK_THAT(hole_through_depth(indexed_triangle_set{}, Vec3d::Zero(), Vec3d::UnitZ(), 0.5), WithinAbs(0., 1e-9));
 }
 
+TEST_CASE("A rim chamfer is a closed ring at the hole edge", "[HoleShapes]")
+{
+    constexpr double      r = 3., size = 1.;
+    const indexed_triangle_set chamfer = its_make_rim_chamfer(r, size, Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(chamfer.empty());
+    CHECK(its_num_open_edges(chamfer) == 0);
+    CHECK(its_volume(chamfer) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(chamfer);
+    CHECK_THAT(bb.min.x(), WithinAbs(-(r + size), 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(r + size, 1e-3));
+    CHECK_THAT(bb.min.z(), WithinAbs(0., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(size, 1e-3));
+
+    // Ring volume by Pappus: triangle of area size^2/2 at centroid radius r + size/3.
+    CHECK_THAT(double(its_volume(chamfer)), WithinRel(PI * size * size * (r + size / 3.), 0.02));
+}
+
+TEST_CASE("A rim fillet is a closed ring smaller than the equivalent chamfer", "[HoleShapes]")
+{
+    constexpr double      r = 3., size = 1.;
+    const indexed_triangle_set fillet = its_make_rim_fillet(r, size, Vec3d::UnitZ(), Vec3d::Zero());
+    REQUIRE_FALSE(fillet.empty());
+    CHECK(its_num_open_edges(fillet) == 0);
+    CHECK(its_volume(fillet) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(fillet);
+    CHECK_THAT(bb.min.x(), WithinAbs(-(r + size), 1e-3));
+    CHECK_THAT(bb.max.x(), WithinAbs(r + size, 1e-3));
+    CHECK_THAT(bb.min.z(), WithinAbs(0., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(size, 1e-3));
+
+    // The lune is smaller than the chamfer triangle for the same size.
+    const indexed_triangle_set chamfer = its_make_rim_chamfer(r, size, Vec3d::UnitZ(), Vec3d::Zero());
+    CHECK(its_volume(fillet) < its_volume(chamfer));
+}
+
+TEST_CASE("A rim shape is placed on the hole axis", "[HoleShapes]")
+{
+    const Vec3d entry(5., 0., 0.);
+    const indexed_triangle_set chamfer = its_make_rim_chamfer(2., 0.5, Vec3d::UnitX(), entry);
+    REQUIRE_FALSE(chamfer.empty());
+
+    const BoundingBoxf3 bb = bounding_box(chamfer);
+    CHECK_THAT(bb.min.x(), WithinAbs(entry.x(), 1e-3));         // grows into the material
+    CHECK_THAT(bb.max.x(), WithinAbs(entry.x() + 0.5, 1e-3));
+    CHECK_THAT(bb.min.y(), WithinAbs(-2.5, 1e-3));              // ring around the axis
+    CHECK_THAT(bb.max.y(), WithinAbs(2.5, 1e-3));
+}
+
+TEST_CASE("Rim shapes reject non-positive inputs", "[HoleShapes]")
+{
+    CHECK(its_make_rim_chamfer(0., 1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
+    CHECK(its_make_rim_chamfer(2., 0., Vec3d::UnitZ(), Vec3d::Zero()).empty());
+    CHECK(its_make_rim_fillet(2., -1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
+}
+
