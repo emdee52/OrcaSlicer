@@ -47,6 +47,13 @@ constexpr double EDGE_SIZE_MAX = 3.0;
 // most a wall thickness behind, so this separates the two without needing a depth buffer read.
 constexpr double EDGE_DEPTH_TOL = 0.5;
 
+// Same idea for the loop pick: a rim may be found on the patch next to the one under the cursor, up
+// to a band's height away, so it is allowed to sit deeper than a straight edge does.
+constexpr double EDGE_LOOP_DEPTH_TOL = 2.0;
+
+// Rings of faces searched around the cursor for a loop when the patch under it has none.
+constexpr int EDGE_LOOP_RINGS = 3;
+
 // A boundary that bends by less than this at both ends is a tessellated curve, not a straight edge.
 constexpr double EDGE_CURVE_DEG = 20.;
 
@@ -423,13 +430,16 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
             // the cursor is actually on.
             const Transform3d view      = camera.get_view_matrix();
             const double      hit_depth = (view * hit_world).z();
-            const auto visible = [&view, hit_depth, &to_world](const Vec3d &object_pt) {
-                return (view * (to_world * object_pt)).z() >= hit_depth - EDGE_DEPTH_TOL;
+            const double depth_tol = m_loop_mode ? EDGE_LOOP_DEPTH_TOL : EDGE_DEPTH_TOL;
+            const auto   visible   = [&view, hit_depth, depth_tol, &to_world](const Vec3d &object_pt) {
+                return (view * (to_world * object_pt)).z() >= hit_depth - depth_tol;
             };
 
             if (m_loop_mode) {
                 // The whole boundary loop of the patch under the cursor, so a rim is dressed as one
-                // feature instead of its tessellation segments.
+                // feature instead of its tessellation segments. A rim often borders a smooth band (a
+                // bevel, or the rounded side of a low boss) and the cursor lands on that band, where
+                // the patch has no loop of its own; loops_for_facet rings outwards in that case.
                 double best = tol;
                 for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
                     if (loop.size() < 3)
@@ -513,7 +523,7 @@ const std::vector<std::vector<LoopFrame>> &GLGizmoEdgeDress::loops_for_facet(con
         m_loops_volume = mv;
         m_loops_facet  = facet;
         if (mv != nullptr && facet >= 0 && facet < int(mv->mesh().its.indices.size()))
-            m_loops = its_face_patch_loops(mv->mesh().its, mv->get_matrix(), facet);
+            m_loops = its_face_patch_loops_around(mv->mesh().its, mv->get_matrix(), facet, EDGE_LOOP_RINGS);
     }
     return m_loops;
 }

@@ -315,6 +315,48 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
     return loops;
 }
 
+std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_triangle_set &its,
+                                                                const Transform3d &trafo,
+                                                                int seed_face, int max_rings,
+                                                                float normal_tol)
+{
+    std::vector<std::vector<LoopFrame>> loops = its_face_patch_loops(its, trafo, seed_face, normal_tol);
+    if (!loops.empty() || max_rings <= 0 || seed_face < 0 || seed_face >= int(its.indices.size()))
+        return loops;
+
+    // A rim can border a smooth band, and a cursor on that band lands on a patch with no rim of its
+    // own. Ring outwards from the seed face and return the loops of the first ring that has any:
+    // the patch beyond the band is the flat face the rim belongs to. Ringing stops at the first
+    // ring that yields a loop, so the cost stays local to the cursor.
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    std::vector<char>          seen(its.indices.size(), 0);
+    seen[seed_face] = 1;
+    std::vector<int> frontier{ seed_face };
+    for (int ring = 0; ring < max_rings && !frontier.empty(); ++ring) {
+        std::vector<int> next;
+        for (const int f : frontier) {
+            if (f < 0 || f >= int(neighbors.size()))
+                continue;
+            for (int k = 0; k < 3; ++k) {
+                const int n = neighbors[f][k];
+                if (n < 0 || seen[n])
+                    continue;
+                seen[n] = 1;
+                next.push_back(n);
+            }
+        }
+        for (const int n : next) {
+            std::vector<std::vector<LoopFrame>> found = its_face_patch_loops(its, trafo, n, normal_tol);
+            for (std::vector<LoopFrame> &loop : found)
+                loops.push_back(std::move(loop));
+        }
+        if (!loops.empty())
+            return loops;
+        frontier.swap(next);
+    }
+    return loops;
+}
+
 indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile)
 {
     indexed_triangle_set its;

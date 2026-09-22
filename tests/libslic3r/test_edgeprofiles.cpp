@@ -205,3 +205,30 @@ TEST_CASE("Loop dress rejects degenerate input", "[EdgeProfiles]")
     CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), int(cyl.indices.size())).empty());
 }
 
+TEST_CASE("A rim behind a smooth band is found by the ring fallback", "[EdgeProfiles]")
+{
+    // The wall of a cylinder is a smooth band: a patch on it has no loop of its own. A cursor there
+    // must still be able to pick the rim of the cap just beyond the band, so the search rings out
+    // from the face under the cursor until it reaches a patch that does have a loop.
+    const indexed_triangle_set cyl       = its_make_cylinder(5., 10., 2. * PI / 64.);
+    const std::vector<Vec3f>   normals   = its_face_normals(cyl);
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(cyl);
+    const int                  top       = top_face(cyl);
+    int                        wall      = -1;
+    for (size_t f = 0; f < cyl.indices.size() && wall < 0; ++f) {
+        if (std::abs(normals[f].z()) > 0.1f)
+            continue;
+        for (int k = 0; k < 3; ++k)
+            if (neighbors[f][k] == top) {
+                wall = int(f);
+                break;
+            }
+    }
+    REQUIRE(wall >= 0);
+
+    CHECK(its_face_patch_loops(cyl, Transform3d::Identity(), wall).empty());
+    CHECK(its_face_patch_loops_around(cyl, Transform3d::Identity(), wall, 0).empty());
+    CHECK_FALSE(its_face_patch_loops_around(cyl, Transform3d::Identity(), wall, 1).empty());
+    CHECK_FALSE(its_face_patch_loops_around(cyl, Transform3d::Identity(), top, 0).empty());
+}
+
