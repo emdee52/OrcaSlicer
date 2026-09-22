@@ -840,18 +840,30 @@ assembly.
   anchor and a newly found target both settle in the next frame.
 - **Core.** `src/slic3r/GUI/OrcaExt/ObjectSnap.{hpp,cpp}` raycasts every non-moving visible volume and
   keeps the one nearest the camera, then reuses `CutUtils::face_snap_points` (through the gizmos'
-  `coplanar_region` + `build_face_snap_points`) and `CutUtils::nearest_face_snap`. A non-planar face
-  under the cursor falls back to the raw hit point, so curved surfaces snap too. The per-facet
-  candidate list is cached and rebuilt only when the volume/facet changes.
+  `coplanar_region` + `build_face_snap_points`). A non-planar face under the cursor falls back to the
+  raw hit point, so curved surfaces snap too. The per-facet candidate list is cached and rebuilt only
+  when the volume/facet changes.
+- **Picking.** The candidate is chosen by `pick_by_sphere`, not by `CutUtils::nearest_face_snap`: a pure
+  screen-distance test hands the pick to whichever snap coordinate projects nearest, which near a shared
+  edge is often a feature of the *neighbouring* face, and the object then lands offset from the flush
+  face the user was aiming at. Instead the drawn disc is the hit target — every candidate's disc is
+  measured in screen space (its centre and its rim, using the same `candidate_radius` the spheres are
+  drawn with, so the picture and the pick agree), the cursor's distance to that rim is the score, and an
+  8 px grab margin lets a near miss still grab. Strictly-closest wins, so candidates emitted first keep
+  the `FaceSnapKind` priority on ties. `nearest_face_snap` itself is untouched.
 - **Markers.** While Alt is held both objects show their candidate points as spheres, the active one
   larger — white on the object the drag lands on, amber on the object being dragged, so the feature to
-  grab is visible before the press and the two sets are tellable apart. `ObjectSnap::Markers` builds one
+  grab is visible before the press and the two sets are tellable apart. Hovering with Alt over a
+  selected object's face is enough to show them: `GLCanvas3D::_objsnap_update` is shared by the drag
+  path and by the `evt.Moving()` hover branch (skipped while a gizmo owns Alt, i.e. Holes and Cut), so
+  no drag has to be started first. `ObjectSnap::Markers` builds one
   merged mesh per `FaceSnapKind` with `its_make_sphere`/`its_merge`, radius `0.012 * diag` clamped to
   `[0.3, 1.5]` mm, and the same per-kind colours the Holes tool uses (`GLGizmoHoles::build_snap_markers`
   is the reference). `Markers::render` runs with the depth test off so the spheres read through the
-  object they belong to. `GLCanvas3D` clears both sets on every mouse event, sets them in the Alt branch,
-  and clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag branch, so without that
-  they would linger). The draw call sits next to `_render_snapdrag_indicator`.
+  object they belong to. `GLCanvas3D` clears both sets on every mouse event, sets them in
+  `_objsnap_update`, and clears them again in `mouse_up_cleanup` (mouse-up does not re-run the drag
+  branch, so without that they would linger) and in `_render_objsnap_markers` when Alt is released
+  without any mouse event. The draw call sits next to `_render_snapdrag_indicator`.
 - **Three lessons, do not regress.** (a) `ObjectSnap.hpp` forward-declares `GUI::Camera` as `struct`, to
   match `Camera.hpp`; MSVC mangles a `class` forward declaration differently (`AEBVCamera` vs
   `AEBUCamera`) and the mismatch is a permanent LNK2001/LNK2019 that survives every clean rebuild.
