@@ -25,6 +25,7 @@
 #include "IMToolbar.hpp"
 #include "slic3r/GUI/3DBed.hpp"
 #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] SnapDragIndicator draws a GravitySnap::FloorHit
+#include "OrcaExt/ObjectSnap.hpp"  // [ORCAPORT:SNAP-8] object-to-object Alt snap + its markers
 #include "libslic3r/Slicing.hpp"
 
 #include <float.h>
@@ -783,6 +784,10 @@ public:
 
     SnapDragIndicator m_snapdrag_indicator;
 
+    // [ORCAPORT:SNAP-8] Candidate spheres for the object-to-object Alt snap, rebuilt by on_mouse and
+    // drawn once per frame. Render-only; the snap decision lives in OrcaExt/ObjectSnap.cpp.
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_markers;
+
     // [ORCAPORT:SU-5] What each support zone will catch (built in world coordinates, one model for
     // every instance). See Feature/SupportZones/SupportZoneProbe.hpp.
     GLModel m_support_zone_lit;
@@ -1431,6 +1436,7 @@ private:
     void _render_support_zones();
     // [ORCAPORT:AS-3] landing shadow/beam while Snap & Drag is dragging
     void _render_snapdrag_indicator();
+    void _render_objsnap_markers(); // [ORCAPORT:SNAP-8]
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER

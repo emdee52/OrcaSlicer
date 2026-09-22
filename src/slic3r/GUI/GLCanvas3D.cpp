@@ -2278,6 +2278,7 @@ void GLCanvas3D::_render_scene(const Camera& camera, const Size& cnv_size)
 
     _render_sequential_clearance();
     _render_snapdrag_indicator(); // [ORCAPORT:AS-3]
+    _render_objsnap_markers(); // [ORCAPORT:SNAP-8]
 #if ENABLE_RENDER_SELECTION_CENTER
     _render_selection_center();
 #endif // ENABLE_RENDER_SELECTION_CENTER
@@ -4846,16 +4847,23 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                     moving.insert({ gv->object_idx(), gv->instance_idx() });
                 }
 
+                m_objsnap_markers.clear(); // rebuilt below only while Alt is held over a face
                 Vec3d snap_disp = Vec3d::Zero();
                 if (alt_snap && m_model != nullptr) {
                     const Camera& camera = wxGetApp().plater()->get_camera();
-                    if (const std::optional<ObjectSnap::SnapTarget> target =
-                            ObjectSnap::target_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>())) {
+                    if (const std::optional<ObjectSnap::SnapHit> hit =
+                            ObjectSnap::hit_under_cursor(*m_model, m_volumes, camera, moving, pos.cast<double>())) {
                         // `cur_pos` is where the plain drag put the grabbed point, so this is the
                         // remaining shift that lands it exactly on the snapped coordinate. Folded
                         // into the single translate below: Selection::translate writes each offset
                         // absolutely from the drag-start cache, so a second call would overwrite it.
-                        snap_disp = target->world - cur_pos;
+                        snap_disp = hit->point.world - cur_pos;
+
+                        size_t active = 0;
+                        for (size_t i = 0; i < hit->candidates.size(); ++i)
+                            if ((hit->candidates[i].world - hit->point.world).squaredNorm() < 1e-12)
+                                active = i;
+                        m_objsnap_markers.set(hit->candidates, active);
                     }
                 }
                 // [ORCAPORT:SNAP-8] END
@@ -5832,6 +5840,11 @@ void GLCanvas3D::_render_snapdrag_indicator()
     m_snapdrag_indicator.render();
 }
 
+void GLCanvas3D::_render_objsnap_markers() // [ORCAPORT:SNAP-8]
+{
+    m_objsnap_markers.render(wxGetApp().plater()->get_camera());
+}
+
 void GLCanvas3D::do_move(const std::string& snapshot_type)
 {
     if (m_model == nullptr)
@@ -6559,6 +6572,7 @@ void GLCanvas3D::mouse_up_cleanup()
     m_camera_movement = false;
     m_mouse.drag.move_volume_idx = -1;
     m_snapdrag_indicator.set_visible(false); // [ORCAPORT:AS-3] drop the landing overlay on mouse-up
+    m_objsnap_markers.clear(); // [ORCAPORT:SNAP-8] drop the snap candidate spheres on mouse-up
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;
