@@ -51,8 +51,8 @@ $env:CMAKE_TLS_VERIFY = "0"
 ## 2. Branches / commits
 
 Everything below is merged into `port/integration` unless its row says otherwise. The ME, CUT, SNAP,
-PF, SU and AS branches are done, as are the rim dress and edge dress tools; the newest branch is the
-object-to-object Alt-drag snap (SNAP-8).
+PF, SU and AS branches are done, as are the rim dress and edge dress tools, and the object-to-object
+Alt-drag snap (SNAP-8) is the newest of them.
 
 | Branch | State | Contents |
 |---|---|---|
@@ -64,7 +64,7 @@ object-to-object Alt-drag snap (SNAP-8).
 | `port/EF-1` | merged (`b6803f53b4`) | Edge chamfer / fillet gizmo, straight edges |
 | `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
 | `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
-| `port/SNAP-8` | not merged | Alt-drag object-to-object point snap (see section 21) |
+| `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -238,8 +238,6 @@ the branch too but was superseded by `656714103a`.
   redundant — see section 20. The fillet-corner case (the one unverified part) is now user-confirmed
   correct; SNAP-7 is user-tested and merged.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
-- SNAP-8 (snap one object onto another while dragging with Alt) is implemented and green on
-  `port/SNAP-8`; it merges once the user tests the live Alt+drag gesture — see section 21.
 
 ---
 
@@ -885,9 +883,10 @@ assembly.
   error, not a linker one.
 - **Verification.** Regression suites `[EdgeProfiles],[HoleShapes],[HoleDetector],[HoleStandards],
   [CutUtils]` = 546 assertions in 61 cases, all passing (this feature adds no libslic3r geometry, so
-  those suites are unchanged). The live gesture must be tested by the user: MCP cannot hold Alt. Manual
-  protocol is in `docs/superpowers/SNAP-8-object-snap.md` (scratch, gitignored, not committed).
-- **Branch state**: on `port/SNAP-8`, branched from `port/integration` at `fa2d06d014`. Not merged;
-  merges after the user tests the Alt+drag gesture in the app (see section 0).
+  those suites are unchanged). The live gesture had to be tested by hand, since MCP cannot hold Alt; the
+  user did, and confirmed the Alt-hover preview, the sphere picking and the corner-to-corner landing.
+  Manual protocol is in `docs/superpowers/SNAP-8-object-snap.md` (scratch, gitignored, not committed).
+- **Branch state**: on `port/SNAP-8`, branched from `port/integration` at `fa2d06d014`. Merged. See
+  section 0 for why a branch only merges once the user has tested it in the app.
 
 
