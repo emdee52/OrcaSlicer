@@ -50,14 +50,21 @@ struct LoopFrame
     Vec3d v{ Vec3d::Zero() };
 };
 
-// Boundary loops of the coplanar face patch that contains `seed_face`, in world space after
-// `trafo` (normals are transformed with its inverse transpose). A patch can carry several loops,
-// e.g. a top face with holes; each loop is a closed ring of segment frames, and degenerate loops
-// are dropped, so the result may be empty. `normal_tol` is the component-wise normal match that
-// grows the patch.
+// Boundary loops of the face region that contains `seed_face`, in world space after `trafo`
+// (normals are transformed with its inverse transpose). Faces that meet across a crease shallower
+// than the join threshold are one region, so the region stops at real rims and a loop can never run
+// along the inside of a smooth surface. A region can carry several loops, e.g. a top face with
+// holes; each loop is a closed ring of segment frames, and degenerate loops are dropped, so the
+// result may be empty.
 std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_set &its,
-                                                         const Transform3d &trafo, int seed_face,
-                                                         float normal_tol = 1e-3f);
+                                                         const Transform3d &trafo, int seed_face);
+
+// As above, but when the region of `seed_face` carries no loop the search is repeated for the facets
+// in the rings around it, up to `max_rings` rings out, and the loops of the first ring that has any
+// are returned. Loops of several regions in the same ring are concatenated, so the caller picks the
+// one it wants; `max_rings <= 0` reduces to the region of the seed.
+std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(
+    const indexed_triangle_set &its, const Transform3d &trafo, int seed_face, int max_rings = 3);
 
 // Sweep a CCW profile around a closed loop: profile point (a, b) of segment i is placed at
 // `p + a * u + b * v` at one end and at `q + a * u + b * v` at the other, and consecutive segments

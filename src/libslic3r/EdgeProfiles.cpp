@@ -12,6 +12,14 @@ namespace {
 // means the run is an interior edge of a smooth surface rather than the outline of a face.
 constexpr double MIN_CREASE_SIN = 0.2588; // 15 degrees
 
+// Creases shallower than this are treated as the same surface, so a patch is one region of the model
+// that only sharper creases interrupt, and the loops it is bounded by are always rims. Without it a
+// rim that crosses a round-over in small steps comes out as a staircase that wanders off the rim.
+// Measured on the lego head: at 25 degrees the mouth rim still stepped on and off round-over facets
+// (39 of 449 segments, 23-31 degrees); at 40 degrees those facets belong to the surface, so the rim
+// comes out at 54 degrees or crisper while the eyes, nose and flat faces keep their own regions.
+constexpr double MAX_JOIN_DOT = 0.766; // cos(40 degrees)
+
 double profile_signed_area(const std::vector<Vec2d> &pts)
 {
     double a = 0.;
@@ -137,8 +145,7 @@ bool face_has_vertex(const indexed_triangle_set &its, int face, int vertex)
 } // namespace
 
 std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_set &its,
-                                                         const Transform3d &trafo, int seed_face,
-                                                         float normal_tol)
+                                                         const Transform3d &trafo, int seed_face)
 {
     std::vector<std::vector<LoopFrame>> loops;
     const int face_count = int(its.indices.size());
@@ -159,7 +166,7 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
             const int g = neighbors[size_t(f)](k);
             if (g < 0 || in_patch[size_t(g)])
                 continue;
-            if ((normals[size_t(g)] - normals[size_t(f)]).cwiseAbs().maxCoeff() <= normal_tol) {
+            if (double(normals[size_t(f)].dot(normals[size_t(g)])) >= MAX_JOIN_DOT) {
                 in_patch[size_t(g)] = 1;
                 patch.push_back(g);
             }
@@ -315,11 +322,84 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops(const indexed_triangle_
     return loops;
 }
 
+std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(const indexed_triangle_set &its,
+                                                                const Transform3d &trafo,
+                                                                int seed_face, int max_rings)
+{
+    std::vector<std::vector<LoopFrame>> loops = its_face_patch_loops(its, trafo, seed_face);
+    if (!loops.empty() || max_rings <= 0)
+        return loops;
+
+    // A rim can border a smooth band, and a cursor on that band lands on a patch with no rim of its
+    // own. Ring outwards from the seed face and return the loops of the first ring that has any:
+    // the patch beyond the band is the face the rim belongs to. Ringing stops at the first ring that
+    // yields a loop, so the cost stays local to the cursor.
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    std::vector<char>          seen_faces(its.indices.size(), 0);
+    seen_faces[seed_face] = 1;
+    std::vector<int> frontier{ seed_face };
+    for (int ring = 0; ring < max_rings && !frontier.empty(); ++ring) {
+        std::vector<int> next;
+        for (const int f : frontier) {
+            if (f < 0 || f >= int(neighbors.size()))
+                continue;
+            for (int k = 0; k < 3; ++k) {
+                const int n = neighbors[f][k];
+                if (n < 0 || n >= int(seen_faces.size()) || seen_faces[n])
+                    continue;
+                seen_faces[n] = 1;
+                next.push_back(n);
+            }
+        }
+        bool any = false;
+        for (const int n : next) {
+            std::vector<std::vector<LoopFrame>> found = its_face_patch_loops(its, trafo, n);
+            for (std::vector<LoopFrame> &loop : found) {
+                loops.push_back(std::move(loop));
+                any = true;
+            }
+        }
+        if (any)
+            return loops;
+        frontier.swap(next);
+    }
+    return loops;
+}
+
 indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile)
 {
     indexed_triangle_set its;
-    const int n = int(loop.size()), m = int(profile.size());
-    if (n < 3 || m < 3)
+    const int            m = int(profile.size());
+    if (loop.size() < 3 || m < 3)
+        return its;
+
+    // A rim that steps across a small round-over in sub-0.1 mm steps turns its frame by tens of
+    // degrees per step, and sweeping every one of those steps fans the prism rings over each other:
+    // the band comes out thicker and stepped where it crosses the round-over. A step shorter than a
+    // fraction of the profile whose frame has already turned belongs to such a stretch, so collapse
+    // it onto the frame that started it and let the joint at the end of the stretch do the turning.
+    // Short steps of a finely tessellated but smooth rim keep their own frame and are kept.
+    float profile_extent = 0.f;
+    for (const Vec2d &q : profile)
+        profile_extent = std::max(profile_extent, float(q.cwiseAbs().maxCoeff()));
+    const double           min_step  = 0.1 * double(profile_extent);
+    constexpr double       STEP_FRAME_DOT = 0.985; // cos(10 degrees)
+    std::vector<LoopFrame> frames;
+    frames.reserve(loop.size());
+    for (const LoopFrame &f : loop) {
+        if (!frames.empty() && (f.q - f.p).norm() < min_step &&
+            frames.back().u.dot(f.u) < STEP_FRAME_DOT)
+            frames.back().q = f.q;
+        else
+            frames.push_back(f);
+    }
+    if (frames.size() > 1 && (frames.back().q - frames.back().p).norm() < min_step &&
+        frames.back().u.dot(frames.front().u) < STEP_FRAME_DOT) {
+        frames.front().p = frames.back().p;
+        frames.pop_back();
+    }
+    const int n = int(frames.size());
+    if (n < 3)
         return its;
 
     // Per segment, two rings of the profile: one at the segment start and one at its end, both in
@@ -328,7 +408,7 @@ indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::v
     // vertex closes the prism of one segment against the miter of the next and the solid is closed.
     its.vertices.reserve(size_t(n) * size_t(m) * 2);
     its.indices.reserve(size_t(n) * size_t(m) * 4);
-    for (const LoopFrame &f : loop) {
+    for (const LoopFrame &f : frames) {
         for (const Vec2d &q : profile)
             its.vertices.emplace_back((f.p + q(0) * f.u + q(1) * f.v).cast<float>());
         for (const Vec2d &q : profile)

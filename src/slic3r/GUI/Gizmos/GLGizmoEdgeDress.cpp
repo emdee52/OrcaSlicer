@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -46,6 +47,13 @@ constexpr double EDGE_SIZE_MAX = 3.0;
 // mm. Edges on the far side of the model are tens of mm behind, edges on the visible side are at
 // most a wall thickness behind, so this separates the two without needing a depth buffer read.
 constexpr double EDGE_DEPTH_TOL = 0.5;
+
+// Same idea for the loop pick: a rim may be found on the patch next to the one under the cursor, up
+// to a band's height away, so it is allowed to sit deeper than a straight edge does.
+constexpr double EDGE_LOOP_DEPTH_TOL = 2.0;
+
+// Rings of faces searched around the cursor for a loop when the patch under it has none.
+constexpr int EDGE_LOOP_RINGS = 3;
 
 // A boundary that bends by less than this at both ends is a tessellated curve, not a straight edge.
 constexpr double EDGE_CURVE_DEG = 20.;
@@ -423,16 +431,33 @@ void GLGizmoEdgeDress::update_hover(const Vec2d &screen_pos)
             // the cursor is actually on.
             const Transform3d view      = camera.get_view_matrix();
             const double      hit_depth = (view * hit_world).z();
-            const auto visible = [&view, hit_depth, &to_world](const Vec3d &object_pt) {
-                return (view * (to_world * object_pt)).z() >= hit_depth - EDGE_DEPTH_TOL;
+            const double depth_tol = m_loop_mode ? EDGE_LOOP_DEPTH_TOL : EDGE_DEPTH_TOL;
+            const auto   visible   = [&view, hit_depth, depth_tol, &to_world](const Vec3d &object_pt) {
+                return (view * (to_world * object_pt)).z() >= hit_depth - depth_tol;
             };
 
             if (m_loop_mode) {
                 // The whole boundary loop of the patch under the cursor, so a rim is dressed as one
-                // feature instead of its tessellation segments.
-                double best = tol;
+                // feature instead of its tessellation segments. A rim often borders a smooth band (a
+                // bevel, or the rounded side of a low boss) and the cursor lands on that band, where
+                // the patch has no loop of its own; loops_for_facet rings outwards in that case.
+                // No screen-space radius cap: the loop that comes back may belong to a neighbouring
+                // patch and sit some distance from the cursor, and picking the nearest visible rim is
+                // the point of whole-loop mode. The depth test keeps rims on the far side out.
+                double best = std::numeric_limits<double>::max();
                 for (const std::vector<LoopFrame> &loop : loops_for_facet(mv, int(facet))) {
                     if (loop.size() < 3)
+                        continue;
+                    // The region on the far side of a cut carries the loop that runs along the back
+                    // of the rim under the cursor, so offering it would dress the wrong side of the
+                    // hole. Only a loop whose segments mostly face the camera is a candidate.
+                    int n_segments = 0, n_visible = 0;
+                    for (const LoopFrame &f : loop) {
+                        ++n_segments;
+                        if (visible(f.p + 0.5 * (f.q - f.p)))
+                            ++n_visible;
+                    }
+                    if (n_segments > 0 && n_visible * 2 < n_segments)
                         continue;
                     for (const LoopFrame &f : loop) {
                         const Vec2d a = world_to_screen(camera, to_world * f.p);
@@ -513,7 +538,7 @@ const std::vector<std::vector<LoopFrame>> &GLGizmoEdgeDress::loops_for_facet(con
         m_loops_volume = mv;
         m_loops_facet  = facet;
         if (mv != nullptr && facet >= 0 && facet < int(mv->mesh().its.indices.size()))
-            m_loops = its_face_patch_loops(mv->mesh().its, mv->get_matrix(), facet);
+            m_loops = its_face_patch_loops_around(mv->mesh().its, mv->get_matrix(), facet, EDGE_LOOP_RINGS);
     }
     return m_loops;
 }

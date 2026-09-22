@@ -698,7 +698,7 @@ void OrcaMCPServer::register_gizmo_tools()
          {"edge_dress_gizmo",
           "[ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet tool. Actions: 'open', 'status', "
           "'set_mode' (chamfer|fillet), 'set_size', 'apply' (dress the edge under the cursor), "
-          "'apply_at' (screen_x/screen_y), 'list_edges', 'apply_edge' (index), 'remove_edge' (index), "
+          "'apply_at' (screen_x/screen_y), 'hover_at' (screen_x/screen_y), 'list_edges', 'apply_edge' (index), 'remove_edge' (index), "
           "'applied_edges', 'set_loop' (whole rim), 'list_loops' (facet), 'apply_loop' (facet + index), "
           "'remove_loop', 'applied_loops' (facet), 'clear_all', 'close'. An edge or loop that already "
           "carries a feature is not dressed twice; remove it first (right-click in the UI).",
@@ -707,14 +707,14 @@ void OrcaMCPServer::register_gizmo_tools()
             {{"action",
               {{"type", "string"},
                {"description",
-                "open | status | set_mode | set_size | apply | apply_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop | list_loops | apply_loop | remove_loop | applied_loops | clear_all | close"}}},
+                "open | status | set_mode | set_size | apply | apply_at | hover_at | list_edges | apply_edge | remove_edge | applied_edges | set_loop | list_loops | apply_loop | remove_loop | applied_loops | clear_all | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
             {"mode", {{"type", "string"}, {"description", "chamfer | fillet, for action=set_mode."}}},
             {"size",
              {{"type", "number"},
               {"description", "Chamfer leg / fillet radius in mm, for action=set_size."}}},
-            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at."}}},
-            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at."}}},
             {"max_count",
              {{"type", "integer"}, {"description", "Maximum edges or loops to return, for list_edges / list_loops."}}},
             {"index",
@@ -783,6 +783,11 @@ void OrcaMCPServer::register_gizmo_tools()
                     const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
                     if (!g->gizmo_apply_at(pos))
                         return {{"status", "error"}, {"error", "No edge is under that point"}};
+                } else if (action == "hover_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    g->gizmo_hover_at(pos);
                 } else if (action == "list_edges") {
                     const int max_count = params.value("max_count", 0);
                     nlohmann::json edges = nlohmann::json::array();

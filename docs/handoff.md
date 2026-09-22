@@ -62,6 +62,7 @@ PF, SU and AS branches are done; the two newest are the rim dress and the edge d
 | `port/RIM-1` | merged (`c39780e219`, `873710376f`) | rim chamfer / fillet ring solids + Holes operations |
 | `port/EF-1` | merged (`b6803f53b4`) | Edge chamfer / fillet gizmo, straight edges |
 | `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
+| `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -79,7 +80,12 @@ cursor, merge collinear segments), `621ecd7bed` (screen-space pick, edge cache),
 grab); then on `port/EF-2`: `7325ad0776` (loop solids + tests), `602fffcf9a` (whole-loop mode),
 `ca02ef4629` (mitred loop sweep, hidden-edge depth test, hover only on motion, size slider),
 `1f8c897a62` (refuse slivers of smooth surfaces), `5bee105c1d` (applied marks, no re-dress,
-right-click removal), `0f14403ee1` (reset preview models before rebuilding).
+right-click removal), `0f14403ee1` (reset preview models before rebuilding). Then on `port/EF-4`:
+`ab4c05125e` (ring the search out to neighbouring regions, MCP `hover_at`), `2438eba6a4` (drop the
+screen-radius cap when picking a loop), `a6f298b09e` (collapse micro-steps when sweeping a rim),
+`656714103a` (grow a region across creases instead of by a normal tolerance), `f3fddd1cda` (40°
+region join, reject a candidate loop that is mostly hidden). `fd9cd9c184` (a tolerance ladder) is on
+the branch too but was superseded by `656714103a`.
 
 ---
 
@@ -97,8 +103,11 @@ right-click removal), `0f14403ee1` (reset preview models before rebuilding).
 - `src/libslic3r/EdgeProfiles.{hpp,cpp}` — chamfer / fillet cross sections as 2D polygons
   (`chamfer_profile`, `fillet_profile`), `extrude_profile` (closed prism) and `make_edge_chamfer` /
   `make_edge_fillet` for one straight mesh edge. Loop mode: `LoopFrame` (a straight run `p`→`q` with
-  the in-face directions `u`,`v`), `its_face_patch_loops` (boundary loops of the coplanar face patch
-  under a seed face), `sweep_loop`, `make_loop_chamfer`, `make_loop_fillet`.
+  the in-face directions `u`,`v`), `its_face_patch_loops` (boundary loops of the crease-bounded region
+  around a seed face — neighbours join while their normals stay within `MAX_JOIN_DOT = cos 40°`, so a
+  region boundary can only be a real rim, never a step of a round-over), `its_face_patch_loops_around`
+  (rings outwards from the seed when its own region carries no loop), `sweep_loop`, `make_loop_chamfer`,
+  `make_loop_fillet`.
 - `src/libslic3r/HoleStandards.{hpp,cpp}` — shared screw/insert/magnet/nut table + `HoleFit`
   (Tight/Slip) and `hole_fit_diameter_delta`, `screw_nominal_diameter`. Always compiled (works with
   `SLIC3R_CAD=OFF`). `CadDocument::add_hole_standard` consumes it (socket head is the CAD counterbore).
@@ -188,13 +197,21 @@ right-click removal), `0f14403ee1` (reset preview models before rebuilding).
 16. **A screen-space nearest candidate needs a depth test.** Without one, an edge on the far side of
     the model wins over the edge under the cursor (the highlight jumps through the solid). Compare
     view-space depth against the ray hit and reject candidates more than ~0.5 mm behind it.
+17. **A region grown by a normal tolerance steps on and off round-over facets.** A rim that crosses a
+    small round-over (a chamfered jack-o'-lantern face) gets a boundary that walks a few shallow
+    (23-31°) round-over facets, so the loop jogs sideways and the swept band doubles over. Growing the
+    region by crease angle instead (`normal · normal >= cos 40°`) leaves those facets inside the
+    region, so its boundary is only ever a real rim (measured on `lego-head-4.3mf`: mouth loop minimum
+    crease 32° → 54°, shallow segments 39 → 2). A tolerance ladder cannot fix this, and neither can a
+    change to the sweep.
 
 ---
 
 ## 5. Key code locations
 
 - Detection / shapes: `src/libslic3r/HoleDetector.cpp`, `HoleShapes.cpp`.
-- Edge dress geometry: `src/libslic3r/EdgeProfiles.cpp` (profiles, prism sweep, patch loops).
+- Edge dress geometry: `src/libslic3r/EdgeProfiles.cpp` (profiles, prism sweep, crease-bounded region
+  loops).
 - Shared data: `src/libslic3r/HoleStandards.cpp` (table + fit), `src/libslic3r/CAD/CadDocument.cpp`
   (`add_hole_standard` consumes it).
 - Gizmo: `src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp` (detect, feature_frame, bore_negative_mesh,
@@ -214,9 +231,8 @@ right-click removal), `0f14403ee1` (reset preview models before rebuilding).
   (`min_facets`, `radial_tolerance`, `max_angular_gap_deg`).
 - **Insert fit**: pocket OD uses the max (knurl) diameter; Tight/Slip are flat deltas of 0.05 mm and
   0.16 mm on the pocket diameter.
-- Edge dress follow-ups (see section 20): dressing irregular / non-circular hole rims (the loop sweep
-  already handles any closed boundary loop, but picking one that is not a face outline is not offered),
-  and a second look at the chamfer crease on a top face if a skin artifact shows up there.
+- Edge dress follow-ups (see section 20): a second look at the chamfer crease on a top face if a skin
+  artifact shows up there. Irregular / non-circular rims are done (EF-4).
 - EF-3 (miter corner vertices between separate straight-edge sweeps) was investigated and closed as
   redundant — see section 20.
 - Per-hole parameters are not restorable/editable after placement (only clear + re-apply).
@@ -771,7 +787,25 @@ made the prism twist, which showed as a taper at a square rim's corner.
   or chain sweep is needed for chamfers. **The fillet corner was not verified**: two 90° fillet sweeps
   union two quarter-cylinders, which may leave a crease instead of a spherical corner patch; check that
   case before claiming fillet corners are correct.
-- **Next (EF candidates)**: offer irregular hole rims explicitly; if a skin artifact ever shows on the
-  top face beside a 45° chamfer crease, look there first.
+**EF-4 — irregular rims.** Whole-loop mode used to find nothing on a face whose facets are each their
+own patch, which is what a hole cut into a round-over looks like. The region is now grown by CREASE
+ANGLE (`MAX_JOIN_DOT = cos 40°`), not by a normal tolerance, so the region stops only at real rims,
+and `its_face_patch_loops_around` rings outwards from the seed when its own region carries no loop.
+Measured on `lego-head-4.3mf` (eyes, nose and mouth cut into the head's rounded front): the 40° join
+gives a mouth rim of 451 segments whose smallest crease is 54°, while the eyes, nose and flat faces
+keep their own regions. Two further defects were fixed with it: the sweep no longer fans a run of
+sub-0.1 mm steps where a rim crosses a round-over (`sweep_loop` collapses such a step onto the previous
+frame once that frame has turned more than ~10°), and a candidate loop that is mostly hidden from the
+camera is rejected (`update_hover` counts visible segment midpoints and skips a loop with
+`n_visible * 2 < n_segments`), so hovering the front of a cut cannot pick the loop that runs along the
+back of the wall. The loop picker has no screen-radius cap, and MCP gained a `hover_at` action so a
+hover can be driven deterministically. `[EdgeProfiles]` is 256 assertions in 10 cases (the cylinder
+case is now "A curved surface is one region bounded by its rims"); the wider
+`[EdgeProfiles],[HoleShapes],[HoleDetector],[HoleStandards],[CutUtils]` set is 546 in 61. The
+geometry was worked out offline against the lego mesh with python replicas of the region/loop
+algorithm (scratch, not in the repo), then confirmed in the app.
+
+- **Next (EF candidates)**: if a skin artifact ever shows on the top face beside a 45° chamfer crease,
+  look there first.
 
 
