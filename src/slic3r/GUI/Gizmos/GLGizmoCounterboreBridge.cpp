@@ -70,10 +70,9 @@ void GLGizmoCounterboreBridge::on_shutdown()
 
 void GLGizmoCounterboreBridge::render_painter_gizmo()
 {
-    // [ORCAPORT:RF-1] The strengthen mode adds volumes, it does not paint.
-    if (m_strengthen)
-        return;
-
+    // [ORCAPORT:RF-1] GLCanvas3D skips the regular volume pass while a painter gizmo is open, so
+    // this pass owns the object's visibility: it must also draw while strengthening, only the
+    // brush cursor is bridge-specific.
     const Selection &selection = m_parent.get_selection();
 
     glsafe(::glEnable(GL_BLEND));
@@ -82,7 +81,8 @@ void GLGizmoCounterboreBridge::render_painter_gizmo()
     render_triangles(selection);
     m_c->object_clipper()->render_cut();
     m_c->instances_hider()->render_cut();
-    render_cursor();
+    if (!m_strengthen)
+        render_cursor();
 
     glsafe(::glDisable(GL_BLEND));
 }
@@ -110,7 +110,12 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
     const float sliders_width = m_imgui->scaled(7.0f);
-    const float left_width = m_imgui->calc_text_size(m_desc.at("mode")).x + m_imgui->scaled(1.5f);
+    // [ORCAPORT:RF-1] Fit the widest of the labels used by either mode, otherwise the strengthen
+    // labels run into their input fields.
+    float left_width = 0.f;
+    for (const char *key : { "mode", "cursor_size", "clipping_of_view", "strength", "extra_loops" })
+        left_width = std::max(left_width, m_imgui->calc_text_size(m_desc.at(key)).x);
+    left_width += m_imgui->scaled(1.5f);
 
     // [ORCAPORT:RF-1] Feature selector: bridge painting or hole strengthening.
     ImGui::AlignTextToFramePadding();
