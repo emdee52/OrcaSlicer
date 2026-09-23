@@ -369,16 +369,12 @@ namespace {
 
 // Filling a cavity flush needs the surface the cavity is cut into, not a plane the user paints: a
 // painted plane is flat and the wall it is painted on is not. So every vertex is raised to the
-// highest neighbouring surface plane around it. On a flat or convex wall (the wall of a part is
-// convex where it curves away) no neighbour plane is above the vertex, so nothing is added; a cavity
-// is cut behind the wall, so its floor is raised onto the wall around it and comes out exactly flush
-// - a plane through the wall, not a fit, so there is no residual to leave behind. The brush says
-// which facets may be filled; the wall planes are searched for a margin beyond the brush, so the
-// brush width does not decide whether a mark is detected (a mark wider than the brush, or on a
-// coarsely faceted curve where the wall is a little further away, still gets its wall).
+// highest neighbouring surface plane within the brush reach. On a flat or convex wall (the wall of a
+// part is convex where it curves away) no neighbour plane is above the vertex, so nothing is added;
+// a cavity is cut behind the wall, so its floor is raised onto the wall around it and comes out
+// exactly flush - a plane through the wall, not a fit, so there is no residual to leave behind.
 constexpr double CAVITY_EPS        = 0.15; // raised by less than this: not a cavity, mm
 constexpr double CAVITY_PARALLEL   = 0.9;  // ignore neighbour planes off parallel by more than cos(26)
-constexpr double CAVITY_MARGIN_MIN = 1.5;  // mm, least wall search beyond the brush
 constexpr size_t CAVITY_MAX_WORK   = 20000000; // vertex x facet pairs, so a huge brush cannot stall
 constexpr int    CAVITY_MAX_REGION = 200000;
 
@@ -468,8 +464,7 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
     if (seeds.empty())
         return {};
 
-    // The patch: everything reachable from a seed within the brush reach. Only the patch may become
-    // part of the plug.
+    // The patch: everything reachable from a seed within the brush reach.
     FacetDistances                      dij(neighbors, centroid);
     std::vector<std::pair<int, double>> reached;
     dij.run(seeds, radius, reached);
@@ -480,26 +475,11 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
     for (const auto &r : reached)
         patch.push_back(r.first);
 
-    // The wall a cavity is cut into usually lies just outside it - further than the brush when the
-    // mark is wider than the brush or sits on a coarsely faceted curve. So the candidate planes are
-    // searched for a margin beyond the brush; candidates are never filled, they only say how high
-    // the patch comes up.
-    const double margin = std::max(CAVITY_MARGIN_MIN, 3. * double(its_average_edge_length(its)));
-    const double search = radius + margin;
-    std::vector<std::pair<int, double>> cand_reached;
-    dij.run(seeds, search, cand_reached);
-    if (cand_reached.size() > CAVITY_MAX_REGION)
-        return {};
-    std::vector<int> candidates;
-    candidates.reserve(cand_reached.size());
-    for (const auto &r : cand_reached)
-        candidates.push_back(r.first);
-
-    // Outward normal of every facet, and of the patch as a whole. Every facet needs one: the wall
-    // planes that raise the patch are searched outside the patch as well.
+    // Outward normal of every facet in the patch, and of the patch as a whole.
     const double       wind = its_volume(its) < 0. ? -1. : 1.; // the file may wind inward
     std::vector<Vec3d> fnorm(nf, Vec3d::Zero());
-    for (size_t f = 0; f < nf; ++f) {
+    Vec3d              n0 = Vec3d::Zero();
+    for (const int f : patch) {
         const Vec3i32 &t = its.indices[f];
         const Vec3d    a = its.vertices[t(0)].cast<double>();
         const Vec3d    b = its.vertices[t(1)].cast<double>();
@@ -508,10 +488,8 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
         if (fn.norm() < 1e-12) // degenerate facet: it has no plane to offer
             continue;
         fnorm[f] = fn.normalized();
+        n0 += fn;
     }
-    Vec3d n0 = Vec3d::Zero();
-    for (const int f : patch)
-        n0 += fnorm[f];
     if (n0.norm() < 1e-12)
         return {};
     n0.normalize();
@@ -526,24 +504,24 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
                 ++vcount;
             }
     }
-    if (vcount == 0 || size_t(candidates.size()) * vcount > CAVITY_MAX_WORK)
+    if (vcount == 0 || size_t(patch.size()) * vcount > CAVITY_MAX_WORK)
         return {};
 
     // How high each vertex has to come up to reach the highest surface plane around it, always along
     // the patch normal so a groove is closed as a solid and its side walls are sealed too. A plane
     // only counts if it faces about the same way as the patch (so a groove side wall cannot lift the
-    // floor) and stands outside the vertex by no more than a fraction of the search distance, or the
-    // closing would fill the wall's own concave curvature as well as the marks. A plane through the
-    // vertex stands outside it by nothing, so a flat or convex wall leaves every vertex where it is.
-    const double        reach = 0.25 * search;
-    const double        h_max = 0.5 * search;
+    // floor) and stands outside the vertex by no more than a fraction of the brush, or the closing
+    // would fill the wall's own concave curvature as well as the marks. A plane through the vertex
+    // stands outside it by nothing, so a flat or convex wall leaves every vertex where it is.
+    const double        reach = 0.25 * radius;
+    const double        h_max = 0.5 * radius;
     std::vector<double> lift(nv, 0.);
     for (size_t v = 0; v < nv; ++v) {
         if (!vused[v])
             continue;
         const Vec3d p = its.vertices[v].cast<double>();
         double      best = 0.;
-        for (const int f : candidates) {
+        for (const int f : patch) {
             if (fnorm[f].norm() < 0.5)
                 continue;
             const double cos0 = n0.dot(fnorm[f]);
