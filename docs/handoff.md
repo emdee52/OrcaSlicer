@@ -1046,5 +1046,8 @@ fitted to the surface, so the fill is flush by construction rather than by appro
   appears and the user trims it. `Lower by` must be at least the mark depth so the lowered band covers
   the whole mark. On a part that is not prismatic the lowered geometry can protrude. These are the
   same compromises the manual workflow makes.
-- **Branch state**: on `port/HF-2`, branched from `port/HF-1`. Not merged. See section 0 for why a
-  branch only merges once the user has tested it in the app.
+- **Deferred.** Trimming the band footprint with further cut planes (the user's extra side cuts) is
+  deliberately deferred: v1 has a single plane and the user trims any spill-over themselves. Add it
+  only if the leftover geometry becomes a problem in practice.
+- **Branch state**: on `port/HF-2`, branched from `port/HF-1`. The user tested it in the app and
+  confirmed it works, so it is merged `--no-ff` into `port/integration`.
