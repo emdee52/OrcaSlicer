@@ -47,6 +47,43 @@ void face_plane_axes(const Vec3d& normal, Vec3d& x_axis, Vec3d& y_axis)
     }
 }
 
+indexed_triangle_set fill_from_above_mesh(const indexed_triangle_set &its, const Vec3d &plane_point,
+                                          const Vec3d &plane_normal, double offset)
+{
+    if (its.indices.empty() || !plane_point.allFinite() || !plane_normal.allFinite() || offset <= 0.)
+        return {};
+
+    const Vec3d n = plane_normal.norm() > 1e-12 ? plane_normal.normalized() : Vec3d::UnitZ();
+
+    Vec3d x_axis, y_axis;
+    face_plane_axes(n, x_axis, y_axis);
+
+    // Frame with z on the plane normal and the origin on the plane.
+    Eigen::Transform<double, 3, Eigen::Affine, Eigen::DontAlign> world_to_local = Eigen::Transform<double, 3, Eigen::Affine, Eigen::DontAlign>::Identity();
+    world_to_local.linear().col(0) = x_axis;
+    world_to_local.linear().col(1) = y_axis;
+    world_to_local.linear().col(2) = n;
+    world_to_local.translation()    = -world_to_local.linear() * plane_point;
+
+    indexed_triangle_set local = its;
+    its_transform(local, world_to_local);
+
+    indexed_triangle_set upper;
+    cut_mesh(local, 0.f, &upper, nullptr);
+    if (upper.indices.empty())
+        return {};
+
+    indexed_triangle_set band;
+    cut_mesh(upper, float(offset), nullptr, &band);
+    if (band.indices.empty())
+        return {};
+
+    const auto local_to_world = world_to_local.inverse();
+    its_transform(band, local_to_world);
+    its_translate(band, (-n * offset).cast<float>());
+    return band;
+}
+
 std::vector<FaceSnapPoint> face_snap_points(const indexed_triangle_set& its, const std::vector<int>& region)
 {
     std::vector<FaceSnapPoint> out;

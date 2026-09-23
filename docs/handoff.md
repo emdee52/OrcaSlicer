@@ -977,3 +977,74 @@ writes a negative volume).
   See section 0 for why a branch only merges once the user has tested it in the app.
 
 
+## 23. HF-1 — Cavity fill (branch port/HF-1)
+
+A Prepare-tab brush that plugs a recessed mark — an engraving or a watermark — with a positive
+volume, so it is filled at slice time without a boolean and without any CAD reconstruction. It is the
+first attempt at the "fill a depression" problem; section 24 is the second.
+
+- **Tool.** `GLGizmoHoleFill` (display name "Cavity fill", `EType::HoleFill`, registered directly after
+  `EdgeDress`, icons `resources/images/toolbar_cavity_fill{,_dark}.svg`, shortcut `Ctrl+G`). The
+  geometry lives in `src/libslic3r/HoleShapes.{hpp,cpp}`; the MCP tool is `hole_fill_gizmo`
+  (`src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp`); tests are the `[HoleShapes]` cases in
+  `tests/libslic3r/test_holeshapes.cpp` using `tests/data/watermark.obj`.
+- **Interaction.** Left-drag paints a stroke over the mark; one fill is committed on mouse-up from the
+  whole stroke; right-click removes the fill under the cursor. "Brush width" is a world-space slider
+  (default 2.5 mm). The fill is a positive `MODEL_PART` volume named `HoleFill#<n>`, added with a
+  snapshot and the usual `ObjectList` refresh. Applied plugs are skipped by the hover raycast so they
+  do not occlude the recesses next to them.
+- **Geometry.** `cavity_fill_local(its, seed_points, seed_facets, radius)`: the brush reach selects a
+  patch of facets around the stroke seeds; every patch vertex is raised along the patch normal to the
+  highest surface plane around it (a candidate facet plane, gated to within ~26° of the patch normal,
+  and searched for a margin beyond the brush so the brush width does not decide detection); one
+  independent prism per raised facet is emitted and the whole plug is flipped if its signed volume is
+  negative. A flat or convex wall has no plane above its own vertices, so painting it emits nothing.
+- **Why it does not work well enough.** The estimator closes a cavity only up to a plane. On the flat
+  front wall of the test part it is exact — the recessed letters come out flush per layer — but on the
+  coarsely faceted wall under the curved top rim it keeps a residual recess (user: "it smoothed out
+  the flat wall flush but the curved walls still were not flush when sliced as you can see letters in
+  the image"). The front wall is prismatic (its `+X` face is exactly at `x ∈ {87.367, 87.5}` at every
+  `z` over the letter band), which is why a *lowered copy of the wall* reproduces the un-engraved
+  surface exactly while a fitted plane cannot. That observation is the origin of section 24.
+- **History.** The branch carries several rejected designs: a fitted reference plane painted by the
+  user (fixes 3–5), a per-facet ring-plane classifier (fix 6), Taubin fairing of the patch (fix 7),
+  and plane-by-plane closing of each cavity (fix 8, the user's "best so far"). Fix 9 widened the wall
+  search beyond the brush and was rejected as a regression; it was reverted, leaving the branch at the
+  fix-8 tree plus the revert commit.
+- **Branch state**: on `port/HF-1`, branched from `port/integration`. Head is the revert of fix 9
+  (tree equal to fix 8). Not merged — the user has not accepted it, and work has moved to section 24.
+
+
+## 24. HF-2 — Fill from above (branch port/HF-2)
+
+Reproduces, inside the Cut gizmo, the workflow the user performs by hand when an engraved watermark
+has to be filled flush on a curved or coarsely faceted wall: cut the part above the mark, duplicate
+the top piece, lower the duplicate so it is a positive that follows the wall shape, and let it fill
+the recess. The key property is that the engraved wall is *prismatic*: a copy of the wall band from
+above the mark, dropped by the depth of the mark, is the un-engraved wall surface exactly. Nothing is
+fitted to the surface, so the fill is flush by construction rather than by approximation.
+
+- **Why it lives in the Cut gizmo.** The Cut gizmo already owns a plane in world space and already
+  produces the two halves of the user's manual process. The feature is an addition, not a replacement:
+  the existing cut is untouched, and the fill is a separate button.
+- **Mechanism.** With the cut plane at `point` with normal `n` (both world space), and an offset `d`
+  (the "Lower by" value):
+  1. frame a transform whose `z` axis is `n` and whose origin is `point`;
+  2. `cut_mesh(local, 0, &upper, nullptr)` — keep the half above the plane;
+  3. `cut_mesh(upper, d, nullptr, &band)` — keep the slab from `0` to `d` above the plane;
+  4. invert the frame and translate the slab by `-n * d`.
+  The result is the band of the object between the plane and plane + `d`, moved down by `d`. It is
+  added to the object as a positive `MODEL_PART` volume named `FillFromAbove#<n>`; because positive
+  model parts are combined per layer by 2D Clipper at slice time, it fills the recess with no boolean.
+- **User-visible parameters.** Exactly two, so the geometry stays understandable: the existing cut
+  plane (position and orientation) and `Lower by` (band thickness, `m_fill_offset`, default 6 mm,
+  slider 0.2–50 mm). No bounding box and no border points — the user's manual side cuts only clip the
+  band footprint and are redundant where the wall is prismatic.
+- **Ceilings, stated deliberately.** The band is the full cross-section of the object at that height,
+  not just the wall strip, so where that cross-section contains geometry which lands in empty space
+  when lowered — the inner cavity, a ledge, geometry under the curved top rim — extra material
+  appears and the user trims it. `Lower by` must be at least the mark depth so the lowered band covers
+  the whole mark. On a part that is not prismatic the lowered geometry can protrude. These are the
+  same compromises the manual workflow makes.
+- **Branch state**: on `port/HF-2`, branched from `port/HF-1`. Not merged. See section 0 for why a
+  branch only merges once the user has tested it in the app.

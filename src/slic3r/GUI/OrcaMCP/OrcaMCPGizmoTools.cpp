@@ -380,6 +380,8 @@ nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
         {"shape_size", g.gizmo_shape_size()},
         {"shape_through", g.gizmo_shape_through()},
         {"shape_depth", g.gizmo_shape_depth()},
+        {"fill_from_above", g.gizmo_fill_from_above_enabled()},
+        {"fill_offset", g.gizmo_fill_offset()},
         {"object_id", object_id},
     };
 }
@@ -581,6 +583,8 @@ void OrcaMCPServer::register_gizmo_tools()
         "'set_shape' (profile kind 0=circle, 1=square, 2=hexagon, size in mm, optional through and "
         "depth in mm; switches to Shape mode), "
         "'flip' (swap upper/lower), 'reset' (reset plane and connectors), 'apply' (perform the cut), "
+        "'fill_from_above' (add the slab of the object above the cut plane, lowered by 'offset' mm, as "
+        "a positive part - reproduces the manual cut/duplicate/lower workflow without cutting), "
         "'pick_face' (raycast the object and align the plane to the face under screen_x/screen_y, or "
         "the viewport centre if omitted - the same path as the interactive 'Pick flat face' mode), "
         "'hover_face' (report the facet under screen_x/screen_y and how many coplanar facets its "
@@ -590,7 +594,7 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_part | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | set_shape | flip | reset | apply | pick_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_part | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | set_shape | flip | reset | apply | fill_from_above | pick_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"part", {{"type", "integer"}, {"description", "Model-volume index (see status.parts) to cut alone, for action=set_part or open. -1 = whole object."}}},
                 {"normal", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space cut-plane normal, for action=set_plane_normal."}}},
@@ -604,6 +608,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"shape_size", {{"type", "number"}, {"description", "Shape size in mm (diameter / side / across-flats), for action=set_shape."}}},
                 {"through", {{"type", "boolean"}, {"description", "Cut all the way through (default true); false cuts a blind pocket of 'depth' mm, for action=set_shape."}}},
                 {"depth", {{"type", "number"}, {"description", "Blind-pocket depth in mm (used when through is false), for action=set_shape."}}},
+                {"offset", {{"type", "number"}, {"description", "Lower-by distance in mm for action=fill_from_above (how far the slab above the plane is dropped into the object). Default keeps the current value."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for action=pick_face or hover_face (defaults to the viewport centre)."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for action=pick_face or hover_face (defaults to the viewport centre)."}}},
             }},
@@ -712,6 +717,11 @@ void OrcaMCPServer::register_gizmo_tools()
                         {"region_facets", region_facets},
                         {"normal", vec3_json(normal)},
                     };
+                } else if (action == "fill_from_above") {
+                    if (need("offset"))
+                        g->gizmo_set_fill_offset(params["offset"].get<double>());
+                    g->gizmo_set_fill_from_above(true);
+                    g->gizmo_fill_from_above();
                 } else if (action == "apply") {
                     OrcaMCP::McpDialogSuppressionGuard guard;
                     g->gizmo_apply();

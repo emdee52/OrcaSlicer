@@ -76,6 +76,14 @@ indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double h
 // through.
 indexed_triangle_set make_cookie_cutter(CutShapeKind kind, double size, double z_min, double z_max);
 
+// The slab of `its` between the plane and `offset` along the plane normal, moved back down by
+// `offset`. The plane is `plane_normal . x = plane_normal . plane_point`. When the surface above the
+// plane is a copy of the surface being filled - the engraved wall of a watermark is prismatic - the
+// lowered slab reproduces that surface and plugs the recess without a boolean. Returns an empty mesh
+// when there is nothing above the plane or the slab is degenerate.
+indexed_triangle_set fill_from_above_mesh(const indexed_triangle_set &its, const Vec3d &plane_point,
+                                          const Vec3d &plane_normal, double offset);
+
 
 class Cut {
 
