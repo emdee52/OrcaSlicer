@@ -365,15 +365,16 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
 
 namespace {
 
-// Cap each edge-connected piece of `region` on its own plane and emit the prisms as one mesh.
-// `fixed_n`/`fixed_p` give an explicit cap plane (all pieces share it); pass nullptr to fit a plane
-// per piece from its rim (smallest-variance direction of the rim points). `eps` is how far behind
-// the plane a facet must lie to be capped; pieces whose cap is deeper than `max_depth` are skipped.
+// Cap each edge-connected piece of `region` and emit the prisms as one mesh. `ref_pts`/`ref_normals`
+// are wall samples: every facet is measured against the plane of the nearest sample, so a plug
+// follows a curved or faceted wall instead of one tangent plane. Pass nullptr to fit a plane per
+// piece from its rim (smallest-variance direction of the rim points). `eps` is how far behind the
+// plane a facet must lie to be capped; pieces whose cap is deeper than `max_depth` are skipped.
 indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
                                     const std::vector<Vec3i32> &neighbors,
                                     const std::vector<Vec3f> &fnorm, const std::vector<int> &region,
-                                    const Vec3d *fixed_n, const Vec3d *fixed_p, double eps,
-                                    double max_depth)
+                                    const std::vector<Vec3d> *ref_pts,
+                                    const std::vector<Vec3d> *ref_normals, double eps, double max_depth)
 {
     std::vector<char> is_reg(its.indices.size(), 0);
     for (const int f : region)
@@ -414,12 +415,9 @@ indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
     };
 
     for (const std::vector<int> &faces : comp_faces) {
-        Vec3d nc;
-        Vec3d p0;
-        if (fixed_n != nullptr) {
-            nc = *fixed_n;
-            p0 = *fixed_p;
-        } else {
+        Vec3d nc = Vec3d::Zero();
+        Vec3d p0 = Vec3d::Zero();
+        if (ref_pts == nullptr) {
             // Fallback normal: area-weighted over the component (walls cancel, opening adds up).
             Vec3d nsum = Vec3d::Zero();
             for (const int f : faces) {
@@ -474,33 +472,50 @@ indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
             }
         }
 
-        // A facet caps the opening when it faces the plane and lies below it by a real amount.
+        // The plane a point is measured against: one shared plane when a rim fit was used, else the
+        // plane of the nearest wall sample.
+        const auto plane_of = [&](const Vec3d &p, Vec3d &pp, Vec3d &nn) {
+            pp = p0;
+            nn = nc;
+            if (ref_pts == nullptr)
+                return;
+            double best = std::numeric_limits<double>::max();
+            for (size_t i = 0; i < ref_pts->size(); ++i) {
+                const double d = ((*ref_pts)[i] - p).squaredNorm();
+                if (d < best) {
+                    best = d;
+                    pp   = (*ref_pts)[i];
+                    nn   = (*ref_normals)[i];
+                }
+            }
+        };
+
+        // A facet caps the opening when it faces the wall and lies behind it by a real amount.
         std::vector<char> capf(its.indices.size(), 0);
         std::vector<int>  cap_faces;
+        double            md = 0.;
         for (const int f : faces) {
-            if (fnorm[f].cast<double>().normalized().dot(nc) < 0.3)
-                continue;
             const Vec3i32 &t = its.indices[f];
             const Vec3d    c = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
                              its.vertices[t(2)].cast<double>()) /
                             3.;
-            if ((p0 - c).dot(nc) <= eps)
+            Vec3d pf, nf;
+            plane_of(c, pf, nf);
+            if (fnorm[f].cast<double>().normalized().dot(nf) < 0.3)
+                continue;
+            const double d = (pf - c).dot(nf);
+            if (d <= eps)
                 continue;
             capf[f] = 1;
             cap_faces.push_back(f);
+            if (d > md)
+                md = d;
         }
         if (cap_faces.empty())
             continue;
 
         // Refuse a cap deeper than `max_depth`: a leaked or near-vertical plane would make a proud
         // blade, not a shallow fill.
-        double md = 0.;
-        for (const int f : cap_faces)
-            for (int k = 0; k < 3; ++k) {
-                const double d = (p0 - its.vertices[its.indices[f](k)].cast<double>()).dot(nc);
-                if (d > md)
-                    md = d;
-            }
         if (md > max_depth)
             continue;
 
@@ -516,7 +531,9 @@ indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
         auto top_of = [&](int vi) {
             if (top_map[vi] < 0) {
                 top_map[vi] = int(verts.size());
-                verts.push_back(project(its.vertices[vi], p0, nc));
+                Vec3d pf, nf;
+                plane_of(its.vertices[vi].cast<double>(), pf, nf);
+                verts.push_back(project(its.vertices[vi], pf, nf));
             }
             return top_map[vi];
         };
@@ -527,7 +544,9 @@ indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
             const Vec3f    va = its.vertices[nt(0)];
             const Vec3f    vb = its.vertices[nt(1)];
             const Vec3f    vc = its.vertices[nt(2)];
-            if ((vb - va).cross(vc - va).cast<double>().dot(nc) < 0.)
+            Vec3d          pf, nf;
+            plane_of(((va + vb + vc) / 3.f).cast<double>(), pf, nf);
+            if ((vb - va).cross(vc - va).cast<double>().dot(nf) < 0.)
                 std::swap(t(1), t(2));
 
             const int i0 = t(0), i1 = t(1), i2 = t(2);
@@ -654,13 +673,17 @@ indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
 
 indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
                                        const std::vector<Vec3d> &seed_points,
-                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
-                                       const Vec3d &ref_normal, double depth, double radius)
+                                       const std::vector<int> &seed_facets,
+                                       const std::vector<Vec3d> &ref_points,
+                                       const std::vector<Vec3d> &ref_normals, double depth, double radius)
 {
     if (its.indices.empty() || radius <= 0. || depth < 0. || seed_points.empty() ||
-        seed_points.size() != seed_facets.size() || !ref_point.allFinite() ||
-        !ref_normal.allFinite() || ref_normal.norm() < 1e-9)
+        seed_points.size() != seed_facets.size() || ref_points.empty() ||
+        ref_points.size() != ref_normals.size())
         return {};
+    for (size_t i = 0; i < ref_points.size(); ++i)
+        if (!ref_points[i].allFinite() || !ref_normals[i].allFinite() || ref_normals[i].norm() < 1e-9)
+            return {};
 
     const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
     const std::vector<Vec3f>   fnorm     = its_face_normals(its);
@@ -711,8 +734,18 @@ indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
     if (region.size() < 4)
         return {};
 
-    const Vec3d n = ref_normal.normalized();
-    return build_cap_mesh(its, neighbors, fnorm, region, &n, &ref_point, depth, radius);
+    return build_cap_mesh(its, neighbors, fnorm, region, &ref_points, &ref_normals, depth, radius);
+}
+
+indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
+                                       const Vec3d &ref_normal, double depth, double radius)
+{
+    if (!ref_point.allFinite() || !ref_normal.allFinite() || ref_normal.norm() < 1e-9)
+        return {};
+    return cavity_fill_plane(its, seed_points, seed_facets, std::vector<Vec3d>{ ref_point },
+                             std::vector<Vec3d>{ ref_normal }, depth, radius);
 }
 
 void fit_plane(const std::vector<Vec3d> &points, const std::vector<Vec3d> &normals, Vec3d &point,

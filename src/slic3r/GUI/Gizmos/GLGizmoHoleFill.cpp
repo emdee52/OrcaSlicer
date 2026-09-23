@@ -244,16 +244,31 @@ indexed_triangle_set GLGizmoHoleFill::fill_mesh(const std::vector<Hover> &seeds)
     if (!m_has_reference)
         return indexed_triangle_set();
 
-    // Bring the world-space reference plane into the volume's own mesh space.
+    // Bring the wall samples into the volume's own mesh space: each facet is measured against the
+    // plane of the nearest sample, so the plug follows a curved or faceted wall.
     const Transform3d vol_to_world = instance_matrix() * mv->get_matrix();
     const Transform3d world_to_vol = vol_to_world.inverse();
-    Vec3d             ref_p        = world_to_vol * m_ref_point;
-    Vec3d             ref_n        = world_to_vol.linear().inverse().transpose() * m_ref_normal;
-    if (!ref_n.allFinite() || ref_n.norm() < 1e-9)
-        return indexed_triangle_set();
-    ref_n.normalize();
+    std::vector<Vec3d> ref_pts;
+    std::vector<Vec3d> ref_nrm;
+    ref_pts.reserve(m_ref_points.size() + 1);
+    ref_nrm.reserve(m_ref_points.size() + 1);
+    for (size_t i = 0; i < m_ref_points.size(); ++i) {
+        Vec3d n = world_to_vol.linear().inverse().transpose() * m_ref_normals[i];
+        if (!n.allFinite() || n.norm() < 1e-9)
+            continue;
+        ref_pts.push_back(world_to_vol * m_ref_points[i]);
+        ref_nrm.push_back(n.normalized());
+    }
+    if (ref_pts.empty()) {
+        Vec3d ref_p = world_to_vol * m_ref_point;
+        Vec3d ref_n = world_to_vol.linear().inverse().transpose() * m_ref_normal;
+        if (!ref_n.allFinite() || ref_n.norm() < 1e-9)
+            return indexed_triangle_set();
+        ref_pts.push_back(ref_p);
+        ref_nrm.push_back(ref_n.normalized());
+    }
 
-    indexed_triangle_set plug = cavity_fill_plane(mv->mesh().its, points, facets, ref_p, ref_n,
+    indexed_triangle_set plug = cavity_fill_plane(mv->mesh().its, points, facets, ref_pts, ref_nrm,
                                                   m_depth / (s > 1e-9 ? s : 1.0), r_local);
     if (plug.indices.empty())
         return plug;
@@ -313,7 +328,8 @@ void GLGizmoHoleFill::rebuild_preview()
         const double s   = object_scale();
         const double rad = std::clamp(m_radius * 0.08, 0.3, 2.0) / (s > 1e-9 ? s : 1.0);
         indexed_triangle_set marker = its_make_sphere(rad, 2. * PI / 16.);
-        its_translate(marker, m_ref_point.cast<float>());
+        const Vec3d pos = instance_matrix().inverse() * m_ref_point; // previews render in object space
+        its_translate(marker, pos.cast<float>());
         m_ref_marker.model.init_from(marker);
         m_ref_marker.model.set_color(REF_COLOR);
     }
@@ -415,6 +431,11 @@ void GLGizmoHoleFill::sample_reference()
     n_world.normalize();
     m_ref_points.push_back(m_hover.hit_world);
     m_ref_normals.push_back(n_world);
+    // Fit as we go, so the marker and the fill preview follow the drag: it is obvious where the
+    // reference is in the first place.
+    fit_plane(m_ref_points, m_ref_normals, m_ref_point, m_ref_normal);
+    m_has_reference = true;
+    m_preview_dirty = true;
 }
 
 void GLGizmoHoleFill::finish_reference()
@@ -423,8 +444,7 @@ void GLGizmoHoleFill::finish_reference()
         return;
     fit_plane(m_ref_points, m_ref_normals, m_ref_point, m_ref_normal);
     m_has_reference = true;
-    m_ref_points.clear();
-    m_ref_normals.clear();
+    // The samples are kept: they are the local wall planes the plug is measured against.
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }

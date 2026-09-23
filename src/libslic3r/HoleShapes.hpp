@@ -97,11 +97,18 @@ indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec
 // facets within `radius` of the seed points whose centroid lies behind the plane (ref_point,
 // ref_normal) by more than `depth`. This is the reference-wall workflow: the user sets the plane on
 // the surrounding wall, and only the recessed geometry behind it is filled. The wall itself sits on
-// the plane, so a brush stroke on the wall alone adds nothing.
+// the plane, so a brush stroke on the wall alone adds nothing. The vector overload takes several
+// wall samples and measures every facet against the plane of the nearest one, so the plug follows a
+// curved or coarsely facetted wall instead of one tangent plane.
 indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
                                        const std::vector<Vec3d> &seed_points,
-                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
-                                       const Vec3d &ref_normal, double depth, double radius);
+                                       const std::vector<int> &seed_facets,
+                                       const std::vector<Vec3d> &ref_points,
+                                       const std::vector<Vec3d> &ref_normals, double depth, double radius);
+indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
+                                        const std::vector<Vec3d> &seed_points,
+                                        const std::vector<int> &seed_facets, const Vec3d &ref_point,
+                                        const Vec3d &ref_normal, double depth, double radius);
 
 // Least-squares plane through `points` (centroid) with the normal averaged from `normals`; if the
 // normals cancel, the normal falls back to the smallest-variance direction of the points. Used to
