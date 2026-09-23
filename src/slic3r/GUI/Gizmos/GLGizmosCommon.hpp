@@ -310,10 +310,12 @@ indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vect
                                           const FaceRegionCache& cache, float lift);
 
 // Raycasts the selected volumes of `mo` under `mouse_position` and returns the closest unclipped hit.
-// Returns false when nothing is hit.
+// Returns false when nothing is hit. When `accept` is set, only volumes it accepts are considered,
+// so a caller can pick through parts of the object it must not hit.
 bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection, const ModelObject* mo,
                          const ClippingPlane* clipping, const GLVolume*& volume, const ModelVolume*& mv,
-                         size_t& facet, Vec3d& hit_world);
+                         size_t& facet, Vec3d& hit_world,
+                         const std::function<bool(const ModelVolume*)>& accept = {});
 
 
 // Snap coordinates of the coplanar `region` of `mv`: corners, edge midpoints, edge quarters, face

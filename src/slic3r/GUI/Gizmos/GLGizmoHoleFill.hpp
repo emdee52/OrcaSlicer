@@ -120,6 +120,7 @@ private:
     std::vector<Vec3d> m_ref_normals;
     PickingModel m_preview;
     PickingModel m_preview_applied;
+    PickingModel m_ref_marker; // small ball on the wall reference, so the set point is visible
     bool         m_preview_dirty{ true };
 
     const ModelObject* m_old_object{ nullptr };

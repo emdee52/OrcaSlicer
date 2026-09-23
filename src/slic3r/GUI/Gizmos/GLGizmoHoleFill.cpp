@@ -30,6 +30,8 @@ constexpr const char *HOLE_FILL_NAME = "HoleFill";
 const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
 // Applied plugs, the same red the hole gizmo uses for applied holes.
 const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
+// The wall reference marker, distinct from both the hover and the applied colour.
+const ColorRGBA REF_COLOR{ 1.00f, 0.85f, 0.10f, 0.95f };
 
 // Fill radius, in world mm, that the panel offers. Small enough to stay on one flat mark, large
 // enough to span a watermark on a curved wall.
@@ -181,9 +183,11 @@ void GLGizmoHoleFill::update_hover(const Vec2d &screen_pos)
         const ModelVolume   *mv       = nullptr;
         size_t               facet    = 0;
         Vec3d                hit_world;
-        if (raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world)) {
-            // A click on an applied plug is not a new fill: the surface under it is already covered.
-            if (mv != nullptr && !is_fill_volume(mv) && facet < mv->mesh().its.indices.size()) {
+        if (raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit_world,
+                                [](const ModelVolume *v) { return !is_fill_volume(v); })) {
+            // The plugs are picked through: an applied plug covers the wall around it, and the user
+            // must still be able to paint the recesses next to it.
+            if (mv != nullptr && facet < mv->mesh().its.indices.size()) {
                 m_hover.valid     = true;
                 m_hover.mv        = mv;
                 m_hover.facet     = int(facet);
@@ -269,6 +273,8 @@ void GLGizmoHoleFill::record_stroke_sample()
         return;
     if (!m_stroke.empty() && m_stroke.front().mv != m_hover.mv)
         return; // a stroke covers a single volume
+    if (m_hover_applied >= 0)
+        return; // the recess under the cursor already carries a plug
     for (const Hover &h : m_stroke)
         if (h.facet == m_hover.facet)
             return; // already part of this stroke
@@ -300,6 +306,17 @@ void GLGizmoHoleFill::rebuild_preview()
     // the preview would keep showing whatever it was first built from.
     m_preview.reset();
     m_preview_applied.reset();
+    m_ref_marker.reset();
+
+    // A ball on the wall reference, so it is obvious where the plane sits and that it was set.
+    if (m_has_reference) {
+        const double s   = object_scale();
+        const double rad = std::clamp(m_radius * 0.08, 0.3, 2.0) / (s > 1e-9 ? s : 1.0);
+        indexed_triangle_set marker = its_make_sphere(rad, 2. * PI / 16.);
+        its_translate(marker, m_ref_point.cast<float>());
+        m_ref_marker.model.init_from(marker);
+        m_ref_marker.model.set_color(REF_COLOR);
+    }
 
     // The plug for the current stroke, or the hovered one, unless the face already carries a plug:
     // an applied plug is shown in the applied overlay instead, and must not look like something
@@ -539,9 +556,10 @@ bool GLGizmoHoleFill::on_init()
     m_desc["clear_ref"]   = _L("Clear reference");
     m_desc["apply"]       = _L("Fill under cursor");
     m_desc["clear"]       = _L("Clear all");
-    m_desc["hover_hint"]  = _L("Set the wall reference, then drag over the depression to fill it.");
-    m_desc["no_ref"]      = _L("Set the wall reference first.");
-    m_desc["ref_set"]     = _L("Wall reference set.");
+    m_desc["hover_hint"]  = _L("Click Set wall reference, then click the wall around the mark, then drag over the depression.");
+    m_desc["no_ref"]      = _L("No wall reference: click Set wall reference, then click the wall around the mark.");
+    m_desc["ref_pick"]    = _L("Click the wall around the mark to set the reference.");
+    m_desc["ref_set"]     = _L("Wall reference set (yellow ball). Hover a depression.");
     m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
     m_desc["cavity"]      = _L("Depression under the cursor.");
     m_desc["already"]     = _L("Already filled.");
@@ -636,6 +654,7 @@ void GLGizmoHoleFill::on_render()
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     m_preview_applied.model.render(shader);
     m_preview.model.render(shader);
+    m_ref_marker.model.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
@@ -769,12 +788,16 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 
-    if (!m_has_reference)
+    if (m_setting_reference)
+        m_imgui->text(m_desc.at("ref_pick"));
+    else if (!m_has_reference)
         m_imgui->text(m_desc.at("no_ref"));
     else if (m_hover.valid && m_hover_applied >= 0)
         m_imgui->text(m_desc.at("already"));
+    else if (m_hover.valid)
+        m_imgui->text(m_desc.at("cavity"));
     else
-        m_imgui->text(m_hover.valid ? m_desc.at("cavity") : m_desc.at("no_cavity"));
+        m_imgui->text(m_desc.at("ref_set"));
     m_imgui->text(m_desc.at("hover_hint"));
     if (applied_count() > 0)
         m_imgui->text(m_desc.at("remove_hint"));
