@@ -367,16 +367,19 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
 
 namespace {
 
-// Filling a cavity flush needs the surface the cavity is cut into, at the facet, not a plane the
-// user paints: a painted plane is flat, and the wall it is painted on is not. So every facet gets
-// its own local surface, a plane fitted to the ring of facets around it, and is measured against
-// that. The ring is a fraction of the brush reach, so it stays local and follows a curved or
-// coarsely facetted wall.
-constexpr double CAVITY_RING_INNER     = 0.6;  // ring band: [0.6 * radius, radius]
-constexpr double CAVITY_PARALLEL_MIN   = 0.90; // facet normal vs its ring normal
-constexpr double CAVITY_RMS_FRACTION   = 0.08; // ring planarity gate, in units of radius
-constexpr double CAVITY_DEPTH_FRACTION = 0.04; // depth floor, in units of radius
-constexpr int    CAVITY_MAX_REGION     = 200000;
+// Filling a cavity flush needs the surface the cavity is cut into, not a plane the user paints: a
+// painted plane is flat and the wall it is painted on is not. So instead of classifying facets, the
+// patch under the brush is faired: its boundary is frozen and its interior run through a few Taubin
+// passes, which remove the high-frequency corrugations (the engraving) and leave the smooth wall
+// untouched. The plug is the closed shell between the faired patch and the original one, so its top
+// surface is the wall as it would be without the mark - flush by construction, and a plain wall
+// fairs to itself and yields nothing.
+constexpr double CAVITY_FAIR_LAMBDA   = 0.33; // Taubin shrink / inflate pair; lambda + mu < 0 so
+constexpr double CAVITY_FAIR_MU      = -0.34; // the fairing does not shrink a curved wall
+constexpr int    CAVITY_FAIR_MIN_ITER = 8;
+constexpr int    CAVITY_FAIR_MAX_ITER = 2000;
+constexpr double CAVITY_MIN_BUMP      = 0.02; // outward fairing displacement, in units of radius
+constexpr int    CAVITY_MAX_REGION    = 200000;
 
 // Facet adjacency distances. The scratch buffers live across calls so they are allocated once.
 class FacetDistances
@@ -431,75 +434,6 @@ private:
         m_queue;
 };
 
-// Area-weighted plane through `ring`, trimmed twice to drop facets that do not belong to the
-// surface (a groove floor caught inside the ring, say). Returns false for a degenerate ring.
-bool fit_ring_plane(const std::vector<Vec3f> &fnorm, const std::vector<Vec3d> &centroid,
-                    const std::vector<double> &area, const std::vector<int> &ring, Vec3d &p, Vec3d &n,
-                    double &rms)
-{
-    std::vector<int> cur;
-    for (const int f : ring)
-        if (area[f] > 1e-12)
-            cur.push_back(f);
-    if (cur.size() < 3)
-        return false;
-
-    p = Vec3d::Zero();
-    n = Vec3d::Zero();
-    for (int pass = 0; pass < 3; ++pass) {
-        double wsum = 0.;
-        Vec3d  c    = Vec3d::Zero();
-        for (const int f : cur) {
-            wsum += area[f];
-            c += area[f] * centroid[f];
-        }
-        if (wsum <= 1e-12)
-            return false;
-        c /= wsum;
-
-        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-        for (const int f : cur) {
-            const Vec3d d = centroid[f] - c;
-            cov += area[f] * d * d.transpose();
-        }
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
-        if (es.info() != Eigen::Success)
-            return false;
-        Vec3d nv = es.eigenvectors().col(0);
-        if (!nv.allFinite() || nv.norm() < 1e-9)
-            return false;
-        nv.normalize();
-
-        // The eigenvector sign is arbitrary: face it out of the solid, the way the ring does.
-        Vec3d nsum = Vec3d::Zero();
-        for (const int f : cur)
-            nsum += area[f] * fnorm[f].cast<double>();
-        if (nv.dot(nsum) < 0.)
-            nv = -nv;
-
-        double sq = 0.;
-        for (const int f : cur) {
-            const double d = (centroid[f] - c).dot(nv);
-            sq += area[f] * d * d;
-        }
-        p   = c;
-        n   = nv;
-        rms = std::sqrt(sq / wsum);
-
-        if (pass == 2)
-            break;
-        const double     cut = std::max(2. * rms, 1e-6);
-        std::vector<int> next;
-        for (const int f : cur)
-            if (std::abs((centroid[f] - c).dot(nv)) <= cut)
-                next.push_back(f);
-        if (next.size() < 3 || next.size() == cur.size())
-            break;
-        cur = std::move(next);
-    }
-    return true;
-}
-
 } // namespace
 
 indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
@@ -511,23 +445,15 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
         return {};
 
     const size_t               nf        = its.indices.size();
+    const size_t               nv        = its.vertices.size();
     const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
-    std::vector<Vec3f>         fnorm     = its_face_normals(its);
-    // Everything below reads "outward" as positive: an inverted winding would flip every depth.
-    if (its_volume(its) < 0.)
-        for (Vec3f &n : fnorm)
-            n = -n;
 
-
-    std::vector<Vec3d>  centroid(nf);
-    std::vector<double> area(nf, 0.);
+    std::vector<Vec3d> centroid(nf);
     for (size_t f = 0; f < nf; ++f) {
         const Vec3i32 &t = its.indices[f];
-        const Vec3d    a = its.vertices[t(0)].cast<double>();
-        const Vec3d    b = its.vertices[t(1)].cast<double>();
-        const Vec3d    c = its.vertices[t(2)].cast<double>();
-        centroid[f]      = (a + b + c) / 3.;
-        area[f]          = 0.5 * (b - a).cross(c - a).norm();
+        centroid[f] = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
+                       its.vertices[t(2)].cast<double>()) /
+                      3.;
     }
 
     std::vector<int> seeds;
@@ -541,140 +467,142 @@ indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
     if (seeds.empty())
         return {};
 
-    // Everything under the brush: the facets reachable from a seed within `radius`.
+    // The patch: everything reachable from a seed within the brush reach.
     FacetDistances                      dij(neighbors, centroid);
     std::vector<std::pair<int, double>> reached;
     dij.run(seeds, radius, reached);
     if (reached.size() < 4 || reached.size() > CAVITY_MAX_REGION)
         return {};
-    std::vector<int> region;
-    region.reserve(reached.size());
+    std::vector<int> patch;
+    patch.reserve(reached.size());
     for (const auto &r : reached)
-        region.push_back(r.first);
+        patch.push_back(r.first);
 
-
-
-    // Local surface of every facet in reach and how far behind it that facet sits.
-    const double        ring_inner = CAVITY_RING_INNER * radius;
-    std::vector<char>   in_region(nf, 0);
-    std::vector<Vec3d>  plane_p(nf, Vec3d::Zero());
-    std::vector<Vec3d>  plane_n(nf, Vec3d::Zero());
-    std::vector<double> plane_rms(nf, 0.);
-    std::vector<double> plane_depth(nf, 0.);
-    std::vector<char>   plane_ok(nf, 0);
-    for (const int f : region)
-        in_region[f] = 1;
-
-    std::vector<std::pair<int, double>> ring_hits;
-    std::vector<int>                    ring;
-    for (const int f : region) {
-        dij.run({f}, radius, ring_hits);
-        ring.clear();
-        for (const auto &r : ring_hits)
-            if (r.second >= ring_inner)
-                ring.push_back(r.first);
-        double rms = 0.;
-        Vec3d  p, n;
-        if (!fit_ring_plane(fnorm, centroid, area, ring, p, n, rms))
-            continue;
-        plane_p[f]     = p;
-        plane_n[f]     = n;
-        plane_rms[f]   = rms;
-        plane_depth[f] = (p - centroid[f]).dot(n);
-        plane_ok[f]    = 1;
-    }
-
-
-    // A facet is recessed when it faces its own local surface, that surface really is a plane (not
-    // the inside of a corner), and the facet sits behind it by a real amount. The floor scales with
-    // the brush, because a wider ring hides more curvature: no user threshold to set.
-    const auto project = [](const Vec3d &v, const Vec3d &p, const Vec3d &n) -> Vec3d {
-        return v - (v - p).dot(n) * n;
-    };
-    // A facet only contributes a prism when its cap, its projection onto its local plane, has an
-    // area and a winding: a sliver would add nothing but open edges.
-    const auto cap_area = [&](int f) {
+    // Patch vertex adjacency, and its boundary: an edge used by one patch facet only is a boundary
+    // edge, and its endpoints must not move while the inside is faired.
+    std::vector<char>             vused(nv, 0);
+    std::vector<std::vector<int>> ring(nv);
+    std::vector<long long>        ekey;
+    ekey.reserve(patch.size() * 3);
+    for (const int f : patch) {
         const Vec3i32 &t = its.indices[f];
-        const Vec3d    a = project(its.vertices[t(0)].cast<double>(), plane_p[f], plane_n[f]);
-        const Vec3d    b = project(its.vertices[t(1)].cast<double>(), plane_p[f], plane_n[f]);
-        const Vec3d    c = project(its.vertices[t(2)].cast<double>(), plane_p[f], plane_n[f]);
-        return (b - a).cross(c - a).norm();
-    };
-
-    const double      depth_floor = CAVITY_DEPTH_FRACTION * radius;
-    std::vector<char> cap(nf, 0);
-    std::vector<int>  cap_faces;
-    for (const int f : region) {
-        if (!plane_ok[f] || area[f] <= 1e-12 || cap_area(f) <= 1e-9)
-            continue;
-        if (fnorm[f].cast<double>().normalized().dot(plane_n[f]) < CAVITY_PARALLEL_MIN)
-            continue;
-        if (plane_rms[f] > CAVITY_RMS_FRACTION * radius)
-            continue;
-        if (plane_depth[f] <= depth_floor || plane_depth[f] > radius) // deeper than the brush = leaked plane
-            continue;
-        cap[f] = 1;
-        cap_faces.push_back(f);
+        for (int k = 0; k < 3; ++k) {
+            const int a = t(k), b = t((k + 1) % 3);
+            vused[a] = vused[b] = 1;
+            ring[a].push_back(b);
+            ring[b].push_back(a);
+            ekey.push_back((long long(std::min(a, b)) << 32) | (unsigned) std::max(a, b));
+        }
     }
-    if (cap_faces.size() < 3)
+    for (auto &r : ring)
+        if (!r.empty()) {
+            std::sort(r.begin(), r.end());
+            r.erase(std::unique(r.begin(), r.end()), r.end());
+        }
+    std::sort(ekey.begin(), ekey.end());
+    std::vector<char> frozen(nv, 0);
+    for (size_t i = 0; i < ekey.size();) {
+        size_t j = i;
+        while (j < ekey.size() && ekey[j] == ekey[i])
+            ++j;
+        if (j - i != 2) { // boundary or non-manifold edge: keep both endpoints where they are
+            frozen[int(ekey[i] >> 32)]          = 1;
+            frozen[int(ekey[i] & 0xffffffffLL)] = 1;
+        }
+        i = j;
+    }
+
+    std::vector<int> used_list;
+    std::vector<Vec3d> orig(nv), cur(nv);
+    for (size_t v = 0; v < nv; ++v)
+        if (vused[v]) {
+            used_list.push_back(int(v));
+            orig[v] = cur[v] = its.vertices[v].cast<double>();
+        }
+
+    // Iteration count follows the brush and the facet size under it, so the brush width stays the
+    // only control. The scale that matters is the patch's own, not the mesh average: a coarse face
+    // next to a fine engraving must not starve the fairing. Enough passes to spread the wall across
+    // the brush, no more, and capped so a huge brush cannot stall the UI.
+    double edge_sum = 0.;
+    size_t edge_cnt = 0;
+    for (const int f : patch) {
+        const Vec3i32 &t = its.indices[f];
+        for (int k = 0; k < 3; ++k) {
+            edge_sum += (its.vertices[t(k)].cast<double>() - its.vertices[t((k + 1) % 3)].cast<double>()).norm();
+            ++edge_cnt;
+        }
+    }
+    const double mean_edge = edge_cnt > 0 ? edge_sum / double(edge_cnt) : 0.;
+    int          iters = mean_edge > 1e-6 ? int(std::lround(300. * radius / mean_edge)) : CAVITY_FAIR_MIN_ITER;
+    if (!used_list.empty())
+        iters = std::min(iters, std::max(CAVITY_FAIR_MIN_ITER, int(30000000 / used_list.size())));
+    iters = std::clamp(iters, CAVITY_FAIR_MIN_ITER, CAVITY_FAIR_MAX_ITER);
+
+    std::vector<Vec3d> tmp(nv);
+    const auto         pass = [&](const std::vector<Vec3d> &in, std::vector<Vec3d> &out, double fac) {
+        for (const int v : used_list) {
+            if (frozen[v] || ring[v].empty()) {
+                out[v] = in[v];
+                continue;
+            }
+            Vec3d avg = Vec3d::Zero();
+            for (const int g : ring[v])
+                avg += in[g];
+            out[v] = in[v] + fac * (avg / double(ring[v].size()) - in[v]);
+        }
+    };
+    for (int it = 0; it < iters; ++it) {
+        pass(cur, tmp, CAVITY_FAIR_LAMBDA);
+        pass(tmp, cur, CAVITY_FAIR_MU);
+    }
+
+    // How far the fairing pushed a vertex out of the wall. A flat or smoothly curved wall fairs to
+    // itself, so nothing sticks out and there is nothing to fill.
+    std::vector<Vec3d> vnorm(nv, Vec3d::Zero());
+    for (const int f : patch) {
+        const Vec3i32 &t = its.indices[f];
+        const Vec3d    a = its.vertices[t(0)].cast<double>();
+        const Vec3d    b = its.vertices[t(1)].cast<double>();
+        const Vec3d    c = its.vertices[t(2)].cast<double>();
+        const Vec3d    fn = (b - a).cross(c - a);
+        for (int k = 0; k < 3; ++k)
+            vnorm[t(k)] += fn;
+    }
+    double max_out = 0.;
+    for (size_t v = 0; v < nv; ++v) {
+        if (!vused[v] || vnorm[v].norm() < 1e-12)
+            continue;
+        const double d = (cur[v] - orig[v]).dot(vnorm[v].normalized());
+        max_out        = std::max(max_out, d);
+    }
+    if (max_out <= CAVITY_MIN_BUMP * radius)
         return {};
 
-    // The steep facets of the same depression (the walls of an engraved letter) belong to the fill
-    // too, or the plug would leave a shell of unfilled groove around every edge. Take two rings of
-    // them, as long as they are still behind their own local surface.
-    for (int grow = 0; grow < 2; ++grow) {
-        std::vector<int> add;
-        for (const int f : region) {
-            if (cap[f] || !plane_ok[f] || area[f] <= 1e-12 || cap_area(f) <= 1e-9)
-                continue;
-            bool touches = false;
-            for (int k = 0; k < 3 && !touches; ++k) {
-                const int g = neighbors[f](k);
-                touches     = g >= 0 && cap[g];
-            }
-            if (!touches)
-                continue;
-            if (plane_depth[f] > 0.5 * depth_floor && plane_depth[f] <= radius)
-                add.push_back(f);
-        }
-        if (add.empty())
-            break;
-        for (const int f : add) {
-            cap[f] = 1;
-            cap_faces.push_back(f);
-        }
-    }
-
-    // Emit the plug as one prism per capped facet: the cavity surface, its projection onto the
-    // local plane, and the three sides. The prisms are independent, so no edge bookkeeping can go
-    // wrong, and overlapping prisms union away per layer when the volume is sliced.
+    // The plug: the faired patch with the patch's own connectivity, the original patch reversed
+    // below it, and the boundary vertices shared, so the shell closes without any rim search.
     std::vector<Vec3f>   verts;
     std::vector<Vec3i32> tris;
-    for (const int f : cap_faces) {
-        const Vec3i32 &nt = its.indices[f];
-        Vec3i32        t  = nt;
-        // Orient by the cap triangle itself, which lies in the local plane: the facet's own normal
-        // says nothing useful about the winding of a steep wall's cap.
-        const Vec3d ca = project(its.vertices[nt(0)].cast<double>(), plane_p[f], plane_n[f]);
-        const Vec3d cb = project(its.vertices[nt(1)].cast<double>(), plane_p[f], plane_n[f]);
-        const Vec3d cc = project(its.vertices[nt(2)].cast<double>(), plane_p[f], plane_n[f]);
-        if ((cb - ca).cross(cc - ca).dot(plane_n[f]) < 0.)
-            std::swap(t(1), t(2));
-
-        const int base = int(verts.size());
-        for (int k = 0; k < 3; ++k) // the cap, in the local plane
-            verts.push_back(project(its.vertices[t(k)].cast<double>(), plane_p[f], plane_n[f]).cast<float>());
-        for (int k = 0; k < 3; ++k) // the cavity surface
-            verts.push_back(its.vertices[t(k)]);
-
-        tris.push_back(Vec3i32(base + 0, base + 1, base + 2)); // cap, facing out
-        tris.push_back(Vec3i32(base + 3, base + 5, base + 4)); // cavity surface, reversed
-        for (int e = 0; e < 3; ++e) {                          // the three sides
-            const int a = base + 3 + e, b = base + 3 + (e + 1) % 3;
-            const int qa = base + e, qb = base + (e + 1) % 3;
-            tris.push_back(Vec3i32(a, b, qb));
-            tris.push_back(Vec3i32(a, qb, qa));
+    std::vector<int>     bot(nv, -1), top(nv, -1);
+    for (size_t v = 0; v < nv; ++v)
+        if (vused[v]) {
+            bot[v] = int(verts.size());
+            verts.push_back(its.vertices[v]);
         }
+    for (size_t v = 0; v < nv; ++v) {
+        if (!vused[v])
+            continue;
+        if (frozen[v])
+            top[v] = bot[v];
+        else {
+            top[v] = int(verts.size());
+            verts.push_back(cur[v].cast<float>());
+        }
+    }
+    for (const int f : patch) {
+        const Vec3i32 &t = its.indices[f];
+        tris.push_back(Vec3i32(top[t(0)], top[t(1)], top[t(2)])); // faired surface, facing out
+        tris.push_back(Vec3i32(bot[t(0)], bot[t(2)], bot[t(1)])); // cavity surface, reversed
     }
 
     if (tris.empty())

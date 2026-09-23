@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 
+#include "libslic3r/AABBMesh.hpp"
 #include "libslic3r/HoleShapes.hpp"
 #include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -316,7 +317,8 @@ TEST_CASE("Every letter of a watermark is filled from its own seed", "[HoleShape
 {
     // The model the tool has to handle: a watermark engraved into a wall, in mm. Each letter is a
     // separate depression, and each has to fill from a single seed with no reference surface to set
-    // and no re-setting as the wall turns away: the surface is fitted locally, facet by facet.
+    // and no re-setting as the wall turns away: the patch under the brush is faired, so the plug's
+    // top surface is the wall as it would be without the mark.
     const TriangleMesh         part = load_model("watermark.obj");
     const indexed_triangle_set its  = part.its;
     REQUIRE_FALSE(its.indices.empty());
@@ -332,12 +334,16 @@ TEST_CASE("Every letter of a watermark is filled from its own seed", "[HoleShape
             REQUIRE_FALSE(fill.empty());
             // Wound outward, so it slices as a positive volume.
             CHECK(its_volume(fill) > 0.f);
-            // Flush: the plug is the letter volume between its floor and the wall, so it stays thin
-            // in x and far below the volume of a brush-shaped block.
+            // Flush, not proud: nothing of the plug reaches past the wall the mark is cut into.
             const BoundingBoxf3 bb = bounding_box(fill);
-            CHECK_THAT(bb.min.x(), WithinAbs(87.1, 1e-2));
-            CHECK(bb.max.x() - bb.min.x() < 1.);
-            CHECK(double(its_volume(fill)) < 10.);
+            CHECK(bb.max.x() <= 87.55);
+            // And it does fill: straight out of the letter floor, the plug adds material.
+            const AABBMesh probe(fill);
+            double         far = 0.;
+            for (const AABBMesh::hit_result &h : probe.query_ray_hits(seed, Vec3d::UnitX()))
+                if (h.is_hit())
+                    far = std::max(far, h.distance());
+            CHECK(far > 0.1);
         }
     }
 }
@@ -352,6 +358,7 @@ TEST_CASE("A plain wall of a watermark is left alone", "[HoleShapes]")
     const Vec3d wall(87.5, 156., 27.2);
     const int   facet = facet_near(its, Vec3d::UnitX(), wall);
     REQUIRE(facet >= 0);
+
     CHECK(cavity_fill_local(its, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
 }
 
