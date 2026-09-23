@@ -361,3 +361,43 @@ TEST_CASE("A brush stroke over the floor and a wall fills the pocket", "[HoleSha
     CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
 }
 
+TEST_CASE("A reference plane fills only the recessed facets", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                floor(10., 10., 2.);
+    const int                  facet = facet_near(plate, Vec3d::UnitZ(), floor);
+    REQUIRE(facet >= 0);
+
+    const indexed_triangle_set fill =
+        cavity_fill_plane(plate, std::vector<Vec3d>{floor}, std::vector<int>{facet}, Vec3d(10., 10., 4.),
+                          Vec3d::UnitZ(), 0.2, 8.);
+    REQUIRE_FALSE(fill.empty());
+    CHECK(its_num_open_edges(fill) == 0);
+    CHECK_THAT(bounding_box(fill).min.z(), WithinAbs(2., 1e-3));
+    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
+    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
+}
+
+TEST_CASE("A reference plane ignores a flush wall", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                wall(0., 10., 2.);
+    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+
+    CHECK(cavity_fill_plane(plate, std::vector<Vec3d>{wall}, std::vector<int>{facet}, Vec3d(10., 10., 4.),
+                            Vec3d::UnitZ(), 0.2, 5.)
+              .empty());
+}
+
+TEST_CASE("fit_plane recovers a rim plane", "[HoleShapes]")
+{
+    const std::vector<Vec3d> points{Vec3d(7., 7., 4.), Vec3d(13., 7., 4.), Vec3d(13., 13., 4.),
+                                    Vec3d(7., 13., 4.)};
+    const std::vector<Vec3d> normals(4, Vec3d::UnitZ());
+    Vec3d                    point, normal;
+    fit_plane(points, normals, point, normal);
+    CHECK_THAT(point.z(), WithinAbs(4., 1e-6));
+    CHECK(normal.dot(Vec3d::UnitZ()) > 0.999);
+}
+

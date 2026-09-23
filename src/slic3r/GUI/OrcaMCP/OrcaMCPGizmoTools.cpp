@@ -347,6 +347,8 @@ nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
 {
     return nlohmann::json{
         {"radius", g.get_radius()},
+        {"depth", g.get_depth()},
+        {"has_reference", g.has_reference()},
         {"hover_valid", g.hover_valid()},
         {"applied_count", g.applied_count()},
         {"object_scale", g.object_scale()}};
@@ -922,23 +924,27 @@ void OrcaMCPServer::register_gizmo_tools()
     register_tool(
         {"hole_fill_gizmo",
          "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
-         "watermark, pocket) with a positive volume built as the convex hull of the surface around "
-         "the clicked face, so it fills without a boolean and also works on a curved wall. Actions: "
-         "'open', 'status', 'set_radius' (mm), 'hover_at' (screen_x/screen_y), 'apply_at' "
-         "(screen_x/screen_y), 'apply' (fill under the cursor), 'list_fills' (volume index + "
-         "object-space centre of each applied plug), 'remove_fill' (index), 'clear_all', 'refresh', "
-         "'close'. A face that is already covered is not filled twice; remove it first (right-click "
-         "in the UI).",
+         "watermark, pocket) with a positive volume built from the recessed faces projected up to a "
+         "wall reference plane, so it sits flush on a curved wall without a boolean. Set the wall "
+         "reference first (set_reference over the wall around the mark), then apply over the "
+         "depression. Actions: "
+         "'open', 'status', 'set_reference' (screen_x/screen_y on the wall), 'clear_reference', "
+         "'set_radius' (brush width, mm), 'set_depth' (mm behind the reference plane), 'hover_at' "
+         "(screen_x/screen_y), 'apply_at' (screen_x/screen_y), 'apply' (fill under the cursor), "
+         "'list_fills' (volume index + object-space centre of each applied plug), 'remove_fill' "
+         "(index), 'clear_all', 'refresh', 'close'. A face that is already covered is not filled "
+         "twice; remove it first (right-click in the UI).",
          {{"type", "object"},
           {"properties",
            {{"action",
              {{"type", "string"},
               {"description",
-               "open | status | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
+               "open | status | set_reference | clear_reference | set_radius | set_depth | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
-            {"radius", {{"type", "number"}, {"description", "Fill radius in mm, for action=set_radius."}}},
-            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at."}}},
-            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at."}}},
+            {"radius", {{"type", "number"}, {"description", "Brush width in mm, for action=set_radius."}}},
+            {"depth", {{"type", "number"}, {"description", "Fill depth behind the reference plane in mm, for action=set_depth."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at / set_reference."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at / set_reference."}}},
             {"index",
              {{"type", "integer"}, {"description", "Fill volume index from list_fills, for action=remove_fill."}}}}},
          {"required", {"action"}}},
@@ -977,6 +983,19 @@ void OrcaMCPServer::register_gizmo_tools()
                     if (!need("radius"))
                         return {{"status", "error"}, {"error", "Missing radius"}};
                     g->set_radius(params["radius"].get<double>());
+                } else if (action == "set_depth") {
+                    if (!need("depth"))
+                        return {{"status", "error"}, {"error", "Missing depth"}};
+                    g->set_depth(params["depth"].get<double>());
+                } else if (action == "set_reference") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    if (!g->gizmo_set_reference_at(pos))
+                        return {{"status", "error"},
+                                {"error", "Could not set the wall reference at that point (no face under the cursor)."}};
+                } else if (action == "clear_reference") {
+                    g->clear_reference();
                 } else if (action == "hover_at") {
                     if (!need("screen_x") || !need("screen_y"))
                         return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};

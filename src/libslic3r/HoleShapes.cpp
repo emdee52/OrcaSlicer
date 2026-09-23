@@ -363,6 +363,213 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
     return far > 0. ? far + std::max(0., margin) : 0.;
 }
 
+namespace {
+
+// Cap each edge-connected piece of `region` on its own plane and emit the prisms as one mesh.
+// `fixed_n`/`fixed_p` give an explicit cap plane (all pieces share it); pass nullptr to fit a plane
+// per piece from its rim (smallest-variance direction of the rim points). `eps` is how far behind
+// the plane a facet must lie to be capped; pieces whose cap is deeper than `max_depth` are skipped.
+indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
+                                    const std::vector<Vec3i32> &neighbors,
+                                    const std::vector<Vec3f> &fnorm, const std::vector<int> &region,
+                                    const Vec3d *fixed_n, const Vec3d *fixed_p, double eps,
+                                    double max_depth)
+{
+    std::vector<char> is_reg(its.indices.size(), 0);
+    for (const int f : region)
+        is_reg[f] = 1;
+
+    // A brush stroke can cover several depressions. Split the region into edge-connected pieces so
+    // each opening is capped on its own plane and never bridges to the next one.
+    std::vector<int>              comp(its.indices.size(), -1);
+    std::vector<std::vector<int>> comp_faces;
+    for (const int seed_f : region) {
+        if (comp[seed_f] >= 0)
+            continue;
+        const int id = int(comp_faces.size());
+        comp_faces.emplace_back();
+        std::queue<int> q;
+        q.push(seed_f);
+        comp[seed_f] = id;
+        while (!q.empty()) {
+            const int f = q.front();
+            q.pop();
+            comp_faces[id].push_back(f);
+            for (int k = 0; k < 3; ++k) {
+                const int g = neighbors[f](k);
+                if (g >= 0 && comp[g] < 0 && is_reg[g]) {
+                    comp[g] = id;
+                    q.push(g);
+                }
+            }
+        }
+    }
+
+    std::vector<Vec3f>   verts;
+    std::vector<Vec3i32> tris;
+
+    auto project = [](const Vec3f &v, const Vec3d &p0, const Vec3d &n) -> Vec3f {
+        const Vec3d d = v.cast<double>() - p0;
+        return (v.cast<double>() - d.dot(n) * n).cast<float>();
+    };
+
+    for (const std::vector<int> &faces : comp_faces) {
+        Vec3d nc;
+        Vec3d p0;
+        if (fixed_n != nullptr) {
+            nc = *fixed_n;
+            p0 = *fixed_p;
+        } else {
+            // Fallback normal: area-weighted over the component (walls cancel, opening adds up).
+            Vec3d nsum = Vec3d::Zero();
+            for (const int f : faces) {
+                const Vec3i32 &t = its.indices[f];
+                const Vec3d    a = its.vertices[t(0)].cast<double>();
+                const Vec3d    b = its.vertices[t(1)].cast<double>();
+                const Vec3d    c = its.vertices[t(2)].cast<double>();
+                nsum += (b - a).cross(c - a);
+            }
+            if (!nsum.allFinite() || nsum.norm() < 1e-12)
+                continue;
+            nc = nsum.normalized();
+
+            // Rim points: component vertices on an edge whose neighbour is outside the region.
+            std::vector<Vec3d> rim;
+            for (const int f : faces) {
+                const Vec3i32 &t = its.indices[f];
+                for (int k = 0; k < 3; ++k) {
+                    const int g = neighbors[f](k);
+                    if (g >= 0 && is_reg[g])
+                        continue;
+                    rim.push_back(its.vertices[t[k]].cast<double>());
+                    rim.push_back(its.vertices[t[(k + 1) % 3]].cast<double>());
+                }
+            }
+
+            p0 = Vec3d::Zero();
+            if (rim.size() >= 3) {
+                // Best-fit plane through the rim: the smallest-eigenvalue eigenvector is the
+                // opening normal, so it follows the surrounding surface.
+                for (const Vec3d &r : rim)
+                    p0 += r;
+                p0 /= double(rim.size());
+                Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+                for (const Vec3d &r : rim) {
+                    const Vec3d d = r - p0;
+                    cov += d * d.transpose();
+                }
+                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
+                if (es.info() == Eigen::Success) {
+                    Vec3d n2 = es.eigenvectors().col(0);
+                    if (n2.dot(nc) < 0.)
+                        n2 = -n2;
+                    if (n2.allFinite() && n2.norm() > 1e-9)
+                        nc = n2.normalized();
+                }
+            } else {
+                for (const int f : faces)
+                    for (int k = 0; k < 3; ++k)
+                        p0 += its.vertices[its.indices[f](k)].cast<double>();
+                p0 /= double(faces.size() * 3);
+            }
+        }
+
+        // A facet caps the opening when it faces the plane and lies below it by a real amount.
+        std::vector<char> capf(its.indices.size(), 0);
+        std::vector<int>  cap_faces;
+        for (const int f : faces) {
+            if (fnorm[f].cast<double>().normalized().dot(nc) < 0.3)
+                continue;
+            const Vec3i32 &t = its.indices[f];
+            const Vec3d    c = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
+                             its.vertices[t(2)].cast<double>()) /
+                            3.;
+            if ((p0 - c).dot(nc) <= eps)
+                continue;
+            capf[f] = 1;
+            cap_faces.push_back(f);
+        }
+        if (cap_faces.empty())
+            continue;
+
+        // Refuse a cap deeper than `max_depth`: a leaked or near-vertical plane would make a proud
+        // blade, not a shallow fill.
+        double md = 0.;
+        for (const int f : cap_faces)
+            for (int k = 0; k < 3; ++k) {
+                const double d = (p0 - its.vertices[its.indices[f](k)].cast<double>()).dot(nc);
+                if (d > md)
+                    md = d;
+            }
+        if (md > max_depth)
+            continue;
+
+        std::vector<int> bot_map(its.vertices.size(), -1);
+        std::vector<int> top_map(its.vertices.size(), -1);
+        auto bot_of = [&](int vi) {
+            if (bot_map[vi] < 0) {
+                bot_map[vi] = int(verts.size());
+                verts.push_back(its.vertices[vi]);
+            }
+            return bot_map[vi];
+        };
+        auto top_of = [&](int vi) {
+            if (top_map[vi] < 0) {
+                top_map[vi] = int(verts.size());
+                verts.push_back(project(its.vertices[vi], p0, nc));
+            }
+            return top_map[vi];
+        };
+
+        for (const int f : cap_faces) {
+            const Vec3i32 &nt = its.indices[f];
+            Vec3i32        t  = nt;
+            const Vec3f    va = its.vertices[nt(0)];
+            const Vec3f    vb = its.vertices[nt(1)];
+            const Vec3f    vc = its.vertices[nt(2)];
+            if ((vb - va).cross(vc - va).cast<double>().dot(nc) < 0.)
+                std::swap(t(1), t(2));
+
+            const int i0 = t(0), i1 = t(1), i2 = t(2);
+            const int b0 = bot_of(i0), b1 = bot_of(i1), b2 = bot_of(i2);
+            const int q0 = top_of(i0), q1 = top_of(i1), q2 = top_of(i2);
+
+            tris.push_back(Vec3i32(q0, q1, q2)); // cap
+            tris.push_back(Vec3i32(b0, b2, b1)); // cavity surface (reversed: outward)
+
+            const int e0[3]  = {i0, i1, i2};
+            const int e1[3]  = {i1, i2, i0};
+            const int eb0[3] = {b0, b1, b2};
+            const int eb1[3] = {b1, b2, b0};
+            const int et0[3] = {q0, q1, q2};
+            const int et1[3] = {q1, q2, q0};
+            for (int e = 0; e < 3; ++e) {
+                int g = -1;
+                for (int k = 0; k < 3; ++k) {
+                    const int u = nt[k], w = nt[(k + 1) % 3];
+                    if ((u == e0[e] && w == e1[e]) || (u == e1[e] && w == e0[e])) {
+                        g = neighbors[f](k);
+                        break;
+                    }
+                }
+                if (g >= 0 && capf[g])
+                    continue; // interior edge of this cap
+                tris.push_back(Vec3i32(eb0[e], eb1[e], et1[e]));
+                tris.push_back(Vec3i32(eb0[e], et1[e], et0[e]));
+            }
+        }
+    }
+
+    if (tris.empty())
+        return {};
+    indexed_triangle_set plug{std::move(tris), std::move(verts)};
+    if (its_volume(plug) < 0.)
+        its_flip_triangles(plug);
+    return plug;
+}
+
+} // namespace
+
 indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
                                       const std::vector<Vec3d> &seed_points,
                                       const std::vector<int> &seed_facets, double radius)
@@ -442,194 +649,97 @@ indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
     if (region.size() < 4 || !crossed_concave)
         return {};
 
-    std::vector<char> is_reg(its.indices.size(), 0);
-    for (const int f : region)
-        is_reg[f] = 1;
+    return build_cap_mesh(its, neighbors, fnorm, region, nullptr, nullptr, 1e-4 * radius, radius);
+}
 
-    // A brush stroke can cover several depressions. Split the region into edge-connected pieces so
-    // each opening is capped on its own plane and never bridges to the next one.
-    std::vector<int>              comp(its.indices.size(), -1);
-    std::vector<std::vector<int>> comp_faces;
-    for (const int seed_f : region) {
-        if (comp[seed_f] >= 0)
-            continue;
-        const int id = int(comp_faces.size());
-        comp_faces.emplace_back();
-        std::queue<int> q;
-        q.push(seed_f);
-        comp[seed_f] = id;
-        while (!q.empty()) {
-            const int f = q.front();
-            q.pop();
-            comp_faces[id].push_back(f);
-            for (int k = 0; k < 3; ++k) {
-                const int g = neighbors[f](k);
-                if (g >= 0 && comp[g] < 0 && is_reg[g]) {
-                    comp[g] = id;
-                    q.push(g);
-                }
+indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
+                                       const Vec3d &ref_normal, double depth, double radius)
+{
+    if (its.indices.empty() || radius <= 0. || depth < 0. || seed_points.empty() ||
+        seed_points.size() != seed_facets.size() || !ref_point.allFinite() ||
+        !ref_normal.allFinite() || ref_normal.norm() < 1e-9)
+        return {};
+
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    const std::vector<Vec3f>   fnorm     = its_face_normals(its);
+    const double               r2        = radius * radius;
+
+    auto near_seed = [&](int f) {
+        for (int k = 0; k < 3; ++k) {
+            const Vec3f &v = its.vertices[its.indices[f](k)];
+            for (const Vec3d &sp : seed_points) {
+                const Vec3d d = Vec3d(v(0), v(1), v(2)) - sp;
+                if (d.squaredNorm() <= r2)
+                    return true;
             }
         }
-    }
-
-    std::vector<Vec3f>   verts;
-    std::vector<Vec3i32> tris;
-
-    auto project = [](const Vec3f &v, const Vec3d &p0, const Vec3d &n) -> Vec3f {
-        const Vec3d d = v.cast<double>() - p0;
-        return (v.cast<double>() - d.dot(n) * n).cast<float>();
+        return false;
     };
 
-    for (const std::vector<int> &faces : comp_faces) {
-        // Fallback normal: area-weighted over the component (the walls cancel, the opening adds up).
-        Vec3d nsum = Vec3d::Zero();
-        for (const int f : faces) {
-            const Vec3i32 &t = its.indices[f];
-            const Vec3d    a = its.vertices[t(0)].cast<double>();
-            const Vec3d    b = its.vertices[t(1)].cast<double>();
-            const Vec3d    c = its.vertices[t(2)].cast<double>();
-            nsum += (b - a).cross(c - a);
-        }
-        if (!nsum.allFinite() || nsum.norm() < 1e-12)
+    std::vector<char> in_region(its.indices.size(), 0);
+    std::queue<int>   queue;
+    for (size_t i = 0; i < seed_facets.size(); ++i) {
+        const int s = seed_facets[i];
+        if (s < 0 || s >= int(its.indices.size()) || !seed_points[i].allFinite() || in_region[s])
             continue;
-        Vec3d nc = nsum.normalized();
+        in_region[s] = 1;
+        queue.push(s);
+    }
+    if (queue.empty())
+        return {};
 
-        // Rim points: component vertices on an edge whose neighbour is outside the region. They sit
-        // on the surrounding surface.
-        std::vector<Vec3d> rim;
-        for (const int f : faces) {
-            const Vec3i32 &t = its.indices[f];
-            for (int k = 0; k < 3; ++k) {
-                const int g = neighbors[f](k);
-                if (g >= 0 && is_reg[g])
-                    continue;
-                rim.push_back(its.vertices[t[k]].cast<double>());
-                rim.push_back(its.vertices[t[(k + 1) % 3]].cast<double>());
-            }
-        }
-
-        Vec3d p0 = Vec3d::Zero();
-        if (rim.size() >= 3) {
-            // Best-fit plane through the rim: the smallest-eigenvalue eigenvector is the opening
-            // normal, so it follows the surrounding surface instead of the cavity walls.
-            for (const Vec3d &r : rim)
-                p0 += r;
-            p0 /= double(rim.size());
-            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-            for (const Vec3d &r : rim) {
-                const Vec3d d = r - p0;
-                cov += d * d.transpose();
-            }
-            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
-            if (es.info() == Eigen::Success) {
-                Vec3d n2 = es.eigenvectors().col(0);
-                if (n2.dot(nc) < 0.)
-                    n2 = -n2;
-                if (n2.allFinite() && n2.norm() > 1e-9)
-                    nc = n2.normalized();
-            }
-        } else {
-            for (const int f : faces)
-                for (int k = 0; k < 3; ++k)
-                    p0 += its.vertices[its.indices[f](k)].cast<double>();
-            p0 /= double(faces.size() * 3);
-        }
-
-        const double eps = 1e-4 * radius;
-
-        // A facet caps the opening when it faces the plane and lies below it by a real amount.
-        // Perpendicular walls and the surrounding surface (already on the plane) are dropped.
-        std::vector<char> capf(its.indices.size(), 0);
-        std::vector<int>  cap_faces;
-        for (const int f : faces) {
-            if (fnorm[f].cast<double>().normalized().dot(nc) < 0.3)
-                continue;
-            const Vec3i32 &t = its.indices[f];
-            const Vec3d    c = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
-                             its.vertices[t(2)].cast<double>()) /
-                            3.;
-            if ((p0 - c).dot(nc) <= eps)
-                continue;
-            capf[f] = 1;
-            cap_faces.push_back(f);
-        }
-        if (cap_faces.empty())
+    // Connected facets within the brush reach; which of them get filled is decided by the
+    // reference plane in build_cap_mesh, not by the surface normal.
+    std::vector<int> region;
+    constexpr int    MAX_REGION = 200000;
+    while (!queue.empty() && int(region.size()) < MAX_REGION) {
+        const int f = queue.front();
+        queue.pop();
+        if (!near_seed(f))
             continue;
-
-        // Refuse a component whose cap is deeper than the brush radius: that is a leaked or
-        // near-vertical plane, not a shallow depression, and it would produce a proud blade.
-        double max_depth = 0.;
-        for (const int f : cap_faces)
-            for (int k = 0; k < 3; ++k) {
-                const double d = (p0 - its.vertices[its.indices[f](k)].cast<double>()).dot(nc);
-                if (d > max_depth)
-                    max_depth = d;
-            }
-        if (max_depth > radius)
-            continue;
-
-        std::vector<int> bot_map(its.vertices.size(), -1);
-        std::vector<int> top_map(its.vertices.size(), -1);
-        auto bot_of = [&](int vi) {
-            if (bot_map[vi] < 0) {
-                bot_map[vi] = int(verts.size());
-                verts.push_back(its.vertices[vi]);
-            }
-            return bot_map[vi];
-        };
-        auto top_of = [&](int vi) {
-            if (top_map[vi] < 0) {
-                top_map[vi] = int(verts.size());
-                verts.push_back(project(its.vertices[vi], p0, nc));
-            }
-            return top_map[vi];
-        };
-
-        for (const int f : cap_faces) {
-            const Vec3i32 &nt = its.indices[f];
-            Vec3i32        t  = nt;
-            const Vec3f    va = its.vertices[nt(0)];
-            const Vec3f    vb = its.vertices[nt(1)];
-            const Vec3f    vc = its.vertices[nt(2)];
-            if ((vb - va).cross(vc - va).cast<double>().dot(nc) < 0.)
-                std::swap(t(1), t(2));
-
-            const int i0 = t(0), i1 = t(1), i2 = t(2);
-            const int b0 = bot_of(i0), b1 = bot_of(i1), b2 = bot_of(i2);
-            const int q0 = top_of(i0), q1 = top_of(i1), q2 = top_of(i2);
-
-            tris.push_back(Vec3i32(q0, q1, q2)); // cap
-            tris.push_back(Vec3i32(b0, b2, b1)); // cavity surface (reversed: outward)
-
-            const int e0[3]  = {i0, i1, i2};
-            const int e1[3]  = {i1, i2, i0};
-            const int eb0[3] = {b0, b1, b2};
-            const int eb1[3] = {b1, b2, b0};
-            const int et0[3] = {q0, q1, q2};
-            const int et1[3] = {q1, q2, q0};
-            for (int e = 0; e < 3; ++e) {
-                int g = -1;
-                for (int k = 0; k < 3; ++k) {
-                    const int u = nt[k], w = nt[(k + 1) % 3];
-                    if ((u == e0[e] && w == e1[e]) || (u == e1[e] && w == e0[e])) {
-                        g = neighbors[f](k);
-                        break;
-                    }
-                }
-                if (g >= 0 && capf[g])
-                    continue; // interior edge of this cap
-                tris.push_back(Vec3i32(eb0[e], eb1[e], et1[e]));
-                tris.push_back(Vec3i32(eb0[e], et1[e], et0[e]));
+        region.push_back(f);
+        for (int k = 0; k < 3; ++k) {
+            const int g = neighbors[f](k);
+            if (g >= 0 && !in_region[g]) {
+                in_region[g] = 1;
+                queue.push(g);
             }
         }
     }
-
-    if (tris.empty())
+    if (region.size() < 4)
         return {};
-    indexed_triangle_set plug{std::move(tris), std::move(verts)};
-    if (its_volume(plug) < 0.)
-        its_flip_triangles(plug);
-    return plug;
+
+    const Vec3d n = ref_normal.normalized();
+    return build_cap_mesh(its, neighbors, fnorm, region, &n, &ref_point, depth, radius);
+}
+
+void fit_plane(const std::vector<Vec3d> &points, const std::vector<Vec3d> &normals, Vec3d &point,
+               Vec3d &normal)
+{
+    point = Vec3d::Zero();
+    for (const Vec3d &p : points)
+        point += p;
+    if (!points.empty())
+        point /= double(points.size());
+
+    Vec3d n = Vec3d::Zero();
+    for (const Vec3d &v : normals)
+        if (v.allFinite())
+            n += v;
+    if (n.norm() < 1e-9 && points.size() >= 3) {
+        // Normals cancel: fall back to the smallest-variance direction of the points.
+        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        for (const Vec3d &p : points) {
+            const Vec3d d = p - point;
+            cov += d * d.transpose();
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
+        if (es.info() == Eigen::Success)
+            n = es.eigenvectors().col(0);
+    }
+    normal = (n.allFinite() && n.norm() > 1e-9) ? n.normalized() : Vec3d::UnitZ();
 }
 
 indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,

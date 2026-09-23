@@ -81,18 +81,33 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
                           double margin = 0.5);
 
 // --- Cavity fill ------------------------------------------------------------------------------
-// A positive plug that fills a depression (engraving, watermark, pocket). Grows the facet region
-// geodesically from the seed facets (on the cavity floor or walls) out to `radius` around their
-// seed points (mesh space), stopping where the surface turns over a convex ridge (the cavity rim),
-// then returns the convex hull of the region's vertices. The hull lies inside the solid everywhere
-// except across the concavity, so a positive volume combined with the object fills the cavity
-// without a boolean. Returns an empty mesh when no concave junction was crossed, so painting a flat
-// or convex wall adds nothing.
+// A positive plug that fills a depression (engraving, watermark, pocket). Selects the facet region
+// around the seed facets (mesh space), caps it on a plane through the rim, and returns the prism
+// between the cavity surface and that plane. The plug is confined to the region footprint, so it
+// sits flush and cannot bridge the surrounding surface. Growth stops where the surface turns over a
+// convex ridge (the cavity rim); a region with no concave junction is left empty, so painting a flat
+// or convex wall adds nothing. `radius` is the brush reach in mesh units.
 indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
                                       const std::vector<Vec3d> &seed_points,
                                       const std::vector<int> &seed_facets, double radius);
 indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
                                       int seed_facet, double radius);
+
+// As above, but the cap plane is given explicitly instead of being fitted per component: keep the
+// facets within `radius` of the seed points whose centroid lies behind the plane (ref_point,
+// ref_normal) by more than `depth`. This is the reference-wall workflow: the user sets the plane on
+// the surrounding wall, and only the recessed geometry behind it is filled. The wall itself sits on
+// the plane, so a brush stroke on the wall alone adds nothing.
+indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
+                                       const Vec3d &ref_normal, double depth, double radius);
+
+// Least-squares plane through `points` (centroid) with the normal averaged from `normals`; if the
+// normals cancel, the normal falls back to the smallest-variance direction of the points. Used to
+// set the reference plane from a painted wall.
+void fit_plane(const std::vector<Vec3d> &points, const std::vector<Vec3d> &normals, Vec3d &point,
+               Vec3d &normal);
 
 } // namespace Slic3r
 
