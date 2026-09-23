@@ -82,13 +82,13 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
 
 // --- Cavity fill ------------------------------------------------------------------------------
 // A positive plug that fills a depression (engraving, watermark, pocket) flush with the surface
-// around it. The facets within the brush reach of the seed facets are faired instead of classified:
-// the patch boundary is frozen and its interior run through a few Taubin passes, which remove the
-// high-frequency corrugations (the mark) and leave the smooth wall alone, curved or coarsely
-// facetted alike. The plug is the closed shell between the faired patch and the original one, so
-// its top surface is the wall as it would be without the mark. A flat or smoothly curved wall fairs
-// to itself, so painting it adds nothing. `radius` is the brush reach in mesh units and also sets
-// the fairing strength. Returns an empty mesh when the fairing moves nothing outward.
+// around it. Every vertex in the brush reach of the seed facets is raised to the highest surface
+// plane around it, so the plug's top surface is the wall the mark is cut into, taken plane by plane
+// rather than fitted: a marked floor comes out exactly level with the wall, and a curved or coarsely
+// facetted wall follows itself instead of being flattened. A flat or convex wall has no plane above
+// its own vertices, so painting it adds nothing. `radius` is the brush reach in mesh units: a plane
+// counts as "around" the vertex when it crosses within it. Returns an empty mesh when nothing is
+// raised.
 indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
                                        const std::vector<Vec3d> &seed_points,
                                        const std::vector<int> &seed_facets, double radius);

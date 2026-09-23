@@ -337,13 +337,14 @@ TEST_CASE("Every letter of a watermark is filled from its own seed", "[HoleShape
             // Flush, not proud: nothing of the plug reaches past the wall the mark is cut into.
             const BoundingBoxf3 bb = bounding_box(fill);
             CHECK(bb.max.x() <= 87.55);
-            // And it does fill: straight out of the letter floor, the plug adds material.
+            // And it does fill, right up to the wall: straight out of the letter floor the plug adds
+            // the whole mark depth (the letters are ~0.4 mm deep).
             const AABBMesh probe(fill);
             double         far = 0.;
             for (const AABBMesh::hit_result &h : probe.query_ray_hits(seed, Vec3d::UnitX()))
                 if (h.is_hit())
                     far = std::max(far, h.distance());
-            CHECK(far > 0.1);
+            CHECK(far > 0.3);
         }
     }
 }
