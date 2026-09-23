@@ -363,3 +363,47 @@ TEST_CASE("A plain wall of a watermark is left alone", "[HoleShapes]")
     CHECK(cavity_fill_local(its, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
 }
 
+TEST_CASE("A watermark letter fills the same from a narrow and a wide brush", "[HoleShapes]")
+{
+    // The wall the watermark is cut into is coarsely facetted and turns away under the top rim, so the
+    // wall plane of a letter is not necessarily inside the brush: the brush only says which facets may
+    // be filled, and the wall is searched for a margin beyond it. A letter must therefore fill the same
+    // whether the brush just covers it or is much wider.
+    const TriangleMesh         part = load_model("watermark.obj");
+    const indexed_triangle_set its  = part.its;
+    REQUIRE_FALSE(its.indices.empty());
+
+    // A letter on the flat wall, one on the section that curves under the top rim, and one further
+    // along the wall.
+    const std::vector<Vec3d> seeds{Vec3d(87.1, 133.5, 34.8), Vec3d(87.1, 129.14, 41.09),
+                                   Vec3d(87.1, 99.8, 34.06)};
+    for (const Vec3d &seed : seeds) {
+        const int facet = facet_near(its, Vec3d::UnitX(), seed);
+        REQUIRE(facet >= 0);
+
+        for (const double radius : {1.5, 3.0}) {
+            const indexed_triangle_set fill = cavity_fill_local(its, std::vector<Vec3d>{seed},
+                                                                std::vector<int>{facet}, radius);
+            DYNAMIC_SECTION("letter at " << seed.x() << "," << seed.y() << "," << seed.z() << " radius "
+                                         << radius) {
+                REQUIRE_FALSE(fill.empty());
+                CHECK(its_volume(fill) > 0.f);
+
+                // Flush, never proud: the plug stays inside the wall the mark is cut into.
+                const BoundingBoxf3 bb = bounding_box(fill);
+                CHECK(bb.max.x() <= 87.55);
+
+                // And it does fill: out of the letter floor the plug adds nearly the whole mark depth
+                // (the letters are ~0.4 mm deep) even when the brush is narrower than the mark.
+                const AABBMesh probe(fill);
+                double         far = 0.;
+                for (const AABBMesh::hit_result &h : probe.query_ray_hits(seed, Vec3d::UnitX()))
+                    if (h.is_hit())
+                        far = std::max(far, h.distance());
+                CHECK(far > 0.3);
+            }
+        }
+    }
+}
+
+
