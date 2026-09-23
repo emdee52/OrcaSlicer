@@ -4,6 +4,8 @@
 #include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
+#include "test_utils.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -282,142 +284,74 @@ TEST_CASE("Rim shapes reject non-positive inputs", "[HoleShapes]")
     CHECK(its_make_rim_fillet(2., -1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
 }
 
-TEST_CASE("A pocket is filled by the cavity hull", "[HoleShapes]")
-{
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d              floor(10., 10., 2.);
-    const int                facet = facet_near(plate, Vec3d::UnitZ(), floor);
-    REQUIRE(facet >= 0);
-
-    const indexed_triangle_set fill = cavity_fill_hull(plate, floor, facet, 8.);
-    REQUIRE_FALSE(fill.empty());
-    CHECK(its_num_open_edges(fill) == 0);
-    CHECK(its_volume(fill) > 0.f);
-
-    // The hull caps the 6x6x2 pocket at the plate top: z in [2, 4], footprint 6x6.
-    const BoundingBoxf3 bb = bounding_box(fill);
-    CHECK_THAT(bb.min.z(), WithinAbs(2., 1e-3));
-    CHECK_THAT(bb.max.z(), WithinAbs(4., 1e-3));
-    CHECK_THAT(bb.min.x(), WithinAbs(7., 1e-3));
-    CHECK_THAT(bb.max.x(), WithinAbs(13., 1e-3));
-    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
-}
-
-TEST_CASE("Seeding a pocket wall fills the same cavity", "[HoleShapes]")
-{
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d              wall(7., 10., 3.);
-    const int                facet = facet_near(plate, Vec3d::UnitX(), wall);
-    REQUIRE(facet >= 0);
-
-    const indexed_triangle_set fill = cavity_fill_hull(plate, wall, facet, 8.);
-    REQUIRE_FALSE(fill.empty());
-    CHECK(its_num_open_edges(fill) == 0);
-    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
-}
-
-TEST_CASE("A cavity fill over a flat region has no volume", "[HoleShapes]")
+TEST_CASE("A cavity fill over a flat surface adds nothing", "[HoleShapes]")
 {
     const indexed_triangle_set cube = its_make_cube(20., 20., 20.);
     const Vec3d                top(2., 2., 20.);
     const int                  facet = facet_near(cube, Vec3d::UnitZ(), top);
     REQUIRE(facet >= 0);
-    CHECK(cavity_fill_hull(cube, top, facet, 5.).empty());
+    CHECK(cavity_fill_local(cube, std::vector<Vec3d>{top}, std::vector<int>{facet}, 3.).empty());
+}
+
+TEST_CASE("A cavity fill over a plain wall adds nothing", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                wall(0., 10., 2.);
+    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+    CHECK(cavity_fill_local(plate, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
 }
 
 TEST_CASE("A cavity fill rejects bad input", "[HoleShapes]")
 {
     const indexed_triangle_set plate = plate_with_pocket();
-    CHECK(cavity_fill_hull(indexed_triangle_set{}, Vec3d::Zero(), 0, 5.).empty());
-    CHECK(cavity_fill_hull(plate, Vec3d(10., 10., 2.), -1, 5.).empty());
-    CHECK(cavity_fill_hull(plate, Vec3d(10., 10., 2.), 0, 0.).empty());
+    const std::vector<Vec3d>   one{Vec3d(10., 10., 2.)};
+    const std::vector<int>     facet{0};
+    CHECK(cavity_fill_local(indexed_triangle_set{}, one, facet, 3.).empty());
+    CHECK(cavity_fill_local(plate, one, std::vector<int>{-1}, 3.).empty());
+    CHECK(cavity_fill_local(plate, one, facet, 0.).empty());
 }
 
-TEST_CASE("Painting an outer wall does nothing", "[HoleShapes]")
+TEST_CASE("Every letter of a watermark is filled from its own seed", "[HoleShapes]")
 {
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d                wall(0., 10., 2.);
-    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
+    // The model the tool has to handle: a watermark engraved into a wall, in mm. Each letter is a
+    // separate depression, and each has to fill from a single seed with no reference surface to set
+    // and no re-setting as the wall turns away: the surface is fitted locally, facet by facet.
+    const TriangleMesh         part = load_model("watermark.obj");
+    const indexed_triangle_set its  = part.its;
+    REQUIRE_FALSE(its.indices.empty());
+
+    const std::vector<Vec3d> seeds{Vec3d(87.1, 133.5, 34.8), Vec3d(87.1, 115.7, 34.5),
+                                   Vec3d(87.1, 125.0, 35.0)};
+    for (const Vec3d &seed : seeds) {
+        const int facet = facet_near(its, Vec3d::UnitX(), seed);
+        REQUIRE(facet >= 0);
+
+        const indexed_triangle_set fill = cavity_fill_local(its, std::vector<Vec3d>{seed}, std::vector<int>{facet}, 3.);
+        DYNAMIC_SECTION("letter at " << seed.x() << "," << seed.y() << "," << seed.z()) {
+            REQUIRE_FALSE(fill.empty());
+            // Wound outward, so it slices as a positive volume.
+            CHECK(its_volume(fill) > 0.f);
+            // Flush: the plug is the letter volume between its floor and the wall, so it stays thin
+            // in x and far below the volume of a brush-shaped block.
+            const BoundingBoxf3 bb = bounding_box(fill);
+            CHECK_THAT(bb.min.x(), WithinAbs(87.1, 1e-2));
+            CHECK(bb.max.x() - bb.min.x() < 1.);
+            CHECK(double(its_volume(fill)) < 10.);
+        }
+    }
+}
+
+TEST_CASE("A plain wall of a watermark is left alone", "[HoleShapes]")
+{
+    const TriangleMesh         part = load_model("watermark.obj");
+    const indexed_triangle_set its  = part.its;
+    REQUIRE_FALSE(its.indices.empty());
+
+    // A flat facet of the same model, far from the engraving.
+    const Vec3d wall(87.5, 156., 27.2);
+    const int   facet = facet_near(its, Vec3d::UnitX(), wall);
     REQUIRE(facet >= 0);
-    CHECK(cavity_fill_hull(plate, wall, facet, 8.).empty());
-}
-
-TEST_CASE("A brush stroke over the floor and a wall fills the pocket", "[HoleShapes]")
-{
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d                floor(10., 10., 2.);
-    const Vec3d                wall(7., 10., 3.);
-    const int                  floor_facet = facet_near(plate, Vec3d::UnitZ(), floor);
-    const int                  wall_facet  = facet_near(plate, Vec3d::UnitX(), wall);
-    REQUIRE(floor_facet >= 0);
-    REQUIRE(wall_facet >= 0);
-
-    const indexed_triangle_set fill =
-        cavity_fill_hull(plate, std::vector<Vec3d>{floor, wall}, std::vector<int>{floor_facet, wall_facet}, 8.);
-    REQUIRE_FALSE(fill.empty());
-    CHECK(its_num_open_edges(fill) == 0);
-    CHECK_THAT(bounding_box(fill).min.z(), WithinAbs(2., 1e-3));
-    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
-    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
-}
-
-TEST_CASE("A reference plane fills only the recessed facets", "[HoleShapes]")
-{
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d                floor(10., 10., 2.);
-    const int                  facet = facet_near(plate, Vec3d::UnitZ(), floor);
-    REQUIRE(facet >= 0);
-
-    const indexed_triangle_set fill =
-        cavity_fill_plane(plate, std::vector<Vec3d>{floor}, std::vector<int>{facet}, Vec3d(10., 10., 4.),
-                          Vec3d::UnitZ(), 0.2, 8.);
-    REQUIRE_FALSE(fill.empty());
-    CHECK(its_num_open_edges(fill) == 0);
-    CHECK_THAT(bounding_box(fill).min.z(), WithinAbs(2., 1e-3));
-    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
-    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
-}
-
-TEST_CASE("A reference plane ignores a flush wall", "[HoleShapes]")
-{    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d                wall(0., 10., 2.);
-    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
-    REQUIRE(facet >= 0);
-
-    CHECK(cavity_fill_plane(plate, std::vector<Vec3d>{wall}, std::vector<int>{facet}, Vec3d(10., 10., 4.),
-                            Vec3d::UnitZ(), 0.2, 5.)
-              .empty());
-}
-
-TEST_CASE("fit_plane recovers a rim plane", "[HoleShapes]")
-{
-    const std::vector<Vec3d> points{Vec3d(7., 7., 4.), Vec3d(13., 7., 4.), Vec3d(13., 13., 4.),
-                                    Vec3d(7., 13., 4.)};
-    const std::vector<Vec3d> normals(4, Vec3d::UnitZ());
-    Vec3d                    point, normal;
-    fit_plane(points, normals, point, normal);
-    CHECK_THAT(point.z(), WithinAbs(4., 1e-6));
-    CHECK(normal.dot(Vec3d::UnitZ()) > 0.999);
-}
-
-TEST_CASE("Sampled wall planes fill the same pocket as one plane", "[HoleShapes]")
-{
-    const indexed_triangle_set plate = plate_with_pocket();
-    const Vec3d                floor(10., 10., 2.);
-    const int                  facet = facet_near(plate, Vec3d::UnitZ(), floor);
-    REQUIRE(facet >= 0);
-
-    // Four wall samples around the pocket mouth, all on the z=4 top surface.
-    const std::vector<Vec3d> refs{Vec3d(6., 6., 4.), Vec3d(14., 6., 4.), Vec3d(14., 14., 4.),
-                                  Vec3d(6., 14., 4.)};
-    const std::vector<Vec3d> ref_normals(4, Vec3d::UnitZ());
-
-    const indexed_triangle_set fill =
-        cavity_fill_plane(plate, std::vector<Vec3d>{floor}, std::vector<int>{facet}, refs, ref_normals, 0.2, 8.);
-    REQUIRE_FALSE(fill.empty());
-    CHECK(its_num_open_edges(fill) == 0);
-    CHECK_THAT(bounding_box(fill).min.z(), WithinAbs(2., 1e-3));
-    CHECK_THAT(bounding_box(fill).max.z(), WithinAbs(4., 1e-3));
-    CHECK_THAT(double(its_volume(fill)), WithinRel(72., 0.05));
+    CHECK(cavity_fill_local(its, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
 }
 

@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <queue>
+#include <utility>
 #include <vector>
 
 namespace Slic3r {
@@ -365,217 +367,313 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
 
 namespace {
 
-// Cap each edge-connected piece of `region` and emit the prisms as one mesh. `ref_pts`/`ref_normals`
-// are wall samples: every facet is measured against the plane of the nearest sample, so a plug
-// follows a curved or faceted wall instead of one tangent plane. Pass nullptr to fit a plane per
-// piece from its rim (smallest-variance direction of the rim points). `eps` is how far behind the
-// plane a facet must lie to be capped; pieces whose cap is deeper than `max_depth` are skipped.
-indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
-                                    const std::vector<Vec3i32> &neighbors,
-                                    const std::vector<Vec3f> &fnorm, const std::vector<int> &region,
-                                    const std::vector<Vec3d> *ref_pts,
-                                    const std::vector<Vec3d> *ref_normals, double eps, double max_depth)
-{
-    std::vector<char> is_reg(its.indices.size(), 0);
-    for (const int f : region)
-        is_reg[f] = 1;
+// Filling a cavity flush needs the surface the cavity is cut into, at the facet, not a plane the
+// user paints: a painted plane is flat, and the wall it is painted on is not. So every facet gets
+// its own local surface, a plane fitted to the ring of facets around it, and is measured against
+// that. The ring is a fraction of the brush reach, so it stays local and follows a curved or
+// coarsely facetted wall.
+constexpr double CAVITY_RING_INNER     = 0.6;  // ring band: [0.6 * radius, radius]
+constexpr double CAVITY_PARALLEL_MIN   = 0.90; // facet normal vs its ring normal
+constexpr double CAVITY_RMS_FRACTION   = 0.08; // ring planarity gate, in units of radius
+constexpr double CAVITY_DEPTH_FRACTION = 0.04; // depth floor, in units of radius
+constexpr int    CAVITY_MAX_REGION     = 200000;
 
-    // A brush stroke can cover several depressions. Split the region into edge-connected pieces so
-    // each opening is capped on its own plane and never bridges to the next one.
-    std::vector<int>              comp(its.indices.size(), -1);
-    std::vector<std::vector<int>> comp_faces;
-    for (const int seed_f : region) {
-        if (comp[seed_f] >= 0)
-            continue;
-        const int id = int(comp_faces.size());
-        comp_faces.emplace_back();
-        std::queue<int> q;
-        q.push(seed_f);
-        comp[seed_f] = id;
-        while (!q.empty()) {
-            const int f = q.front();
-            q.pop();
-            comp_faces[id].push_back(f);
+// Facet adjacency distances. The scratch buffers live across calls so they are allocated once.
+class FacetDistances
+{
+public:
+    FacetDistances(const std::vector<Vec3i32> &neighbors, const std::vector<Vec3d> &centroids)
+        : m_neighbors(neighbors), m_centroids(centroids), m_dist(neighbors.size(), 0.),
+          m_stamp(neighbors.size(), -1)
+    {}
+
+    // Every facet within `limit` of `src`, as (facet, distance), walking facet centroids.
+    void run(const std::vector<int> &src, double limit, std::vector<std::pair<int, double>> &out)
+    {
+        ++m_run;
+        out.clear();
+        for (const int s : src) {
+            if (s < 0 || s >= int(m_neighbors.size()))
+                continue;
+            m_stamp[s] = m_run;
+            m_dist[s]  = 0.;
+            m_queue.emplace(0., s);
+        }
+        while (!m_queue.empty()) {
+            const std::pair<double, int> top = m_queue.top();
+            m_queue.pop();
+            const int f = top.second;
+            if (m_stamp[f] != m_run || top.first > m_dist[f])
+                continue;
+            out.emplace_back(f, top.first);
             for (int k = 0; k < 3; ++k) {
-                const int g = neighbors[f](k);
-                if (g >= 0 && comp[g] < 0 && is_reg[g]) {
-                    comp[g] = id;
-                    q.push(g);
-                }
+                const int g = m_neighbors[f](k);
+                if (g < 0)
+                    continue;
+                const double nd = top.first + (m_centroids[g] - m_centroids[f]).norm();
+                if (nd > limit || (m_stamp[g] == m_run && nd >= m_dist[g]))
+                    continue;
+                m_stamp[g] = m_run;
+                m_dist[g]  = nd;
+                m_queue.emplace(nd, g);
             }
         }
     }
 
-    std::vector<Vec3f>   verts;
-    std::vector<Vec3i32> tris;
+private:
+    const std::vector<Vec3i32> &m_neighbors;
+    const std::vector<Vec3d>   &m_centroids;
+    std::vector<double>         m_dist;
+    std::vector<int>            m_stamp;
+    int                         m_run = 0;
+    std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>,
+                        std::greater<std::pair<double, int>>>
+        m_queue;
+};
 
-    auto project = [](const Vec3f &v, const Vec3d &p0, const Vec3d &n) -> Vec3f {
-        const Vec3d d = v.cast<double>() - p0;
-        return (v.cast<double>() - d.dot(n) * n).cast<float>();
+// Area-weighted plane through `ring`, trimmed twice to drop facets that do not belong to the
+// surface (a groove floor caught inside the ring, say). Returns false for a degenerate ring.
+bool fit_ring_plane(const std::vector<Vec3f> &fnorm, const std::vector<Vec3d> &centroid,
+                    const std::vector<double> &area, const std::vector<int> &ring, Vec3d &p, Vec3d &n,
+                    double &rms)
+{
+    std::vector<int> cur;
+    for (const int f : ring)
+        if (area[f] > 1e-12)
+            cur.push_back(f);
+    if (cur.size() < 3)
+        return false;
+
+    p = Vec3d::Zero();
+    n = Vec3d::Zero();
+    for (int pass = 0; pass < 3; ++pass) {
+        double wsum = 0.;
+        Vec3d  c    = Vec3d::Zero();
+        for (const int f : cur) {
+            wsum += area[f];
+            c += area[f] * centroid[f];
+        }
+        if (wsum <= 1e-12)
+            return false;
+        c /= wsum;
+
+        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        for (const int f : cur) {
+            const Vec3d d = centroid[f] - c;
+            cov += area[f] * d * d.transpose();
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
+        if (es.info() != Eigen::Success)
+            return false;
+        Vec3d nv = es.eigenvectors().col(0);
+        if (!nv.allFinite() || nv.norm() < 1e-9)
+            return false;
+        nv.normalize();
+
+        // The eigenvector sign is arbitrary: face it out of the solid, the way the ring does.
+        Vec3d nsum = Vec3d::Zero();
+        for (const int f : cur)
+            nsum += area[f] * fnorm[f].cast<double>();
+        if (nv.dot(nsum) < 0.)
+            nv = -nv;
+
+        double sq = 0.;
+        for (const int f : cur) {
+            const double d = (centroid[f] - c).dot(nv);
+            sq += area[f] * d * d;
+        }
+        p   = c;
+        n   = nv;
+        rms = std::sqrt(sq / wsum);
+
+        if (pass == 2)
+            break;
+        const double     cut = std::max(2. * rms, 1e-6);
+        std::vector<int> next;
+        for (const int f : cur)
+            if (std::abs((centroid[f] - c).dot(nv)) <= cut)
+                next.push_back(f);
+        if (next.size() < 3 || next.size() == cur.size())
+            break;
+        cur = std::move(next);
+    }
+    return true;
+}
+
+} // namespace
+
+indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, double radius)
+{
+    if (its.indices.empty() || radius <= 0. || seed_points.empty() ||
+        seed_points.size() != seed_facets.size())
+        return {};
+
+    const size_t               nf        = its.indices.size();
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+    std::vector<Vec3f>         fnorm     = its_face_normals(its);
+    // Everything below reads "outward" as positive: an inverted winding would flip every depth.
+    if (its_volume(its) < 0.)
+        for (Vec3f &n : fnorm)
+            n = -n;
+
+
+    std::vector<Vec3d>  centroid(nf);
+    std::vector<double> area(nf, 0.);
+    for (size_t f = 0; f < nf; ++f) {
+        const Vec3i32 &t = its.indices[f];
+        const Vec3d    a = its.vertices[t(0)].cast<double>();
+        const Vec3d    b = its.vertices[t(1)].cast<double>();
+        const Vec3d    c = its.vertices[t(2)].cast<double>();
+        centroid[f]      = (a + b + c) / 3.;
+        area[f]          = 0.5 * (b - a).cross(c - a).norm();
+    }
+
+    std::vector<int> seeds;
+    for (size_t i = 0; i < seed_facets.size(); ++i) {
+        const int s = seed_facets[i];
+        if (s < 0 || s >= int(nf) || !seed_points[i].allFinite())
+            continue;
+        if (std::find(seeds.begin(), seeds.end(), s) == seeds.end())
+            seeds.push_back(s);
+    }
+    if (seeds.empty())
+        return {};
+
+    // Everything under the brush: the facets reachable from a seed within `radius`.
+    FacetDistances                      dij(neighbors, centroid);
+    std::vector<std::pair<int, double>> reached;
+    dij.run(seeds, radius, reached);
+    if (reached.size() < 4 || reached.size() > CAVITY_MAX_REGION)
+        return {};
+    std::vector<int> region;
+    region.reserve(reached.size());
+    for (const auto &r : reached)
+        region.push_back(r.first);
+
+
+
+    // Local surface of every facet in reach and how far behind it that facet sits.
+    const double        ring_inner = CAVITY_RING_INNER * radius;
+    std::vector<char>   in_region(nf, 0);
+    std::vector<Vec3d>  plane_p(nf, Vec3d::Zero());
+    std::vector<Vec3d>  plane_n(nf, Vec3d::Zero());
+    std::vector<double> plane_rms(nf, 0.);
+    std::vector<double> plane_depth(nf, 0.);
+    std::vector<char>   plane_ok(nf, 0);
+    for (const int f : region)
+        in_region[f] = 1;
+
+    std::vector<std::pair<int, double>> ring_hits;
+    std::vector<int>                    ring;
+    for (const int f : region) {
+        dij.run({f}, radius, ring_hits);
+        ring.clear();
+        for (const auto &r : ring_hits)
+            if (r.second >= ring_inner)
+                ring.push_back(r.first);
+        double rms = 0.;
+        Vec3d  p, n;
+        if (!fit_ring_plane(fnorm, centroid, area, ring, p, n, rms))
+            continue;
+        plane_p[f]     = p;
+        plane_n[f]     = n;
+        plane_rms[f]   = rms;
+        plane_depth[f] = (p - centroid[f]).dot(n);
+        plane_ok[f]    = 1;
+    }
+
+
+    // A facet is recessed when it faces its own local surface, that surface really is a plane (not
+    // the inside of a corner), and the facet sits behind it by a real amount. The floor scales with
+    // the brush, because a wider ring hides more curvature: no user threshold to set.
+    const auto project = [](const Vec3d &v, const Vec3d &p, const Vec3d &n) -> Vec3d {
+        return v - (v - p).dot(n) * n;
+    };
+    // A facet only contributes a prism when its cap, its projection onto its local plane, has an
+    // area and a winding: a sliver would add nothing but open edges.
+    const auto cap_area = [&](int f) {
+        const Vec3i32 &t = its.indices[f];
+        const Vec3d    a = project(its.vertices[t(0)].cast<double>(), plane_p[f], plane_n[f]);
+        const Vec3d    b = project(its.vertices[t(1)].cast<double>(), plane_p[f], plane_n[f]);
+        const Vec3d    c = project(its.vertices[t(2)].cast<double>(), plane_p[f], plane_n[f]);
+        return (b - a).cross(c - a).norm();
     };
 
-    for (const std::vector<int> &faces : comp_faces) {
-        Vec3d nc = Vec3d::Zero();
-        Vec3d p0 = Vec3d::Zero();
-        if (ref_pts == nullptr) {
-            // Fallback normal: area-weighted over the component (walls cancel, opening adds up).
-            Vec3d nsum = Vec3d::Zero();
-            for (const int f : faces) {
-                const Vec3i32 &t = its.indices[f];
-                const Vec3d    a = its.vertices[t(0)].cast<double>();
-                const Vec3d    b = its.vertices[t(1)].cast<double>();
-                const Vec3d    c = its.vertices[t(2)].cast<double>();
-                nsum += (b - a).cross(c - a);
-            }
-            if (!nsum.allFinite() || nsum.norm() < 1e-12)
+    const double      depth_floor = CAVITY_DEPTH_FRACTION * radius;
+    std::vector<char> cap(nf, 0);
+    std::vector<int>  cap_faces;
+    for (const int f : region) {
+        if (!plane_ok[f] || area[f] <= 1e-12 || cap_area(f) <= 1e-9)
+            continue;
+        if (fnorm[f].cast<double>().normalized().dot(plane_n[f]) < CAVITY_PARALLEL_MIN)
+            continue;
+        if (plane_rms[f] > CAVITY_RMS_FRACTION * radius)
+            continue;
+        if (plane_depth[f] <= depth_floor || plane_depth[f] > radius) // deeper than the brush = leaked plane
+            continue;
+        cap[f] = 1;
+        cap_faces.push_back(f);
+    }
+    if (cap_faces.size() < 3)
+        return {};
+
+    // The steep facets of the same depression (the walls of an engraved letter) belong to the fill
+    // too, or the plug would leave a shell of unfilled groove around every edge. Take two rings of
+    // them, as long as they are still behind their own local surface.
+    for (int grow = 0; grow < 2; ++grow) {
+        std::vector<int> add;
+        for (const int f : region) {
+            if (cap[f] || !plane_ok[f] || area[f] <= 1e-12 || cap_area(f) <= 1e-9)
                 continue;
-            nc = nsum.normalized();
-
-            // Rim points: component vertices on an edge whose neighbour is outside the region.
-            std::vector<Vec3d> rim;
-            for (const int f : faces) {
-                const Vec3i32 &t = its.indices[f];
-                for (int k = 0; k < 3; ++k) {
-                    const int g = neighbors[f](k);
-                    if (g >= 0 && is_reg[g])
-                        continue;
-                    rim.push_back(its.vertices[t[k]].cast<double>());
-                    rim.push_back(its.vertices[t[(k + 1) % 3]].cast<double>());
-                }
+            bool touches = false;
+            for (int k = 0; k < 3 && !touches; ++k) {
+                const int g = neighbors[f](k);
+                touches     = g >= 0 && cap[g];
             }
-
-            p0 = Vec3d::Zero();
-            if (rim.size() >= 3) {
-                // Best-fit plane through the rim: the smallest-eigenvalue eigenvector is the
-                // opening normal, so it follows the surrounding surface.
-                for (const Vec3d &r : rim)
-                    p0 += r;
-                p0 /= double(rim.size());
-                Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-                for (const Vec3d &r : rim) {
-                    const Vec3d d = r - p0;
-                    cov += d * d.transpose();
-                }
-                Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
-                if (es.info() == Eigen::Success) {
-                    Vec3d n2 = es.eigenvectors().col(0);
-                    if (n2.dot(nc) < 0.)
-                        n2 = -n2;
-                    if (n2.allFinite() && n2.norm() > 1e-9)
-                        nc = n2.normalized();
-                }
-            } else {
-                for (const int f : faces)
-                    for (int k = 0; k < 3; ++k)
-                        p0 += its.vertices[its.indices[f](k)].cast<double>();
-                p0 /= double(faces.size() * 3);
-            }
+            if (!touches)
+                continue;
+            if (plane_depth[f] > 0.5 * depth_floor && plane_depth[f] <= radius)
+                add.push_back(f);
         }
-
-        // The plane a point is measured against: one shared plane when a rim fit was used, else the
-        // plane of the nearest wall sample.
-        const auto plane_of = [&](const Vec3d &p, Vec3d &pp, Vec3d &nn) {
-            pp = p0;
-            nn = nc;
-            if (ref_pts == nullptr)
-                return;
-            double best = std::numeric_limits<double>::max();
-            for (size_t i = 0; i < ref_pts->size(); ++i) {
-                const double d = ((*ref_pts)[i] - p).squaredNorm();
-                if (d < best) {
-                    best = d;
-                    pp   = (*ref_pts)[i];
-                    nn   = (*ref_normals)[i];
-                }
-            }
-        };
-
-        // A facet caps the opening when it faces the wall and lies behind it by a real amount.
-        std::vector<char> capf(its.indices.size(), 0);
-        std::vector<int>  cap_faces;
-        double            md = 0.;
-        for (const int f : faces) {
-            const Vec3i32 &t = its.indices[f];
-            const Vec3d    c = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
-                             its.vertices[t(2)].cast<double>()) /
-                            3.;
-            Vec3d pf, nf;
-            plane_of(c, pf, nf);
-            if (fnorm[f].cast<double>().normalized().dot(nf) < 0.3)
-                continue;
-            const double d = (pf - c).dot(nf);
-            if (d <= eps)
-                continue;
-            capf[f] = 1;
+        if (add.empty())
+            break;
+        for (const int f : add) {
+            cap[f] = 1;
             cap_faces.push_back(f);
-            if (d > md)
-                md = d;
         }
-        if (cap_faces.empty())
-            continue;
+    }
 
-        // Refuse a cap deeper than `max_depth`: a leaked or near-vertical plane would make a proud
-        // blade, not a shallow fill.
-        if (md > max_depth)
-            continue;
+    // Emit the plug as one prism per capped facet: the cavity surface, its projection onto the
+    // local plane, and the three sides. The prisms are independent, so no edge bookkeeping can go
+    // wrong, and overlapping prisms union away per layer when the volume is sliced.
+    std::vector<Vec3f>   verts;
+    std::vector<Vec3i32> tris;
+    for (const int f : cap_faces) {
+        const Vec3i32 &nt = its.indices[f];
+        Vec3i32        t  = nt;
+        // Orient by the cap triangle itself, which lies in the local plane: the facet's own normal
+        // says nothing useful about the winding of a steep wall's cap.
+        const Vec3d ca = project(its.vertices[nt(0)].cast<double>(), plane_p[f], plane_n[f]);
+        const Vec3d cb = project(its.vertices[nt(1)].cast<double>(), plane_p[f], plane_n[f]);
+        const Vec3d cc = project(its.vertices[nt(2)].cast<double>(), plane_p[f], plane_n[f]);
+        if ((cb - ca).cross(cc - ca).dot(plane_n[f]) < 0.)
+            std::swap(t(1), t(2));
 
-        std::vector<int> bot_map(its.vertices.size(), -1);
-        std::vector<int> top_map(its.vertices.size(), -1);
-        auto bot_of = [&](int vi) {
-            if (bot_map[vi] < 0) {
-                bot_map[vi] = int(verts.size());
-                verts.push_back(its.vertices[vi]);
-            }
-            return bot_map[vi];
-        };
-        auto top_of = [&](int vi) {
-            if (top_map[vi] < 0) {
-                top_map[vi] = int(verts.size());
-                Vec3d pf, nf;
-                plane_of(its.vertices[vi].cast<double>(), pf, nf);
-                verts.push_back(project(its.vertices[vi], pf, nf));
-            }
-            return top_map[vi];
-        };
+        const int base = int(verts.size());
+        for (int k = 0; k < 3; ++k) // the cap, in the local plane
+            verts.push_back(project(its.vertices[t(k)].cast<double>(), plane_p[f], plane_n[f]).cast<float>());
+        for (int k = 0; k < 3; ++k) // the cavity surface
+            verts.push_back(its.vertices[t(k)]);
 
-        for (const int f : cap_faces) {
-            const Vec3i32 &nt = its.indices[f];
-            Vec3i32        t  = nt;
-            const Vec3f    va = its.vertices[nt(0)];
-            const Vec3f    vb = its.vertices[nt(1)];
-            const Vec3f    vc = its.vertices[nt(2)];
-            Vec3d          pf, nf;
-            plane_of(((va + vb + vc) / 3.f).cast<double>(), pf, nf);
-            if ((vb - va).cross(vc - va).cast<double>().dot(nf) < 0.)
-                std::swap(t(1), t(2));
-
-            const int i0 = t(0), i1 = t(1), i2 = t(2);
-            const int b0 = bot_of(i0), b1 = bot_of(i1), b2 = bot_of(i2);
-            const int q0 = top_of(i0), q1 = top_of(i1), q2 = top_of(i2);
-
-            tris.push_back(Vec3i32(q0, q1, q2)); // cap
-            tris.push_back(Vec3i32(b0, b2, b1)); // cavity surface (reversed: outward)
-
-            const int e0[3]  = {i0, i1, i2};
-            const int e1[3]  = {i1, i2, i0};
-            const int eb0[3] = {b0, b1, b2};
-            const int eb1[3] = {b1, b2, b0};
-            const int et0[3] = {q0, q1, q2};
-            const int et1[3] = {q1, q2, q0};
-            for (int e = 0; e < 3; ++e) {
-                int g = -1;
-                for (int k = 0; k < 3; ++k) {
-                    const int u = nt[k], w = nt[(k + 1) % 3];
-                    if ((u == e0[e] && w == e1[e]) || (u == e1[e] && w == e0[e])) {
-                        g = neighbors[f](k);
-                        break;
-                    }
-                }
-                if (g >= 0 && capf[g])
-                    continue; // interior edge of this cap
-                tris.push_back(Vec3i32(eb0[e], eb1[e], et1[e]));
-                tris.push_back(Vec3i32(eb0[e], et1[e], et0[e]));
-            }
+        tris.push_back(Vec3i32(base + 0, base + 1, base + 2)); // cap, facing out
+        tris.push_back(Vec3i32(base + 3, base + 5, base + 4)); // cavity surface, reversed
+        for (int e = 0; e < 3; ++e) {                          // the three sides
+            const int a = base + 3 + e, b = base + 3 + (e + 1) % 3;
+            const int qa = base + e, qb = base + (e + 1) % 3;
+            tris.push_back(Vec3i32(a, b, qb));
+            tris.push_back(Vec3i32(a, qb, qa));
         }
     }
 
@@ -585,201 +683,6 @@ indexed_triangle_set build_cap_mesh(const indexed_triangle_set &its,
     if (its_volume(plug) < 0.)
         its_flip_triangles(plug);
     return plug;
-}
-
-} // namespace
-
-indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its,
-                                      const std::vector<Vec3d> &seed_points,
-                                      const std::vector<int> &seed_facets, double radius)
-{
-    if (its.indices.empty() || radius <= 0. || seed_points.empty() ||
-        seed_points.size() != seed_facets.size())
-        return {};
-
-    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
-    const std::vector<Vec3f>   fnorm     = its_face_normals(its);
-    const double               r2        = radius * radius;
-
-    std::vector<char> in_region(its.indices.size(), 0);
-    std::queue<int>   queue;
-    for (size_t i = 0; i < seed_facets.size(); ++i) {
-        const int s = seed_facets[i];
-        if (s < 0 || s >= int(its.indices.size()) || !seed_points[i].allFinite())
-            continue;
-        if (!in_region[s]) {
-            in_region[s] = 1;
-            queue.push(s);
-        }
-    }
-    if (queue.empty())
-        return {};
-
-    auto near_seed = [&](int f) {
-        for (const Vec3d &sp : seed_points)
-            for (int k = 0; k < 3; ++k) {
-                const Vec3f &v = its.vertices[its.indices[f](k)];
-                const Vec3d  d = Vec3d(v(0), v(1), v(2)) - sp;
-                if (d.squaredNorm() <= r2)
-                    return true;
-            }
-        return false;
-    };
-
-    // Geodesic growth: keep a facet when any of its vertices is within `radius` of a seed, and
-    // expand only through kept facets, crossing smooth and concave steps but stopping at convex
-    // ridges. That last rule is the rim of the cavity: the region stays inside the depression, so
-    // the hull caps the cavity instead of spanning the surrounding surface.
-    std::vector<int> region;
-    bool             crossed_concave = false;
-    constexpr int    MAX_REGION      = 200000;
-    while (!queue.empty() && int(region.size()) < MAX_REGION) {
-        const int f = queue.front();
-        queue.pop();
-        if (!near_seed(f))
-            continue;
-
-        region.push_back(f);
-        for (int k = 0; k < 3; ++k) {
-            const int g = neighbors[f](k);
-            if (g < 0 || in_region[g])
-                continue;
-
-            // Sign of the dihedral across f's edge (opposite vertex k), in f's winding order:
-            // cross(nf, ng) . edge > 0 => convex ridge, < 0 => concave valley.
-            const Vec3i32 &tf = its.indices[f];
-            const int      A  = tf[k];
-            const int      B  = tf[(k + 1) % 3];
-            const Vec3f    e  = its.vertices[B] - its.vertices[A];
-            const Vec3f cr = fnorm[f].cross(fnorm[g]);
-            const float conv = cr.dot(e);
-            const float  tol = 1e-4f * e.norm();
-            if (conv > tol) // convex ridge -> do not cross
-                continue;
-            if (conv < -tol)
-                crossed_concave = true;
-
-            in_region[g] = 1;
-            queue.push(g);
-        }
-    }
-
-    // No concave junction means this is a flat or convex surface: nothing to fill.
-    if (region.size() < 4 || !crossed_concave)
-        return {};
-
-    return build_cap_mesh(its, neighbors, fnorm, region, nullptr, nullptr, 1e-4 * radius, radius);
-}
-
-indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
-                                       const std::vector<Vec3d> &seed_points,
-                                       const std::vector<int> &seed_facets,
-                                       const std::vector<Vec3d> &ref_points,
-                                       const std::vector<Vec3d> &ref_normals, double depth, double radius)
-{
-    if (its.indices.empty() || radius <= 0. || depth < 0. || seed_points.empty() ||
-        seed_points.size() != seed_facets.size() || ref_points.empty() ||
-        ref_points.size() != ref_normals.size())
-        return {};
-    for (size_t i = 0; i < ref_points.size(); ++i)
-        if (!ref_points[i].allFinite() || !ref_normals[i].allFinite() || ref_normals[i].norm() < 1e-9)
-            return {};
-
-    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
-    const std::vector<Vec3f>   fnorm     = its_face_normals(its);
-    const double               r2        = radius * radius;
-
-    auto near_seed = [&](int f) {
-        for (int k = 0; k < 3; ++k) {
-            const Vec3f &v = its.vertices[its.indices[f](k)];
-            for (const Vec3d &sp : seed_points) {
-                const Vec3d d = Vec3d(v(0), v(1), v(2)) - sp;
-                if (d.squaredNorm() <= r2)
-                    return true;
-            }
-        }
-        return false;
-    };
-
-    std::vector<char> in_region(its.indices.size(), 0);
-    std::queue<int>   queue;
-    for (size_t i = 0; i < seed_facets.size(); ++i) {
-        const int s = seed_facets[i];
-        if (s < 0 || s >= int(its.indices.size()) || !seed_points[i].allFinite() || in_region[s])
-            continue;
-        in_region[s] = 1;
-        queue.push(s);
-    }
-    if (queue.empty())
-        return {};
-
-    // Connected facets within the brush reach; which of them get filled is decided by the
-    // reference plane in build_cap_mesh, not by the surface normal.
-    std::vector<int> region;
-    constexpr int    MAX_REGION = 200000;
-    while (!queue.empty() && int(region.size()) < MAX_REGION) {
-        const int f = queue.front();
-        queue.pop();
-        if (!near_seed(f))
-            continue;
-        region.push_back(f);
-        for (int k = 0; k < 3; ++k) {
-            const int g = neighbors[f](k);
-            if (g >= 0 && !in_region[g]) {
-                in_region[g] = 1;
-                queue.push(g);
-            }
-        }
-    }
-    if (region.size() < 4)
-        return {};
-
-    return build_cap_mesh(its, neighbors, fnorm, region, &ref_points, &ref_normals, depth, radius);
-}
-
-indexed_triangle_set cavity_fill_plane(const indexed_triangle_set &its,
-                                       const std::vector<Vec3d> &seed_points,
-                                       const std::vector<int> &seed_facets, const Vec3d &ref_point,
-                                       const Vec3d &ref_normal, double depth, double radius)
-{
-    if (!ref_point.allFinite() || !ref_normal.allFinite() || ref_normal.norm() < 1e-9)
-        return {};
-    return cavity_fill_plane(its, seed_points, seed_facets, std::vector<Vec3d>{ ref_point },
-                             std::vector<Vec3d>{ ref_normal }, depth, radius);
-}
-
-void fit_plane(const std::vector<Vec3d> &points, const std::vector<Vec3d> &normals, Vec3d &point,
-               Vec3d &normal)
-{
-    point = Vec3d::Zero();
-    for (const Vec3d &p : points)
-        point += p;
-    if (!points.empty())
-        point /= double(points.size());
-
-    Vec3d n = Vec3d::Zero();
-    for (const Vec3d &v : normals)
-        if (v.allFinite())
-            n += v;
-    if (n.norm() < 1e-9 && points.size() >= 3) {
-        // Normals cancel: fall back to the smallest-variance direction of the points.
-        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-        for (const Vec3d &p : points) {
-            const Vec3d d = p - point;
-            cov += d * d.transpose();
-        }
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
-        if (es.info() == Eigen::Success)
-            n = es.eigenvectors().col(0);
-    }
-    normal = (n.allFinite() && n.norm() > 1e-9) ? n.normalized() : Vec3d::UnitZ();
-}
-
-indexed_triangle_set cavity_fill_hull(const indexed_triangle_set &its, const Vec3d &seed_point,
-                                      int seed_facet, double radius)
-{
-    return cavity_fill_hull(its, std::vector<Vec3d>{seed_point}, std::vector<int>{seed_facet},
-                            radius);
 }
 
 } // namespace Slic3r

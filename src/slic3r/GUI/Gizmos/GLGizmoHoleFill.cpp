@@ -30,17 +30,11 @@ constexpr const char *HOLE_FILL_NAME = "HoleFill";
 const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
 // Applied plugs, the same red the hole gizmo uses for applied holes.
 const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
-// The wall reference marker, distinct from both the hover and the applied colour.
-const ColorRGBA REF_COLOR{ 1.00f, 0.85f, 0.10f, 0.95f };
 
-// Fill radius, in world mm, that the panel offers. Small enough to stay on one flat mark, large
-// enough to span a watermark on a curved wall.
+// Brush reach, in world mm, that the panel offers. Small enough to stay inside one engraved mark,
+// so the local surface the fill is measured against stays local to it.
 constexpr double FILL_RADIUS_MIN = 0.5;
 constexpr double FILL_RADIUS_MAX = 50.0;
-
-// Depth behind the wall reference that still counts as a depression, in world mm.
-constexpr double FILL_DEPTH_MIN = 0.02;
-constexpr double FILL_DEPTH_MAX = 2.0;
 
 // Feature volumes are named <prefix>#<id>, the id matched by prefix like the hole features.
 std::string feature_name(const char *prefix, int idx)
@@ -239,37 +233,10 @@ indexed_triangle_set GLGizmoHoleFill::fill_mesh(const std::vector<Hover> &seeds)
     const double s       = object_scale() * volume_scale(mv);
     const double r_local = m_radius / (s > 1e-9 ? s : 1.0);
 
-    // The brush needs the wall reference: without it a depression cannot be told apart from the
-    // wall, so nothing is filled.
-    if (!m_has_reference)
-        return indexed_triangle_set();
-
-    // Bring the wall samples into the volume's own mesh space: each facet is measured against the
-    // plane of the nearest sample, so the plug follows a curved or faceted wall.
-    const Transform3d vol_to_world = instance_matrix() * mv->get_matrix();
-    const Transform3d world_to_vol = vol_to_world.inverse();
-    std::vector<Vec3d> ref_pts;
-    std::vector<Vec3d> ref_nrm;
-    ref_pts.reserve(m_ref_points.size() + 1);
-    ref_nrm.reserve(m_ref_points.size() + 1);
-    for (size_t i = 0; i < m_ref_points.size(); ++i) {
-        Vec3d n = world_to_vol.linear().inverse().transpose() * m_ref_normals[i];
-        if (!n.allFinite() || n.norm() < 1e-9)
-            continue;
-        ref_pts.push_back(world_to_vol * m_ref_points[i]);
-        ref_nrm.push_back(n.normalized());
-    }
-    if (ref_pts.empty()) {
-        Vec3d ref_p = world_to_vol * m_ref_point;
-        Vec3d ref_n = world_to_vol.linear().inverse().transpose() * m_ref_normal;
-        if (!ref_n.allFinite() || ref_n.norm() < 1e-9)
-            return indexed_triangle_set();
-        ref_pts.push_back(ref_p);
-        ref_nrm.push_back(ref_n.normalized());
-    }
-
-    indexed_triangle_set plug = cavity_fill_plane(mv->mesh().its, points, facets, ref_pts, ref_nrm,
-                                                  m_depth / (s > 1e-9 ? s : 1.0), r_local);
+    // Every painted facet is measured against the surface fitted to its own neighbourhood, so the
+    // plug follows the wall it is engraved into: no reference surface to set, and painting a plain
+    // wall finds nothing behind the surface and adds nothing.
+    indexed_triangle_set plug = cavity_fill_local(mv->mesh().its, points, facets, r_local);
     if (plug.indices.empty())
         return plug;
 
@@ -321,18 +288,6 @@ void GLGizmoHoleFill::rebuild_preview()
     // the preview would keep showing whatever it was first built from.
     m_preview.reset();
     m_preview_applied.reset();
-    m_ref_marker.reset();
-
-    // A ball on the wall reference, so it is obvious where the plane sits and that it was set.
-    if (m_has_reference) {
-        const double s   = object_scale();
-        const double rad = std::clamp(m_radius * 0.08, 0.3, 2.0) / (s > 1e-9 ? s : 1.0);
-        indexed_triangle_set marker = its_make_sphere(rad, 2. * PI / 16.);
-        const Vec3d pos = instance_matrix().inverse() * m_ref_point; // previews render in object space
-        its_translate(marker, pos.cast<float>());
-        m_ref_marker.model.init_from(marker);
-        m_ref_marker.model.set_color(REF_COLOR);
-    }
 
     // The plug for the current stroke, or the hovered one, unless the face already carries a plug:
     // an applied plug is shown in the applied overlay instead, and must not look like something
@@ -398,67 +353,6 @@ void GLGizmoHoleFill::set_radius(double radius)
     m_radius        = std::clamp(radius, FILL_RADIUS_MIN, FILL_RADIUS_MAX);
     m_preview_dirty = true;
     m_parent.set_as_dirty();
-}
-
-void GLGizmoHoleFill::set_depth(double depth)
-{
-    m_depth         = std::clamp(depth, FILL_DEPTH_MIN, FILL_DEPTH_MAX);
-    m_preview_dirty = true;
-    m_parent.set_as_dirty();
-}
-
-void GLGizmoHoleFill::clear_reference()
-{
-    m_has_reference     = false;
-    m_setting_reference = false;
-    m_ref_painting      = false;
-    m_ref_points.clear();
-    m_ref_normals.clear();
-    m_preview_dirty = true;
-    m_parent.set_as_dirty();
-}
-
-void GLGizmoHoleFill::sample_reference()
-{
-    if (!m_hover.valid || m_hover.mv == nullptr || m_hover.facet < 0)
-        return;
-    const ModelVolume *mv      = m_hover.mv;
-    const Vec3d        n_local = its_face_normal(mv->mesh().its, m_hover.facet).cast<double>();
-    const Transform3d  vol_to_world = instance_matrix() * mv->get_matrix();
-    Vec3d              n_world      = vol_to_world.linear().inverse().transpose() * n_local;
-    if (!n_world.allFinite() || n_world.norm() < 1e-9)
-        return;
-    n_world.normalize();
-    m_ref_points.push_back(m_hover.hit_world);
-    m_ref_normals.push_back(n_world);
-    // Fit as we go, so the marker and the fill preview follow the drag: it is obvious where the
-    // reference is in the first place.
-    fit_plane(m_ref_points, m_ref_normals, m_ref_point, m_ref_normal);
-    m_has_reference = true;
-    m_preview_dirty = true;
-}
-
-void GLGizmoHoleFill::finish_reference()
-{
-    if (m_ref_points.empty())
-        return;
-    fit_plane(m_ref_points, m_ref_normals, m_ref_point, m_ref_normal);
-    m_has_reference = true;
-    // The samples are kept: they are the local wall planes the plug is measured against.
-    m_preview_dirty = true;
-    m_parent.set_as_dirty();
-}
-
-bool GLGizmoHoleFill::gizmo_set_reference_at(const Vec2d &screen_pos)
-{
-    update_hover(screen_pos);
-    if (!m_hover.valid || m_hover.facet < 0)
-        return false;
-    m_ref_points.clear();
-    m_ref_normals.clear();
-    sample_reference();
-    finish_reference();
-    return m_has_reference;
 }
 
 bool GLGizmoHoleFill::gizmo_hover_at(const Vec2d &screen_pos)
@@ -571,15 +465,9 @@ bool GLGizmoHoleFill::on_init()
 
     m_desc["name"]        = _L("Cavity fill");
     m_desc["radius"]      = _L("Brush width");
-    m_desc["depth"]       = _L("Depth");
-    m_desc["set_ref"]     = _L("Set wall reference");
-    m_desc["clear_ref"]   = _L("Clear reference");
     m_desc["apply"]       = _L("Fill under cursor");
     m_desc["clear"]       = _L("Clear all");
-    m_desc["hover_hint"]  = _L("Click Set wall reference, then click the wall around the mark, then drag over the depression.");
-    m_desc["no_ref"]      = _L("No wall reference: click Set wall reference, then click the wall around the mark.");
-    m_desc["ref_pick"]    = _L("Click the wall around the mark to set the reference.");
-    m_desc["ref_set"]     = _L("Wall reference set (yellow ball). Hover a depression.");
+    m_desc["hover_hint"]  = _L("Drag over an engraved mark to fill it; a plain wall is left alone.");
     m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
     m_desc["cavity"]      = _L("Depression under the cursor.");
     m_desc["already"]     = _L("Already filled.");
@@ -623,9 +511,6 @@ void GLGizmoHoleFill::data_changed(bool /*is_serializing*/)
         clear_hover();
         return;
     }
-
-    if (mo != m_old_object)
-        clear_reference();
 
     if (mo != m_old_object || int(mo->volumes.size()) != m_old_volume_count || instance_matrix().matrix() != m_old_matrix.matrix()) {
         m_old_object       = mo;
@@ -674,7 +559,6 @@ void GLGizmoHoleFill::on_render()
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     m_preview_applied.model.render(shader);
     m_preview.model.render(shader);
-    m_ref_marker.model.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
@@ -690,37 +574,6 @@ bool GLGizmoHoleFill::on_mouse(const wxMouseEvent &mouse_event)
         // Right-click removes the plug the cursor is on, like the hole gizmo removes a hole.
         gizmo_hover_at(m_parent.get_local_mouse_position());
         return gizmo_remove_hovered();
-    }
-    if (m_setting_reference) {
-        // Picking the wall: drag across it, then fit the plane on release.
-        if (m_ref_painting && (mouse_event.Dragging() || mouse_event.Moving())) {
-            update_hover(m_parent.get_local_mouse_position());
-            sample_reference();
-            m_parent.set_as_dirty();
-            m_parent.request_extra_frame();
-            return true;
-        }
-        if (m_ref_painting && mouse_event.LeftUp()) {
-            m_ref_painting      = false;
-            m_setting_reference = false;
-            finish_reference();
-            m_parent.set_as_dirty();
-            m_parent.request_extra_frame();
-            return true;
-        }
-        if (mouse_event.LeftDown()) {
-            update_hover(m_parent.get_local_mouse_position());
-            if (!m_hover.valid)
-                return false;
-            m_ref_points.clear();
-            m_ref_normals.clear();
-            m_ref_painting = true;
-            sample_reference();
-            m_parent.set_as_dirty();
-            m_parent.request_extra_frame();
-            return true;
-        }
-        return false;
     }
     if (mouse_event.LeftUp() && m_painting) {
         m_painting = false;
@@ -781,43 +634,18 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
         set_radius(typed);
     ImGui::PopItemWidth();
 
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("depth"));
-    ImGui::SameLine(left_width);
-    ImGui::PushItemWidth(sliders_width);
-    float depth = float(m_depth);
-    if (m_imgui->bbl_slider_float_style("##fill_depth", &depth, float(FILL_DEPTH_MIN), float(FILL_DEPTH_MAX), "%.2f", 0.01f, true))
-        set_depth(depth);
-    ImGui::PopItemWidth();
-    ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-    ImGui::PushItemWidth(m_imgui->scaled(4.5f));
-    float typed_depth = float(m_depth);
-    if (ImGui::InputFloat("##fill_depth_in", &typed_depth, 0.01f, 0.1f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-        set_depth(typed_depth);
-    ImGui::PopItemWidth();
-
-    if (m_imgui->button(m_desc.at("set_ref")))
-        m_setting_reference = !m_setting_reference;
-    ImGui::SameLine();
-    if (m_imgui->button(m_desc.at("clear_ref")))
-        clear_reference();
-
     if (m_imgui->button(m_desc.at("apply")))
         gizmo_apply_hovered();
     ImGui::SameLine();
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 
-    if (m_setting_reference)
-        m_imgui->text(m_desc.at("ref_pick"));
-    else if (!m_has_reference)
-        m_imgui->text(m_desc.at("no_ref"));
-    else if (m_hover.valid && m_hover_applied >= 0)
+    if (m_hover.valid && m_hover_applied >= 0)
         m_imgui->text(m_desc.at("already"));
     else if (m_hover.valid)
         m_imgui->text(m_desc.at("cavity"));
     else
-        m_imgui->text(m_desc.at("ref_set"));
+        m_imgui->text(m_desc.at("no_cavity"));
     m_imgui->text(m_desc.at("hover_hint"));
     if (applied_count() > 0)
         m_imgui->text(m_desc.at("remove_hint"));

@@ -2,11 +2,11 @@
 #define slic3r_GLGizmoHoleFill_hpp_
 
 // [ORCAPORT:HF-1] Cavity fill tool. Fills a depression cut into the mesh (an engraving, a watermark,
-// a pocket) by adding a positive MODEL_PART volume over it. Set a wall reference (drag on the wall
-// around the mark), then paint the recessed faces: the plug is those facets projected up to the
-// reference plane, so it sits flush and cannot bridge onto the surrounding surface. Painting a
-// surface that is not behind the reference plane does nothing. Works on the mesh directly - no
-// boolean and no CAD reconstruction. Handling full through-holes is deliberately deferred.
+// a pocket) by adding a positive MODEL_PART volume over it. Paint the recessed faces: every facet is
+// measured against the surface fitted to its own neighbourhood, so the plug is those facets projected
+// up to that local surface, sits flush, and follows a curved or coarsely facetted wall without any
+// reference to set. A facet that is level with its neighbourhood (a plain wall) is left alone. Works
+// on the mesh directly - no boolean and no CAD reconstruction. Full through-holes are deferred.
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
@@ -38,11 +38,6 @@ public:
     // --- control surface for the embedded MCP tool (see OrcaMCPGizmoTools.cpp) ---
     double get_radius() const { return m_radius; }
     void   set_radius(double radius);
-    double get_depth() const { return m_depth; }
-    void   set_depth(double depth);
-    bool   has_reference() const { return m_has_reference; }
-    void   clear_reference();
-    bool   gizmo_set_reference_at(const Vec2d& screen_pos);
     double object_scale() const;
     int    applied_count() const;
     bool   hover_valid() const { return m_hover.valid; }
@@ -70,7 +65,7 @@ protected:
 
 private:
     // The picked face in object space, plus the seed point in the volume's own mesh space, which is
-    // what cavity_fill_hull expects.
+    // what cavity_fill_local expects.
     struct Hover
     {
         bool               valid{ false };
@@ -91,17 +86,13 @@ private:
     indexed_triangle_set fill_mesh(const std::vector<Hover>& seeds) const;
     void                 record_stroke_sample();
     void                 commit_stroke();
-    // Wall-reference picking: collect wall points onto the plane, then fit it.
-    void sample_reference();
-    void finish_reference();
     // Volume index of an applied plug that already covers `hit_world`, or -1.
     int          find_covering_fill(const Vec3d& hit_world) const;
     void         rebuild_preview();
     void         add_named_fill(const std::string& name, const indexed_triangle_set& its);
     int          next_feature_id() const;
 
-    double m_radius{ 5.0 }; // in world mm, converted to mesh units per volume
-    double m_depth{ 0.15 }; // fill depth behind the reference plane, in world mm
+    double m_radius{ 2.5 }; // brush reach in world mm, converted to mesh units per volume
     std::map<std::string, wxString> m_desc;
 
     Hover        m_hover;
@@ -109,18 +100,8 @@ private:
     bool         m_painting{ false };
     std::vector<Hover> m_stroke;
 
-    // Wall reference, in world space. While set, the brush fills only facets behind it, so a curved
-    // or finely tessellated wall cannot leak the selection past the mark.
-    bool         m_setting_reference{ false };
-    bool         m_ref_painting{ false };
-    bool         m_has_reference{ false };
-    Vec3d        m_ref_point{ Vec3d::Zero() };
-    Vec3d        m_ref_normal{ Vec3d::UnitZ() };
-    std::vector<Vec3d> m_ref_points;
-    std::vector<Vec3d> m_ref_normals;
     PickingModel m_preview;
     PickingModel m_preview_applied;
-    PickingModel m_ref_marker; // small ball on the wall reference, so the set point is visible
     bool         m_preview_dirty{ true };
 
     const ModelObject* m_old_object{ nullptr };
