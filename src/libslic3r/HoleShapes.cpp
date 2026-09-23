@@ -2,10 +2,15 @@
 
 #include "AABBMesh.hpp"
 
+#include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <queue>
+#include <utility>
+#include <vector>
 
 namespace Slic3r {
 
@@ -358,6 +363,222 @@ double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, c
         if (h.is_hit() && h.distance() > far)
             far = h.distance();
     return far > 0. ? far + std::max(0., margin) : 0.;
+}
+
+namespace {
+
+// Filling a cavity flush needs the surface the cavity is cut into, not a plane the user paints: a
+// painted plane is flat and the wall it is painted on is not. So every vertex is raised to the
+// highest neighbouring surface plane within the brush reach. On a flat or convex wall (the wall of a
+// part is convex where it curves away) no neighbour plane is above the vertex, so nothing is added;
+// a cavity is cut behind the wall, so its floor is raised onto the wall around it and comes out
+// exactly flush - a plane through the wall, not a fit, so there is no residual to leave behind.
+constexpr double CAVITY_EPS        = 0.15; // raised by less than this: not a cavity, mm
+constexpr double CAVITY_PARALLEL   = 0.9;  // ignore neighbour planes off parallel by more than cos(26)
+constexpr size_t CAVITY_MAX_WORK   = 20000000; // vertex x facet pairs, so a huge brush cannot stall
+constexpr int    CAVITY_MAX_REGION = 200000;
+
+// Facet adjacency distances. The scratch buffers live across calls so they are allocated once.
+class FacetDistances
+{
+public:
+    FacetDistances(const std::vector<Vec3i32> &neighbors, const std::vector<Vec3d> &centroids)
+        : m_neighbors(neighbors), m_centroids(centroids), m_dist(neighbors.size(), 0.),
+          m_stamp(neighbors.size(), -1)
+    {}
+
+    // Every facet within `limit` of `src`, as (facet, distance), walking facet centroids.
+    void run(const std::vector<int> &src, double limit, std::vector<std::pair<int, double>> &out)
+    {
+        ++m_run;
+        out.clear();
+        for (const int s : src) {
+            if (s < 0 || s >= int(m_neighbors.size()))
+                continue;
+            m_stamp[s] = m_run;
+            m_dist[s]  = 0.;
+            m_queue.emplace(0., s);
+        }
+        while (!m_queue.empty()) {
+            const std::pair<double, int> top = m_queue.top();
+            m_queue.pop();
+            const int f = top.second;
+            if (m_stamp[f] != m_run || top.first > m_dist[f])
+                continue;
+            out.emplace_back(f, top.first);
+            for (int k = 0; k < 3; ++k) {
+                const int g = m_neighbors[f](k);
+                if (g < 0)
+                    continue;
+                const double nd = top.first + (m_centroids[g] - m_centroids[f]).norm();
+                if (nd > limit || (m_stamp[g] == m_run && nd >= m_dist[g]))
+                    continue;
+                m_stamp[g] = m_run;
+                m_dist[g]  = nd;
+                m_queue.emplace(nd, g);
+            }
+        }
+    }
+
+private:
+    const std::vector<Vec3i32> &m_neighbors;
+    const std::vector<Vec3d>   &m_centroids;
+    std::vector<double>         m_dist;
+    std::vector<int>            m_stamp;
+    int                         m_run = 0;
+    std::priority_queue<std::pair<double, int>, std::vector<std::pair<double, int>>,
+                        std::greater<std::pair<double, int>>>
+        m_queue;
+};
+
+} // namespace
+
+indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, double radius)
+{
+    if (its.indices.empty() || radius <= 0. || seed_points.empty() ||
+        seed_points.size() != seed_facets.size())
+        return {};
+
+    const size_t               nf        = its.indices.size();
+    const size_t               nv        = its.vertices.size();
+    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
+
+    std::vector<Vec3d> centroid(nf);
+    for (size_t f = 0; f < nf; ++f) {
+        const Vec3i32 &t = its.indices[f];
+        centroid[f] = (its.vertices[t(0)].cast<double>() + its.vertices[t(1)].cast<double>() +
+                       its.vertices[t(2)].cast<double>()) /
+                      3.;
+    }
+
+    std::vector<int> seeds;
+    for (size_t i = 0; i < seed_facets.size(); ++i) {
+        const int s = seed_facets[i];
+        if (s < 0 || s >= int(nf) || !seed_points[i].allFinite())
+            continue;
+        if (std::find(seeds.begin(), seeds.end(), s) == seeds.end())
+            seeds.push_back(s);
+    }
+    if (seeds.empty())
+        return {};
+
+    // The patch: everything reachable from a seed within the brush reach.
+    FacetDistances                      dij(neighbors, centroid);
+    std::vector<std::pair<int, double>> reached;
+    dij.run(seeds, radius, reached);
+    if (reached.size() < 4 || reached.size() > CAVITY_MAX_REGION)
+        return {};
+    std::vector<int> patch;
+    patch.reserve(reached.size());
+    for (const auto &r : reached)
+        patch.push_back(r.first);
+
+    // Outward normal of every facet in the patch, and of the patch as a whole.
+    const double       wind = its_volume(its) < 0. ? -1. : 1.; // the file may wind inward
+    std::vector<Vec3d> fnorm(nf, Vec3d::Zero());
+    Vec3d              n0 = Vec3d::Zero();
+    for (const int f : patch) {
+        const Vec3i32 &t = its.indices[f];
+        const Vec3d    a = its.vertices[t(0)].cast<double>();
+        const Vec3d    b = its.vertices[t(1)].cast<double>();
+        const Vec3d    c = its.vertices[t(2)].cast<double>();
+        const Vec3d    fn = wind * (b - a).cross(c - a);
+        if (fn.norm() < 1e-12) // degenerate facet: it has no plane to offer
+            continue;
+        fnorm[f] = fn.normalized();
+        n0 += fn;
+    }
+    if (n0.norm() < 1e-12)
+        return {};
+    n0.normalize();
+
+    std::vector<char> vused(nv, 0);
+    size_t            vcount = 0;
+    for (const int f : patch) {
+        const Vec3i32 &t = its.indices[f];
+        for (int k = 0; k < 3; ++k)
+            if (!vused[t(k)]) {
+                vused[t(k)] = 1;
+                ++vcount;
+            }
+    }
+    if (vcount == 0 || size_t(patch.size()) * vcount > CAVITY_MAX_WORK)
+        return {};
+
+    // How high each vertex has to come up to reach the highest surface plane around it, always along
+    // the patch normal so a groove is closed as a solid and its side walls are sealed too. A plane
+    // only counts if it faces about the same way as the patch (so a groove side wall cannot lift the
+    // floor) and stands outside the vertex by no more than a fraction of the brush, or the closing
+    // would fill the wall's own concave curvature as well as the marks. A plane through the vertex
+    // stands outside it by nothing, so a flat or convex wall leaves every vertex where it is.
+    const double        reach = 0.25 * radius;
+    const double        h_max = 0.5 * radius;
+    std::vector<double> lift(nv, 0.);
+    for (size_t v = 0; v < nv; ++v) {
+        if (!vused[v])
+            continue;
+        const Vec3d p = its.vertices[v].cast<double>();
+        double      best = 0.;
+        for (const int f : patch) {
+            if (fnorm[f].norm() < 0.5)
+                continue;
+            const double cos0 = n0.dot(fnorm[f]);
+            if (cos0 < CAVITY_PARALLEL)
+                continue;
+            const double outside = -(p - centroid[f]).dot(fnorm[f]) / cos0;
+            if (outside <= 0. || outside > reach || outside > h_max)
+                continue;
+            best = std::max(best, outside);
+        }
+        lift[v] = best;
+    }
+
+    // One prism per raised facet: the facet, its vertices lifted onto the surface around it, and the
+    // sides. The prisms share no vertices - they union away per layer when the volume is sliced - so
+    // no edge bookkeeping can go wrong on a coarse or degenerate mesh.
+    std::vector<Vec3f>   verts;
+    std::vector<Vec3i32> tris;
+    for (const int f : patch) {
+        const Vec3i32 &nt = its.indices[f];
+        const double   hc = std::max(std::max(lift[nt(0)], lift[nt(1)]), lift[nt(2)]);
+        if (hc <= CAVITY_EPS || hc > h_max)
+            continue;
+
+        Vec3i32 t = nt;
+        Vec3d   q[3];
+        for (int k = 0; k < 3; ++k)
+            q[k] = its.vertices[t(k)].cast<double>() + lift[t(k)] * n0;
+        // Orient the prism by its cap: the facet's own normal says nothing useful about the winding
+        // of the cap once the vertices have each moved along their own normal.
+        if ((q[1] - q[0]).cross(q[2] - q[0]).dot(n0) < 0.) {
+            std::swap(t(1), t(2));
+            std::swap(q[1], q[2]);
+        }
+
+        const int base = int(verts.size());
+        for (int k = 0; k < 3; ++k)
+            verts.push_back(q[k].cast<float>()); // the cap, at the surrounding surface
+        for (int k = 0; k < 3; ++k)
+            verts.push_back(its.vertices[t(k)]); // the cavity surface
+
+        tris.push_back(Vec3i32(base + 0, base + 1, base + 2)); // cap, facing out
+        tris.push_back(Vec3i32(base + 3, base + 5, base + 4)); // cavity surface, reversed
+        for (int e = 0; e < 3; ++e) {                          // the three sides
+            const int a = base + 3 + e, b = base + 3 + (e + 1) % 3;
+            const int qa = base + e, qb = base + (e + 1) % 3;
+            tris.push_back(Vec3i32(a, b, qb));
+            tris.push_back(Vec3i32(a, qb, qa));
+        }
+    }
+
+    if (tris.empty())
+        return {};
+    indexed_triangle_set plug{std::move(tris), std::move(verts)};
+    if (its_volume(plug) < 0.)
+        its_flip_triangles(plug);
+    return plug;
 }
 
 } // namespace Slic3r

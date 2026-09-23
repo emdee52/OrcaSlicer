@@ -704,7 +704,7 @@ indexed_triangle_set build_coplanar_patch(const ModelVolume* mv, const std::vect
 
 bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection, const ModelObject* mo,
                          const ClippingPlane* clipping, const GLVolume*& volume, const ModelVolume*& mv,
-                         size_t& facet, Vec3d& hit_world)
+                         size_t& facet, Vec3d& hit_world, const std::function<bool(const ModelVolume*)>& accept)
 {
     volume    = nullptr;
     mv        = nullptr;
@@ -722,6 +722,8 @@ bool raycast_object_face(const Vec2d& mouse_position, const Selection& selection
             continue;
         const int vi = v->volume_idx();
         if (vi < 0 || vi >= int(mo->volumes.size()))
+            continue;
+        if (accept && !accept(mo->volumes[vi]))
             continue;
 
         Vec3f  hit, normal;

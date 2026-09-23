@@ -1,7 +1,11 @@
 #include <catch2/catch_all.hpp>
 
+#include "libslic3r/AABBMesh.hpp"
 #include "libslic3r/HoleShapes.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+
+#include "test_utils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +26,41 @@ double teardrop_area(double r, double angle_deg)
 }
 
 double apex_height(double r, double angle_deg) { return r / std::sin(angle_deg * PI / 180.); }
+
+// A 20x20x4 plate with a 6x6x2 pocket carved into the top face (open upward).
+indexed_triangle_set plate_with_pocket()
+{
+    TriangleMesh plate(its_make_cube(20., 20., 4.));
+    TriangleMesh cutter(its_make_cube(6., 6., 3.));
+    cutter.translate(Vec3f(7.f, 7.f, 2.f)); // z in [2, 5], pokes above the plate top
+    MeshBoolean::cgal::minus(plate, cutter);
+    its_merge_vertices(plate.its);
+    return plate.its;
+}
+
+// The facet whose normal is closest to `normal` and whose centroid is closest to `point`.
+int facet_near(const indexed_triangle_set &its, const Vec3d &normal, const Vec3d &point)
+{
+    const std::vector<Vec3f> normals = its_face_normals(its);
+    int                      best    = -1;
+    double                   best_d  = 1e30;
+    for (int f = 0; f < int(its.indices.size()); ++f) {
+        if (Vec3d(normals[f](0), normals[f](1), normals[f](2)).dot(normal) < 0.99)
+            continue;
+        Vec3d c = Vec3d::Zero();
+        for (int k = 0; k < 3; ++k) {
+            const Vec3f &v = its.vertices[its.indices[f](k)];
+            c += Vec3d(v(0), v(1), v(2));
+        }
+        c /= 3.;
+        const double d = (c - point).norm();
+        if (d < best_d) {
+            best_d = d;
+            best   = f;
+        }
+    }
+    return best;
+}
 
 } // namespace
 
@@ -244,5 +283,83 @@ TEST_CASE("Rim shapes reject non-positive inputs", "[HoleShapes]")
     CHECK(its_make_rim_chamfer(0., 1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
     CHECK(its_make_rim_chamfer(2., 0., Vec3d::UnitZ(), Vec3d::Zero()).empty());
     CHECK(its_make_rim_fillet(2., -1., Vec3d::UnitZ(), Vec3d::Zero()).empty());
+}
+
+TEST_CASE("A cavity fill over a flat surface adds nothing", "[HoleShapes]")
+{
+    const indexed_triangle_set cube = its_make_cube(20., 20., 20.);
+    const Vec3d                top(2., 2., 20.);
+    const int                  facet = facet_near(cube, Vec3d::UnitZ(), top);
+    REQUIRE(facet >= 0);
+    CHECK(cavity_fill_local(cube, std::vector<Vec3d>{top}, std::vector<int>{facet}, 3.).empty());
+}
+
+TEST_CASE("A cavity fill over a plain wall adds nothing", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const Vec3d                wall(0., 10., 2.);
+    const int                  facet = facet_near(plate, -Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+    CHECK(cavity_fill_local(plate, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
+}
+
+TEST_CASE("A cavity fill rejects bad input", "[HoleShapes]")
+{
+    const indexed_triangle_set plate = plate_with_pocket();
+    const std::vector<Vec3d>   one{Vec3d(10., 10., 2.)};
+    const std::vector<int>     facet{0};
+    CHECK(cavity_fill_local(indexed_triangle_set{}, one, facet, 3.).empty());
+    CHECK(cavity_fill_local(plate, one, std::vector<int>{-1}, 3.).empty());
+    CHECK(cavity_fill_local(plate, one, facet, 0.).empty());
+}
+
+TEST_CASE("Every letter of a watermark is filled from its own seed", "[HoleShapes]")
+{
+    // The model the tool has to handle: a watermark engraved into a wall, in mm. Each letter is a
+    // separate depression, and each has to fill from a single seed with no reference surface to set
+    // and no re-setting as the wall turns away: the patch under the brush is faired, so the plug's
+    // top surface is the wall as it would be without the mark.
+    const TriangleMesh         part = load_model("watermark.obj");
+    const indexed_triangle_set its  = part.its;
+    REQUIRE_FALSE(its.indices.empty());
+
+    const std::vector<Vec3d> seeds{Vec3d(87.1, 133.5, 34.8), Vec3d(87.1, 115.7, 34.5),
+                                   Vec3d(87.1, 125.0, 35.0)};
+    for (const Vec3d &seed : seeds) {
+        const int facet = facet_near(its, Vec3d::UnitX(), seed);
+        REQUIRE(facet >= 0);
+
+        const indexed_triangle_set fill = cavity_fill_local(its, std::vector<Vec3d>{seed}, std::vector<int>{facet}, 3.);
+        DYNAMIC_SECTION("letter at " << seed.x() << "," << seed.y() << "," << seed.z()) {
+            REQUIRE_FALSE(fill.empty());
+            // Wound outward, so it slices as a positive volume.
+            CHECK(its_volume(fill) > 0.f);
+            // Flush, not proud: nothing of the plug reaches past the wall the mark is cut into.
+            const BoundingBoxf3 bb = bounding_box(fill);
+            CHECK(bb.max.x() <= 87.55);
+            // And it does fill, right up to the wall: straight out of the letter floor the plug adds
+            // the whole mark depth (the letters are ~0.4 mm deep).
+            const AABBMesh probe(fill);
+            double         far = 0.;
+            for (const AABBMesh::hit_result &h : probe.query_ray_hits(seed, Vec3d::UnitX()))
+                if (h.is_hit())
+                    far = std::max(far, h.distance());
+            CHECK(far > 0.3);
+        }
+    }
+}
+
+TEST_CASE("A plain wall of a watermark is left alone", "[HoleShapes]")
+{
+    const TriangleMesh         part = load_model("watermark.obj");
+    const indexed_triangle_set its  = part.its;
+    REQUIRE_FALSE(its.indices.empty());
+
+    // A flat facet of the same model, far from the engraving.
+    const Vec3d wall(87.5, 156., 27.2);
+    const int   facet = facet_near(its, Vec3d::UnitX(), wall);
+    REQUIRE(facet >= 0);
+
+    CHECK(cavity_fill_local(its, std::vector<Vec3d>{wall}, std::vector<int>{facet}, 3.).empty());
 }
 

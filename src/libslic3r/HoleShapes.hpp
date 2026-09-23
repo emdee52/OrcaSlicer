@@ -80,6 +80,19 @@ indexed_triangle_set its_make_rim_fillet(double hole_radius, double size, const 
 double hole_through_depth(const indexed_triangle_set &its, const Vec3d &entry, const Vec3d &dir,
                           double margin = 0.5);
 
+// --- Cavity fill ------------------------------------------------------------------------------
+// A positive plug that fills a depression (engraving, watermark, pocket) flush with the surface
+// around it. Every vertex in the brush reach of the seed facets is raised to the highest surface
+// plane around it, so the plug's top surface is the wall the mark is cut into, taken plane by plane
+// rather than fitted: a marked floor comes out exactly level with the wall, and a curved or coarsely
+// facetted wall follows itself instead of being flattened. A flat or convex wall has no plane above
+// its own vertices, so painting it adds nothing. `radius` is the brush reach in mesh units: a plane
+// counts as "around" the vertex when it crosses within it. Returns an empty mesh when nothing is
+// raised.
+indexed_triangle_set cavity_fill_local(const indexed_triangle_set &its,
+                                       const std::vector<Vec3d> &seed_points,
+                                       const std::vector<int> &seed_facets, double radius);
+
 } // namespace Slic3r
 
 #endif // libslic3r_HoleShapes_hpp_

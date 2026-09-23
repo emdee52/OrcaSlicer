@@ -13,6 +13,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
 #include "slic3r/GUI/Selection.hpp"
 
 #include "libslic3r/Model.hpp"
@@ -299,6 +300,36 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
     return dynamic_cast<GLGizmoEdgeDress *>(mgr.get_current());
 }
 
+// [ORCAPORT:HF-1] Open and drive the Cavity fill tool.
+GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+{
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr)
+        return nullptr;
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HoleFill) {
+        Selection &sel = canvas->get_selection();
+        if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
+            int oid = sel.get_object_idx();
+            if (oid < 0)
+                oid = 0;
+            if (oid >= 0 && oid < int(plater->model().objects.size())) {
+                sel.clear();
+                sel.add_object(unsigned(oid), true);
+            }
+        }
+        mgr.open_gizmo(GLGizmosManager::EType::HoleFill);
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+    }
+
+    if (mgr.get_current_type() != GLGizmosManager::EType::HoleFill)
+        return nullptr;
+    return dynamic_cast<GLGizmoHoleFill *>(mgr.get_current());
+}
+
 nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
 {
     return nlohmann::json{
@@ -308,6 +339,15 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
         {"hover_applied_volume", g.hover_applied_volume()},
         {"loop_mode", g.loop_mode()},
         {"loop_facet", g.loop_facet()},
+        {"applied_count", g.applied_count()},
+        {"object_scale", g.object_scale()}};
+}
+
+nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
+{
+    return nlohmann::json{
+        {"radius", g.get_radius()},
+        {"hover_valid", g.hover_valid()},
         {"applied_count", g.applied_count()},
         {"object_scale", g.object_scale()}};
 }
@@ -340,6 +380,8 @@ nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
         {"shape_size", g.gizmo_shape_size()},
         {"shape_through", g.gizmo_shape_through()},
         {"shape_depth", g.gizmo_shape_depth()},
+        {"fill_from_above", g.gizmo_fill_from_above_enabled()},
+        {"fill_offset", g.gizmo_fill_offset()},
         {"object_id", object_id},
     };
 }
@@ -541,6 +583,8 @@ void OrcaMCPServer::register_gizmo_tools()
         "'set_shape' (profile kind 0=circle, 1=square, 2=hexagon, size in mm, optional through and "
         "depth in mm; switches to Shape mode), "
         "'flip' (swap upper/lower), 'reset' (reset plane and connectors), 'apply' (perform the cut), "
+        "'fill_from_above' (add the slab of the object above the cut plane, lowered by 'offset' mm, as "
+        "a positive part - reproduces the manual cut/duplicate/lower workflow without cutting), "
         "'pick_face' (raycast the object and align the plane to the face under screen_x/screen_y, or "
         "the viewport centre if omitted - the same path as the interactive 'Pick flat face' mode), "
         "'hover_face' (report the facet under screen_x/screen_y and how many coplanar facets its "
@@ -550,7 +594,7 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_part | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | set_shape | flip | reset | apply | pick_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_part | set_plane_normal | set_plane_center | shift_cut | set_mode | set_keep | set_shape | flip | reset | apply | fill_from_above | pick_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"part", {{"type", "integer"}, {"description", "Model-volume index (see status.parts) to cut alone, for action=set_part or open. -1 = whole object."}}},
                 {"normal", {{"type", "array"}, {"items", {{"type", "number"}}}, {"description", "[x,y,z] world-space cut-plane normal, for action=set_plane_normal."}}},
@@ -564,6 +608,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"shape_size", {{"type", "number"}, {"description", "Shape size in mm (diameter / side / across-flats), for action=set_shape."}}},
                 {"through", {{"type", "boolean"}, {"description", "Cut all the way through (default true); false cuts a blind pocket of 'depth' mm, for action=set_shape."}}},
                 {"depth", {{"type", "number"}, {"description", "Blind-pocket depth in mm (used when through is false), for action=set_shape."}}},
+                {"offset", {{"type", "number"}, {"description", "Lower-by distance in mm for action=fill_from_above (how far the slab above the plane is dropped into the object). Default keeps the current value."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for action=pick_face or hover_face (defaults to the viewport centre)."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for action=pick_face or hover_face (defaults to the viewport centre)."}}},
             }},
@@ -672,6 +717,11 @@ void OrcaMCPServer::register_gizmo_tools()
                         {"region_facets", region_facets},
                         {"normal", vec3_json(normal)},
                     };
+                } else if (action == "fill_from_above") {
+                    if (need("offset"))
+                        g->gizmo_set_fill_offset(params["offset"].get<double>());
+                    g->gizmo_set_fill_from_above(true);
+                    g->gizmo_fill_from_above();
                 } else if (action == "apply") {
                     OrcaMCP::McpDialogSuppressionGuard guard;
                     g->gizmo_apply();
@@ -872,6 +922,125 @@ void OrcaMCPServer::register_gizmo_tools()
                 }
 
                 nlohmann::json result = edge_dress_gizmo_state(*g);
+                result["status"] = "ok";
+                result["open"] = true;
+                result["action"] = action;
+                return result;
+            });
+        }
+    });
+    register_tool(
+        {"hole_fill_gizmo",
+         "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
+         "watermark, pocket) with a positive volume built from the recessed faces projected up to "
+         "the surface fitted around them, so it sits flush on a curved wall without a boolean and "
+         "without any reference to set. Actions: "
+         "'open', 'status', 'set_radius' (brush width, mm), 'hover_at' "
+         "(screen_x/screen_y), 'apply_at' (screen_x/screen_y), 'apply' (fill under the cursor), "
+         "'list_fills' (volume index + object-space centre of each applied plug), 'remove_fill' "
+         "(index), 'clear_all', 'refresh', 'close'. A face that is already covered is not filled "
+         "twice; remove it first (right-click in the UI).",
+         {{"type", "object"},
+          {"properties",
+           {{"action",
+             {{"type", "string"},
+              {"description",
+               "open | status | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
+            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
+            {"radius", {{"type", "number"}, {"description", "Brush width in mm, for action=set_radius."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at."}}},
+            {"index",
+             {{"type", "integer"}, {"description", "Fill volume index from list_fills, for action=remove_fill."}}}}},
+          {"required", {"action"}}},
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string action = params.value("action", std::string("status"));
+            return run_on_main_thread([action, params]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                if (action == "close") {
+                    canvas->reset_all_gizmos();
+                    canvas->set_as_dirty();
+                    return {{"status", "ok"}, {"open", false}, {"action", action}};
+                }
+
+                if (params.contains("object_id")) {
+                    const int oid = params["object_id"].get<int>();
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
+                        return {{"status", "error"}, {"error", "Invalid object_id"}};
+                    Selection &sel = canvas->get_selection();
+                    sel.clear();
+                    sel.add_object(unsigned(oid), true);
+                }
+
+                GLGizmoHoleFill *g = active_hole_fill_gizmo(action == "open");
+                if (g == nullptr)
+                    return {{"status", "error"},
+                            {"error", "Cavity fill gizmo is not active. Load a model and pass object_id or "
+                                      "select a single object."}};
+
+                auto need = [&](const char *key) { return params.contains(key); };
+
+                if (action == "set_radius") {
+                    if (!need("radius"))
+                        return {{"status", "error"}, {"error", "Missing radius"}};
+                    g->set_radius(params["radius"].get<double>());
+                } else if (action == "hover_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    g->gizmo_hover_at(pos);
+                } else if (action == "apply_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    if (!g->gizmo_apply_at(pos))
+                        return {{"status", "error"},
+                                {"error", "No fillable cavity at that point (nothing under the cursor, the face is already covered, or the patch is too flat)."}};
+                } else if (action == "apply") {
+                    if (!g->gizmo_apply_hovered())
+                        return {{"status", "error"},
+                                {"error", "No fillable cavity is under the cursor (hover first, or the face is already covered / too flat)."}};
+                } else if (action == "list_fills") {
+                    nlohmann::json fills = nlohmann::json::array();
+                    const int      oi    = canvas->get_selection().get_object_idx();
+                    if (oi >= 0 && oi < int(plater->model().objects.size())) {
+                        const ModelObject *mo = plater->model().objects[oi];
+                        for (size_t i = 0; i < mo->volumes.size(); ++i) {
+                            const ModelVolume *v = mo->volumes[i];
+                            if (v == nullptr || v->name.rfind("HoleFill#", 0) != 0 || v->mesh().its.vertices.empty())
+                                continue;
+                            Vec3f c = Vec3f::Zero();
+                            for (const stl_vertex &p : v->mesh().its.vertices)
+                                c += p;
+                            c /= float(v->mesh().its.vertices.size());
+                            const Vec3d center = v->get_matrix() * c.cast<double>();
+                            fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
+                        }
+                    }
+                    nlohmann::json result = hole_fill_gizmo_state(*g);
+                    result["status"] = "ok";
+                    result["open"]   = true;
+                    result["action"] = action;
+                    result["fills"]  = std::move(fills);
+                    return result;
+                } else if (action == "remove_fill") {
+                    if (!need("index"))
+                        return {{"status", "error"}, {"error", "Missing index"}};
+                    if (!g->gizmo_remove_fill(params["index"].get<int>()))
+                        return {{"status", "error"}, {"error", "That volume is not a cavity fill"}};
+                } else if (action == "clear_all") {
+                    g->gizmo_clear_all();
+                } else if (action == "refresh") {
+                    g->gizmo_refresh();
+                } else if (action != "status" && action != "open") {
+                    return {{"status", "error"}, {"error", "Unknown action: " + action}};
+                }
+
+                nlohmann::json result = hole_fill_gizmo_state(*g);
                 result["status"] = "ok";
                 result["open"] = true;
                 result["action"] = action;

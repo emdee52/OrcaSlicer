@@ -1,7 +1,9 @@
 #include <catch2/catch_all.hpp>
 
+#include "libslic3r/AABBMesh.hpp"
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/Geometry.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TriangleSelector.hpp"
@@ -585,5 +587,59 @@ TEST_CASE("Snap points that cut the same plane collapse to one", "[CutUtils]")
             snap_points_distinct_cuts(pts, id, normal, Vec3d(5., 5., 0.), 3.0);
         CHECK(kept.size() == 3);
     }
+}
+
+namespace {
+
+// A 20 x 20 x 10 plate with a 0.4 mm deep, 4 x 2 mm recess in its +X face, spanning z in [3, 5].
+// The recess is prismatic in Z, so the slab of wall above it, moved down, reproduces the
+// un-recessed wall exactly - the geometry HF-2 relies on.
+indexed_triangle_set prismatic_recess()
+{
+    TriangleMesh plate(its_make_cube(20., 20., 10.));
+    TriangleMesh cutter(its_make_cube(0.4, 4., 2.));
+    cutter.translate(Vec3f(19.6f, 8.f, 3.f));
+    MeshBoolean::cgal::minus(plate, cutter);
+    its_merge_vertices(plate.its);
+    return plate.its;
+}
+
+} // namespace
+
+TEST_CASE("Fill from above drops the wall slab over a recess", "[CutUtils]")
+{
+    const indexed_triangle_set its = prismatic_recess();
+
+    // Plane at z = 6 (above the recess, which ends at z = 5); the 4 mm slab of wall above it is
+    // moved down onto z in [2, 6], covering the recess.
+    const indexed_triangle_set band = fill_from_above_mesh(its, Vec3d(10., 10., 6.), Vec3d::UnitZ(), 4.);
+
+    REQUIRE_FALSE(band.indices.empty());
+    const BoundingBoxf3 bb = bounding_box(band);
+    CHECK_THAT(bb.min.z(), WithinAbs(2., 1e-3));
+    CHECK_THAT(bb.max.z(), WithinAbs(6., 1e-3));
+    CHECK_THAT(double(its_volume(band)), WithinRel(20. * 20. * 4., 0.01));
+
+    // A ray out of the recess along +X now hits the dropped slab at the outer wall plane (x = 20):
+    // the recess is plugged flush instead of staying open to the outside.
+    const AABBMesh probe(band);
+    double        farthest = 0.;
+    int           hits     = 0;
+    for (const AABBMesh::hit_result &h : probe.query_ray_hits(Vec3d(19.7, 10., 4.), Vec3d::UnitX()))
+        if (h.is_hit()) {
+            ++hits;
+            farthest = std::max(farthest, h.distance());
+        }
+    CHECK(hits > 0);
+    CHECK(farthest > 0.2);
+}
+
+TEST_CASE("Fill from above refuses a plane with nothing above it", "[CutUtils]")
+{
+    const indexed_triangle_set its = prismatic_recess();
+
+    CHECK(fill_from_above_mesh(its, Vec3d(10., 10., 20.), Vec3d::UnitZ(), 4.).empty());
+    CHECK(fill_from_above_mesh(its, Vec3d(10., 10., 6.), Vec3d::UnitZ(), 0.).empty());
+    CHECK(fill_from_above_mesh(indexed_triangle_set{}, Vec3d(10., 10., 6.), Vec3d::UnitZ(), 4.).empty());
 }
 

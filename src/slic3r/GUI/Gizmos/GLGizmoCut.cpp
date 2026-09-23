@@ -8,6 +8,7 @@
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/GUI_ObjectList.hpp" // HF-2: add the fill volume to the object list
 #include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 #include "slic3r/GUI/format.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
@@ -234,7 +235,9 @@ GLGizmoCut3D::GLGizmoCut3D(GLCanvas3D& parent, const std::string& icon_filename,
         {"Multiple"     , _u8L("Multiple")}, // ORCA
         {"Count"        , _u8L("Count")}, // ORCA
         {"Gap"          , _u8L("Gap")}, // ORCA
-        {"Spacing"      , _u8L("Spacing")} // ORCA
+        {"Spacing"      , _u8L("Spacing")}, // ORCA
+        {"FillFromAbove", _u8L("Fill from above")}, // HF-2
+        {"LowerBy"      , _u8L("Lower by")} // HF-2
     };
 
 //    update_connector_shape();
@@ -3645,6 +3648,19 @@ void GLGizmoCut3D::render_cut_plane_input_window(CutConnectors &connectors, floa
                 m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, _L("Click a flat face to align the cut plane"));
             }
 
+            // HF-2 "Fill from above": drop the slab above the cut plane into the object as a
+            // positive part, lowered by `Lower by`. Reproduces the cut/duplicate/lower workflow.
+            if (mode == CutMode::cutPlanar) {
+                ImGui::Separator();
+                m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, from_u8(m_labels_map["FillFromAbove"]) + ": ");
+                m_imgui->bbl_checkbox(_L("Enable") + "##fill_from_above", m_fill_from_above);
+                m_imgui->disabled_begin(!m_fill_from_above);
+                render_slider_input(_u8L("Lower by"), m_fill_offset, 0.2f, 50.f);
+                if (m_imgui->button(_L("Fill from above")))
+                    gizmo_fill_from_above();
+                m_imgui->disabled_end();
+            }
+
             if (mode == CutMode::cutShape) {
                 ImGui::Separator();
                 m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, m_labels_map["Shape"] + ": ");
@@ -4334,6 +4350,74 @@ Transform3d GLGizmoCut3D::get_cut_matrix(const Selection& selection)
     cut_center_offset[Z] -= sla_shift_z;
 
     return translation_transform(cut_center_offset) * m_rotation_m;
+}
+
+// HF-2 "Fill from above" -----------------------------------------------------------------------
+
+static const char *FILL_FROM_ABOVE_NAME = "FillFromAbove#";
+
+void GLGizmoCut3D::gizmo_set_fill_offset(double offset)
+{
+    m_fill_offset = std::min(std::max(offset, 0.2), 50.0);
+}
+
+void GLGizmoCut3D::gizmo_fill_from_above()
+{
+    const Selection &selection  = m_parent.get_selection();
+    const int        instance_idx = selection.get_instance_idx();
+    const int        object_idx   = selection.get_object_idx();
+    if (instance_idx < 0 || object_idx < 0)
+        return;
+
+    Plater *plater = wxGetApp().plater();
+    if (plater == nullptr)
+        return;
+    ModelObject *mo = plater->model().objects[object_idx];
+    if (mo == nullptr || instance_idx >= int(mo->instances.size()))
+        return;
+
+    // Readable mesh of the object in object coordinates: every model part except the fill volumes
+    // this tool has already added, so calling it twice does not stack copies of the plugs.
+    TriangleMesh mesh;
+    for (const ModelVolume *v : mo->volumes) {
+        if (v == nullptr || !v->is_model_part())
+            continue;
+        if (v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0 || v->name.rfind("HoleFill#", 0) == 0)
+            continue;
+        TriangleMesh part = v->mesh();
+        if (!v->get_matrix().isApprox(Transform3d::Identity()))
+            part.transform(v->get_matrix());
+        mesh.merge(part);
+    }
+    if (mesh.its.indices.empty())
+        return;
+
+    // The plane is stored in world/bed coordinates; the volume is added in object coordinates.
+    const Transform3d world_to_obj   = mo->instances[instance_idx]->get_matrix().inverse();
+    const Vec3d       plane_point    = world_to_obj * m_plane_center;
+    const Vec3d       plane_normal   = world_to_obj.linear() * m_cut_normal;
+
+    const indexed_triangle_set band = fill_from_above_mesh(mesh.its, plane_point, plane_normal, m_fill_offset);
+    if (band.indices.empty())
+        return;
+
+    // Name the new volume with the next free index so the object list stays readable.
+    int next_index = 0;
+    for (const ModelVolume *v : mo->volumes)
+        if (v != nullptr && v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0)
+            next_index++;
+
+    Plater::TakeSnapshot snapshot(plater, _u8L("Fill from above"), UndoRedo::SnapshotType::GizmoAction);
+    ModelVolume *volume = mo->add_volume(TriangleMesh(band), ModelVolumeType::MODEL_PART, false);
+    if (volume == nullptr)
+        return;
+    volume->name = FILL_FROM_ABOVE_NAME + std::to_string(next_index);
+
+    if (ObjectList *obj_list = wxGetApp().obj_list()) {
+        obj_list->add_volumes_to_object_in_list(object_idx);
+        obj_list->update_info_items(object_idx);
+    }
+    plater->update();
 }
 
 void update_object_cut_id(CutObjectBase& cut_id, ModelObjectCutAttributes attributes, const int dowels_count)

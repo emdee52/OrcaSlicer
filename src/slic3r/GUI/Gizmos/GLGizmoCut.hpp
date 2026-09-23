@@ -125,6 +125,14 @@ class GLGizmoCut3D : public GLGizmoBase
     std::vector<int> m_cut_volume_idxs;
     bool is_single_part_cut() const { return !m_cut_volume_idxs.empty(); }
 
+    // HF-2 "Fill from above": reproduce the manual cut/duplicate/lower workflow non-destructively.
+    // The slab of the object between the cut plane and `m_fill_offset` along the cut normal is added
+    // to the object as a positive MODEL_PART volume, lowered by the same offset. Where the surface
+    // above the mark is prismatic (the engraved wall of a watermark) the lowered slab reproduces the
+    // un-engraved surface and plugs the recess, with no boolean and no fitted plane.
+    bool   m_fill_from_above { false };
+    float  m_fill_offset { 6.0f };
+
     // Input params for cut with tongue and groove
     Cut::Groove m_groove;
     bool m_groove_editing { false };
@@ -341,6 +349,13 @@ public:
     void   gizmo_flip_plane();     // swaps upper/lower
     void   gizmo_reset_plane();
     void   gizmo_apply();          // performs the cut with the current plane and options
+    // HF-2 "Fill from above": adds the lowered slab above the cut plane as a positive MODEL_PART
+    // volume. Does not cut. Reads the plane from m_plane_center / m_cut_normal (world space).
+    bool   gizmo_fill_from_above_enabled() const { return m_fill_from_above; }
+    void   gizmo_set_fill_from_above(bool on) { m_fill_from_above = on; }
+    double gizmo_fill_offset() const { return m_fill_offset; }
+    void   gizmo_set_fill_offset(double offset);
+    void   gizmo_fill_from_above();
     bool   gizmo_pick_face_mode() const { return m_pick_face_mode; }
     // Aligns the cut plane to the face at a screen position (same path as the interactive pick).
     bool   gizmo_pick_face_at(const Vec2d& screen_pos) { return pick_face_at(screen_pos); }
