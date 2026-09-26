@@ -61,6 +61,13 @@ tray's. On a miss it falls back by filament type: a system `Generic <type>` pres
 failing that, any compatible system preset, else the slot is skipped — every fallback
 selection surfaces a user-visible notice.
 
+After the matcher returns, the GUI applies an optional second stage: the `filament_sync_profile_map`
+app setting (`Source=Target` pairs, edited from the filament-title bar) rewrites each resolved
+preset name to a compatible user preset, keyed by the resolved name or, failing that, its
+`filament_type`. This runs in the sidebar's sync path only, after the tray ids have been cached, so
+it changes the preset shown and selected without touching the device-reported ids. The sync dialog's
+preview (`get_ams_cobox_infos`) is unaware of the remap and still shows the pre-remap name.
+
 Today only the Bambu AMS integration follows this pattern end to end — the device itself
 reports the id, `BBLPrinterAgent` translates it out of Bambu's catalog into ours, and the
 pipeline does all the matching. The other device integrations still synthesize a preset id
