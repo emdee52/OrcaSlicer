@@ -708,6 +708,11 @@ private:
 
 };
 
+// ORCA (FSM-1): parse the "filament_sync_profile_map" app config value.
+// One "Source=Target" pair per line (or separated by ';'), source/target are preset names.
+// Malformed lines (no '=', empty) are skipped. Duplicate keys keep the first entry.
+std::vector<std::pair<std::string, std::string>> parse_filament_preset_map(const std::string &text);
+
 ENABLE_ENUM_BITMASK_OPERATORS(PresetBundle::LoadConfigBundleAttribute)
 
 } // namespace Slic3r

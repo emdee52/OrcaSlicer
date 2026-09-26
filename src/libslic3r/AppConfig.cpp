@@ -259,6 +259,9 @@ void AppConfig::set_defaults()
         set_bool("ams_sync_match_full_use_color_dist", false);
     if (get("sync_ams_filament_mode").empty())
         set("sync_ams_filament_mode", "0"); // 0: filament+color, 1: color only
+    // ORCA (FSM-1): remap the preset chosen by filament sync, e.g. "Generic ABS=HF ABS" per line.
+    if (get("filament_sync_profile_map").empty())
+        set("filament_sync_profile_map", "");
 
     if (get("camera_orbit_mult").empty())
         set("camera_orbit_mult", "1.0");

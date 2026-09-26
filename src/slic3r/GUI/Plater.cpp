@@ -41,6 +41,7 @@
 #include <wx/string.h>
 #include <wx/wupdlock.h>
 #include <wx/numdlg.h>
+#include <wx/textdlg.h>
 #include <wx/debug.h>
 #include <wx/busyinfo.h>
 #include <wx/event.h>
@@ -3024,6 +3025,13 @@ Sidebar::Sidebar(Plater *parent)
     ams_btn->Bind(wxEVT_UPDATE_UI, &Sidebar::update_sync_ams_btn_enable, this);
     p->m_bpButton_ams_filament = ams_btn;
 
+    // ORCA (FSM-1): edit the "source=target" preset remap applied on filament sync.
+    ScalableButton* filament_map_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "switch_filament_maps", wxEmptyString, wxDefaultSize,
+                                                          wxDefaultPosition, wxBU_EXACTFIT | wxNO_BORDER, false, 16);
+    filament_map_btn->SetToolTip(_L("Filament sync profile mapping"));
+    filament_map_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &e) { edit_filament_sync_profile_map(); });
+    bSizer39->Add(filament_map_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
+
     bSizer39->Add(ams_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
     //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
 
@@ -5845,6 +5853,21 @@ void Sidebar::load_ams_list(MachineObject* obj)
     p->combo_printer->update();
 }
 
+void Sidebar::edit_filament_sync_profile_map()
+{
+    wxTextEntryDialog dlg(this,
+        _L("Map a synced filament preset to one of your own.\n"
+           "One \"Source=Target\" pair per line, matched by preset name or filament type. Example:\n"
+           "Generic ABS=HF ABS\n"
+           "PETG=HF Kingroon PETG"),
+        _L("Filament sync profile mapping"), from_u8(wxGetApp().app_config->get("filament_sync_profile_map")), wxOK | wxCANCEL | wxTE_MULTILINE);
+    dlg.SetSize(dlg.FromDIP(wxSize(480, 320)));
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+    wxGetApp().app_config->set("filament_sync_profile_map", std::string(dlg.GetValue().utf8_str()));
+    wxGetApp().app_config->save();
+}
+
 void Sidebar::sync_ams_list(bool is_from_big_sync_btn)
 {
     wxBusyCursor cursor;
@@ -5959,6 +5982,29 @@ void Sidebar::sync_ams_list(bool is_from_big_sync_btn)
             const Preset *resolved = filaments.find_preset(filament_presets[i]);
             if (resolved)
                 list2[i] = resolved->filament_id;
+        }
+    }
+    // ORCA (FSM-1): optionally remap the preset the matcher chose to a user preset, e.g.
+    // "Generic ABS=HF ABS". Keyed by the resolved name, falling back to its filament_type, so one
+    // line can cover every generic profile of a type. list2 above keeps the printer-reported id, so
+    // the sync cache stays stable; this only changes the preset shown/selected afterwards.
+    if (!sync_color_only) {
+        const auto profile_map = Slic3r::parse_filament_preset_map(wxGetApp().app_config->get("filament_sync_profile_map"));
+        if (!profile_map.empty()) {
+            const auto find_key = [&profile_map](const std::string &key) {
+                return std::find_if(profile_map.begin(), profile_map.end(), [&key](const auto &kv) { return kv.first == key; });
+            };
+            for (auto &name : filament_presets) {
+                const Preset *src = filaments.find_preset(name);
+                auto          it  = find_key(name);
+                if (it == profile_map.end() && src)
+                    it = find_key(src->config.opt_string("filament_type", 0u));
+                if (it == profile_map.end())
+                    continue;
+                const Preset *target = filaments.find_preset(it->second);
+                if (target && target->is_compatible && target->name != name)
+                    name = target->name;
+            }
         }
     }
     ams_filament_ids = boost::algorithm::join(list2, ",");
