@@ -3618,6 +3618,39 @@ static void warn_ambiguous_filament_id_match(const PresetCollection &filaments, 
                                    << "\", also matches " << others;
 }
 
+// ORCA (FSM-1): parse "Source=Target" pairs, one per line or ';'-separated.
+std::vector<std::pair<std::string, std::string>> parse_filament_preset_map(const std::string &text)
+{
+    const auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+    const auto trim     = [&is_space](std::string &s) {
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [&is_space](char c) { return !is_space(c); }));
+        s.erase(std::find_if(s.rbegin(), s.rend(), [&is_space](char c) { return !is_space(c); }).base(), s.end());
+    };
+    std::vector<std::pair<std::string, std::string>> result;
+    std::string entry;
+    const auto flush_entry = [&]() {
+        const size_t eq = entry.find('=');
+        if (eq != std::string::npos) {
+            std::string key   = entry.substr(0, eq);
+            std::string value = entry.substr(eq + 1);
+            trim(key);
+            trim(value);
+            const bool duplicate = std::any_of(result.begin(), result.end(), [&key](const auto &kv) { return kv.first == key; });
+            if (!key.empty() && !value.empty() && !duplicate)
+                result.emplace_back(std::move(key), std::move(value));
+        }
+        entry.clear();
+    };
+    for (const char c : text) {
+        if (c == '\n' || c == '\r' || c == ';')
+            flush_entry();
+        else
+            entry += c;
+    }
+    flush_entry();
+    return result;
+}
+
 void PresetBundle::get_ams_cobox_infos(AMSComboInfo& combox_info)
 {
     combox_info.clear();

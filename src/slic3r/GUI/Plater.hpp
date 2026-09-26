@@ -152,6 +152,8 @@ class Sidebar : public wxPanel
     SyncAmsInfoDialog*                      m_sync_dlg{nullptr};
 
     void update_sync_ams_btn_enable(wxUpdateUIEvent &e);
+    // ORCA (FSM-1): edit the "Source=Target" filament sync preset map.
+    void edit_filament_sync_profile_map();
 
 public:
     enum DockingState
