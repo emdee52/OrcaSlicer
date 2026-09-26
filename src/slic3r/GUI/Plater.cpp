@@ -41,7 +41,7 @@
 #include <wx/string.h>
 #include <wx/wupdlock.h>
 #include <wx/numdlg.h>
-#include <wx/textdlg.h>
+#include <wx/choice.h>
 #include <wx/debug.h>
 #include <wx/busyinfo.h>
 #include <wx/event.h>
@@ -5853,18 +5853,182 @@ void Sidebar::load_ams_list(MachineObject* obj)
     p->combo_printer->update();
 }
 
+namespace {
+
+// ORCA (FSM-1): pick "generic system preset -> user preset" pairs from dropdowns.
+class FilamentSyncMapDialog : public wxDialog
+{
+public:
+    FilamentSyncMapDialog(wxWindow *parent, const Slic3r::PresetCollection &filaments, const std::string &current)
+        : wxDialog(parent, wxID_ANY, _L("Filament sync profile mapping"), wxDefaultPosition, wxDefaultSize,
+                   wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
+          m_filaments(&filaments)
+    {
+        for (const Preset &p : filaments.get_presets()) {
+            if (p.is_visible && p.is_compatible && p.name.rfind("Generic ", 0) == 0) {
+                m_source_types[p.name] = p.config.opt_string("filament_type", 0u);
+                m_sources.push_back(p.name);
+            }
+        }
+        std::sort(m_sources.begin(), m_sources.end());
+
+        auto *root = new wxBoxSizer(wxVERTICAL);
+        root->Add(new wxStaticText(this, wxID_ANY,
+                       _L("Map a synced generic filament preset to one of your own presets.\n"
+                          "The right list shows your presets of the same material type.")),
+                  0, wxALL, FromDIP(8));
+
+        m_grid = new wxFlexGridSizer(0, 4, FromDIP(4), FromDIP(6));
+        root->Add(m_grid, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
+
+        auto *add = new wxButton(this, wxID_ANY, _L("Add mapping"));
+        add->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+            add_row("", "");
+            Layout();
+            FitInside();
+        });
+        root->Add(add, 0, wxALL, FromDIP(8));
+        root->Add(CreateButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+
+        SetSizerAndFit(root);
+        SetSize(FromDIP(wxSize(620, 420)));
+
+        const auto pairs = Slic3r::parse_filament_preset_map(current);
+        for (const auto &kv : pairs)
+            add_row(kv.first, kv.second);
+        if (pairs.empty())
+            add_row("", "");
+        Layout();
+    }
+
+    std::string map_string() const
+    {
+        std::string out;
+        for (const Row &r : m_rows) {
+            if (r.deleted)
+                continue;
+            const int si = r.src->GetSelection();
+            const int ti = r.tgt->GetSelection();
+            if (si <= 0 || ti == wxNOT_FOUND || ti >= int(r.targets.size()))
+                continue;
+            if (!out.empty())
+                out += "\n";
+            out += m_sources[si - 1] + "=" + r.targets[ti];
+        }
+        return out;
+    }
+
+private:
+    struct Row
+    {
+        wxChoice     *src   = nullptr;
+        wxStaticText *arrow = nullptr;
+        wxChoice     *tgt   = nullptr;
+        wxButton     *del   = nullptr;
+        std::vector<std::string> targets;
+        bool                     deleted = false;
+    };
+
+    void add_row(const std::string &source, const std::string &target)
+    {
+        Row r;
+        r.src = new wxChoice(this, wxID_ANY);
+        r.src->Append(_L("(none)"));
+        for (const std::string &s : m_sources)
+            r.src->Append(from_u8(s));
+        r.arrow = new wxStaticText(this, wxID_ANY, "->");
+        r.tgt   = new wxChoice(this, wxID_ANY);
+        r.del   = new wxButton(this, wxID_ANY, "X", wxDefaultPosition, FromDIP(wxSize(32, -1)));
+
+        m_grid->Add(r.src, 0, wxALIGN_CENTER_VERTICAL);
+        m_grid->Add(r.arrow, 0, wxALIGN_CENTER_VERTICAL);
+        m_grid->Add(r.tgt, 0, wxALIGN_CENTER_VERTICAL);
+        m_grid->Add(r.del, 0, wxALIGN_CENTER_VERTICAL);
+
+        int sel = 0;
+        if (!source.empty()) {
+            const int i = r.src->FindString(from_u8(source));
+            if (i != wxNOT_FOUND)
+                sel = i;
+        }
+        r.src->SetSelection(sel);
+
+        wxChoice *src_ptr = r.src;
+        src_ptr->Bind(wxEVT_CHOICE, [this, src_ptr](wxCommandEvent &) {
+            for (Row &row : m_rows)
+                if (row.src == src_ptr) {
+                    refresh_targets(row, "");
+                    break;
+                }
+            Layout();
+        });
+        wxButton *del_ptr = r.del;
+        del_ptr->Bind(wxEVT_BUTTON, [this, del_ptr](wxCommandEvent &) { remove_row(del_ptr); });
+
+        m_rows.push_back(std::move(r));
+        refresh_targets(m_rows.back(), target);
+    }
+
+    void refresh_targets(Row &r, const std::string &keep)
+    {
+        r.tgt->Clear();
+        r.targets.clear();
+        const int si = r.src->GetSelection();
+        if (si <= 0) {
+            r.tgt->Disable();
+            return;
+        }
+        auto              type_it = m_source_types.find(m_sources[si - 1]);
+        const std::string type    = type_it == m_source_types.end() ? std::string() : type_it->second;
+        for (const Preset &p : m_filaments->get_presets()) {
+            if (p.is_user() && p.config.opt_string("filament_type", 0u) == type)
+                r.targets.push_back(p.name);
+        }
+        std::sort(r.targets.begin(), r.targets.end());
+        for (const std::string &t : r.targets)
+            r.tgt->Append(from_u8(t));
+        r.tgt->Enable(!r.targets.empty());
+        int sel = 0;
+        if (!keep.empty()) {
+            auto it = std::find(r.targets.begin(), r.targets.end(), keep);
+            if (it != r.targets.end())
+                sel = int(it - r.targets.begin());
+        }
+        if (!r.targets.empty())
+            r.tgt->SetSelection(sel);
+    }
+
+    void remove_row(wxButton *del)
+    {
+        for (Row &r : m_rows) {
+            if (r.del != del)
+                continue;
+            r.deleted = true;
+            r.src->Hide();
+            r.arrow->Hide();
+            r.tgt->Hide();
+            r.del->Hide();
+            break;
+        }
+        Layout();
+        FitInside();
+    }
+
+    const Slic3r::PresetCollection      *m_filaments;
+    std::vector<std::string>             m_sources;
+    std::map<std::string, std::string>   m_source_types;
+    wxFlexGridSizer                     *m_grid = nullptr;
+    std::vector<Row>                     m_rows;
+};
+
+} // namespace
+
 void Sidebar::edit_filament_sync_profile_map()
 {
-    wxTextEntryDialog dlg(this,
-        _L("Map a synced filament preset to one of your own.\n"
-           "One \"Source=Target\" pair per line, matched by preset name or filament type. Example:\n"
-           "Generic ABS=HF ABS\n"
-           "PETG=HF Kingroon PETG"),
-        _L("Filament sync profile mapping"), from_u8(wxGetApp().app_config->get("filament_sync_profile_map")), wxOK | wxCANCEL | wxTE_MULTILINE);
-    dlg.SetSize(dlg.FromDIP(wxSize(480, 320)));
+    FilamentSyncMapDialog dlg(this, wxGetApp().preset_bundle->filaments, wxGetApp().app_config->get("filament_sync_profile_map"));
     if (dlg.ShowModal() != wxID_OK)
         return;
-    wxGetApp().app_config->set("filament_sync_profile_map", std::string(dlg.GetValue().utf8_str()));
+    wxGetApp().app_config->set("filament_sync_profile_map", dlg.map_string());
     wxGetApp().app_config->save();
 }
 
@@ -5984,25 +6148,33 @@ void Sidebar::sync_ams_list(bool is_from_big_sync_btn)
                 list2[i] = resolved->filament_id;
         }
     }
-    // ORCA (FSM-1): optionally remap the preset the matcher chose to a user preset, e.g.
-    // "Generic ABS=HF ABS". Keyed by the resolved name, falling back to its filament_type, so one
-    // line can cover every generic profile of a type. list2 above keeps the printer-reported id, so
-    // the sync cache stays stable; this only changes the preset shown/selected afterwards.
+    // ORCA (FSM-1): optionally remap the preset the matcher chose to a user preset.
+    // list2 above keeps the printer-reported id, so the sync cache stays stable; this only changes
+    // the preset shown/selected afterwards. The per-slot config is derived from these names when the
+    // full config is built, so replacing the name is enough.
     if (!sync_color_only) {
-        const auto profile_map = Slic3r::parse_filament_preset_map(wxGetApp().app_config->get("filament_sync_profile_map"));
+        const std::string map_text    = wxGetApp().app_config->get("filament_sync_profile_map");
+        const auto        profile_map = Slic3r::parse_filament_preset_map(map_text);
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " (FSM-1) map=\"" << map_text << "\" entries=" << profile_map.size();
         if (!profile_map.empty()) {
             const auto find_key = [&profile_map](const std::string &key) {
                 return std::find_if(profile_map.begin(), profile_map.end(), [&key](const auto &kv) { return kv.first == key; });
             };
             for (auto &name : filament_presets) {
-                const Preset *src = filaments.find_preset(name);
-                auto          it  = find_key(name);
-                if (it == profile_map.end() && src)
-                    it = find_key(src->config.opt_string("filament_type", 0u));
-                if (it == profile_map.end())
+                const std::string src_name = name;
+                const Preset     *src      = filaments.find_preset(src_name);
+                const std::string src_type = src ? src->config.opt_string("filament_type", 0u) : std::string();
+                auto              it       = find_key(src_name);
+                if (it == profile_map.end() && !src_type.empty())
+                    it = find_key(src_type);
+                if (it == profile_map.end()) {
+                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " (FSM-1) slot \"" << src_name << "\" type=\"" << src_type << "\" no map key";
                     continue;
+                }
                 const Preset *target = filaments.find_preset(it->second);
-                if (target && target->is_compatible && target->name != name)
+                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " (FSM-1) slot \"" << src_name << "\" key=\"" << it->first << "\" -> \""
+                                        << it->second << "\" found=" << (target != nullptr) << " compatible=" << (target ? target->is_compatible : false);
+                if (target && target->name != src_name)
                     name = target->name;
             }
         }
