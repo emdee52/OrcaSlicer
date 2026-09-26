@@ -59,6 +59,9 @@ bool GLGizmoMove3D::on_mouse(const wxMouseEvent &mouse_event) {
         }
         if (mouse_event.RightDown()) {
             m_pick_face_mode = false;
+            m_face_highlight.reset();
+            m_hover_volume = nullptr;
+            m_hover_facet  = -1;
             m_parent.set_as_dirty();
             return true;
         }
@@ -124,7 +127,7 @@ void GLGizmoMove3D::on_start_dragging()
     m_starting_drag_position = m_grabbers[m_hover_id].matrix * m_grabbers[m_hover_id].center;
     // ORCAPORT: in face mode the drag runs along the face axis, not from the selection center
     if (m_face_frame_active)
-        m_starting_box_center = m_starting_drag_position - m_face_frame.linear().col(m_hover_id).normalized();
+        m_starting_box_center = m_starting_drag_position - face_frame_world().linear().col(m_hover_id).normalized();
     else
         m_starting_box_center = box.center();
     m_starting_box_bottom_center = box.center();
@@ -151,7 +154,7 @@ void GLGizmoMove3D::on_dragging(const UpdateData& data)
     trafo_type.set_relative();
     // ORCAPORT: move along the picked face axes (world-space displacement)
     if (m_face_frame_active) {
-        selection.translate(m_face_frame.linear() * m_displacement, trafo_type);
+        selection.translate(face_frame_world().linear() * m_displacement, trafo_type);
         return;
     }
     switch (wxGetApp().obj_manipul()->get_coordinates_type())
@@ -175,8 +178,8 @@ void GLGizmoMove3D::on_render()
     BoundingBoxf3 render_box = ref_box;
     // ORCAPORT: face-aligned move frame
     if (m_face_frame_active) {
-        base_matrix = m_face_frame;
-        const Transform3d inv = m_face_frame.inverse();
+        base_matrix = face_frame_world();
+        const Transform3d inv = base_matrix.inverse();
         const BoundingBoxf3 world_box = selection.get_bounding_box();
         BoundingBoxf3 local_box;
         for (int c = 0; c < 8; ++c) {
@@ -322,6 +325,12 @@ void GLGizmoMove3D::on_render()
             shader->stop_using();
         }
     }
+
+    // ORCAPORT: highlight the face under the cursor while picking
+    if (m_pick_face_mode) {
+        update_face_highlight();
+        render_face_highlight();
+    }
 }
 
 void GLGizmoMove3D::on_register_raycasters_for_picking()
@@ -393,7 +402,18 @@ void GLGizmoMove3D::change_cs_by_selection() {
 }
 
 // ORCAPORT: face-aligned move frame
-void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal)
+Transform3d GLGizmoMove3D::face_frame_world() const
+{
+    if (!m_face_frame_active)
+        return Transform3d::Identity();
+    // frame is stored relative to the picked volume, so it follows the object
+    const GLVolume* vol = m_parent.get_selection().get_volume(m_face_frame_volume_idx);
+    if (vol != nullptr)
+        return vol->world_matrix() * m_face_frame_local;
+    return m_face_frame_local;
+}
+
+void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx)
 {
     Vec3d z = normal.normalized();
     if (z.squaredNorm() < 0.5)
@@ -415,11 +435,18 @@ void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal)
     rot.col(1) = y;
     rot.col(2) = z;
 
-    m_face_frame = Transform3d::Identity();
-    m_face_frame.linear()      = rot;
-    m_face_frame.translation() = hit_world;
+    Transform3d world_frame = Transform3d::Identity();
+    world_frame.linear()      = rot;
+    world_frame.translation() = hit_world;
+
+    const GLVolume* vol = m_parent.get_selection().get_volume(volume_idx);
+    m_face_frame_local      = (vol != nullptr) ? (vol->world_matrix().inverse() * world_frame) : world_frame;
+    m_face_frame_volume_idx = volume_idx;
     m_face_frame_active = true;
     m_pick_face_mode    = false;
+    m_face_highlight.reset();
+    m_hover_volume = nullptr;
+    m_hover_facet  = -1;
     if (m_object_manipulation)
         m_object_manipulation->m_move_window_combo_disabled = true;
     m_parent.set_as_dirty();
@@ -430,6 +457,10 @@ void GLGizmoMove3D::clear_face_frame()
 {
     m_face_frame_active = false;
     m_pick_face_mode    = false;
+    m_face_frame_local  = Transform3d::Identity();
+    m_face_highlight.reset();
+    m_hover_volume = nullptr;
+    m_hover_facet  = -1;
     if (m_object_manipulation)
         m_object_manipulation->m_move_window_combo_disabled = false;
     m_parent.set_as_dirty();
@@ -447,12 +478,78 @@ void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
         Vec3d  hit_world;
         if (raycast_object_face(mouse_pos, m_parent.get_selection(), mo, nullptr, vol, mv, facet, hit_world, nullptr)) {
             const Vec3d normal = facet_normal_in_world(mv->mesh().its, int(facet), vol->world_matrix());
-            set_face_frame(hit_world, normal);
+            unsigned int vol_idx = 0;
+            for (unsigned int vi : m_parent.get_selection().get_volume_idxs()) {
+                if (m_parent.get_selection().get_volume(vi) == vol) {
+                    vol_idx = vi;
+                    break;
+                }
+            }
+            set_face_frame(hit_world, normal, vol_idx);
             return;
         }
     }
     m_pick_face_mode = false;
+    m_face_highlight.reset();
+    m_hover_volume = nullptr;
+    m_hover_facet  = -1;
     m_parent.set_as_dirty();
+}
+
+// ORCAPORT: hover highlight while picking a face (reused from the cut gizmo)
+void GLGizmoMove3D::update_face_highlight()
+{
+    int obj_idx = -1;
+    ModelObject* mo = m_parent.get_selection().get_selected_single_object(obj_idx);
+    const GLVolume* hover_volume = nullptr;
+    const ModelVolume* hover_mv = nullptr;
+    size_t hover_facet = 0;
+    Vec3d  hit_world;
+    const bool hit = mo != nullptr && raycast_object_face(m_parent.get_local_mouse_position(), m_parent.get_selection(), mo,
+                                                          nullptr, hover_volume, hover_mv, hover_facet, hit_world, nullptr);
+    if (!hit) {
+        if (m_hover_volume != nullptr || m_face_highlight.is_initialized())
+            m_face_highlight.reset();
+        m_hover_volume = nullptr;
+        m_hover_facet  = -1;
+        return;
+    }
+    if (hover_volume == m_hover_volume && int(hover_facet) == m_hover_facet)
+        return;
+    m_hover_volume = hover_volume;
+    m_hover_facet  = int(hover_facet);
+
+    m_face_highlight.reset();
+    const std::vector<int> region = coplanar_region(hover_mv, hover_facet, m_face_cache);
+    if (!region.empty()) {
+        indexed_triangle_set patch = build_coplanar_patch(hover_mv, region, m_face_cache, 0.10f);
+        if (!patch.indices.empty()) {
+            m_face_highlight.init_from(patch);
+            m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+        }
+    }
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoMove3D::render_face_highlight()
+{
+    if (!m_face_highlight.is_initialized() || m_hover_volume == nullptr)
+        return;
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+    shader->start_using();
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    glsafe(::glDisable(GL_CULL_FACE));
+    glsafe(::glEnable(GL_BLEND));
+    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_hover_volume->world_matrix());
+    m_face_highlight.render();
+    glsafe(::glDisable(GL_BLEND));
+    glsafe(::glEnable(GL_CULL_FACE));
+    shader->stop_using();
 }
 
 void GLGizmoMove3D::render_extra_move_ui()
@@ -463,7 +560,13 @@ void GLGizmoMove3D::render_extra_move_ui()
     ImGui::Spacing();
     if (m_pick_face_mode) {
         if (m_imgui->button(_L("Cancel face pick")))
-            { m_pick_face_mode = false; m_parent.set_as_dirty(); }
+            {
+                m_pick_face_mode = false;
+                m_face_highlight.reset();
+                m_hover_volume = nullptr;
+                m_hover_facet  = -1;
+                m_parent.set_as_dirty();
+            }
         m_imgui->text(_L("Click a flat face on the model."));
     } else if (m_face_frame_active) {
         if (m_imgui->button(_L("Reset axis")))

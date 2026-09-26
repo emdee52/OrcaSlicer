@@ -4,6 +4,7 @@
 #include "GLGizmoBase.hpp"
 //BBS: add size adjust related
 #include "GizmoObjectManipulation.hpp"
+#include "GLGizmosCommon.hpp"
 
 
 namespace Slic3r {
@@ -78,11 +79,20 @@ private:
     // ORCAPORT: face-aligned move frame
     bool          m_pick_face_mode{ false };
     bool          m_face_frame_active{ false };
-    Transform3d   m_face_frame{ Transform3d::Identity() };
+    // frame stored relative to the picked volume, so it follows the object
+    Transform3d   m_face_frame_local{ Transform3d::Identity() };
+    unsigned int  m_face_frame_volume_idx{ 0 };
+    GLModel       m_face_highlight;
+    FaceRegionCache m_face_cache;
+    const GLVolume* m_hover_volume{ nullptr };
+    int           m_hover_facet{ -1 };
+    Transform3d   face_frame_world() const;
     void          pick_face_at(const Vec2d& mouse_pos);
-    void          set_face_frame(const Vec3d& hit_world, const Vec3d& normal);
+    void          set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx);
     void          clear_face_frame();
     void          render_extra_move_ui();
+    void          update_face_highlight();
+    void          render_face_highlight();
 private:
     int m_last_selected_obejct_idx, m_last_selected_volume_idx;
 };
