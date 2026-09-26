@@ -4,6 +4,9 @@
 //BBS: GUI refactor
 #include "slic3r/GUI/Plater.hpp"
 #include "libslic3r/AppConfig.hpp"
+// ORCAPORT: face-aligned move frame
+#include "GLGizmosCommon.hpp"
+#include "libslic3r/CutUtils.hpp"
 
 
 #include <glad/gl.h>
@@ -24,7 +27,11 @@ GLGizmoMove3D::GLGizmoMove3D(GLCanvas3D& parent, const std::string& icon_filenam
     : GLGizmoBase(parent, icon_filename, sprite_id)
     //BBS: GUI refactor: add obj manipulation
     , m_object_manipulation(obj_manipulation)
-{}
+{
+    // ORCAPORT: face-aligned move frame
+    if (m_object_manipulation)
+        m_object_manipulation->m_move_window_extra_ui = [this]() { render_extra_move_ui(); };
+}
 
 std::string GLGizmoMove3D::get_tooltip() const
 {
@@ -43,7 +50,26 @@ std::string GLGizmoMove3D::get_tooltip() const
 }
 
 bool GLGizmoMove3D::on_mouse(const wxMouseEvent &mouse_event) {
+    // ORCAPORT: face-aligned move frame
+    if (m_pick_face_mode) {
+        if (mouse_event.LeftDown()) {
+            const wxPoint p = mouse_event.GetPosition();
+            pick_face_at(Vec2d(double(p.x), double(p.y)));
+            return true;
+        }
+        if (mouse_event.RightDown()) {
+            m_pick_face_mode = false;
+            m_parent.set_as_dirty();
+            return true;
+        }
+        return false;
+    }
     return use_grabbers(mouse_event);
+}
+
+bool GLGizmoMove3D::render_follows_cursor() const {
+    // ORCAPORT: keep the cursor style update while picking a face
+    return get_state() == On && m_pick_face_mode;
 }
 
 void GLGizmoMove3D::data_changed(bool is_serializing) {
@@ -84,6 +110,7 @@ void GLGizmoMove3D::on_set_state() {
     if (get_state() == On) {
         m_last_selected_obejct_idx = -1;
         m_last_selected_volume_idx = -1;
+        clear_face_frame();
         change_cs_by_selection();
     }
 }
@@ -95,7 +122,11 @@ void GLGizmoMove3D::on_start_dragging()
     m_displacement = Vec3d::Zero();
     const BoundingBoxf3& box = m_parent.get_selection().get_bounding_box();
     m_starting_drag_position = m_grabbers[m_hover_id].matrix * m_grabbers[m_hover_id].center;
-    m_starting_box_center = box.center();
+    // ORCAPORT: in face mode the drag runs along the face axis, not from the selection center
+    if (m_face_frame_active)
+        m_starting_box_center = m_starting_drag_position - m_face_frame.linear().col(m_hover_id).normalized();
+    else
+        m_starting_box_center = box.center();
     m_starting_box_bottom_center = box.center();
     m_starting_box_bottom_center(2) = box.min(2);
 }
@@ -118,6 +149,11 @@ void GLGizmoMove3D::on_dragging(const UpdateData& data)
     Selection &selection = m_parent.get_selection();
     TransformationType trafo_type;
     trafo_type.set_relative();
+    // ORCAPORT: move along the picked face axes (world-space displacement)
+    if (m_face_frame_active) {
+        selection.translate(m_face_frame.linear() * m_displacement, trafo_type);
+        return;
+    }
     switch (wxGetApp().obj_manipul()->get_coordinates_type())
     {
     case ECoordinatesType::Instance: { trafo_type.set_instance(); break; }
@@ -134,13 +170,28 @@ void GLGizmoMove3D::on_render()
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
     glsafe(::glEnable(GL_DEPTH_TEST));
 
-    const auto &[box, box_trafo]    = selection.get_bounding_box_in_current_reference_system();
-    m_bounding_box                  = box;
-    m_center                        = box_trafo.translation();
-    if (m_object_manipulation) {
-        m_object_manipulation->cs_center = box_trafo.translation();
+    const auto &[ref_box, box_trafo]    = selection.get_bounding_box_in_current_reference_system();
+    Transform3d  base_matrix = box_trafo;
+    BoundingBoxf3 render_box = ref_box;
+    // ORCAPORT: face-aligned move frame
+    if (m_face_frame_active) {
+        base_matrix = m_face_frame;
+        const Transform3d inv = m_face_frame.inverse();
+        const BoundingBoxf3 world_box = selection.get_bounding_box();
+        BoundingBoxf3 local_box;
+        for (int c = 0; c < 8; ++c) {
+            const Vec3d corner((c & 1) ? world_box.max.x() : world_box.min.x(),
+                               (c & 2) ? world_box.max.y() : world_box.min.y(),
+                               (c & 4) ? world_box.max.z() : world_box.min.z());
+            local_box.merge(inv * corner);
+        }
+        render_box = local_box;
     }
-    const Transform3d base_matrix   = box_trafo;
+    m_bounding_box                  = render_box;
+    m_center                        = base_matrix.translation();
+    if (m_object_manipulation) {
+        m_object_manipulation->cs_center = m_center;
+    }
     float space_size = 20.f *INV_ZOOM;
 
     for (int i = 0; i < 3; ++i) {
@@ -150,11 +201,11 @@ void GLGizmoMove3D::on_render()
     const Vec3d zero = Vec3d::Zero();
 
     // x axis
-    m_grabbers[0].center = {m_bounding_box.max.x() + space_size, 0, 0};
+    m_grabbers[0].center = {render_box.max.x() + space_size, 0, 0};
     // y axis
-    m_grabbers[1].center = {0, m_bounding_box.max.y() + space_size,0};
+    m_grabbers[1].center = {0, render_box.max.y() + space_size,0};
     // z axis
-    m_grabbers[2].center = {0,0, m_bounding_box.max.z() + space_size};
+    m_grabbers[2].center = {0,0, render_box.max.z() + space_size};
 
     for (int i = 0; i < 3; ++i) {
         m_grabbers[i].color       = AXES_COLOR[i];
@@ -233,9 +284,10 @@ void GLGizmoMove3D::on_render()
     }
 	
 	// draw grabbers
-    render_grabbers(box);
+    render_grabbers(render_box);
 
-    if (m_object_manipulation->is_instance_coordinates()) {
+    // ORCAPORT: skip the instance-origin cross mark while the face-aligned frame is active
+    if (m_object_manipulation->is_instance_coordinates() && !m_face_frame_active) {
 #if SLIC3R_OPENGL_ES
     GLShaderProgram* shader = wxGetApp().get_shader("dashed_lines");
 #else
@@ -337,6 +389,88 @@ void GLGizmoMove3D::change_cs_by_selection() {
         m_object_manipulation->set_coordinates_type(ECoordinatesType::Instance);
     } else {
         m_object_manipulation->set_coordinates_type(ECoordinatesType::World);
+    }
+}
+
+// ORCAPORT: face-aligned move frame
+void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal)
+{
+    Vec3d z = normal.normalized();
+    if (z.squaredNorm() < 0.5)
+        z = Vec3d::UnitZ();
+    // point the blue axis toward the camera so the gizmo is not buried in the model
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    if (z.dot(camera.get_position() - hit_world) < 0.0)
+        z = -z;
+
+    const Vec3d ref = (std::abs(z.z()) < 0.9) ? Vec3d::UnitZ() : Vec3d::UnitY();
+    Vec3d x = ref.cross(z);
+    if (x.squaredNorm() < 0.5)
+        x = Vec3d::UnitX();
+    x.normalize();
+    const Vec3d y = z.cross(x);
+
+    Matrix3d rot;
+    rot.col(0) = x;
+    rot.col(1) = y;
+    rot.col(2) = z;
+
+    m_face_frame = Transform3d::Identity();
+    m_face_frame.linear()      = rot;
+    m_face_frame.translation() = hit_world;
+    m_face_frame_active = true;
+    m_pick_face_mode    = false;
+    if (m_object_manipulation)
+        m_object_manipulation->m_move_window_combo_disabled = true;
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoMove3D::clear_face_frame()
+{
+    m_face_frame_active = false;
+    m_pick_face_mode    = false;
+    if (m_object_manipulation)
+        m_object_manipulation->m_move_window_combo_disabled = false;
+    m_parent.set_as_dirty();
+    m_parent.request_extra_frame();
+}
+
+void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
+{
+    int obj_idx = -1;
+    ModelObject* mo = m_parent.get_selection().get_selected_single_object(obj_idx);
+    if (mo != nullptr) {
+        const GLVolume* vol = nullptr;
+        const ModelVolume* mv = nullptr;
+        size_t facet = 0;
+        Vec3d  hit_world;
+        if (raycast_object_face(mouse_pos, m_parent.get_selection(), mo, nullptr, vol, mv, facet, hit_world, nullptr)) {
+            const Vec3d normal = facet_normal_in_world(mv->mesh().its, int(facet), vol->world_matrix());
+            set_face_frame(hit_world, normal);
+            return;
+        }
+    }
+    m_pick_face_mode = false;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoMove3D::render_extra_move_ui()
+{
+    if (get_state() != On)
+        return;
+
+    ImGui::Spacing();
+    if (m_pick_face_mode) {
+        if (m_imgui->button(_L("Cancel face pick")))
+            { m_pick_face_mode = false; m_parent.set_as_dirty(); }
+        m_imgui->text(_L("Click a flat face on the model."));
+    } else if (m_face_frame_active) {
+        if (m_imgui->button(_L("Reset axis")))
+            clear_face_frame();
+    } else {
+        if (m_imgui->button(_L("Pick face")))
+            { m_pick_face_mode = true; m_parent.set_as_dirty(); }
     }
 }
 

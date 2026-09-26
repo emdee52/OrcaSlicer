@@ -816,9 +816,12 @@ void GizmoObjectManipulation::do_render_move_window(ImGuiWrapper *imgui_wrapper,
 
     ImGuiWrapper::push_combo_style(m_glcanvas.get_scale());
     bool combox_changed = false;
+    // ORCAPORT: a picked face overrides the coordinate-system combo
+    if (m_move_window_combo_disabled) imgui_wrapper->disabled_begin(true);
     if (render_combo(imgui_wrapper, "", modes, selection_idx, 0, coord_combo_width)) {
         combox_changed = true;
     }
+    if (m_move_window_combo_disabled) imgui_wrapper->disabled_end();
     if (ImGui::IsItemHovered()) {
         auto tooltip_str = _L("Coordinate system used for transform actions.");
         imgui_wrapper->tooltip(tooltip_str, imgui_wrapper->calc_text_size(tooltip_str).x + 3 * space_size);
@@ -884,6 +887,10 @@ void GizmoObjectManipulation::do_render_move_window(ImGuiWrapper *imgui_wrapper,
         }
     }
     if (!focued_on_text) m_glcanvas.handle_sidebar_focus_event("", false);
+
+    // ORCAPORT: face-aligned move frame UI
+    if (m_move_window_extra_ui)
+        m_move_window_extra_ui();
 
     ImGui::Spacing();
     ImGui::Separator();

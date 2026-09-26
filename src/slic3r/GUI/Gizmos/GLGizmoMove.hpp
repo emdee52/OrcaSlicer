@@ -51,6 +51,8 @@ public:
     /// <returns>Return True when use the information otherwise False.</returns>
     bool on_mouse(const wxMouseEvent &mouse_event) override;
 
+    bool render_follows_cursor() const override;
+
     /// <summary>
     /// Detect reduction of move for wipetover on selection change
     /// </summary>
@@ -72,6 +74,15 @@ protected:
 private:
     double calc_projection(const UpdateData& data) const;
     void   change_cs_by_selection(); //cs mean Coordinate System
+
+    // ORCAPORT: face-aligned move frame
+    bool          m_pick_face_mode{ false };
+    bool          m_face_frame_active{ false };
+    Transform3d   m_face_frame{ Transform3d::Identity() };
+    void          pick_face_at(const Vec2d& mouse_pos);
+    void          set_face_frame(const Vec3d& hit_world, const Vec3d& normal);
+    void          clear_face_frame();
+    void          render_extra_move_ui();
 private:
     int m_last_selected_obejct_idx, m_last_selected_volume_idx;
 };
