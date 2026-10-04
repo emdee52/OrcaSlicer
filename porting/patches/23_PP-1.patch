@@ -370,10 +370,10 @@ index 83ed62e198..553f9a81fc 100644
              _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
 new file mode 100644
-index 0000000000..bbc1c7f514
+index 0000000000..b4ad6b8b2d
 --- /dev/null
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,491 @@
 +#include "GLGizmoPerforation.hpp"
 +#include "GLGizmoUtils.hpp"
 +
@@ -439,6 +439,7 @@ index 0000000000..bbc1c7f514
 +    m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
 +    m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
 +    m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
++    m_desc["reduced"]    = _L("Hole width too large for the spacing; reduced to keep a wall between holes.");
 +    return true;
 +}
 +
@@ -788,12 +789,24 @@ index 0000000000..bbc1c7f514
 +    GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
 +                                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 +
++    // Fixed, independent ranges. The UI never clamps one value against another: the pattern
++    // builder keeps a wall between holes on its own and the panel says so (the "reduced" note),
++    // so dragging or typing a value always takes effect.
++    constexpr double SPACING_MIN = 1.0,  SPACING_MAX = 25.0;
++    constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
++    constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
++    constexpr double ANGLE_MIN   = 0.0,  ANGLE_MAX   = PERFORATION_MAX_ANGLE_DEG;
++
 +    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
 +    const float input_w  = m_imgui->scaled(3.2f);
-+    const float label_w  = m_imgui->calc_text_size(m_desc.at("boundary")).x + m_imgui->scaled(1.0f);
++    // Widest label the panel can show, so no slider starts under its own text.
++    float label_w = 0.f;
++    for (const char *key : {"pattern", "spacing", "width", "boundary", "angle"})
++        label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
++    label_w += m_imgui->scaled(1.5f);
 +
-+    // A slider followed by a typed, clamped number input. The two sit in separate columns so
-+    // the input never overlaps the track. `value` is clamped to [lo, hi] on commit.
++    // A slider followed by a typed number input, in separate columns. Each widget writes
++    // `value` directly - no cross-clamping - so a drag or a typed entry always lands.
 +    const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
 +                                  double lo, double hi, const char *fmt) {
 +        ImGui::AlignTextToFramePadding();
@@ -801,16 +814,15 @@ index 0000000000..bbc1c7f514
 +        ImGui::SameLine(label_w);
 +        ImGui::PushItemWidth(slider_w);
 +        float f = float(value);
-+        bool  changed = m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
++        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
++            value = f; // the slider cannot leave [lo, hi]
 +        ImGui::PopItemWidth();
 +        ImGui::SameLine();
 +        ImGui::PushItemWidth(input_w);
-+        f = float(value);
-+        if (ImGui::InputFloat(input_id, &f, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue))
-+            changed = true;
++        float g = float(value);
++        if (ImGui::InputFloat(input_id, &g, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue))
++            value = g; // accept what was typed; the builder guards the geometry
 +        ImGui::PopItemWidth();
-+        if (changed)
-+            value = std::clamp(double(f), lo, hi);
 +    };
 +
 +    ImGui::AlignTextToFramePadding();
@@ -823,22 +835,11 @@ index 0000000000..bbc1c7f514
 +        m_params.kind = PerforationKind(kind);
 +    ImGui::PopItemWidth();
 +
-+    // Spacing and width are interdependent: a wall of at least PERFORATION_MIN_WALL must survive,
-+    // so width is capped by spacing and spacing has a floor set by width. Clamping here keeps the
-+    // sliders honest and the committed values valid.
-+    const double spacing_lo = m_params.width + PERFORATION_MIN_WALL;
-+    m_params.spacing        = std::clamp(m_params.spacing, spacing_lo, 50.0);
-+    slider_input("##spacing", "##spacing_in", m_desc.at("spacing"), m_params.spacing, spacing_lo, 50.0, "%.1f");
-+
-+    const double width_hi = std::max(0.2, m_params.spacing - PERFORATION_MIN_WALL);
-+    m_params.width        = std::clamp(m_params.width, 0.2, width_hi);
-+    slider_input("##width", "##width_in", m_desc.at("width"), m_params.width, 0.2, width_hi, "%.1f");
-+
-+    slider_input("##boundary", "##boundary_in", m_desc.at("boundary"), m_params.margin, 0.0, 30.0, "%.1f");
-+
++    slider_input("##spacing", "##spacing_in", m_desc.at("spacing"), m_params.spacing, SPACING_MIN, SPACING_MAX, "%.1f");
++    slider_input("##width", "##width_in", m_desc.at("width"), m_params.width, WIDTH_MIN, WIDTH_MAX, "%.1f");
++    slider_input("##boundary", "##boundary_in", m_desc.at("boundary"), m_params.margin, MARGIN_MIN, MARGIN_MAX, "%.1f");
 +    if (m_params.kind == PerforationKind::Lines || m_params.kind == PerforationKind::Grid)
-+        slider_input("##angle", "##angle_in", m_desc.at("angle"), m_params.angle_deg, 0.0,
-+                     PERFORATION_MAX_ANGLE_DEG, "%.0f");
++        slider_input("##angle", "##angle_in", m_desc.at("angle"), m_params.angle_deg, ANGLE_MIN, ANGLE_MAX, "%.0f");
 +
 +    const std::string invert_label = m_desc.at("invert").ToStdString();
 +    ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
@@ -846,6 +847,13 @@ index 0000000000..bbc1c7f514
 +    ImGui::Separator();
 +    m_imgui->text(_L("Click a flat face to perforate it."));
 +    m_imgui->text(m_desc.at("depth_hint"));
++    // The builder keeps a wall between holes whatever the numbers say; tell the user when it had
++    // to shrink the width, so the number and the preview disagree for a stated reason.
++    if (m_params.width > perforation_effective_width(m_params.spacing, m_params.width) + 1e-6) {
++        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
++        m_imgui->text(m_desc.at("reduced"));
++        ImGui::PopStyleColor();
++    }
 +    if (m_hover_horizontal) {
 +        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
 +        m_imgui->text(m_desc.at("horizontal"));
