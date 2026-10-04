@@ -27,10 +27,10 @@ index 6486fd4048..b4cb91139c 100644
      Layer.cpp
 diff --git a/src/libslic3r/PerforationPattern.cpp b/src/libslic3r/PerforationPattern.cpp
 new file mode 100644
-index 0000000000..ae8b59f7b4
+index 0000000000..3ceed182c8
 --- /dev/null
 +++ b/src/libslic3r/PerforationPattern.cpp
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,239 @@
 +#include "PerforationPattern.hpp"
 +
 +#include "ClipperUtils.hpp"
@@ -174,16 +174,6 @@ index 0000000000..ae8b59f7b4
 +
 +} // namespace
 +
-+double perforation_effective_width(double spacing, double width)
-+{
-+    // Keep at least PERFORATION_MIN_WALL of material between adjacent holes. Without this a
-+    // width >= spacing merges the holes into one continuous slot, which reads as a single big
-+    // void (the "square" artifact) rather than a perforation.
-+    const double sp     = std::max(spacing, 0.2);
-+    const double max_w  = std::max(0.1, sp - PERFORATION_MIN_WALL);
-+    return std::clamp(width, 0.1, max_w);
-+}
-+
 +ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationParams &params)
 +{
 +    if (domain.empty())
@@ -195,7 +185,10 @@ index 0000000000..ae8b59f7b4
 +        return {};
 +
 +    const double spacing = std::max(params.spacing, 0.2);
-+    const double width   = perforation_effective_width(spacing, params.width);
++    // Width is used exactly as given. If it leaves less than PERFORATION_MIN_WALL between holes
++    // the holes merge; that is the caller's choice and the UI warns, but the builder never
++    // silently changes the value.
++    const double width   = std::max(params.width, 0.01);
 +    const double theta   = params.angle_deg * PI / 180.;
 +
 +    ExPolygons holes;
@@ -279,10 +272,10 @@ index 0000000000..ae8b59f7b4
 +} // namespace Slic3r
 diff --git a/src/libslic3r/PerforationPattern.hpp b/src/libslic3r/PerforationPattern.hpp
 new file mode 100644
-index 0000000000..5931e29c61
+index 0000000000..8bb6760596
 --- /dev/null
 +++ b/src/libslic3r/PerforationPattern.hpp
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,54 @@
 +#ifndef slic3r_PerforationPattern_hpp_
 +#define slic3r_PerforationPattern_hpp_
 +
@@ -311,19 +304,15 @@ index 0000000000..5931e29c61
 +    bool   invert{false};   // true: subtract the material between the holes
 +};
 +
-+// Smallest material wall kept between adjacent holes, in mm. The pattern builder shrinks
-+// `width` so that holes can never merge into a continuous slot (which would produce one big
-+// void instead of a perforation). A fixed physically-motivated minimum, not a parameter.
++// Wall below which adjacent holes are considered too close, in mm. Advisory only: the UI warns
++// when `spacing - width` drops below this, because a sub-millimetre wall leaves no room for
++// perimeters and the holes may merge. The builder does NOT enforce it - the value the user sets
++// is the geometry, merged or not.
 +inline constexpr double PERFORATION_MIN_WALL = 1.0;
 +
 +// Upper bound of the in-plane angle. A single line family plus its 90-degree cross covers
 +// every orientation within 0..45; beyond that only repeats the same set mirrored.
 +inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
-+
-+// `spacing` for which `width` leaves a wall of at least PERFORATION_MIN_WALL. Clamps `width`
-+// if it is too large; returns the effective width. Shared by the builder and the UI so the
-+// slider ranges and the geometry cannot disagree.
-+double perforation_effective_width(double spacing, double width);
 +
 +// The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 +// outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
@@ -370,10 +359,10 @@ index 83ed62e198..553f9a81fc 100644
              _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
 new file mode 100644
-index 0000000000..24adae2758
+index 0000000000..9418a55c11
 --- /dev/null
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,504 @@
 +#include "GLGizmoPerforation.hpp"
 +#include "GLGizmoUtils.hpp"
 +
@@ -439,7 +428,7 @@ index 0000000000..24adae2758
 +    m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
 +    m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
 +    m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
-+    m_desc["reduced"]    = _L("Hole width too large for the spacing; reduced to keep a wall between holes.");
++    m_desc["reduced"]    = _L("Hole width is too large for the spacing: the holes may merge. Reduce the width or increase the spacing.");
 +    return true;
 +}
 +
@@ -861,12 +850,10 @@ index 0000000000..24adae2758
 +    m_imgui->text(_L("Click a flat face to perforate it."));
 +    m_imgui->text(m_desc.at("depth_hint"));
 +
-+    // The builder keeps a wall between holes whatever the numbers say. The notice explains a
-+    // preview that differs from the number, but it is only shown once the drag has settled and it
-+    // occupies a reserved row always, so toggling it never resizes the window (which would move
-+    // the slider under the cursor and loop).
-+    const bool reduced = m_params.width > perforation_effective_width(m_params.spacing, m_params.width) + 1e-6;
-+    const bool show_reduced    = reduced && !m_editing;
++    // Advisory only: the geometry uses the width exactly as set. The notice shares a reserved row
++    // with the horizontal warning, so showing or hiding it never resizes the window (which would
++    // move the slider under the cursor and loop).
++    const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
 +    const bool show_horizontal = m_hover_horizontal;
 +    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
 +    ImGui::BeginGroup();
@@ -1306,10 +1293,10 @@ index 13c09f6385..1aab781eb0 100644
      test_polygon.cpp
 diff --git a/tests/libslic3r/test_perforationpattern.cpp b/tests/libslic3r/test_perforationpattern.cpp
 new file mode 100644
-index 0000000000..9fa9d3a742
+index 0000000000..cc8db13f28
 --- /dev/null
 +++ b/tests/libslic3r/test_perforationpattern.cpp
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,148 @@
 +#include <catch2/catch_all.hpp>
 +
 +#include "libslic3r/ClipperUtils.hpp"
@@ -1341,22 +1328,14 @@ index 0000000000..9fa9d3a742
 +
 +} // namespace
 +
-+TEST_CASE("A wall is always kept between holes whatever the width", "[PerforationPattern]")
++TEST_CASE("A valid width keeps the holes discrete", "[PerforationPattern]")
 +{
-+    // Width is clamped so a wall of at least PERFORATION_MIN_WALL survives, even when the
-+    // caller asks for width >= spacing. Without the clamp the holes merge into a single void.
-+    REQUIRE(perforation_effective_width(6., 3.) == Catch::Approx(3.));
-+    REQUIRE(perforation_effective_width(6., 10.) == Catch::Approx(6. - PERFORATION_MIN_WALL));
-+    REQUIRE(perforation_effective_width(2., 10.) <= 2. - PERFORATION_MIN_WALL + 1e-9);
-+
-+    // With width >> spacing the clamp must keep the holes discrete, not merge them into one
-+    // void. `Lines` is the sharpest test: an unclamped width would fuse every slot into a
-+    // single continuous rectangle (one contour), whereas the clamped comb has many.
-+    // Discrete-hole patterns (Lines / Honeycomb / Circles) must stay as many separate holes.
++    // With width comfortably below spacing the holes must stay separate. `Lines` is the sharpest
++    // case: if the width reached the spacing the slots would fuse into one rectangle.
 +    const PerforationParams discrete[] = {
-+        {PerforationKind::Lines, 0., 6., 100., 2., false},
-+        {PerforationKind::Honeycomb, 0., 6., 100., 2., false},
-+        {PerforationKind::Circles, 0., 6., 100., 2., false},
++        {PerforationKind::Lines, 0., 6., 2., 2., false},
++        {PerforationKind::Honeycomb, 0., 6., 2., 2., false},
++        {PerforationKind::Circles, 0., 6., 2., 2., false},
 +    };
 +    for (const PerforationParams &p : discrete) {
 +        const ExPolygons pattern = make_perforation_pattern(rectangle_domain(), p);
@@ -1365,13 +1344,28 @@ index 0000000000..9fa9d3a742
 +            REQUIRE(area_mm2(ExPolygons{e}) < 0.5 * area_mm2(rectangle_domain()));
 +    }
 +
-+    // Grid is a single connected lattice by construction (the two families cross), so the
-+    // check is that it is a perforated lattice - it has holes - rather than one solid slab.
-+    // Use a spacing where the bars (width clamped to 5mm) leave clear open cells.
++    // Grid is a single connected lattice by construction (the two families cross), so the check
++    // is that it is a perforated lattice - it has holes - rather than one solid slab.
 +    const ExPolygons grid = make_perforation_pattern(
-+        rectangle_domain(), {PerforationKind::Grid, 0., 12., 100., 2., false});
++        rectangle_domain(), {PerforationKind::Grid, 0., 12., 2., 2., false});
 +    REQUIRE(!grid.empty());
 +    REQUIRE(grid.front().holes.size() > 1);
++}
++
++TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")
++{
++    // No silent shrink: width is not corrected. Two parallel slots at spacing 6 with width 6
++    // merge into one continuous void - the documented outcome the UI warns about.
++    const ExPolygons merged = make_perforation_pattern(
++        rectangle_domain(), {PerforationKind::Lines, 0., 6., 6., 2., false});
++    REQUIRE(!merged.empty());
++    // Merged slots cover almost the whole inset face (the 1 mm margin is the only loss): this is
++    // the "square" the user can create on purpose, not a corrected shape.
++    const ExPolygons inset = offset_ex(rectangle_domain(), -scale_(2.));
++    REQUIRE(area_mm2(merged) > 0.9 * area_mm2(inset));
++
++    // The warning threshold is advisory and lives in the UI; the constant itself just marks it.
++    REQUIRE(PERFORATION_MIN_WALL > 0.);
 +}
 +
 +TEST_CASE("A honeycomb pattern removes holes from a rectangular face", "[PerforationPattern]")

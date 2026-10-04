@@ -33,12 +33,17 @@ Four kinds, chosen so `angle` does the rest:
 
 Angle slider is **0–45°**, which covers every orientation once a family is crossed.
 
-### Minimum wall (the "square" artifact fix)
+### Minimum wall - warning only, no auto-shrink
 
-`perforation_effective_width()` clamps `width` to `spacing - PERFORATION_MIN_WALL` (1.0 mm) so
-adjacent holes can never merge into one continuous void. The UI mirrors the clamp: width max is
-`spacing - 1`, spacing min is `width + 1`. Without it a width >= spacing turned the pattern into a
-single square-ish hole (user report).
+The builder uses `width` **exactly as set**; it never shrinks it. `PERFORATION_MIN_WALL` (1.0 mm)
+is an advisory threshold only: when `spacing - width` drops below it the panel shows a warning
+("Hole width is too large for the spacing: the holes may merge..."). If the user ignores it the
+holes do merge into a continuous void - applying is allowed, and the warning explains it. No value
+is ever changed behind the user's back.
+
+(Earlier revisions silently clamped the width here. That made the preview geometry a function of
+two sliders at once and, combined with the auto-resizing panel, read as the controls "spazzing
+out". Removed by user decision.)
 
 ### UI
 
@@ -101,10 +106,11 @@ before `Primitive`/`Sketch` so the `SLIC3R_CAD`-off numbering is unaffected.
 
 ## Verification
 
-- `libslic3r_tests [PerforationPattern]` — 4 cases: holes shrink the face; invert complements
-  inside the inset (`holes + grooves == inset`); prism volume == area x height; the min-wall clamp
-  keeps discrete-hole patterns discrete (Lines/Honeycomb/Circles > 1 contour) and Grid a perforated
-  lattice, even when `width` is passed far above `spacing`.
+- `libslic3r_tests [PerforationPattern]` — 5 cases: holes shrink the face; invert complements
+  inside the inset (`holes + grooves == inset`); prism volume == area x height; a valid width keeps
+  discrete-hole patterns discrete (Lines/Honeycomb/Circles > 1 contour) and Grid a perforated
+  lattice; and width is used **as given** — an over-wide width merges the slots into one void
+  (documented, not corrected).
 - `fff_print_tests [Perforation]` — 1 case: a hollow 30x30x20 box sliced with and without a honeycomb
   negative volume on a side wall; the perforated mid-height layer carries **more wall loops**. This
   proves the volume reaches the slicer and is subtracted per layer. Headless, deterministic.
