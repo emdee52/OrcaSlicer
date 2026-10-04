@@ -100,7 +100,56 @@ ExPolygons honeycomb(const ExPolygons &domain, double spacing_mm, double width_m
     return intersection_ex(domain, union_ex(cells));
 }
 
+// Round holes of diameter `width` on a staggered grid. The nearest neighbour distance is
+// `spacing` (horizontal) and the row offset is spacing/2, so the wall is spacing - width.
+ExPolygons circles(const ExPolygons &domain, double spacing_mm, double width_mm)
+{
+    const double r  = scale_(width_mm) / 2.;
+    const double dx = scale_(spacing_mm);
+    const double dy = dx * std::sqrt(3.) / 2.;
+    if (r <= 0. || dx <= 0. || dy <= 0.)
+        return {};
+
+    const BoundingBox bbox = get_extents(domain);
+    const double    x0     = bbox.min.x() - dx;
+    const double    x1     = bbox.max.x() + dx;
+    const double    y0     = bbox.min.y() - dy;
+    const double    y1     = bbox.max.y() + dy;
+
+    Polygons cells;
+    int      guard = 0;
+    int      row   = 0;
+    for (double y = y0; y <= y1 && guard < MAX_FEATURES; y += dy, ++row) {
+        const double xoff = (row & 1) ? dx * 0.5 : 0.;
+        for (double x = x0 + xoff; x <= x1 && guard < MAX_FEATURES; x += dx, ++guard) {
+            Polygon c;
+            const int seg = 24;
+            c.points.reserve(seg);
+            for (int k = 0; k < seg; ++k) {
+                const double a = 2. * PI * k / seg;
+                c.points.emplace_back(coord_t(std::lround(x + r * std::cos(a))),
+                                      coord_t(std::lround(y + r * std::sin(a))));
+            }
+            cells.emplace_back(std::move(c));
+        }
+    }
+    if (cells.empty())
+        return {};
+
+    return intersection_ex(domain, union_ex(cells));
+}
+
 } // namespace
+
+double perforation_effective_width(double spacing, double width)
+{
+    // Keep at least PERFORATION_MIN_WALL of material between adjacent holes. Without this a
+    // width >= spacing merges the holes into one continuous slot, which reads as a single big
+    // void (the "square" artifact) rather than a perforation.
+    const double sp     = std::max(spacing, 0.2);
+    const double max_w  = std::max(0.1, sp - PERFORATION_MIN_WALL);
+    return std::clamp(width, 0.1, max_w);
+}
 
 ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationParams &params)
 {
@@ -113,7 +162,7 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
         return {};
 
     const double spacing = std::max(params.spacing, 0.2);
-    const double width   = std::max(0.1, std::min(params.width, spacing));
+    const double width   = perforation_effective_width(spacing, params.width);
     const double theta   = params.angle_deg * PI / 180.;
 
     ExPolygons holes;
@@ -121,20 +170,16 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
     case PerforationKind::Lines:
         holes = line_family(inset, theta, spacing, width);
         break;
-    case PerforationKind::Cross:
+    case PerforationKind::Grid:
+        // Two orthogonal families: '+' at angle 0, 'x' at angle 45.
         holes = union_ex(line_family(inset, theta, spacing, width),
                          line_family(inset, theta + PI / 2., spacing, width));
         break;
-    case PerforationKind::X:
-        holes = union_ex(line_family(inset, theta + PI / 4., spacing, width),
-                         line_family(inset, theta - PI / 4., spacing, width));
-        break;
-    case PerforationKind::DualDiagonal:
-        holes = union_ex(line_family(inset, theta, spacing, width),
-                         line_family(inset, -theta, spacing, width));
-        break;
     case PerforationKind::Honeycomb:
         holes = honeycomb(inset, spacing, width);
+        break;
+    case PerforationKind::Circles:
+        holes = circles(inset, spacing, width);
         break;
     }
 

@@ -29,6 +29,39 @@ double area_mm2(const ExPolygons &polys)
 
 } // namespace
 
+TEST_CASE("A wall is always kept between holes whatever the width", "[PerforationPattern]")
+{
+    // Width is clamped so a wall of at least PERFORATION_MIN_WALL survives, even when the
+    // caller asks for width >= spacing. Without the clamp the holes merge into a single void.
+    REQUIRE(perforation_effective_width(6., 3.) == Catch::Approx(3.));
+    REQUIRE(perforation_effective_width(6., 10.) == Catch::Approx(6. - PERFORATION_MIN_WALL));
+    REQUIRE(perforation_effective_width(2., 10.) <= 2. - PERFORATION_MIN_WALL + 1e-9);
+
+    // With width >> spacing the clamp must keep the holes discrete, not merge them into one
+    // void. `Lines` is the sharpest test: an unclamped width would fuse every slot into a
+    // single continuous rectangle (one contour), whereas the clamped comb has many.
+    // Discrete-hole patterns (Lines / Honeycomb / Circles) must stay as many separate holes.
+    const PerforationParams discrete[] = {
+        {PerforationKind::Lines, 0., 6., 100., 2., false},
+        {PerforationKind::Honeycomb, 0., 6., 100., 2., false},
+        {PerforationKind::Circles, 0., 6., 100., 2., false},
+    };
+    for (const PerforationParams &p : discrete) {
+        const ExPolygons pattern = make_perforation_pattern(rectangle_domain(), p);
+        REQUIRE(pattern.size() > 1);
+        for (const ExPolygon &e : pattern)
+            REQUIRE(area_mm2(ExPolygons{e}) < 0.5 * area_mm2(rectangle_domain()));
+    }
+
+    // Grid is a single connected lattice by construction (the two families cross), so the
+    // check is that it is a perforated lattice - it has holes - rather than one solid slab.
+    // Use a spacing where the bars (width clamped to 5mm) leave clear open cells.
+    const ExPolygons grid = make_perforation_pattern(
+        rectangle_domain(), {PerforationKind::Grid, 0., 12., 100., 2., false});
+    REQUIRE(!grid.empty());
+    REQUIRE(grid.front().holes.size() > 1);
+}
+
 TEST_CASE("A honeycomb pattern removes holes from a rectangular face", "[PerforationPattern]")
 {
     const ExPolygons domain = rectangle_domain();

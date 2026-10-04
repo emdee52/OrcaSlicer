@@ -1,10 +1,10 @@
 #ifndef slic3r_GLGizmoPerforation_hpp_
 #define slic3r_GLGizmoPerforation_hpp_
 
-// [ORCAPORT:PP-1] Perforations tool. Stamps a 2D pattern (lines, cross, x, dual diagonals,
-// honeycomb) into a picked planar face and adds it as a single negative volume, so the slicer
-// subtracts it per layer. Depth is detected by the first surface the face normal crosses, so a
-// hole goes through the local wall and stops at a cavity; a solid part is cut right through.
+// [ORCAPORT:PP-1] Perforations tool. Stamps a 2D pattern (lines, grid, honeycomb, circles) into
+// a picked planar face and adds it as a single negative volume, so the slicer subtracts it per
+// layer. Depth is detected by the first surface the face normal crosses, so a hole goes through
+// the local wall and stops at a cavity; a solid part is cut right through.
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
@@ -67,6 +67,7 @@ private:
     GLModel              m_face_ghost;
     const ModelVolume*   m_hover_mv{ nullptr };
     int                  m_hover_facet{ -1 };
+    bool                 m_hover_horizontal{ false };
     Vec3d                m_last_hit{ Vec3d::Constant(1e30) };
     std::vector<int>     m_hover_region;
     FaceRegionCache      m_face_cache;

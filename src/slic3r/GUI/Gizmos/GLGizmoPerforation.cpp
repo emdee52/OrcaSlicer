@@ -61,6 +61,8 @@ bool GLGizmoPerforation::on_init()
     m_desc["angle"]      = _L("Angle");
     m_desc["invert"]     = _L("Invert (grooves)");
     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
+    m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
+    m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
     return true;
 }
 
@@ -123,6 +125,7 @@ void GLGizmoPerforation::clear_hover()
 {
     m_hover_mv     = nullptr;
     m_hover_facet  = -1;
+    m_hover_horizontal = false;
     m_hover_region.clear();
     m_last_hit = Vec3d::Constant(1e30);
     m_face_highlight.reset();
@@ -236,6 +239,12 @@ void GLGizmoPerforation::update_hover()
     if (face_changed) {
         m_hover_mv     = mv;
         m_hover_facet  = int(facet);
+        // A near-horizontal face (normal close to bed Z) means the holes bridge or leave gaps.
+        const Vec3d n_obj = facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()).normalized();
+        const Vec3d up    = instance_matrix().linear().inverse() * Vec3d::UnitZ();
+        m_hover_horizontal =
+            up.allFinite() && up.norm() > 1e-9 && n_obj.allFinite() && n_obj.norm() > 1e-9 &&
+            std::abs(n_obj.dot(up.normalized())) > 0.9;
         m_hover_region = coplanar_region(mv, facet, m_face_cache);
         m_face_highlight.reset();
         if (!m_hover_region.empty()) {
@@ -403,35 +412,57 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-    const float width    = m_imgui->scaled(7.0f);
+    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
+    const float input_w  = m_imgui->scaled(3.2f);
     const float label_w  = m_imgui->calc_text_size(m_desc.at("boundary")).x + m_imgui->scaled(1.0f);
 
-    const auto slider = [&](const char *id, const wxString &label, double &value, double lo, double hi, const char *fmt) {
+    // A slider followed by a typed, clamped number input. The two sit in separate columns so
+    // the input never overlaps the track. `value` is clamped to [lo, hi] on commit.
+    const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
+                                  double lo, double hi, const char *fmt) {
         ImGui::AlignTextToFramePadding();
         m_imgui->text(label);
         ImGui::SameLine(label_w);
-        ImGui::PushItemWidth(width);
+        ImGui::PushItemWidth(slider_w);
         float f = float(value);
-        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
-            value = f;
+        bool  changed = m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
         ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::PushItemWidth(input_w);
+        f = float(value);
+        if (ImGui::InputFloat(input_id, &f, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue))
+            changed = true;
+        ImGui::PopItemWidth();
+        if (changed)
+            value = std::clamp(double(f), lo, hi);
     };
 
     ImGui::AlignTextToFramePadding();
     m_imgui->text(m_desc.at("pattern"));
     ImGui::SameLine(label_w);
-    ImGui::PushItemWidth(width);
+    ImGui::PushItemWidth(slider_w + input_w + ImGui::GetStyle().ItemSpacing.x);
     int         kind  = int(m_params.kind);
-    const char *kinds[] = {"Lines", "Cross (+)", "X", "Dual diagonal", "Honeycomb"};
+    const char *kinds[] = {"Lines", "Grid", "Honeycomb", "Circles"};
     if (ImGui::Combo("##kind", &kind, kinds, int(sizeof(kinds) / sizeof(kinds[0]))))
         m_params.kind = PerforationKind(kind);
     ImGui::PopItemWidth();
 
-    slider("##spacing", m_desc.at("spacing"), m_params.spacing, 0.5, 50.0, "%.1f");
-    slider("##width", m_desc.at("width"), m_params.width, 0.2, 30.0, "%.1f");
-    slider("##boundary", m_desc.at("boundary"), m_params.margin, 0.0, 30.0, "%.1f");
-    if (m_params.kind != PerforationKind::Honeycomb)
-        slider("##angle", m_desc.at("angle"), m_params.angle_deg, 0.0, 180.0, "%.0f");
+    // Spacing and width are interdependent: a wall of at least PERFORATION_MIN_WALL must survive,
+    // so width is capped by spacing and spacing has a floor set by width. Clamping here keeps the
+    // sliders honest and the committed values valid.
+    const double spacing_lo = m_params.width + PERFORATION_MIN_WALL;
+    m_params.spacing        = std::clamp(m_params.spacing, spacing_lo, 50.0);
+    slider_input("##spacing", "##spacing_in", m_desc.at("spacing"), m_params.spacing, spacing_lo, 50.0, "%.1f");
+
+    const double width_hi = std::max(0.2, m_params.spacing - PERFORATION_MIN_WALL);
+    m_params.width        = std::clamp(m_params.width, 0.2, width_hi);
+    slider_input("##width", "##width_in", m_desc.at("width"), m_params.width, 0.2, width_hi, "%.1f");
+
+    slider_input("##boundary", "##boundary_in", m_desc.at("boundary"), m_params.margin, 0.0, 30.0, "%.1f");
+
+    if (m_params.kind == PerforationKind::Lines || m_params.kind == PerforationKind::Grid)
+        slider_input("##angle", "##angle_in", m_desc.at("angle"), m_params.angle_deg, 0.0,
+                     PERFORATION_MAX_ANGLE_DEG, "%.0f");
 
     const std::string invert_label = m_desc.at("invert").ToStdString();
     ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
@@ -439,6 +470,11 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     ImGui::Separator();
     m_imgui->text(_L("Click a flat face to perforate it."));
     m_imgui->text(m_desc.at("depth_hint"));
+    if (m_hover_horizontal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+        m_imgui->text(m_desc.at("horizontal"));
+        ImGui::PopStyleColor();
+    }
 
     GizmoImguiEnd();
 }

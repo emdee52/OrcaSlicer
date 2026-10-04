@@ -575,7 +575,7 @@ void OrcaMCPServer::register_gizmo_tools()
     // [ORCAPORT:PP-1]
     register_tool({
         "perforation_gizmo",
-        "Control the Perforations tool: stamp a 2D pattern (lines/cross/x/dual_diagonal/honeycomb) "
+        "Control the Perforations tool: stamp a 2D pattern (lines/grid/honeycomb/circles) "
         "into a picked planar face and add it as one negative volume, cut through the local wall. "
         "Actions: 'open' (activate; selects the object if needed), 'status' (current parameters), "
         "'set_params' (any of pattern, angle, spacing, width, boundary, invert), "
@@ -586,7 +586,7 @@ void OrcaMCPServer::register_gizmo_tools()
             {"properties", {
                 {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | apply | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
-                {"pattern", {{"type", "string"}, {"description", "lines | cross | x | dual_diagonal | honeycomb"}}},
+                {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
                 {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
                 {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
                 {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
@@ -644,10 +644,9 @@ void OrcaMCPServer::register_gizmo_tools()
                 if (params.contains("pattern")) {
                     const std::string s = params["pattern"].get<std::string>();
                     p.kind = s == "lines" ? PerforationKind::Lines
-                           : s == "cross" ? PerforationKind::Cross
-                           : s == "x" ? PerforationKind::X
-                           : s == "dual_diagonal" ? PerforationKind::DualDiagonal
-                                                  : PerforationKind::Honeycomb;
+                           : s == "grid" ? PerforationKind::Grid
+                           : s == "circles" ? PerforationKind::Circles
+                                            : PerforationKind::Honeycomb;
                     params_changed = true;
                 }
                 if (params.contains("angle"))    { p.angle_deg = params["angle"].get<double>();    params_changed = true; }
@@ -661,9 +660,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 auto report = [&](const std::string &act) {
                     const PerforationParams q = g->params();
                     const char *k = q.kind == PerforationKind::Lines ? "lines"
-                                  : q.kind == PerforationKind::Cross ? "cross"
-                                  : q.kind == PerforationKind::X ? "x"
-                                  : q.kind == PerforationKind::DualDiagonal ? "dual_diagonal" : "honeycomb";
+                                  : q.kind == PerforationKind::Grid ? "grid"
+                                  : q.kind == PerforationKind::Circles ? "circles" : "honeycomb";
                     return nlohmann::json{
                         {"status", "ok"}, {"open", true}, {"action", act},
                         {"pattern", k}, {"angle", q.angle_deg}, {"spacing", q.spacing},
