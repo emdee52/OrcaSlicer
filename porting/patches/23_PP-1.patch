@@ -370,10 +370,10 @@ index 83ed62e198..553f9a81fc 100644
              _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
 new file mode 100644
-index 0000000000..570f42ef71
+index 0000000000..24adae2758
 --- /dev/null
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,506 @@
 +#include "GLGizmoPerforation.hpp"
 +#include "GLGizmoUtils.hpp"
 +
@@ -822,12 +822,13 @@ index 0000000000..570f42ef71
 +        ImGui::SameLine(label_w);
 +        ImGui::PushItemWidth(slider_w);
 +        float f = float(value);
-+        m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
++        // Track every edited frame: the slider seeds itself from `value` each frame, so deferring
++        // the write-back made the handle snap home. Commit the value live, defer only the rebuild.
++        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
++            value = f;
 +        const ImGuiWrapper::LastSliderStatus &st = m_imgui->get_last_slider_status();
-+        if (st.deactivated_after_edit)
-+            value = f; // commit on release
 +        if (st.edited && !st.deactivated_after_edit)
-+            m_editing = true; // still dragging: defer the rebuild
++            m_editing = true; // still dragging: the ghost is not rebuilt until release
 +        ImGui::PopItemWidth();
 +        ImGui::SameLine();
 +        ImGui::PushItemWidth(input_w);
