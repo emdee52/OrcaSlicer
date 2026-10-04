@@ -21,6 +21,40 @@ Orca does not mesh-boolean negative volumes. `PrintObjectSlice` slices them like
   no persistence format, no migration.**
 - The prism only has to *slice* cleanly, not survive a boolean.
 
+## Patterns (v1, updated)
+
+Four kinds, chosen so `angle` does the rest:
+
+- **Lines** — one parallel family.
+- **Grid** — two orthogonal families at `angle` / `angle+90` (`+` at 0, `x` at 45). Replaces the
+  former Cross/X/DualDiagonal, which were the same family set under different angle conventions.
+- **Honeycomb** — staggered hexagons (isotropic; the airflow default).
+- **Circles** — round holes on a staggered grid (isotropic, conventional vent look).
+
+Angle slider is **0–45°**, which covers every orientation once a family is crossed.
+
+### Minimum wall (the "square" artifact fix)
+
+`perforation_effective_width()` clamps `width` to `spacing - PERFORATION_MIN_WALL` (1.0 mm) so
+adjacent holes can never merge into one continuous void. The UI mirrors the clamp: width max is
+`spacing - 1`, spacing min is `width + 1`. Without it a width >= spacing turned the pattern into a
+single square-ish hole (user report).
+
+### UI
+
+- Each of spacing/width/boundary/angle is a **slider plus a typed number input**, both clamped to
+  the valid range on commit — the number no longer overlaps the slider track.
+- A **near-horizontal face warning** shows when `|normal . up| > 0.9`: holes in a top/bottom face
+  bridge over air or leave first-layer gaps.
+
+### Icon
+
+Teal panel `#009688` with **pure-black** holes. The toolbar's texture loader forces every drawn
+pixel to the neutral tone for the un-hovered tile and recolours only pure-black pixels (to light)
+for the hover tile while leaving teal pixels alone. So: neutral = solid neutral square (no teal,
+like every other gizmo), hover = teal panel with light holes. Two neutral tones in one icon is not
+possible — the normal pass flattens all drawn pixels to a single colour.
+
 ## Files
 
 | Kind | Path |
@@ -67,8 +101,10 @@ before `Primitive`/`Sketch` so the `SLIC3R_CAD`-off numbering is unaffected.
 
 ## Verification
 
-- `libslic3r_tests [PerforationPattern]` — 3 cases / 9 assertions: holes shrink the face, invert
-  complements inside the inset (`holes + grooves == inset`), prism volume == area x height.
+- `libslic3r_tests [PerforationPattern]` — 4 cases: holes shrink the face; invert complements
+  inside the inset (`holes + grooves == inset`); prism volume == area x height; the min-wall clamp
+  keeps discrete-hole patterns discrete (Lines/Honeycomb/Circles > 1 contour) and Grid a perforated
+  lattice, even when `width` is passed far above `spacing`.
 - `fff_print_tests [Perforation]` — 1 case: a hollow 30x30x20 box sliced with and without a honeycomb
   negative volume on a side wall; the perforated mid-height layer carries **more wall loops**. This
   proves the volume reaches the slicer and is subtracted per layer. Headless, deterministic.

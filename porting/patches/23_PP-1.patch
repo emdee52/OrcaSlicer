@@ -1,17 +1,17 @@
 diff --git a/resources/images/toolbar_perforation.svg b/resources/images/toolbar_perforation.svg
 new file mode 100644
-index 0000000000..389098f77c
+index 0000000000..c98936b7f3
 --- /dev/null
 +++ b/resources/images/toolbar_perforation.svg
 @@ -0,0 +1 @@
-+<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" style="fill:#009688;"/><rect x="11" y="11" width="4" height="4" style="fill:#2b3436;"/><rect x="18" y="11" width="4" height="4" style="fill:#2b3436;"/><rect x="25" y="11" width="4" height="4" style="fill:#2b3436;"/><rect x="11" y="18" width="4" height="4" style="fill:#2b3436;"/><rect x="18" y="18" width="4" height="4" style="fill:#2b3436;"/><rect x="25" y="18" width="4" height="4" style="fill:#2b3436;"/><rect x="11" y="25" width="4" height="4" style="fill:#2b3436;"/><rect x="18" y="25" width="4" height="4" style="fill:#2b3436;"/><rect x="25" y="25" width="4" height="4" style="fill:#2b3436;"/></svg>
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" style="fill:#009688;"/><rect x="11" y="11" width="4" height="4" style="fill:#000000;"/><rect x="18" y="11" width="4" height="4" style="fill:#000000;"/><rect x="25" y="11" width="4" height="4" style="fill:#000000;"/><rect x="11" y="18" width="4" height="4" style="fill:#000000;"/><rect x="18" y="18" width="4" height="4" style="fill:#000000;"/><rect x="25" y="18" width="4" height="4" style="fill:#000000;"/><rect x="11" y="25" width="4" height="4" style="fill:#000000;"/><rect x="18" y="25" width="4" height="4" style="fill:#000000;"/><rect x="25" y="25" width="4" height="4" style="fill:#000000;"/></svg>
 diff --git a/resources/images/toolbar_perforation_dark.svg b/resources/images/toolbar_perforation_dark.svg
 new file mode 100644
-index 0000000000..7ac0d9c25e
+index 0000000000..c98936b7f3
 --- /dev/null
 +++ b/resources/images/toolbar_perforation_dark.svg
 @@ -0,0 +1 @@
-+<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" style="fill:#009688;"/><rect x="11" y="11" width="4" height="4" style="fill:#b6b6b6;"/><rect x="18" y="11" width="4" height="4" style="fill:#b6b6b6;"/><rect x="25" y="11" width="4" height="4" style="fill:#b6b6b6;"/><rect x="11" y="18" width="4" height="4" style="fill:#b6b6b6;"/><rect x="18" y="18" width="4" height="4" style="fill:#b6b6b6;"/><rect x="25" y="18" width="4" height="4" style="fill:#b6b6b6;"/><rect x="11" y="25" width="4" height="4" style="fill:#b6b6b6;"/><rect x="18" y="25" width="4" height="4" style="fill:#b6b6b6;"/><rect x="25" y="25" width="4" height="4" style="fill:#b6b6b6;"/></svg>
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" style="fill:#009688;"/><rect x="11" y="11" width="4" height="4" style="fill:#000000;"/><rect x="18" y="11" width="4" height="4" style="fill:#000000;"/><rect x="25" y="11" width="4" height="4" style="fill:#000000;"/><rect x="11" y="18" width="4" height="4" style="fill:#000000;"/><rect x="18" y="18" width="4" height="4" style="fill:#000000;"/><rect x="25" y="18" width="4" height="4" style="fill:#000000;"/><rect x="11" y="25" width="4" height="4" style="fill:#000000;"/><rect x="18" y="25" width="4" height="4" style="fill:#000000;"/><rect x="25" y="25" width="4" height="4" style="fill:#000000;"/></svg>
 diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
 index 6486fd4048..b4cb91139c 100644
 --- a/src/libslic3r/CMakeLists.txt
@@ -27,10 +27,10 @@ index 6486fd4048..b4cb91139c 100644
      Layer.cpp
 diff --git a/src/libslic3r/PerforationPattern.cpp b/src/libslic3r/PerforationPattern.cpp
 new file mode 100644
-index 0000000000..120ebd8956
+index 0000000000..ae8b59f7b4
 --- /dev/null
 +++ b/src/libslic3r/PerforationPattern.cpp
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,246 @@
 +#include "PerforationPattern.hpp"
 +
 +#include "ClipperUtils.hpp"
@@ -133,7 +133,56 @@ index 0000000000..120ebd8956
 +    return intersection_ex(domain, union_ex(cells));
 +}
 +
++// Round holes of diameter `width` on a staggered grid. The nearest neighbour distance is
++// `spacing` (horizontal) and the row offset is spacing/2, so the wall is spacing - width.
++ExPolygons circles(const ExPolygons &domain, double spacing_mm, double width_mm)
++{
++    const double r  = scale_(width_mm) / 2.;
++    const double dx = scale_(spacing_mm);
++    const double dy = dx * std::sqrt(3.) / 2.;
++    if (r <= 0. || dx <= 0. || dy <= 0.)
++        return {};
++
++    const BoundingBox bbox = get_extents(domain);
++    const double    x0     = bbox.min.x() - dx;
++    const double    x1     = bbox.max.x() + dx;
++    const double    y0     = bbox.min.y() - dy;
++    const double    y1     = bbox.max.y() + dy;
++
++    Polygons cells;
++    int      guard = 0;
++    int      row   = 0;
++    for (double y = y0; y <= y1 && guard < MAX_FEATURES; y += dy, ++row) {
++        const double xoff = (row & 1) ? dx * 0.5 : 0.;
++        for (double x = x0 + xoff; x <= x1 && guard < MAX_FEATURES; x += dx, ++guard) {
++            Polygon c;
++            const int seg = 24;
++            c.points.reserve(seg);
++            for (int k = 0; k < seg; ++k) {
++                const double a = 2. * PI * k / seg;
++                c.points.emplace_back(coord_t(std::lround(x + r * std::cos(a))),
++                                      coord_t(std::lround(y + r * std::sin(a))));
++            }
++            cells.emplace_back(std::move(c));
++        }
++    }
++    if (cells.empty())
++        return {};
++
++    return intersection_ex(domain, union_ex(cells));
++}
++
 +} // namespace
++
++double perforation_effective_width(double spacing, double width)
++{
++    // Keep at least PERFORATION_MIN_WALL of material between adjacent holes. Without this a
++    // width >= spacing merges the holes into one continuous slot, which reads as a single big
++    // void (the "square" artifact) rather than a perforation.
++    const double sp     = std::max(spacing, 0.2);
++    const double max_w  = std::max(0.1, sp - PERFORATION_MIN_WALL);
++    return std::clamp(width, 0.1, max_w);
++}
 +
 +ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationParams &params)
 +{
@@ -146,7 +195,7 @@ index 0000000000..120ebd8956
 +        return {};
 +
 +    const double spacing = std::max(params.spacing, 0.2);
-+    const double width   = std::max(0.1, std::min(params.width, spacing));
++    const double width   = perforation_effective_width(spacing, params.width);
 +    const double theta   = params.angle_deg * PI / 180.;
 +
 +    ExPolygons holes;
@@ -154,20 +203,16 @@ index 0000000000..120ebd8956
 +    case PerforationKind::Lines:
 +        holes = line_family(inset, theta, spacing, width);
 +        break;
-+    case PerforationKind::Cross:
++    case PerforationKind::Grid:
++        // Two orthogonal families: '+' at angle 0, 'x' at angle 45.
 +        holes = union_ex(line_family(inset, theta, spacing, width),
 +                         line_family(inset, theta + PI / 2., spacing, width));
 +        break;
-+    case PerforationKind::X:
-+        holes = union_ex(line_family(inset, theta + PI / 4., spacing, width),
-+                         line_family(inset, theta - PI / 4., spacing, width));
-+        break;
-+    case PerforationKind::DualDiagonal:
-+        holes = union_ex(line_family(inset, theta, spacing, width),
-+                         line_family(inset, -theta, spacing, width));
-+        break;
 +    case PerforationKind::Honeycomb:
 +        holes = honeycomb(inset, spacing, width);
++        break;
++    case PerforationKind::Circles:
++        holes = circles(inset, spacing, width);
 +        break;
 +    }
 +
@@ -234,10 +279,10 @@ index 0000000000..120ebd8956
 +} // namespace Slic3r
 diff --git a/src/libslic3r/PerforationPattern.hpp b/src/libslic3r/PerforationPattern.hpp
 new file mode 100644
-index 0000000000..ab8a6b0dc2
+index 0000000000..5931e29c61
 --- /dev/null
 +++ b/src/libslic3r/PerforationPattern.hpp
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,58 @@
 +#ifndef slic3r_PerforationPattern_hpp_
 +#define slic3r_PerforationPattern_hpp_
 +
@@ -251,21 +296,34 @@ index 0000000000..ab8a6b0dc2
 +// The pattern is the solid that is subtracted (a set of through-holes), or its complement
 +// when `invert` is set (grooves between the holes).
 +enum class PerforationKind : int {
-+    Lines = 0,     // a single family of parallel slots at `angle`
-+    Cross,         // '+' : families at `angle` and `angle + 90`
-+    X,             // 'x' : families at `angle + 45` and `angle - 45`
-+    DualDiagonal,  // two families mirrored about `angle`
-+    Honeycomb,     // staggered hexagonal holes
++    Lines = 0,  // a single family of parallel slots at `angle`
++    Grid,       // two orthogonal families at `angle` and `angle + 90` (Cross at 0, X at 45)
++    Honeycomb,  // staggered hexagonal holes (isotropic)
++    Circles,    // round holes on a staggered grid (isotropic)
 +};
 +
 +struct PerforationParams {
 +    PerforationKind kind{PerforationKind::Honeycomb};
-+    double angle_deg{0.0};  // in-plane rotation of the pattern
++    double angle_deg{0.0};  // in-plane rotation, 0..45 deg
 +    double spacing{6.0};    // hole / slot centre-to-centre distance, mm
 +    double width{2.0};      // hole / slot width, mm
 +    double margin{2.0};     // boundary inset from the face outline, mm
 +    bool   invert{false};   // true: subtract the material between the holes
 +};
++
++// Smallest material wall kept between adjacent holes, in mm. The pattern builder shrinks
++// `width` so that holes can never merge into a continuous slot (which would produce one big
++// void instead of a perforation). A fixed physically-motivated minimum, not a parameter.
++inline constexpr double PERFORATION_MIN_WALL = 1.0;
++
++// Upper bound of the in-plane angle. A single line family plus its 90-degree cross covers
++// every orientation within 0..45; beyond that only repeats the same set mirrored.
++inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
++
++// `spacing` for which `width` leaves a wall of at least PERFORATION_MIN_WALL. Clamps `width`
++// if it is too large; returns the effective width. Shared by the builder and the UI so the
++// slider ranges and the geometry cannot disagree.
++double perforation_effective_width(double spacing, double width);
 +
 +// The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 +// outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
@@ -312,10 +370,10 @@ index 83ed62e198..553f9a81fc 100644
              _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
 new file mode 100644
-index 0000000000..b22a3785dc
+index 0000000000..bbc1c7f514
 --- /dev/null
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,483 @@
 +#include "GLGizmoPerforation.hpp"
 +#include "GLGizmoUtils.hpp"
 +
@@ -379,6 +437,8 @@ index 0000000000..b22a3785dc
 +    m_desc["angle"]      = _L("Angle");
 +    m_desc["invert"]     = _L("Invert (grooves)");
 +    m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
++    m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
++    m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
 +    return true;
 +}
 +
@@ -441,6 +501,7 @@ index 0000000000..b22a3785dc
 +{
 +    m_hover_mv     = nullptr;
 +    m_hover_facet  = -1;
++    m_hover_horizontal = false;
 +    m_hover_region.clear();
 +    m_last_hit = Vec3d::Constant(1e30);
 +    m_face_highlight.reset();
@@ -554,6 +615,12 @@ index 0000000000..b22a3785dc
 +    if (face_changed) {
 +        m_hover_mv     = mv;
 +        m_hover_facet  = int(facet);
++        // A near-horizontal face (normal close to bed Z) means the holes bridge or leave gaps.
++        const Vec3d n_obj = facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()).normalized();
++        const Vec3d up    = instance_matrix().linear().inverse() * Vec3d::UnitZ();
++        m_hover_horizontal =
++            up.allFinite() && up.norm() > 1e-9 && n_obj.allFinite() && n_obj.norm() > 1e-9 &&
++            std::abs(n_obj.dot(up.normalized())) > 0.9;
 +        m_hover_region = coplanar_region(mv, facet, m_face_cache);
 +        m_face_highlight.reset();
 +        if (!m_hover_region.empty()) {
@@ -721,35 +788,57 @@ index 0000000000..b22a3785dc
 +    GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
 +                                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 +
-+    const float width    = m_imgui->scaled(7.0f);
++    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
++    const float input_w  = m_imgui->scaled(3.2f);
 +    const float label_w  = m_imgui->calc_text_size(m_desc.at("boundary")).x + m_imgui->scaled(1.0f);
 +
-+    const auto slider = [&](const char *id, const wxString &label, double &value, double lo, double hi, const char *fmt) {
++    // A slider followed by a typed, clamped number input. The two sit in separate columns so
++    // the input never overlaps the track. `value` is clamped to [lo, hi] on commit.
++    const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
++                                  double lo, double hi, const char *fmt) {
 +        ImGui::AlignTextToFramePadding();
 +        m_imgui->text(label);
 +        ImGui::SameLine(label_w);
-+        ImGui::PushItemWidth(width);
++        ImGui::PushItemWidth(slider_w);
 +        float f = float(value);
-+        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
-+            value = f;
++        bool  changed = m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
 +        ImGui::PopItemWidth();
++        ImGui::SameLine();
++        ImGui::PushItemWidth(input_w);
++        f = float(value);
++        if (ImGui::InputFloat(input_id, &f, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue))
++            changed = true;
++        ImGui::PopItemWidth();
++        if (changed)
++            value = std::clamp(double(f), lo, hi);
 +    };
 +
 +    ImGui::AlignTextToFramePadding();
 +    m_imgui->text(m_desc.at("pattern"));
 +    ImGui::SameLine(label_w);
-+    ImGui::PushItemWidth(width);
++    ImGui::PushItemWidth(slider_w + input_w + ImGui::GetStyle().ItemSpacing.x);
 +    int         kind  = int(m_params.kind);
-+    const char *kinds[] = {"Lines", "Cross (+)", "X", "Dual diagonal", "Honeycomb"};
++    const char *kinds[] = {"Lines", "Grid", "Honeycomb", "Circles"};
 +    if (ImGui::Combo("##kind", &kind, kinds, int(sizeof(kinds) / sizeof(kinds[0]))))
 +        m_params.kind = PerforationKind(kind);
 +    ImGui::PopItemWidth();
 +
-+    slider("##spacing", m_desc.at("spacing"), m_params.spacing, 0.5, 50.0, "%.1f");
-+    slider("##width", m_desc.at("width"), m_params.width, 0.2, 30.0, "%.1f");
-+    slider("##boundary", m_desc.at("boundary"), m_params.margin, 0.0, 30.0, "%.1f");
-+    if (m_params.kind != PerforationKind::Honeycomb)
-+        slider("##angle", m_desc.at("angle"), m_params.angle_deg, 0.0, 180.0, "%.0f");
++    // Spacing and width are interdependent: a wall of at least PERFORATION_MIN_WALL must survive,
++    // so width is capped by spacing and spacing has a floor set by width. Clamping here keeps the
++    // sliders honest and the committed values valid.
++    const double spacing_lo = m_params.width + PERFORATION_MIN_WALL;
++    m_params.spacing        = std::clamp(m_params.spacing, spacing_lo, 50.0);
++    slider_input("##spacing", "##spacing_in", m_desc.at("spacing"), m_params.spacing, spacing_lo, 50.0, "%.1f");
++
++    const double width_hi = std::max(0.2, m_params.spacing - PERFORATION_MIN_WALL);
++    m_params.width        = std::clamp(m_params.width, 0.2, width_hi);
++    slider_input("##width", "##width_in", m_desc.at("width"), m_params.width, 0.2, width_hi, "%.1f");
++
++    slider_input("##boundary", "##boundary_in", m_desc.at("boundary"), m_params.margin, 0.0, 30.0, "%.1f");
++
++    if (m_params.kind == PerforationKind::Lines || m_params.kind == PerforationKind::Grid)
++        slider_input("##angle", "##angle_in", m_desc.at("angle"), m_params.angle_deg, 0.0,
++                     PERFORATION_MAX_ANGLE_DEG, "%.0f");
 +
 +    const std::string invert_label = m_desc.at("invert").ToStdString();
 +    ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
@@ -757,6 +846,11 @@ index 0000000000..b22a3785dc
 +    ImGui::Separator();
 +    m_imgui->text(_L("Click a flat face to perforate it."));
 +    m_imgui->text(m_desc.at("depth_hint"));
++    if (m_hover_horizontal) {
++        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
++        m_imgui->text(m_desc.at("horizontal"));
++        ImGui::PopStyleColor();
++    }
 +
 +    GizmoImguiEnd();
 +}
@@ -765,17 +859,17 @@ index 0000000000..b22a3785dc
 +} // namespace Slic3r
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
 new file mode 100644
-index 0000000000..a295aee0b6
+index 0000000000..ca991a2b96
 --- /dev/null
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,84 @@
 +#ifndef slic3r_GLGizmoPerforation_hpp_
 +#define slic3r_GLGizmoPerforation_hpp_
 +
-+// [ORCAPORT:PP-1] Perforations tool. Stamps a 2D pattern (lines, cross, x, dual diagonals,
-+// honeycomb) into a picked planar face and adds it as a single negative volume, so the slicer
-+// subtracts it per layer. Depth is detected by the first surface the face normal crosses, so a
-+// hole goes through the local wall and stops at a cavity; a solid part is cut right through.
++// [ORCAPORT:PP-1] Perforations tool. Stamps a 2D pattern (lines, grid, honeycomb, circles) into
++// a picked planar face and adds it as a single negative volume, so the slicer subtracts it per
++// layer. Depth is detected by the first surface the face normal crosses, so a hole goes through
++// the local wall and stops at a cavity; a solid part is cut right through.
 +
 +#include "GLGizmoBase.hpp"
 +#include "GLGizmosCommon.hpp"
@@ -838,6 +932,7 @@ index 0000000000..a295aee0b6
 +    GLModel              m_face_ghost;
 +    const ModelVolume*   m_hover_mv{ nullptr };
 +    int                  m_hover_facet{ -1 };
++    bool                 m_hover_horizontal{ false };
 +    Vec3d                m_last_hit{ Vec3d::Constant(1e30) };
 +    std::vector<int>     m_hover_region;
 +    FaceRegionCache      m_face_cache;
@@ -895,7 +990,7 @@ index 63cb8274ed..c0211d6a98 100644
          // Both need the CAD kernel (GeometryEngine); keep them last so that with
          // SLIC3R_CAD off the enum matches upstream's numbering exactly.
 diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
-index 3880566c2f..8f18937588 100644
+index 3880566c2f..b82a801e0f 100644
 --- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
 +++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
 @@ -14,6 +14,7 @@
@@ -906,14 +1001,14 @@ index 3880566c2f..8f18937588 100644
  #include "slic3r/GUI/Selection.hpp"
  
  #include "libslic3r/Model.hpp"
-@@ -571,6 +572,133 @@ void OrcaMCPServer::register_gizmo_tools()
+@@ -571,6 +572,131 @@ void OrcaMCPServer::register_gizmo_tools()
          }
      });
  
 +    // [ORCAPORT:PP-1]
 +    register_tool({
 +        "perforation_gizmo",
-+        "Control the Perforations tool: stamp a 2D pattern (lines/cross/x/dual_diagonal/honeycomb) "
++        "Control the Perforations tool: stamp a 2D pattern (lines/grid/honeycomb/circles) "
 +        "into a picked planar face and add it as one negative volume, cut through the local wall. "
 +        "Actions: 'open' (activate; selects the object if needed), 'status' (current parameters), "
 +        "'set_params' (any of pattern, angle, spacing, width, boundary, invert), "
@@ -924,7 +1019,7 @@ index 3880566c2f..8f18937588 100644
 +            {"properties", {
 +                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | apply | close"}}},
 +                {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
-+                {"pattern", {{"type", "string"}, {"description", "lines | cross | x | dual_diagonal | honeycomb"}}},
++                {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
 +                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
 +                {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
 +                {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
@@ -982,10 +1077,9 @@ index 3880566c2f..8f18937588 100644
 +                if (params.contains("pattern")) {
 +                    const std::string s = params["pattern"].get<std::string>();
 +                    p.kind = s == "lines" ? PerforationKind::Lines
-+                           : s == "cross" ? PerforationKind::Cross
-+                           : s == "x" ? PerforationKind::X
-+                           : s == "dual_diagonal" ? PerforationKind::DualDiagonal
-+                                                  : PerforationKind::Honeycomb;
++                           : s == "grid" ? PerforationKind::Grid
++                           : s == "circles" ? PerforationKind::Circles
++                                            : PerforationKind::Honeycomb;
 +                    params_changed = true;
 +                }
 +                if (params.contains("angle"))    { p.angle_deg = params["angle"].get<double>();    params_changed = true; }
@@ -999,9 +1093,8 @@ index 3880566c2f..8f18937588 100644
 +                auto report = [&](const std::string &act) {
 +                    const PerforationParams q = g->params();
 +                    const char *k = q.kind == PerforationKind::Lines ? "lines"
-+                                  : q.kind == PerforationKind::Cross ? "cross"
-+                                  : q.kind == PerforationKind::X ? "x"
-+                                  : q.kind == PerforationKind::DualDiagonal ? "dual_diagonal" : "honeycomb";
++                                  : q.kind == PerforationKind::Grid ? "grid"
++                                  : q.kind == PerforationKind::Circles ? "circles" : "honeycomb";
 +                    return nlohmann::json{
 +                        {"status", "ok"}, {"open", true}, {"action", act},
 +                        {"pattern", k}, {"angle", q.angle_deg}, {"spacing", q.spacing},
@@ -1187,10 +1280,10 @@ index 13c09f6385..1aab781eb0 100644
      test_polygon.cpp
 diff --git a/tests/libslic3r/test_perforationpattern.cpp b/tests/libslic3r/test_perforationpattern.cpp
 new file mode 100644
-index 0000000000..61bf814071
+index 0000000000..9fa9d3a742
 --- /dev/null
 +++ b/tests/libslic3r/test_perforationpattern.cpp
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,141 @@
 +#include <catch2/catch_all.hpp>
 +
 +#include "libslic3r/ClipperUtils.hpp"
@@ -1221,6 +1314,39 @@ index 0000000000..61bf814071
 +}
 +
 +} // namespace
++
++TEST_CASE("A wall is always kept between holes whatever the width", "[PerforationPattern]")
++{
++    // Width is clamped so a wall of at least PERFORATION_MIN_WALL survives, even when the
++    // caller asks for width >= spacing. Without the clamp the holes merge into a single void.
++    REQUIRE(perforation_effective_width(6., 3.) == Catch::Approx(3.));
++    REQUIRE(perforation_effective_width(6., 10.) == Catch::Approx(6. - PERFORATION_MIN_WALL));
++    REQUIRE(perforation_effective_width(2., 10.) <= 2. - PERFORATION_MIN_WALL + 1e-9);
++
++    // With width >> spacing the clamp must keep the holes discrete, not merge them into one
++    // void. `Lines` is the sharpest test: an unclamped width would fuse every slot into a
++    // single continuous rectangle (one contour), whereas the clamped comb has many.
++    // Discrete-hole patterns (Lines / Honeycomb / Circles) must stay as many separate holes.
++    const PerforationParams discrete[] = {
++        {PerforationKind::Lines, 0., 6., 100., 2., false},
++        {PerforationKind::Honeycomb, 0., 6., 100., 2., false},
++        {PerforationKind::Circles, 0., 6., 100., 2., false},
++    };
++    for (const PerforationParams &p : discrete) {
++        const ExPolygons pattern = make_perforation_pattern(rectangle_domain(), p);
++        REQUIRE(pattern.size() > 1);
++        for (const ExPolygon &e : pattern)
++            REQUIRE(area_mm2(ExPolygons{e}) < 0.5 * area_mm2(rectangle_domain()));
++    }
++
++    // Grid is a single connected lattice by construction (the two families cross), so the
++    // check is that it is a perforated lattice - it has holes - rather than one solid slab.
++    // Use a spacing where the bars (width clamped to 5mm) leave clear open cells.
++    const ExPolygons grid = make_perforation_pattern(
++        rectangle_domain(), {PerforationKind::Grid, 0., 12., 100., 2., false});
++    REQUIRE(!grid.empty());
++    REQUIRE(grid.front().holes.size() > 1);
++}
 +
 +TEST_CASE("A honeycomb pattern removes holes from a rectangular face", "[PerforationPattern]")
 +{
