@@ -61,9 +61,10 @@ bool GLGizmoPerforation::on_init()
     m_desc["angle"]      = _L("Angle");
     m_desc["invert"]     = _L("Invert (grooves)");
     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
+    m_desc["click_hint"] = _L("Click a flat face to perforate it.");
     m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
-    m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
-    m_desc["reduced"]    = _L("Hole width is too large for the spacing: the holes may merge. Reduce the width or increase the spacing.");
+    m_desc["horizontal"] = _L("Near-horizontal face: holes may bridge or leave gaps.");
+    m_desc["reduced"]    = _L("Hole width is too large for the spacing.");
     return true;
 }
 
@@ -482,19 +483,27 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
 
     ImGui::Separator();
-    m_imgui->text(_L("Click a flat face to perforate it."));
+    // Wrap the static hints too: they are the widest text in the panel, and if they exceed the
+    // controls' width they set the window width, which the notices then cannot avoid changing.
+    const float notice_w = label_w + slider_w + ImGui::GetStyle().ItemSpacing.x + input_w;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + notice_w);
+    m_imgui->text(m_desc.at("click_hint"));
     m_imgui->text(m_desc.at("depth_hint"));
+    ImGui::PopTextWrapPos();
 
-    // Advisory only: the geometry uses the width exactly as set. The notice shares a reserved row
-    // with the horizontal warning, so showing or hiding it never resizes the window (which would
-    // move the slider under the cursor and loop).
+    // Advisory only: the geometry uses the width exactly as set. The notices are wrapped to the
+    // controls' width and share reserved rows, so showing one never changes the window width or
+    // height. That matters: if a notice widened the window, the slider would slide under a
+    // stationary cursor mid-drag and ImGui would read the offset as a new value.
     const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
     const bool show_horizontal = m_hover_horizontal;
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + notice_w);
     ImGui::BeginGroup();
     m_imgui->text(show_reduced ? m_desc.at("reduced") : wxString());
     m_imgui->text(show_horizontal ? m_desc.at("horizontal") : wxString());
     ImGui::EndGroup();
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
     GizmoImguiEnd();
