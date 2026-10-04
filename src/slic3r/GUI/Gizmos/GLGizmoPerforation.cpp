@@ -63,7 +63,7 @@ bool GLGizmoPerforation::on_init()
     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
     m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
     m_desc["horizontal"] = _L("This face is near-horizontal: holes here bridge over air or leave gaps.");
-    m_desc["reduced"]    = _L("Hole width too large for the spacing; reduced to keep a wall between holes.");
+    m_desc["reduced"]    = _L("Hole width is too large for the spacing: the holes may merge. Reduce the width or increase the spacing.");
     return true;
 }
 
@@ -485,12 +485,10 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     m_imgui->text(_L("Click a flat face to perforate it."));
     m_imgui->text(m_desc.at("depth_hint"));
 
-    // The builder keeps a wall between holes whatever the numbers say. The notice explains a
-    // preview that differs from the number, but it is only shown once the drag has settled and it
-    // occupies a reserved row always, so toggling it never resizes the window (which would move
-    // the slider under the cursor and loop).
-    const bool reduced = m_params.width > perforation_effective_width(m_params.spacing, m_params.width) + 1e-6;
-    const bool show_reduced    = reduced && !m_editing;
+    // Advisory only: the geometry uses the width exactly as set. The notice shares a reserved row
+    // with the horizontal warning, so showing or hiding it never resizes the window (which would
+    // move the slider under the cursor and loop).
+    const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
     const bool show_horizontal = m_hover_horizontal;
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
     ImGui::BeginGroup();

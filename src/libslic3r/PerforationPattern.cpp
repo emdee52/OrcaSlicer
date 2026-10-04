@@ -141,16 +141,6 @@ ExPolygons circles(const ExPolygons &domain, double spacing_mm, double width_mm)
 
 } // namespace
 
-double perforation_effective_width(double spacing, double width)
-{
-    // Keep at least PERFORATION_MIN_WALL of material between adjacent holes. Without this a
-    // width >= spacing merges the holes into one continuous slot, which reads as a single big
-    // void (the "square" artifact) rather than a perforation.
-    const double sp     = std::max(spacing, 0.2);
-    const double max_w  = std::max(0.1, sp - PERFORATION_MIN_WALL);
-    return std::clamp(width, 0.1, max_w);
-}
-
 ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationParams &params)
 {
     if (domain.empty())
@@ -162,7 +152,10 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
         return {};
 
     const double spacing = std::max(params.spacing, 0.2);
-    const double width   = perforation_effective_width(spacing, params.width);
+    // Width is used exactly as given. If it leaves less than PERFORATION_MIN_WALL between holes
+    // the holes merge; that is the caller's choice and the UI warns, but the builder never
+    // silently changes the value.
+    const double width   = std::max(params.width, 0.01);
     const double theta   = params.angle_deg * PI / 180.;
 
     ExPolygons holes;

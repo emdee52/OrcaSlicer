@@ -29,22 +29,14 @@ double area_mm2(const ExPolygons &polys)
 
 } // namespace
 
-TEST_CASE("A wall is always kept between holes whatever the width", "[PerforationPattern]")
+TEST_CASE("A valid width keeps the holes discrete", "[PerforationPattern]")
 {
-    // Width is clamped so a wall of at least PERFORATION_MIN_WALL survives, even when the
-    // caller asks for width >= spacing. Without the clamp the holes merge into a single void.
-    REQUIRE(perforation_effective_width(6., 3.) == Catch::Approx(3.));
-    REQUIRE(perforation_effective_width(6., 10.) == Catch::Approx(6. - PERFORATION_MIN_WALL));
-    REQUIRE(perforation_effective_width(2., 10.) <= 2. - PERFORATION_MIN_WALL + 1e-9);
-
-    // With width >> spacing the clamp must keep the holes discrete, not merge them into one
-    // void. `Lines` is the sharpest test: an unclamped width would fuse every slot into a
-    // single continuous rectangle (one contour), whereas the clamped comb has many.
-    // Discrete-hole patterns (Lines / Honeycomb / Circles) must stay as many separate holes.
+    // With width comfortably below spacing the holes must stay separate. `Lines` is the sharpest
+    // case: if the width reached the spacing the slots would fuse into one rectangle.
     const PerforationParams discrete[] = {
-        {PerforationKind::Lines, 0., 6., 100., 2., false},
-        {PerforationKind::Honeycomb, 0., 6., 100., 2., false},
-        {PerforationKind::Circles, 0., 6., 100., 2., false},
+        {PerforationKind::Lines, 0., 6., 2., 2., false},
+        {PerforationKind::Honeycomb, 0., 6., 2., 2., false},
+        {PerforationKind::Circles, 0., 6., 2., 2., false},
     };
     for (const PerforationParams &p : discrete) {
         const ExPolygons pattern = make_perforation_pattern(rectangle_domain(), p);
@@ -53,13 +45,28 @@ TEST_CASE("A wall is always kept between holes whatever the width", "[Perforatio
             REQUIRE(area_mm2(ExPolygons{e}) < 0.5 * area_mm2(rectangle_domain()));
     }
 
-    // Grid is a single connected lattice by construction (the two families cross), so the
-    // check is that it is a perforated lattice - it has holes - rather than one solid slab.
-    // Use a spacing where the bars (width clamped to 5mm) leave clear open cells.
+    // Grid is a single connected lattice by construction (the two families cross), so the check
+    // is that it is a perforated lattice - it has holes - rather than one solid slab.
     const ExPolygons grid = make_perforation_pattern(
-        rectangle_domain(), {PerforationKind::Grid, 0., 12., 100., 2., false});
+        rectangle_domain(), {PerforationKind::Grid, 0., 12., 2., 2., false});
     REQUIRE(!grid.empty());
     REQUIRE(grid.front().holes.size() > 1);
+}
+
+TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")
+{
+    // No silent shrink: width is not corrected. Two parallel slots at spacing 6 with width 6
+    // merge into one continuous void - the documented outcome the UI warns about.
+    const ExPolygons merged = make_perforation_pattern(
+        rectangle_domain(), {PerforationKind::Lines, 0., 6., 6., 2., false});
+    REQUIRE(!merged.empty());
+    // Merged slots cover almost the whole inset face (the 1 mm margin is the only loss): this is
+    // the "square" the user can create on purpose, not a corrected shape.
+    const ExPolygons inset = offset_ex(rectangle_domain(), -scale_(2.));
+    REQUIRE(area_mm2(merged) > 0.9 * area_mm2(inset));
+
+    // The warning threshold is advisory and lives in the UI; the constant itself just marks it.
+    REQUIRE(PERFORATION_MIN_WALL > 0.);
 }
 
 TEST_CASE("A honeycomb pattern removes holes from a rectangular face", "[PerforationPattern]")

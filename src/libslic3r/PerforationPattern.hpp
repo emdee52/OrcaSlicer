@@ -26,19 +26,15 @@ struct PerforationParams {
     bool   invert{false};   // true: subtract the material between the holes
 };
 
-// Smallest material wall kept between adjacent holes, in mm. The pattern builder shrinks
-// `width` so that holes can never merge into a continuous slot (which would produce one big
-// void instead of a perforation). A fixed physically-motivated minimum, not a parameter.
+// Wall below which adjacent holes are considered too close, in mm. Advisory only: the UI warns
+// when `spacing - width` drops below this, because a sub-millimetre wall leaves no room for
+// perimeters and the holes may merge. The builder does NOT enforce it - the value the user sets
+// is the geometry, merged or not.
 inline constexpr double PERFORATION_MIN_WALL = 1.0;
 
 // Upper bound of the in-plane angle. A single line family plus its 90-degree cross covers
 // every orientation within 0..45; beyond that only repeats the same set mirrored.
 inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
-
-// `spacing` for which `width` leaves a wall of at least PERFORATION_MIN_WALL. Clamps `width`
-// if it is too large; returns the effective width. Shared by the builder and the UI so the
-// slider ranges and the geometry cannot disagree.
-double perforation_effective_width(double spacing, double width);
 
 // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
