@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -417,12 +418,24 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
     ImGuiWrapper::push_toolbar_style(scale);
+
+    // Pin the panel WIDTH; let the height auto-fit. With AlwaysAutoResize the width is derived
+    // from the widest item, so a warning sentence appearing mid-drag widened the window, slid the
+    // slider out from under a stationary cursor and ImGui read the offset as a new value. A
+    // SetWindowSize after Begin does not survive the next Begin (auto-resize recomputes it); only
+    // a size constraint does. Same reasoning as the Support Zones panel.
+    const float win_w = std::max(m_imgui->scaled(38.0f), 16.0f * ImGui::GetFontSize());
+    ImGui::SetNextWindowSizeConstraints(ImVec2(win_w, 0.f), ImVec2(win_w, std::numeric_limits<float>::max()));
+
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
-    // Fixed, independent ranges. The UI never clamps one value against another: the pattern
-    // builder keeps a wall between holes on its own and the panel says so (the "reduced" note),
-    // so dragging or typing a value always takes effect.
+    // Everything below wraps at the pinned content width, so no string can widen the panel.
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+
+    // Fixed, independent ranges. The UI never clamps one value against another: the geometry uses
+    // exactly what is set, and the panel only warns when a wall gets too thin, so dragging or
+    // typing a value always takes effect.
     constexpr double SPACING_MIN = 1.0,  SPACING_MAX = 25.0;
     constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
     constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
@@ -436,9 +449,9 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
         label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
     label_w += m_imgui->scaled(1.5f);
 
-    // A slider followed by a typed number input, in separate columns. The slider writes a
-    // scratch and commits only when the drag ends (deactivated_after_edit), so dragging does not
-    // rebuild the ghost every frame; the typed input commits on Enter. Neither clamps the other.
+    // A slider followed by a typed number input, in separate columns. The slider commits every
+    // edited frame (so the handle tracks the drag), but the ghost mesh is only rebuilt once the
+    // drag ends; the typed input commits on Enter. Neither clamps the other.
     m_editing = false;
     const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
                                   double lo, double hi, const char *fmt) {
@@ -483,29 +496,21 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
 
     ImGui::Separator();
-    // Wrap the static hints too: they are the widest text in the panel, and if they exceed the
-    // controls' width they set the window width, which the notices then cannot avoid changing.
-    const float notice_w = label_w + slider_w + ImGui::GetStyle().ItemSpacing.x + input_w;
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + notice_w);
     m_imgui->text(m_desc.at("click_hint"));
     m_imgui->text(m_desc.at("depth_hint"));
-    ImGui::PopTextWrapPos();
 
-    // Advisory only: the geometry uses the width exactly as set. The notices are wrapped to the
-    // controls' width and share reserved rows, so showing one never changes the window width or
-    // height. That matters: if a notice widened the window, the slider would slide under a
-    // stationary cursor mid-drag and ImGui would read the offset as a new value.
+    // Advisory only: the geometry uses the width exactly as set. Both notices share reserved rows
+    // in the fixed-width panel, so showing one changes neither the width nor the height.
     const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
     const bool show_horizontal = m_hover_horizontal;
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + notice_w);
     ImGui::BeginGroup();
     m_imgui->text(show_reduced ? m_desc.at("reduced") : wxString());
     m_imgui->text(show_horizontal ? m_desc.at("horizontal") : wxString());
     ImGui::EndGroup();
-    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
+    ImGui::PopTextWrapPos();
     GizmoImguiEnd();
 }
 
