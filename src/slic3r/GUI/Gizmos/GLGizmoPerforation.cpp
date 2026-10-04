@@ -258,6 +258,12 @@ void GLGizmoPerforation::update_hover()
     }
     m_last_hit = hit_obj;
 
+    // Do not rebuild the ghost while a slider is being dragged: the prism is a full mesh and
+    // rebuilding it every frame flickers. The parameter is committed on release and the ghost
+    // catches up on the next pass (m_last_hit then differs, so this runs).
+    if (m_editing)
+        return;
+
     ExPolygons            pattern;
     indexed_triangle_set  prism;
     m_face_ghost.reset();
@@ -429,8 +435,10 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
         label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
     label_w += m_imgui->scaled(1.5f);
 
-    // A slider followed by a typed number input, in separate columns. Each widget writes
-    // `value` directly - no cross-clamping - so a drag or a typed entry always lands.
+    // A slider followed by a typed number input, in separate columns. The slider writes a
+    // scratch and commits only when the drag ends (deactivated_after_edit), so dragging does not
+    // rebuild the ghost every frame; the typed input commits on Enter. Neither clamps the other.
+    m_editing = false;
     const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
                                   double lo, double hi, const char *fmt) {
         ImGui::AlignTextToFramePadding();
@@ -438,8 +446,12 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
         ImGui::SameLine(label_w);
         ImGui::PushItemWidth(slider_w);
         float f = float(value);
-        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
-            value = f; // the slider cannot leave [lo, hi]
+        m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
+        const ImGuiWrapper::LastSliderStatus &st = m_imgui->get_last_slider_status();
+        if (st.deactivated_after_edit)
+            value = f; // commit on release
+        if (st.edited && !st.deactivated_after_edit)
+            m_editing = true; // still dragging: defer the rebuild
         ImGui::PopItemWidth();
         ImGui::SameLine();
         ImGui::PushItemWidth(input_w);
@@ -471,18 +483,20 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     ImGui::Separator();
     m_imgui->text(_L("Click a flat face to perforate it."));
     m_imgui->text(m_desc.at("depth_hint"));
-    // The builder keeps a wall between holes whatever the numbers say; tell the user when it had
-    // to shrink the width, so the number and the preview disagree for a stated reason.
-    if (m_params.width > perforation_effective_width(m_params.spacing, m_params.width) + 1e-6) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-        m_imgui->text(m_desc.at("reduced"));
-        ImGui::PopStyleColor();
-    }
-    if (m_hover_horizontal) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-        m_imgui->text(m_desc.at("horizontal"));
-        ImGui::PopStyleColor();
-    }
+
+    // The builder keeps a wall between holes whatever the numbers say. The notice explains a
+    // preview that differs from the number, but it is only shown once the drag has settled and it
+    // occupies a reserved row always, so toggling it never resizes the window (which would move
+    // the slider under the cursor and loop).
+    const bool reduced = m_params.width > perforation_effective_width(m_params.spacing, m_params.width) + 1e-6;
+    const bool show_reduced    = reduced && !m_editing;
+    const bool show_horizontal = m_hover_horizontal;
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+    ImGui::BeginGroup();
+    m_imgui->text(show_reduced ? m_desc.at("reduced") : wxString());
+    m_imgui->text(show_horizontal ? m_desc.at("horizontal") : wxString());
+    ImGui::EndGroup();
+    ImGui::PopStyleColor();
 
     GizmoImguiEnd();
 }

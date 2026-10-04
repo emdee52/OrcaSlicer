@@ -73,6 +73,9 @@ private:
     FaceRegionCache      m_face_cache;
     indexed_triangle_set m_merged_its;
     bool                 m_merged_dirty{ true };
+    // True while a slider is being dragged: the ghost is not rebuilt until release, so the
+    // preview cannot flicker and the params-driven notice settles after the drag.
+    bool                 m_editing{ false };
     int                  m_old_volume_count{ -1 };
     const ModelObject*   m_old_model_object{ nullptr };
     std::map<std::string, wxString> m_desc;
