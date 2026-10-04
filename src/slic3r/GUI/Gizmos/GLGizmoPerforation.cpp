@@ -446,12 +446,13 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
         ImGui::SameLine(label_w);
         ImGui::PushItemWidth(slider_w);
         float f = float(value);
-        m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true);
+        // Track every edited frame: the slider seeds itself from `value` each frame, so deferring
+        // the write-back made the handle snap home. Commit the value live, defer only the rebuild.
+        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
+            value = f;
         const ImGuiWrapper::LastSliderStatus &st = m_imgui->get_last_slider_status();
-        if (st.deactivated_after_edit)
-            value = f; // commit on release
         if (st.edited && !st.deactivated_after_edit)
-            m_editing = true; // still dragging: defer the rebuild
+            m_editing = true; // still dragging: the ghost is not rebuilt until release
         ImGui::PopItemWidth();
         ImGui::SameLine();
         ImGui::PushItemWidth(input_w);
