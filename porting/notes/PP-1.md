@@ -47,10 +47,19 @@ out". Removed by user decision.)
 
 ### UI
 
-- Each of spacing/width/boundary/angle is a **slider plus a typed number input**, both clamped to
-  the valid range on commit — the number no longer overlaps the slider track.
+- Each of spacing/width/boundary/angle is a **slider plus a typed number input** in separate
+  columns. Fixed ranges (spacing 1-25, width 0.2-10, boundary 1-25, angle 0-45). The slider commits
+  every edited frame so the handle tracks the drag; the typed input commits on Enter. Neither
+  clamps the other, and neither is ever changed automatically.
+- **The panel width is pinned.** `SetNextWindowSizeConstraints(win_w, 0)..(win_w, FLT_MAX)` before
+  `Begin` fixes the width while the height still auto-fits, and all body text wraps at the content
+  width. Without this, `AlwaysAutoResize` derived the width from the widest item, so a warning
+  appearing mid-drag widened the window, slid the slider out from under a stationary cursor, and
+  ImGui read the offset as a new value. `SetWindowSize` after `Begin` does not fix it (the next
+  `Begin` recomputes from content); only a size constraint does. Same finding as SU-5.
 - A **near-horizontal face warning** shows when `|normal . up| > 0.9`: holes in a top/bottom face
-  bridge over air or leave first-layer gaps.
+  bridge over air or leave first-layer gaps. The two notices share reserved rows, so toggling one
+  changes neither the width nor the height.
 
 ### Icon
 
