@@ -77,6 +77,17 @@ port intent onto Orca's pipelines.
 | PF-10-paint-qol | Support painter QOL: grouped layout, colour swatches, remap support types | ported (user-verified) | notes/PF-10-paint.md | 22_PF-10-paint-qol.patch |
 | PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
+### Original features (`PP-*`, not from a fork)
+
+| ID | Feature | Status | Notes | Patch |
+|----|---------|--------|-------|-------|
+| PP-1 | Perforations gizmo (planar-face through holes) | merged (user-verified) | notes/PP-1.md | 23_PP-1.patch |
+
+PP-1 stamps a pattern (Lines/Grid/Honeycomb/Circles) into a picked planar face as one
+`NEGATIVE_VOLUME`; the slicer subtracts it per layer, so no mesh boolean and no new config keys.
+Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. Merged into
+`port/integration` as `544885e96a` (branch `feat/perf-pattern`).
+
 ## What to do next
 
 **PF-10-paint / PF-10-auto / PF-10-multisupport / PF-10-paint-qol are DONE and merged into
