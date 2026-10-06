@@ -51,9 +51,10 @@ out". Removed by user decision.)
   columns. Fixed ranges (spacing 1-25, width 0.2-10, boundary 1-25, angle 0-45). The slider commits
   every edited frame so the handle tracks the drag; the typed input commits on Enter. Neither
   clamps the other, and neither is ever changed automatically.
-- **The panel width is pinned.** `SetNextWindowSizeConstraints(win_w, 0)..(win_w, FLT_MAX)` before
-  `Begin` fixes the width while the height still auto-fits, and all body text wraps at the content
-  width. Without this, `AlwaysAutoResize` derived the width from the widest item, so a warning
+- **The panel width is pinned** to the control row, derived from the label/slider/input widths
+  (not a guessed constant, which made it too wide). `SetNextWindowSizeConstraints(win_w, 0)..(win_w,
+  FLT_MAX)` before `Begin` fixes the width while the height still auto-fits, and all body text
+  wraps at the content width. Without this, `AlwaysAutoResize` derived the width from the widest item, so a warning
   appearing mid-drag widened the window, slid the slider out from under a stationary cursor, and
   ImGui read the offset as a new value. `SetWindowSize` after `Begin` does not fix it (the next
   `Begin` recomputes from content); only a size constraint does. Same finding as SU-5.
