@@ -189,6 +189,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Gizmos/GLGizmoEdgeDress.hpp
     GUI/Gizmos/GLGizmoHoleFill.cpp
     GUI/Gizmos/GLGizmoHoleFill.hpp
+    GUI/Gizmos/GLGizmoPerforation.cpp
+    GUI/Gizmos/GLGizmoPerforation.hpp
     #GUI/Gizmos/GLGizmoHollow.cpp
     #GUI/Gizmos/GLGizmoHollow.hpp
     GUI/Gizmos/GLGizmoMeasure.cpp

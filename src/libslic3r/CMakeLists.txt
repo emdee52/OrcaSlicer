@@ -328,6 +328,8 @@ set(lisbslic3r_sources
     HoleShapes.hpp
     HoleStandards.cpp
     HoleStandards.hpp
+    PerforationPattern.cpp
+    PerforationPattern.hpp
     Int128.hpp
     KDTreeIndirect.hpp
     Layer.cpp

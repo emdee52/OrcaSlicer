@@ -96,6 +96,7 @@ public:
         Holes, // [ORCAPORT:ME-2] holes tool (teardrop / bore-pocket)
         EdgeDress, // [ORCAPORT:EF-1] chamfer / fillet a straight mesh edge
         HoleFill, // [ORCAPORT:HF-1] fill a depression (engraving / watermark) with a positive plug
+        Perforation, // [ORCAPORT:PP-1] stamp a perforation pattern into a planar face
 #ifdef SLIC3R_CAD
         // Both need the CAD kernel (GeometryEngine); keep them last so that with
         // SLIC3R_CAD off the enum matches upstream's numbering exactly.

@@ -5310,7 +5310,8 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         // selected, leave Alt to this.
         const GLGizmosManager::EType objsnap_gizmo = m_gizmos.get_current_type();
         if (!m_mouse.dragging && objsnap_gizmo != GLGizmosManager::EType::Holes &&
-            objsnap_gizmo != GLGizmosManager::EType::Cut) {
+            objsnap_gizmo != GLGizmosManager::EType::Cut &&
+            objsnap_gizmo != GLGizmosManager::EType::Perforation) {
             const std::set<std::pair<int, int>> moving = _objsnap_moving_set();
             std::optional<ObjectSnap::SnapHit>  target_hit, mover_hit;
             _objsnap_update(pos.cast<double>(), moving, target_hit, mover_hit);

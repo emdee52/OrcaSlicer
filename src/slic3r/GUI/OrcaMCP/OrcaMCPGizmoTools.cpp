@@ -14,6 +14,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
 #include "slic3r/GUI/Selection.hpp"
 
 #include "libslic3r/Model.hpp"
@@ -567,6 +568,131 @@ void OrcaMCPServer::register_gizmo_tools()
                 result["open"]   = true;
                 result["action"] = action;
                 return result;
+            });
+        }
+    });
+
+    // [ORCAPORT:PP-1]
+    register_tool({
+        "perforation_gizmo",
+        "Control the Perforations tool: stamp a 2D pattern (lines/grid/honeycomb/circles) "
+        "into a picked planar face and add it as one negative volume, cut through the local wall. "
+        "Actions: 'open' (activate; selects the object if needed), 'status' (current parameters), "
+        "'set_params' (any of pattern, angle, spacing, width, boundary, invert), "
+        "'hover_face' (report the facet and coplanar-region size under screen_x/screen_y), "
+        "'apply' (perforate the face under screen_x/screen_y, or the viewport centre), 'close'.",
+        {
+            {"type", "object"},
+            {"properties", {
+                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | apply | close"}}},
+                {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
+                {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
+                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
+                {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
+                {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
+                {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},
+                {"invert", {{"type", "boolean"}, {"description", "Subtract the material between holes (grooves)."}}},
+                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / apply. Defaults to the viewport centre."}}},
+                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / apply."}}}
+            }},
+            {"required", {"action"}}
+        },
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string action = params.value("action", std::string("status"));
+            return run_on_main_thread([action, params]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                if (action == "close") {
+                    canvas->reset_all_gizmos();
+                    canvas->set_as_dirty();
+                    return {{"status", "ok"}, {"open", false}, {"action", action}};
+                }
+
+                if (params.contains("object_id")) {
+                    const int oid = params["object_id"].get<int>();
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
+                        return {{"status", "error"}, {"error", "Invalid object_id"}};
+                    Selection &sel = canvas->get_selection();
+                    sel.clear();
+                    sel.add_object(unsigned(oid), true);
+                }
+
+                GLGizmosManager &mgr = canvas->get_gizmos_manager();
+                if (action == "open" && mgr.get_current_type() != GLGizmosManager::EType::Perforation) {
+                    Selection &sel = canvas->get_selection();
+                    if (!sel.is_single_full_instance() && !plater->model().objects.empty()) {
+                        int oid = sel.get_object_idx();
+                        if (oid < 0) oid = 0;
+                        sel.clear();
+                        sel.add_object(unsigned(oid), true);
+                    }
+                    mgr.open_gizmo(GLGizmosManager::EType::Perforation);
+                    canvas->set_as_dirty();
+                    canvas->request_extra_frame();
+                }
+                GLGizmoPerforation *g = mgr.get_current_type() == GLGizmosManager::EType::Perforation
+                                            ? dynamic_cast<GLGizmoPerforation *>(mgr.get_current())
+                                            : nullptr;
+                if (g == nullptr)
+                    return {{"status", "error"}, {"error", "Perforations gizmo is not active. Load a model and pass object_id."}};
+
+                PerforationParams p = g->params();
+                bool params_changed = false;
+                if (params.contains("pattern")) {
+                    const std::string s = params["pattern"].get<std::string>();
+                    p.kind = s == "lines" ? PerforationKind::Lines
+                           : s == "grid" ? PerforationKind::Grid
+                           : s == "circles" ? PerforationKind::Circles
+                                            : PerforationKind::Honeycomb;
+                    params_changed = true;
+                }
+                if (params.contains("angle"))    { p.angle_deg = params["angle"].get<double>();    params_changed = true; }
+                if (params.contains("spacing"))  { p.spacing   = params["spacing"].get<double>();  params_changed = true; }
+                if (params.contains("width"))    { p.width     = params["width"].get<double>();    params_changed = true; }
+                if (params.contains("boundary")) { p.margin    = params["boundary"].get<double>(); params_changed = true; }
+                if (params.contains("invert"))   { p.invert    = params["invert"].get<bool>();     params_changed = true; }
+                if (params_changed)
+                    g->set_params(p);
+
+                auto report = [&](const std::string &act) {
+                    const PerforationParams q = g->params();
+                    const char *k = q.kind == PerforationKind::Lines ? "lines"
+                                  : q.kind == PerforationKind::Grid ? "grid"
+                                  : q.kind == PerforationKind::Circles ? "circles" : "honeycomb";
+                    return nlohmann::json{
+                        {"status", "ok"}, {"open", true}, {"action", act},
+                        {"pattern", k}, {"angle", q.angle_deg}, {"spacing", q.spacing},
+                        {"width", q.width}, {"boundary", q.margin}, {"invert", q.invert}};
+                };
+
+                if (action == "set_params" || action == "status" || action == "open")
+                    return report(action);
+
+                Vec2d screen;
+                if (params.contains("screen_x") && params.contains("screen_y"))
+                    screen = Vec2d(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                else {
+                    const std::array<int, 4> vp = plater->get_camera().get_viewport();
+                    screen = Vec2d(vp[0] + 0.5 * vp[2], vp[1] + 0.5 * vp[3]);
+                }
+
+                if (action == "hover_face") {
+                    int facet = -1, region = 0;
+                    Vec3d normal = Vec3d::Zero();
+                    if (!g->gizmo_face_info_at(screen, facet, region, normal))
+                        return {{"status", "error"}, {"error", "No face under the screen point"}};
+                    return {{"status", "ok"}, {"open", true}, {"action", action}, {"facet", facet},
+                            {"region_facets", region}, {"normal", vec3_json(normal)}};
+                }
+                if (action == "apply") {
+                    if (!g->gizmo_apply_at(screen))
+                        return {{"status", "error"}, {"error", "No perfomable face under the screen point"}};
+                    return report(action);
+                }
+                return {{"status", "error"}, {"error", "Unknown action: " + action}};
             });
         }
     });
