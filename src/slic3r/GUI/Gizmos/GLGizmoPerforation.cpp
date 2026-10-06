@@ -419,12 +419,24 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
     ImGuiWrapper::push_toolbar_style(scale);
 
-    // Pin the panel WIDTH; let the height auto-fit. With AlwaysAutoResize the width is derived
-    // from the widest item, so a warning sentence appearing mid-drag widened the window, slid the
-    // slider out from under a stationary cursor and ImGui read the offset as a new value. A
-    // SetWindowSize after Begin does not survive the next Begin (auto-resize recomputes it); only
-    // a size constraint does. Same reasoning as the Support Zones panel.
-    const float win_w = std::max(m_imgui->scaled(38.0f), 16.0f * ImGui::GetFontSize());
+    // Column widths, computed before Begin so the constraint below can use them. calc_text_size
+    // and GetStyle use the current font/style, not the window, so they are valid here.
+    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
+    const float input_w  = m_imgui->scaled(3.2f);
+    // Widest label the panel can show, so no slider starts under its own text.
+    float label_w = 0.f;
+    for (const char *key : {"pattern", "spacing", "width", "boundary", "angle"})
+        label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
+    label_w += m_imgui->scaled(1.5f);
+
+    // Pin the panel WIDTH to exactly the control row, letting the height auto-fit. With
+    // AlwaysAutoResize the width came from the widest item, so a warning sentence appearing
+    // mid-drag widened the window, slid the slider out from under a stationary cursor and ImGui
+    // read the offset as a new value. Derived from the controls (not a guessed constant) so the
+    // panel stays tight. A SetWindowSize after Begin does not survive the next Begin; only a
+    // constraint does. Same reasoning as the Support Zones panel.
+    const float win_w = label_w + slider_w + ImGui::GetStyle().ItemSpacing.x + input_w +
+                        ImGui::GetStyle().WindowPadding.x * 2.f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(win_w, 0.f), ImVec2(win_w, std::numeric_limits<float>::max()));
 
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
@@ -440,14 +452,6 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
     constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
     constexpr double ANGLE_MIN   = 0.0,  ANGLE_MAX   = PERFORATION_MAX_ANGLE_DEG;
-
-    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
-    const float input_w  = m_imgui->scaled(3.2f);
-    // Widest label the panel can show, so no slider starts under its own text.
-    float label_w = 0.f;
-    for (const char *key : {"pattern", "spacing", "width", "boundary", "angle"})
-        label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
-    label_w += m_imgui->scaled(1.5f);
 
     // A slider followed by a typed number input, in separate columns. The slider commits every
     // edited frame (so the handle tracks the drag), but the ghost mesh is only rebuilt once the
