@@ -77,11 +77,20 @@ port intent onto Orca's pipelines.
 | PF-10-paint-qol | Support painter QOL: grouped layout, colour swatches, remap support types | ported (user-verified) | notes/PF-10-paint.md | 22_PF-10-paint-qol.patch |
 | PF-10 | Baobab supports | abandoned (user) - attempted, removed | - | - |
 
-### Original features (`PP-*`, not from a fork)
+### Original features (`PP-*`, `BT-*`, not from a fork)
 
 | ID | Feature | Status | Notes | Patch |
 |----|---------|--------|-------|-------|
 | PP-1 | Perforations gizmo (planar-face through holes) | merged (user-verified) | notes/PP-1.md | 23_PP-1.patch |
+| BT-1 | Bed temperature readout + print-time offset | implemented (G-code A/B verified over MCP; GUI visual pending) | notes/BT-1.md | 27_BT-1.patch |
+
+BT-1 draws the first-layer plate temperature under the plate number and adds six
++-5/10/15 offset buttons to the "Send G-code to printer host" dialog. The offset is a
+project-config key (`bed_temperature_offset`, default 0) applied in
+`GCode::get_bed_temperature()`, so it re-exports the G-code without re-slicing - no
+post-processing script needed. Branch `port/BT-1` from `port/integration` `3d2099554d`.
+Known gap: `.gcode.3mf` uploads (`use_3mf` printers) build the bundle from the already
+exported G-code, so the controls are disabled for them. See `notes/BT-1.md`.
 
 PP-1 stamps a pattern (Lines/Grid/Honeycomb/Circles) into a picked planar face as one
 `NEGATIVE_VOLUME`; the slicer subtracts it per layer, so no mesh boolean and no new config keys.
