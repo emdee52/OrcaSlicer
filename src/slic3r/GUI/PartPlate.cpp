@@ -29,6 +29,8 @@
 #include "libslic3r/Tesselate.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Utils.hpp"
+// [ORCAPORT:BT-1]
+#include "libslic3r/OrcaExt/BedTempOverride.hpp"
 
 #include "I18N.hpp"
 #include "GUI_App.hpp"
@@ -240,6 +242,9 @@ void PartPlate::set_bed_type(BedType bed_type)
         m_config.erase(bed_type_key);
     else
         m_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(bed_type));
+
+    // [ORCAPORT:BT-1] the bed-temperature readout depends on the plate type
+    invalidate_bed_temp_texture();
 }
 
 void PartPlate::reset_bed_type()
@@ -1231,6 +1236,8 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
 
             if (m_plate_index >= 0 && m_plate_index < MAX_PLATE_COUNT) {
                 render_icon_texture(m_plate_idx_icon, m_partplate_list->m_idx_textures[m_plate_index]);
+                // [ORCAPORT:BT-1] bed-temperature readout, right under the plate number
+                render_bed_temp_texture();
             }
         }
 		render_plate_name_texture();
@@ -1266,6 +1273,8 @@ void PartPlate::render_only_numbers(bool bottom)
 
         if (m_plate_index >=0 && m_plate_index < MAX_PLATE_COUNT) {
             render_icon_texture(m_plate_idx_icon, m_partplate_list->m_idx_textures[m_plate_index]);
+            // [ORCAPORT:BT-1] bed-temperature readout, right under the plate number
+            render_bed_temp_texture();
         }
 
         glsafe(::glDisable(GL_BLEND));
@@ -2630,6 +2639,94 @@ void PartPlate::invalidate_plate_name_texture()
 		canvas->set_as_dirty();
 	}
 }
+
+// [ORCAPORT:BT-1] BEGIN - plate bed-temperature readout
+// Draws the first-layer plate temperature (the value the slicer will command, offset included)
+// under the plate number. Rebuilt only when invalidated, never per frame: assembling the full
+// config is too expensive for a render path.
+void PartPlate::generate_bed_temp_texture()
+{
+	m_bed_temp_ready = true;
+	m_bed_temp_icon.reset();
+	m_bed_temp_texture.reset();
+
+	if (wxGetApp().preset_bundle == nullptr)
+		return;
+
+	const DynamicPrintConfig& config   = wxGetApp().preset_bundle->full_config();
+	const BedType             bed_type = get_bed_type(true);
+	const int                 base     = OrcaExt::effective_first_layer_bed_temp(
+		config, bed_type, OrcaExt::to_zero_based_filaments(get_extruders()));
+	if (base <= 0)
+		return; // no plate temperature configured: nothing to show
+
+	const ConfigOptionInt* offset_opt = config.option<ConfigOptionInt>("bed_temperature_offset");
+	const int              offset     = offset_opt != nullptr ? offset_opt->value : 0;
+
+	wxString label = wxString::Format("%d", OrcaExt::apply_bed_temp_offset(base, offset));
+	label += from_u8(OrcaExt::bed_temp_unit_utf8());
+	if (offset != 0)
+		label += wxString::Format(" (%+d)", offset);
+
+	// ORCA also scale font size to prevent low res texture
+	int size = wxGetApp().em_unit() * PARTPLATE_ICON_SIZE;
+	auto l = Label::sysFont(int(size), true);
+	wxFont* font = &l;
+
+	wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
+	if (!m_bed_temp_texture.generate_from_text_string(label.ToUTF8().data(), *font, *wxBLACK, foreground)) {
+		BOOST_LOG_TRIVIAL(error) << "PartPlate::generate_bed_temp_texture(): generate_from_text_string() failed";
+		return;
+	}
+
+	calc_vertex_for_bed_temp_texture(m_bed_temp_texture, m_bed_temp_icon);
+}
+
+void PartPlate::calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer)
+{
+	buffer.reset();
+
+	ExPolygon poly;
+	auto      bed_ext  = get_extents(m_shape);
+	Vec2d     p        = bed_ext[1];
+	float     factor   = bed_ext.size()(1) / 200.0;
+	float     size     = PARTPLATE_ICON_SIZE * factor;
+	float     offset_x = PARTPLATE_TEXT_OFFSET_X2 * factor;
+	float     offset_y = PARTPLATE_TEXT_OFFSET_Y * factor;
+	float     gap_left = PARTPLATE_ICON_GAP_LEFT * factor;
+	p += Vec2d(gap_left, 0);
+
+	// The plate number occupies [p(1) + offset_y, p(1) + size - offset_y]; the readout sits below it.
+	float height = 0.8f * size;
+	float width  = (texture.m_original_height > 0)
+		? height * (float) texture.m_original_width / (float) texture.m_original_height
+		: height;
+	float x0 = p(0) + offset_x;
+	float y0 = p(1) + offset_y - height - PARTPLATE_ICON_GAP_Y * factor;
+
+	poly.contour.append({ scale_(x0)        , scale_(y0)         });
+	poly.contour.append({ scale_(x0 + width), scale_(y0)         });
+	poly.contour.append({ scale_(x0 + width), scale_(y0 + height) });
+	poly.contour.append({ scale_(x0)        , scale_(y0 + height) });
+
+	if (!init_model_from_poly(buffer, poly, GROUND_Z))
+		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for icons\n";
+}
+
+void PartPlate::render_bed_temp_texture()
+{
+	if (!m_bed_temp_ready)
+		generate_bed_temp_texture();
+
+	if (m_bed_temp_texture.get_id() == 0)
+		return;
+
+	GLuint tex_id = (GLuint) m_bed_temp_texture.get_id();
+	glsafe(::glBindTexture(GL_TEXTURE_2D, tex_id));
+	m_bed_temp_icon.render();
+	glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
+}
+// [ORCAPORT:BT-1] END
 
 void PartPlate::set_plate_name(const std::string& name) 
 { 
@@ -4483,6 +4580,13 @@ void PartPlateList::release_icon_textures()
             if (part.buffer) { delete part.buffer; }
         }
     }
+}
+
+void PartPlateList::invalidate_bed_temp_textures()
+{
+    for (PartPlate* plate : m_plate_list)
+        if (plate != nullptr)
+            plate->invalidate_bed_temp_texture();
 }
 
 void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool init_pos)

@@ -20005,6 +20005,22 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         }
 
         config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
+        // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
+        // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
+        // scheduled just below regenerates the G-code with the new plate temperature and keeps the
+        // existing slice result (no re-slice, no post-processing script).
+        {
+            const int           bed_temp_offset = pDlg->bed_temp_offset();
+            DynamicPrintConfig& project_config  = wxGetApp().preset_bundle->project_config;
+            if (ConfigOptionInt* opt = project_config.option<ConfigOptionInt>("bed_temperature_offset"))
+                opt->value = bed_temp_offset;
+            else
+                project_config.set_key_value("bed_temperature_offset", new ConfigOptionInt(bed_temp_offset));
+
+            // refresh the plate bed-temperature readout for the new delta
+            p->partplate_list.invalidate_bed_temp_textures();
+            p->view3D->get_canvas3d()->set_as_dirty();
+        }
         // PrintHostUpload upload_data;
         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
         upload_job.upload_data.upload_path = pDlg->filename();
@@ -20400,6 +20416,12 @@ void Plater::config_change_notification(const DynamicPrintConfig &config, const 
 
 void Plater::on_config_change(const DynamicPrintConfig &config)
 {
+    // [ORCAPORT:BT-1] the plate bed-temperature readout follows the plate type, the filament plate
+    // temperatures and the print-time offset: refresh the cached labels on any config change
+    p->partplate_list.invalidate_bed_temp_textures();
+    if (p->view3D != nullptr)
+        p->view3D->get_canvas3d()->set_as_dirty();
+
     bool update_scheduled = false;
     bool bed_shape_changed = false;
     //bool print_sequence_changed = false;

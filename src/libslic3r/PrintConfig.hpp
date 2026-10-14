@@ -1897,6 +1897,8 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionString,             bed_custom_texture))
     ((ConfigOptionString,             bed_custom_model))
     ((ConfigOptionEnum<BedType>,      curr_bed_type))
+    // [ORCAPORT:BT-1] print-time bed-temperature offset; project-level, never a preset key
+    ((ConfigOptionInt,                bed_temperature_offset))
     ((ConfigOptionInts,               cool_plate_temp))
     ((ConfigOptionInts,               textured_cool_plate_temp))
     ((ConfigOptionInts,               supertack_plate_temp))

@@ -6,6 +6,8 @@
 #include "MaterialType.hpp"
 #include "I18N.hpp"
 #include "format.hpp"
+// [ORCAPORT:BT-1] bed-temperature offset bounds
+#include "OrcaExt/BedTempOverride.hpp"
 
 #include "GCode/Thumbnails.hpp"
 #include <set>
@@ -1300,6 +1302,17 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels.emplace_back(L("Textured Cool Plate"));
     def->enum_labels.emplace_back(L("Cool Plate (SuperTack)"));
     def->set_default_value(new ConfigOptionEnum<BedType>(btPC));
+
+    // [ORCAPORT:BT-1] print-time bed-temperature offset, set from the upload dialog and kept in
+    // the project config (PresetBundle::s_project_options) so it never dirties a preset. Applied
+    // at G-code export time only, so changing it re-exports the G-code without re-slicing.
+    def = this->add("bed_temperature_offset", coInt);
+    def->label = L("Bed temperature offset");
+    def->tooltip = L("Added to the plate bed temperature when the G-code is exported. Set from the upload dialog to adjust a plate temperature without re-slicing; saved with the project.");
+    def->mode = comAdvanced;
+    def->min = OrcaExt::kBedTempOffsetMin;
+    def->max = OrcaExt::kBedTempOffsetMax;
+    def->set_default_value(new ConfigOptionInt(0));
 
     // Orca: allow profile maker to set default bed type in machine profile
     // This option won't be shown in the UI

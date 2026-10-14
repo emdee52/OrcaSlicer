@@ -38,6 +38,12 @@
 #include "../Utils/CrealityPrint.hpp"
 #include "BitmapComboBox.hpp"
 #include "wxExtensions.hpp"
+// [ORCAPORT:BT-1]
+#include <array>
+#include "Plater.hpp"
+#include "PartPlate.hpp"
+#include "Widgets/RadioBox.hpp"
+#include "libslic3r/OrcaExt/BedTempOverride.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -48,6 +54,9 @@ namespace Slic3r {
 namespace GUI {
 
 namespace {
+
+// [ORCAPORT:BT-1] the six mutually exclusive bed-temperature offsets offered in the upload dialog
+const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 
 wxColour contrasting_text_color(const wxColour& background)
 {
@@ -440,6 +449,31 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
     txt_filename->OSXDisableAllSmartSubstitutions();
 #endif
 }
+// [ORCAPORT:BT-1] BEGIN - bed-temperature offset row helpers
+void PrintHostSendDialog::set_bed_temp_offset(int offset)
+{
+    // Radio-box semantics with a clear: choosing the active offset turns it off, so the delta is
+    // always relative to the plate temperature instead of accumulating across clicks.
+    m_bed_temp_offset = (m_bed_temp_offset == offset) ? 0 : offset;
+    for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
+        m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
+    update_bed_temp_status();
+}
+
+void PrintHostSendDialog::update_bed_temp_status()
+{
+    if (m_bed_temp_status == nullptr)
+        return;
+
+    const int target = OrcaExt::apply_bed_temp_offset(m_bed_temp_base, m_bed_temp_offset);
+    wxString  text = wxString::Format("%s: %d%s", m_bed_temp_plate_label, target, from_u8(OrcaExt::bed_temp_unit_utf8()));
+    if (m_bed_temp_offset != 0)
+        text += wxString::Format(" (%+d)", m_bed_temp_offset);
+    m_bed_temp_status->SetLabel(text);
+    m_bed_temp_status->GetParent()->Layout();
+}
+// [ORCAPORT:BT-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -509,6 +543,69 @@ void PrintHostSendDialog::init()
     checkbox_text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
     content_sizer->Add(checkbox_sizer);
     content_sizer->AddSpacer(VERT_SPACING);
+
+    // [ORCAPORT:BT-1] BEGIN - plate bed temperature readout + six additive offsets. The value is
+    // applied when the G-code is exported, so choosing one changes the plate temperature without
+    // re-slicing and without touching a preset.
+    {
+        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+
+        const BedType bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
+        m_bed_temp_base         = OrcaExt::effective_first_layer_bed_temp(
+            preset_bundle->full_config(), bed_type,
+            OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
+
+        if (const ConfigOptionInt* saved = preset_bundle->project_config.option<ConfigOptionInt>("bed_temperature_offset"))
+            m_bed_temp_offset = saved->value;
+
+        const ConfigOptionDef* bed_type_def = print_config_def.get("curr_bed_type");
+        const int              bed_type_idx = (int) bed_type - 1;
+        m_bed_temp_plate_label              = (bed_type_def != nullptr && bed_type_idx >= 0 && bed_type_idx < (int) bed_type_def->enum_labels.size())
+            ? from_u8(bed_type_def->enum_labels[bed_type_idx])
+            : _L("Unknown plate");
+
+        auto* row     = new wxBoxSizer(wxHORIZONTAL);
+        auto* caption = new wxStaticText(this, wxID_ANY, _L("Bed temperature"), wxDefaultPosition, wxDefaultSize, 0);
+        caption->SetFont(::Label::Body_13);
+        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        // A .gcode.3mf is bundled from the plate's already-exported G-code before this value could
+        // be re-exported, so the offset cannot reach that upload path: keep the control
+        // discoverable but disabled rather than silently doing nothing.
+        const ConfigOptionBool* use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
+        const bool              offsets_supported = use_3mf_opt == nullptr || !use_3mf_opt->value;
+        for (int offset : kBedTempOffsets) {
+            auto* radio = new RadioBox(this);
+            radio->SetValue(offset == m_bed_temp_offset);
+            if (offsets_supported)
+                radio->Bind(wxEVT_LEFT_DOWN, [this, offset](wxMouseEvent&) { set_bed_temp_offset(offset); });
+            else {
+                radio->Disable();
+                radio->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
+            }
+            row->Add(radio, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+            auto* text = new wxStaticText(this, wxID_ANY, wxString::Format("%+d", offset), wxDefaultPosition, wxDefaultSize, 0);
+            text->SetFont(::Label::Body_13);
+            text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+            row->Add(text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+            row->AddSpacer(FromDIP(6));
+            m_bed_temp_radios.push_back(radio);
+        }
+        content_sizer->Add(row);
+
+        auto* status_row  = new wxBoxSizer(wxHORIZONTAL);
+        m_bed_temp_status = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
+        m_bed_temp_status->SetFont(::Label::Body_13);
+        m_bed_temp_status->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        status_row->Add(m_bed_temp_status, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(status_row);
+        content_sizer->AddSpacer(VERT_SPACING);
+        update_bed_temp_status();
+    }
+    // [ORCAPORT:BT-1] END
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);
