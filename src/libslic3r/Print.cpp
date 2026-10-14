@@ -258,6 +258,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "filament_retraction_distances_when_cut",
         "grab_length",
         "bed_temperature_formula",
+        "bed_temperature_offset", // [ORCAPORT:BT-1] G-code-only: changing it must not re-slice
         "filament_notes",
         "process_notes",
         "printer_notes",

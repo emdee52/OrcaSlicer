@@ -168,6 +168,11 @@ private:
     wxCoord m_name_texture_width;
     wxCoord m_name_texture_height;
 
+    // [ORCAPORT:BT-1] plate bed-temperature readout, drawn under the plate number
+    GLModel   m_bed_temp_icon;
+    GLTexture m_bed_temp_texture;
+    bool      m_bed_temp_ready {false};
+
     void init();
     bool valid_instance(int obj_id, int instance_id) const;
     void generate_print_polygon(ExPolygon &print_polygon);
@@ -180,6 +185,10 @@ private:
     void calc_gridlines(const ExPolygon& poly, const BoundingBox& pp_bbox);
     void calc_height_limit();
     void calc_vertex_for_number(int index, bool one_number, GLModel &buffer);
+    // [ORCAPORT:BT-1]
+    void calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer);
+    void render_bed_temp_texture();
+    void generate_bed_temp_texture();
     void calc_vertex_for_plate_name_edit_icon(GLTexture *texture, int index, PickingModel &model);
     void calc_vertex_for_icons(int index, PickingModel &model);
     // void calc_vertex_for_icons_background(int icon_count, GLModel &buffer);
@@ -203,6 +212,8 @@ private:
     void render_only_numbers(bool bottom);
     void render_plate_name_texture();
     void invalidate_plate_name_texture();
+    // [ORCAPORT:BT-1]
+    void invalidate_bed_temp_texture() { m_bed_temp_ready = false; }
     void register_raycasters_for_picking(GLCanvas3D& canvas);
     int picking_id_component(int idx) const;
 
@@ -672,6 +683,9 @@ class PartPlateList : public ObjectBase
 
 public:
     void set_default_wipe_tower_pos_for_plate(int plate_idx, bool init_pos = false);
+    // [ORCAPORT:BT-1] the bed-temperature readout depends on the plate type, the filament bed
+    // temperatures and the print-time offset; drop every cached label and rebuild on next render.
+    void invalidate_bed_temp_textures();
     class BedTextureInfo {
     public:
         class TexturePart {

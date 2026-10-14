@@ -61,6 +61,10 @@ static std::vector<std::string> s_project_options {
     "wipe_tower_x",
     "wipe_tower_y",
     "curr_bed_type",
+    // [ORCAPORT:BT-1] print-time bed-temperature offset; a project-level key like curr_bed_type,
+    // so it round-trips through a saved 3mf without ever being written into a preset. Kept out of
+    // s_project_options_published: a published project must not impose the author's bed tweak.
+    "bed_temperature_offset",
     "flush_multiplier",
     // Fast-purge mode: project-level purge control, inert at Default.
     "flush_multiplier_fast",

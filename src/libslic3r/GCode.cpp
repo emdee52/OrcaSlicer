@@ -19,6 +19,7 @@
 #include "GCode/OrderingStrategies.hpp"
 #include "Print.hpp"
 #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
+#include "OrcaExt/BedTempOverride.hpp" // [ORCAPORT:BT-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
 #include "libslic3r.h"
@@ -3590,8 +3591,18 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             target_bed_temp = get_bed_temperature(initial_extruder_id, true, curr_bed_type);
 
         this->placeholder_parser().set("bbl_bed_temperature_gcode", new ConfigOptionBool(false));
-        this->placeholder_parser().set("bed_temperature_initial_layer", new ConfigOptionInts(*first_bed_temp_opt));
-        this->placeholder_parser().set("bed_temperature", new ConfigOptionInts(*bed_temp_opt));
+        // [ORCAPORT:BT-1] BEGIN - a profile's own start G-code reads the bed temperature through
+        // these placeholders (e.g. "M190 S[bed_temperature_initial_layer]"), so the print-time
+        // offset has to reach them too or that printer would silently ignore the dialog's choice.
+        ConfigOptionInts bed_temp_with_offset(*bed_temp_opt);
+        ConfigOptionInts first_bed_temp_with_offset(*first_bed_temp_opt);
+        for (int &t : bed_temp_with_offset.values)
+            t = OrcaExt::apply_bed_temp_offset(t, m_config.bed_temperature_offset.value);
+        for (int &t : first_bed_temp_with_offset.values)
+            t = OrcaExt::apply_bed_temp_offset(t, m_config.bed_temperature_offset.value);
+        this->placeholder_parser().set("bed_temperature_initial_layer", new ConfigOptionInts(first_bed_temp_with_offset));
+        this->placeholder_parser().set("bed_temperature", new ConfigOptionInts(bed_temp_with_offset));
+        // [ORCAPORT:BT-1] END
         this->placeholder_parser().set("bed_temperature_initial_layer_single", new ConfigOptionInt(target_bed_temp));
         this->placeholder_parser().set("bed_temperature_initial_layer_vector", new ConfigOptionString());
         this->placeholder_parser().set("chamber_temperature", new ConfigOptionInts(m_config.chamber_temperature));
@@ -3601,7 +3612,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         this->placeholder_parser().set("min_vitrification_temperature", new ConfigOptionInt(min_temperature_vitrification));
 
         // SoftFever: support variables `first_layer_temperature` and `first_layer_bed_temperature`
-        this->placeholder_parser().set("first_layer_bed_temperature", new ConfigOptionInts(*first_bed_temp_opt));
+        // [ORCAPORT:BT-1] same offset as `bed_temperature_initial_layer` above
+        this->placeholder_parser().set("first_layer_bed_temperature", new ConfigOptionInts(first_bed_temp_with_offset));
         this->placeholder_parser().set("first_layer_temperature", new ConfigOptionInts(m_config.nozzle_temperature_initial_layer));
         this->placeholder_parser().set("max_print_height",new ConfigOptionInt(m_config.printable_height));
         this->placeholder_parser().set("z_offset", new ConfigOptionFloat(m_config.z_offset));
@@ -4688,7 +4700,8 @@ int GCode::get_bed_temperature(const int extruder_id, const bool is_first_layer,
 {
     std::string bed_temp_key = is_first_layer ? get_bed_temp_1st_layer_key(bed_type) : get_bed_temp_key(bed_type);
     const ConfigOptionInts* bed_temp_opt = m_config.option<ConfigOptionInts>(bed_temp_key);
-    return bed_temp_opt->get_at(extruder_id);
+    // [ORCAPORT:BT-1] apply the print-time offset chosen in the upload dialog
+    return OrcaExt::apply_bed_temp_offset(bed_temp_opt->get_at(extruder_id), m_config.bed_temperature_offset.value);
 }
 
 int GCode::get_highest_bed_temperature(const bool is_first_layer, const Print& print) const

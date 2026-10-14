@@ -1,0 +1,715 @@
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index 037a24e8e8..234515ba33 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -19,6 +19,7 @@
+ #include "GCode/OrderingStrategies.hpp"
+ #include "Print.hpp"
+ #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
++#include "OrcaExt/BedTempOverride.hpp" // [ORCAPORT:BT-1]
+ #include "Utils.hpp"
+ #include "ClipperUtils.hpp"
+ #include "libslic3r.h"
+@@ -3590,8 +3591,18 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
+             target_bed_temp = get_bed_temperature(initial_extruder_id, true, curr_bed_type);
+ 
+         this->placeholder_parser().set("bbl_bed_temperature_gcode", new ConfigOptionBool(false));
+-        this->placeholder_parser().set("bed_temperature_initial_layer", new ConfigOptionInts(*first_bed_temp_opt));
+-        this->placeholder_parser().set("bed_temperature", new ConfigOptionInts(*bed_temp_opt));
++        // [ORCAPORT:BT-1] BEGIN - a profile's own start G-code reads the bed temperature through
++        // these placeholders (e.g. "M190 S[bed_temperature_initial_layer]"), so the print-time
++        // offset has to reach them too or that printer would silently ignore the dialog's choice.
++        ConfigOptionInts bed_temp_with_offset(*bed_temp_opt);
++        ConfigOptionInts first_bed_temp_with_offset(*first_bed_temp_opt);
++        for (int &t : bed_temp_with_offset.values)
++            t = OrcaExt::apply_bed_temp_offset(t, m_config.bed_temperature_offset.value);
++        for (int &t : first_bed_temp_with_offset.values)
++            t = OrcaExt::apply_bed_temp_offset(t, m_config.bed_temperature_offset.value);
++        this->placeholder_parser().set("bed_temperature_initial_layer", new ConfigOptionInts(first_bed_temp_with_offset));
++        this->placeholder_parser().set("bed_temperature", new ConfigOptionInts(bed_temp_with_offset));
++        // [ORCAPORT:BT-1] END
+         this->placeholder_parser().set("bed_temperature_initial_layer_single", new ConfigOptionInt(target_bed_temp));
+         this->placeholder_parser().set("bed_temperature_initial_layer_vector", new ConfigOptionString());
+         this->placeholder_parser().set("chamber_temperature", new ConfigOptionInts(m_config.chamber_temperature));
+@@ -3601,7 +3612,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
+         this->placeholder_parser().set("min_vitrification_temperature", new ConfigOptionInt(min_temperature_vitrification));
+ 
+         // SoftFever: support variables `first_layer_temperature` and `first_layer_bed_temperature`
+-        this->placeholder_parser().set("first_layer_bed_temperature", new ConfigOptionInts(*first_bed_temp_opt));
++        // [ORCAPORT:BT-1] same offset as `bed_temperature_initial_layer` above
++        this->placeholder_parser().set("first_layer_bed_temperature", new ConfigOptionInts(first_bed_temp_with_offset));
+         this->placeholder_parser().set("first_layer_temperature", new ConfigOptionInts(m_config.nozzle_temperature_initial_layer));
+         this->placeholder_parser().set("max_print_height",new ConfigOptionInt(m_config.printable_height));
+         this->placeholder_parser().set("z_offset", new ConfigOptionFloat(m_config.z_offset));
+@@ -4688,7 +4700,8 @@ int GCode::get_bed_temperature(const int extruder_id, const bool is_first_layer,
+ {
+     std::string bed_temp_key = is_first_layer ? get_bed_temp_1st_layer_key(bed_type) : get_bed_temp_key(bed_type);
+     const ConfigOptionInts* bed_temp_opt = m_config.option<ConfigOptionInts>(bed_temp_key);
+-    return bed_temp_opt->get_at(extruder_id);
++    // [ORCAPORT:BT-1] apply the print-time offset chosen in the upload dialog
++    return OrcaExt::apply_bed_temp_offset(bed_temp_opt->get_at(extruder_id), m_config.bed_temperature_offset.value);
+ }
+ 
+ int GCode::get_highest_bed_temperature(const bool is_first_layer, const Print& print) const
+diff --git a/src/libslic3r/OrcaExt/BedTempOverride.hpp b/src/libslic3r/OrcaExt/BedTempOverride.hpp
+new file mode 100644
+index 0000000000..2f21a68021
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/BedTempOverride.hpp
+@@ -0,0 +1,102 @@
++// [ORCAPORT FILE] BedTempOverride - bed-temperature readout and print-time offset
++// Source: original (design in porting/notes/BT-1.md)
++//
++// The upload dialog offers an additive bed-temperature offset (+-5/10/15) so a plate
++// temperature can be nudged right before a print. The value lives in the project config (like
++// curr_bed_type, so it never dirties a preset), and every bed-temperature key is in the
++// "G-code export only" invalidation bucket, so changing it re-exports the G-code and keeps the
++// slice result: no re-slice, and no post-processing script.
++//
++// This header is the single place the offset is bounded and the single place the effective
++// first-layer temperature is computed, so the G-code emission and the two readouts (the plate
++// label and the dialog) can never disagree.
++#ifndef slic3r_OrcaExt_BedTempOverride_hpp_
++#define slic3r_OrcaExt_BedTempOverride_hpp_
++
++#include <algorithm>
++#include <string>
++#include <vector>
++
++#include "../PrintConfig.hpp"
++
++namespace Slic3r {
++namespace OrcaExt {
++
++// The six dialog buttons reach +-15; the wider bound is defence, not UI.
++constexpr int kBedTempOffsetMin = -30;
++constexpr int kBedTempOffsetMax = 30;
++// No per-printer bed ceiling reaches the slicer (MachineObject::get_bed_temperature_limit is
++// network-printer-only), so base + offset is clamped into a generic printable range instead.
++// Named with a k-prefix on purpose: DeviceManager.hpp already defines a BED_TEMP_LIMIT macro.
++constexpr int kBedTempCeiling = 120;
++
++inline int clamp_bed_temp_offset(int offset)
++{
++    return std::clamp(offset, kBedTempOffsetMin, kBedTempOffsetMax);
++}
++
++// Base plate temperature plus the dialog offset. A base of 0 is the slicer's "this filament
++// does not support this plate" marker, so it is left untouched rather than nudged into a small
++// positive temperature. A heated base is never allowed to reach 0: M140 S0 switches the bed off
++// on most firmwares.
++inline int apply_bed_temp_offset(int base_temp, int offset)
++{
++    if (base_temp <= 0)
++        return base_temp;
++    return std::clamp(base_temp + offset, 1, kBedTempCeiling);
++}
++
++// PartPlate::get_extruders() and the slice filaments are 1-based filament ids; the config arrays
++// are 0-based. Convert once, dropping the "unset" 0/negative entries.
++inline std::vector<int> to_zero_based_filaments(const std::vector<int> &one_based)
++{
++    std::vector<int> out;
++    out.reserve(one_based.size());
++    for (int f : one_based)
++        if (f > 0)
++            out.push_back(f - 1);
++    return out;
++}
++
++// "degC" as explicit UTF-8 bytes so callers do not depend on the source/execution charset.
++inline std::string bed_temp_unit_utf8()
++{
++    return "\xC2\xB0" "C";
++}
++
++// The first-layer plate temperature the slicer will command: the *_plate_temp_initial_layer of
++// the first used filament, or the highest among the used filaments when bed_temperature_formula
++// is "by highest temp" (the default, so a PLA+PETG plate runs at PETG's temperature). Mirrors
++// GCode::get_highest_bed_temperature() so the readouts show what will actually be emitted.
++// `filaments` are 0-based filament indices; an empty list means "nothing sliced yet", in which
++// case every configured filament is considered.
++inline int effective_first_layer_bed_temp(const DynamicPrintConfig &config, BedType bed_type,
++                                          const std::vector<int> &filaments)
++{
++    const ConfigOptionInts *temps = config.option<ConfigOptionInts>(get_bed_temp_1st_layer_key(bed_type));
++    if (temps == nullptr || temps->values.empty())
++        return 0;
++
++    const BedTempFormula formula = config.option<ConfigOptionEnum<BedTempFormula>>("bed_temperature_formula") != nullptr
++        ? config.opt_enum<BedTempFormula>("bed_temperature_formula")
++        : BedTempFormula::btfHighestTemp;
++
++    int temp = 0;
++    if (formula == BedTempFormula::btfHighestTemp) {
++        for (int f : filaments)
++            if (f >= 0 && f < (int) temps->values.size())
++                temp = std::max(temp, (int) temps->get_at(f));
++        if (filaments.empty())
++            for (int t : temps->values)
++                temp = std::max(temp, t);
++    } else {
++        const int f = filaments.empty() ? 0 : filaments.front();
++        temp = (f >= 0 && f < (int) temps->values.size()) ? (int) temps->get_at(f) : 0;
++    }
++    return temp;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif /* slic3r_OrcaExt_BedTempOverride_hpp_ */
+diff --git a/src/libslic3r/PresetBundle.cpp b/src/libslic3r/PresetBundle.cpp
+index 6ca6fa8544..cdd7dcfbfc 100644
+--- a/src/libslic3r/PresetBundle.cpp
++++ b/src/libslic3r/PresetBundle.cpp
+@@ -61,6 +61,10 @@ static std::vector<std::string> s_project_options {
+     "wipe_tower_x",
+     "wipe_tower_y",
+     "curr_bed_type",
++    // [ORCAPORT:BT-1] print-time bed-temperature offset; a project-level key like curr_bed_type,
++    // so it round-trips through a saved 3mf without ever being written into a preset. Kept out of
++    // s_project_options_published: a published project must not impose the author's bed tweak.
++    "bed_temperature_offset",
+     "flush_multiplier",
+     // Fast-purge mode: project-level purge control, inert at Default.
+     "flush_multiplier_fast",
+diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
+index a5e4523ddd..eaecc9bb01 100644
+--- a/src/libslic3r/Print.cpp
++++ b/src/libslic3r/Print.cpp
+@@ -258,6 +258,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
+         "filament_retraction_distances_when_cut",
+         "grab_length",
+         "bed_temperature_formula",
++        "bed_temperature_offset", // [ORCAPORT:BT-1] G-code-only: changing it must not re-slice
+         "filament_notes",
+         "process_notes",
+         "printer_notes",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index b0bfd39b3e..998c2ca3d4 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -6,6 +6,8 @@
+ #include "MaterialType.hpp"
+ #include "I18N.hpp"
+ #include "format.hpp"
++// [ORCAPORT:BT-1] bed-temperature offset bounds
++#include "OrcaExt/BedTempOverride.hpp"
+ 
+ #include "GCode/Thumbnails.hpp"
+ #include <set>
+@@ -1301,6 +1303,17 @@ void PrintConfigDef::init_fff_params()
+     def->enum_labels.emplace_back(L("Cool Plate (SuperTack)"));
+     def->set_default_value(new ConfigOptionEnum<BedType>(btPC));
+ 
++    // [ORCAPORT:BT-1] print-time bed-temperature offset, set from the upload dialog and kept in
++    // the project config (PresetBundle::s_project_options) so it never dirties a preset. Applied
++    // at G-code export time only, so changing it re-exports the G-code without re-slicing.
++    def = this->add("bed_temperature_offset", coInt);
++    def->label = L("Bed temperature offset");
++    def->tooltip = L("Added to the plate bed temperature when the G-code is exported. Set from the upload dialog to adjust a plate temperature without re-slicing; saved with the project.");
++    def->mode = comAdvanced;
++    def->min = OrcaExt::kBedTempOffsetMin;
++    def->max = OrcaExt::kBedTempOffsetMax;
++    def->set_default_value(new ConfigOptionInt(0));
++
+     // Orca: allow profile maker to set default bed type in machine profile
+     // This option won't be shown in the UI
+     def = this->add("default_bed_type", coString);
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index 6c5931a427..ce4a5a462e 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1897,6 +1897,8 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
+     ((ConfigOptionString,             bed_custom_texture))
+     ((ConfigOptionString,             bed_custom_model))
+     ((ConfigOptionEnum<BedType>,      curr_bed_type))
++    // [ORCAPORT:BT-1] print-time bed-temperature offset; project-level, never a preset key
++    ((ConfigOptionInt,                bed_temperature_offset))
+     ((ConfigOptionInts,               cool_plate_temp))
+     ((ConfigOptionInts,               textured_cool_plate_temp))
+     ((ConfigOptionInts,               supertack_plate_temp))
+diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
+index f117a15c54..e90f3d55a3 100644
+--- a/src/slic3r/GUI/PartPlate.cpp
++++ b/src/slic3r/GUI/PartPlate.cpp
+@@ -29,6 +29,8 @@
+ #include "libslic3r/Tesselate.hpp"
+ #include "libslic3r/GCode/ThumbnailData.hpp"
+ #include "libslic3r/Utils.hpp"
++// [ORCAPORT:BT-1]
++#include "libslic3r/OrcaExt/BedTempOverride.hpp"
+ 
+ #include "I18N.hpp"
+ #include "GUI_App.hpp"
+@@ -240,6 +242,9 @@ void PartPlate::set_bed_type(BedType bed_type)
+         m_config.erase(bed_type_key);
+     else
+         m_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(bed_type));
++
++    // [ORCAPORT:BT-1] the bed-temperature readout depends on the plate type
++    invalidate_bed_temp_texture();
+ }
+ 
+ void PartPlate::reset_bed_type()
+@@ -1231,6 +1236,8 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
+ 
+             if (m_plate_index >= 0 && m_plate_index < MAX_PLATE_COUNT) {
+                 render_icon_texture(m_plate_idx_icon, m_partplate_list->m_idx_textures[m_plate_index]);
++                // [ORCAPORT:BT-1] bed-temperature readout, right under the plate number
++                render_bed_temp_texture();
+             }
+         }
+ 		render_plate_name_texture();
+@@ -1266,6 +1273,8 @@ void PartPlate::render_only_numbers(bool bottom)
+ 
+         if (m_plate_index >=0 && m_plate_index < MAX_PLATE_COUNT) {
+             render_icon_texture(m_plate_idx_icon, m_partplate_list->m_idx_textures[m_plate_index]);
++            // [ORCAPORT:BT-1] bed-temperature readout, right under the plate number
++            render_bed_temp_texture();
+         }
+ 
+         glsafe(::glDisable(GL_BLEND));
+@@ -2631,6 +2640,94 @@ void PartPlate::invalidate_plate_name_texture()
+ 	}
+ }
+ 
++// [ORCAPORT:BT-1] BEGIN - plate bed-temperature readout
++// Draws the first-layer plate temperature (the value the slicer will command, offset included)
++// under the plate number. Rebuilt only when invalidated, never per frame: assembling the full
++// config is too expensive for a render path.
++void PartPlate::generate_bed_temp_texture()
++{
++	m_bed_temp_ready = true;
++	m_bed_temp_icon.reset();
++	m_bed_temp_texture.reset();
++
++	if (wxGetApp().preset_bundle == nullptr)
++		return;
++
++	const DynamicPrintConfig& config   = wxGetApp().preset_bundle->full_config();
++	const BedType             bed_type = get_bed_type(true);
++	const int                 base     = OrcaExt::effective_first_layer_bed_temp(
++		config, bed_type, OrcaExt::to_zero_based_filaments(get_extruders()));
++	if (base <= 0)
++		return; // no plate temperature configured: nothing to show
++
++	const ConfigOptionInt* offset_opt = config.option<ConfigOptionInt>("bed_temperature_offset");
++	const int              offset     = offset_opt != nullptr ? offset_opt->value : 0;
++
++	wxString label = wxString::Format("%d", OrcaExt::apply_bed_temp_offset(base, offset));
++	label += from_u8(OrcaExt::bed_temp_unit_utf8());
++	if (offset != 0)
++		label += wxString::Format(" (%+d)", offset);
++
++	// ORCA also scale font size to prevent low res texture
++	int size = wxGetApp().em_unit() * PARTPLATE_ICON_SIZE;
++	auto l = Label::sysFont(int(size), true);
++	wxFont* font = &l;
++
++	wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
++	if (!m_bed_temp_texture.generate_from_text_string(label.ToUTF8().data(), *font, *wxBLACK, foreground)) {
++		BOOST_LOG_TRIVIAL(error) << "PartPlate::generate_bed_temp_texture(): generate_from_text_string() failed";
++		return;
++	}
++
++	calc_vertex_for_bed_temp_texture(m_bed_temp_texture, m_bed_temp_icon);
++}
++
++void PartPlate::calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer)
++{
++	buffer.reset();
++
++	ExPolygon poly;
++	auto      bed_ext  = get_extents(m_shape);
++	Vec2d     p        = bed_ext[1];
++	float     factor   = bed_ext.size()(1) / 200.0;
++	float     size     = PARTPLATE_ICON_SIZE * factor;
++	float     offset_x = PARTPLATE_TEXT_OFFSET_X2 * factor;
++	float     offset_y = PARTPLATE_TEXT_OFFSET_Y * factor;
++	float     gap_left = PARTPLATE_ICON_GAP_LEFT * factor;
++	p += Vec2d(gap_left, 0);
++
++	// The plate number occupies [p(1) + offset_y, p(1) + size - offset_y]; the readout sits below it.
++	float height = 0.8f * size;
++	float width  = (texture.m_original_height > 0)
++		? height * (float) texture.m_original_width / (float) texture.m_original_height
++		: height;
++	float x0 = p(0) + offset_x;
++	float y0 = p(1) + offset_y - height - PARTPLATE_ICON_GAP_Y * factor;
++
++	poly.contour.append({ scale_(x0)        , scale_(y0)         });
++	poly.contour.append({ scale_(x0 + width), scale_(y0)         });
++	poly.contour.append({ scale_(x0 + width), scale_(y0 + height) });
++	poly.contour.append({ scale_(x0)        , scale_(y0 + height) });
++
++	if (!init_model_from_poly(buffer, poly, GROUND_Z))
++		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for icons\n";
++}
++
++void PartPlate::render_bed_temp_texture()
++{
++	if (!m_bed_temp_ready)
++		generate_bed_temp_texture();
++
++	if (m_bed_temp_texture.get_id() == 0)
++		return;
++
++	GLuint tex_id = (GLuint) m_bed_temp_texture.get_id();
++	glsafe(::glBindTexture(GL_TEXTURE_2D, tex_id));
++	m_bed_temp_icon.render();
++	glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
++}
++// [ORCAPORT:BT-1] END
++
+ void PartPlate::set_plate_name(const std::string& name) 
+ { 
+ 	// compare if name equal to m_name, case sensitive
+@@ -4485,6 +4582,13 @@ void PartPlateList::release_icon_textures()
+     }
+ }
+ 
++void PartPlateList::invalidate_bed_temp_textures()
++{
++    for (PartPlate* plate : m_plate_list)
++        if (plate != nullptr)
++            plate->invalidate_bed_temp_texture();
++}
++
+ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool init_pos)
+ {
+     DynamicConfig &     proj_cfg     = wxGetApp().preset_bundle->project_config;
+diff --git a/src/slic3r/GUI/PartPlate.hpp b/src/slic3r/GUI/PartPlate.hpp
+index e05e78e9cf..1cf5e82cff 100644
+--- a/src/slic3r/GUI/PartPlate.hpp
++++ b/src/slic3r/GUI/PartPlate.hpp
+@@ -168,6 +168,11 @@ private:
+     wxCoord m_name_texture_width;
+     wxCoord m_name_texture_height;
+ 
++    // [ORCAPORT:BT-1] plate bed-temperature readout, drawn under the plate number
++    GLModel   m_bed_temp_icon;
++    GLTexture m_bed_temp_texture;
++    bool      m_bed_temp_ready {false};
++
+     void init();
+     bool valid_instance(int obj_id, int instance_id) const;
+     void generate_print_polygon(ExPolygon &print_polygon);
+@@ -180,6 +185,10 @@ private:
+     void calc_gridlines(const ExPolygon& poly, const BoundingBox& pp_bbox);
+     void calc_height_limit();
+     void calc_vertex_for_number(int index, bool one_number, GLModel &buffer);
++    // [ORCAPORT:BT-1]
++    void calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer);
++    void render_bed_temp_texture();
++    void generate_bed_temp_texture();
+     void calc_vertex_for_plate_name_edit_icon(GLTexture *texture, int index, PickingModel &model);
+     void calc_vertex_for_icons(int index, PickingModel &model);
+     // void calc_vertex_for_icons_background(int icon_count, GLModel &buffer);
+@@ -203,6 +212,8 @@ private:
+     void render_only_numbers(bool bottom);
+     void render_plate_name_texture();
+     void invalidate_plate_name_texture();
++    // [ORCAPORT:BT-1]
++    void invalidate_bed_temp_texture() { m_bed_temp_ready = false; }
+     void register_raycasters_for_picking(GLCanvas3D& canvas);
+     int picking_id_component(int idx) const;
+ 
+@@ -672,6 +683,9 @@ class PartPlateList : public ObjectBase
+ 
+ public:
+     void set_default_wipe_tower_pos_for_plate(int plate_idx, bool init_pos = false);
++    // [ORCAPORT:BT-1] the bed-temperature readout depends on the plate type, the filament bed
++    // temperatures and the print-time offset; drop every cached label and rebuild on next render.
++    void invalidate_bed_temp_textures();
+     class BedTextureInfo {
+     public:
+         class TexturePart {
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index 59f57b04fa..62c4011e72 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -20005,6 +20005,22 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+         }
+ 
+         config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
++        // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
++        // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
++        // scheduled just below regenerates the G-code with the new plate temperature and keeps the
++        // existing slice result (no re-slice, no post-processing script).
++        {
++            const int           bed_temp_offset = pDlg->bed_temp_offset();
++            DynamicPrintConfig& project_config  = wxGetApp().preset_bundle->project_config;
++            if (ConfigOptionInt* opt = project_config.option<ConfigOptionInt>("bed_temperature_offset"))
++                opt->value = bed_temp_offset;
++            else
++                project_config.set_key_value("bed_temperature_offset", new ConfigOptionInt(bed_temp_offset));
++
++            // refresh the plate bed-temperature readout for the new delta
++            p->partplate_list.invalidate_bed_temp_textures();
++            p->view3D->get_canvas3d()->set_as_dirty();
++        }
+         // PrintHostUpload upload_data;
+         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
+         upload_job.upload_data.upload_path = pDlg->filename();
+@@ -20400,6 +20416,12 @@ void Plater::config_change_notification(const DynamicPrintConfig &config, const
+ 
+ void Plater::on_config_change(const DynamicPrintConfig &config)
+ {
++    // [ORCAPORT:BT-1] the plate bed-temperature readout follows the plate type, the filament plate
++    // temperatures and the print-time offset: refresh the cached labels on any config change
++    p->partplate_list.invalidate_bed_temp_textures();
++    if (p->view3D != nullptr)
++        p->view3D->get_canvas3d()->set_as_dirty();
++
+     bool update_scheduled = false;
+     bool bed_shape_changed = false;
+     //bool print_sequence_changed = false;
+diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
+index 2b4d212d0f..23b54cdcd3 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.cpp
++++ b/src/slic3r/GUI/PrintHostDialogs.cpp
+@@ -38,6 +38,12 @@
+ #include "../Utils/CrealityPrint.hpp"
+ #include "BitmapComboBox.hpp"
+ #include "wxExtensions.hpp"
++// [ORCAPORT:BT-1]
++#include <array>
++#include "Plater.hpp"
++#include "PartPlate.hpp"
++#include "Widgets/RadioBox.hpp"
++#include "libslic3r/OrcaExt/BedTempOverride.hpp"
+ 
+ #include <nlohmann/json.hpp>
+ 
+@@ -49,6 +55,9 @@ namespace GUI {
+ 
+ namespace {
+ 
++// [ORCAPORT:BT-1] the six mutually exclusive bed-temperature offsets offered in the upload dialog
++const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
++
+ wxColour contrasting_text_color(const wxColour& background)
+ {
+     return background.GetLuminance() < 0.60 ? *wxWHITE : wxColour("#303030");
+@@ -440,6 +449,31 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
+     txt_filename->OSXDisableAllSmartSubstitutions();
+ #endif
+ }
++// [ORCAPORT:BT-1] BEGIN - bed-temperature offset row helpers
++void PrintHostSendDialog::set_bed_temp_offset(int offset)
++{
++    // Radio-box semantics with a clear: choosing the active offset turns it off, so the delta is
++    // always relative to the plate temperature instead of accumulating across clicks.
++    m_bed_temp_offset = (m_bed_temp_offset == offset) ? 0 : offset;
++    for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
++        m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
++    update_bed_temp_status();
++}
++
++void PrintHostSendDialog::update_bed_temp_status()
++{
++    if (m_bed_temp_status == nullptr)
++        return;
++
++    const int target = OrcaExt::apply_bed_temp_offset(m_bed_temp_base, m_bed_temp_offset);
++    wxString  text = wxString::Format("%s: %d%s", m_bed_temp_plate_label, target, from_u8(OrcaExt::bed_temp_unit_utf8()));
++    if (m_bed_temp_offset != 0)
++        text += wxString::Format(" (%+d)", m_bed_temp_offset);
++    m_bed_temp_status->SetLabel(text);
++    m_bed_temp_status->GetParent()->Layout();
++}
++// [ORCAPORT:BT-1] END
++
+ void PrintHostSendDialog::init()
+ {
+     const auto& path = m_path;
+@@ -510,6 +544,69 @@ void PrintHostSendDialog::init()
+     content_sizer->Add(checkbox_sizer);
+     content_sizer->AddSpacer(VERT_SPACING);
+ 
++    // [ORCAPORT:BT-1] BEGIN - plate bed temperature readout + six additive offsets. The value is
++    // applied when the G-code is exported, so choosing one changes the plate temperature without
++    // re-slicing and without touching a preset.
++    {
++        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
++        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
++
++        const BedType bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
++        m_bed_temp_base         = OrcaExt::effective_first_layer_bed_temp(
++            preset_bundle->full_config(), bed_type,
++            OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
++
++        if (const ConfigOptionInt* saved = preset_bundle->project_config.option<ConfigOptionInt>("bed_temperature_offset"))
++            m_bed_temp_offset = saved->value;
++
++        const ConfigOptionDef* bed_type_def = print_config_def.get("curr_bed_type");
++        const int              bed_type_idx = (int) bed_type - 1;
++        m_bed_temp_plate_label              = (bed_type_def != nullptr && bed_type_idx >= 0 && bed_type_idx < (int) bed_type_def->enum_labels.size())
++            ? from_u8(bed_type_def->enum_labels[bed_type_idx])
++            : _L("Unknown plate");
++
++        auto* row     = new wxBoxSizer(wxHORIZONTAL);
++        auto* caption = new wxStaticText(this, wxID_ANY, _L("Bed temperature"), wxDefaultPosition, wxDefaultSize, 0);
++        caption->SetFont(::Label::Body_13);
++        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        // A .gcode.3mf is bundled from the plate's already-exported G-code before this value could
++        // be re-exported, so the offset cannot reach that upload path: keep the control
++        // discoverable but disabled rather than silently doing nothing.
++        const ConfigOptionBool* use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
++        const bool              offsets_supported = use_3mf_opt == nullptr || !use_3mf_opt->value;
++        for (int offset : kBedTempOffsets) {
++            auto* radio = new RadioBox(this);
++            radio->SetValue(offset == m_bed_temp_offset);
++            if (offsets_supported)
++                radio->Bind(wxEVT_LEFT_DOWN, [this, offset](wxMouseEvent&) { set_bed_temp_offset(offset); });
++            else {
++                radio->Disable();
++                radio->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
++            }
++            row->Add(radio, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++            auto* text = new wxStaticText(this, wxID_ANY, wxString::Format("%+d", offset), wxDefaultPosition, wxDefaultSize, 0);
++            text->SetFont(::Label::Body_13);
++            text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++            row->Add(text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++            row->AddSpacer(FromDIP(6));
++            m_bed_temp_radios.push_back(radio);
++        }
++        content_sizer->Add(row);
++
++        auto* status_row  = new wxBoxSizer(wxHORIZONTAL);
++        m_bed_temp_status = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
++        m_bed_temp_status->SetFont(::Label::Body_13);
++        m_bed_temp_status->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        status_row->Add(m_bed_temp_status, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        content_sizer->Add(status_row);
++        content_sizer->AddSpacer(VERT_SPACING);
++        update_bed_temp_status();
++    }
++    // [ORCAPORT:BT-1] END
++
+     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
+         m_valid_suffix = recent_path.substr(extension_start);
+     // .gcode suffix control
+diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
+index 6f55c0d953..5896f45f3f 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.hpp
++++ b/src/slic3r/GUI/PrintHostDialogs.hpp
+@@ -25,7 +25,7 @@ class wxStaticText;
+ class wxWrapSizer;
+ class CheckBox;
+ 
+-namespace Slic3r { namespace GUI { class BitmapComboBox; } }
++namespace Slic3r { namespace GUI { class BitmapComboBox; class RadioBox; } }
+ 
+ namespace Slic3r {
+ 
+@@ -41,6 +41,8 @@ public:
+     std::string group() const;
+     std::string storage() const;
+     bool switch_to_device_tab() const {return m_switch_to_device_tab;}
++    // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
++    int bed_temp_offset() const { return m_bed_temp_offset; }
+ 
+     virtual void EndModal(int ret) override;
+     virtual void init();
+@@ -59,6 +61,18 @@ protected:
+     boost::filesystem::path m_path;
+     PrintHostPostUploadActions m_post_actions;
+     wxArrayString m_storage_names;
++
++    // [ORCAPORT:BT-1] BEGIN - bed-temperature offset row. The value is written to the project
++    // config by the caller and applied at G-code export, so no preset is touched and no re-slice
++    // is triggered.
++    int                    m_bed_temp_offset {0};
++    int                    m_bed_temp_base {0};
++    wxString               m_bed_temp_plate_label;
++    wxStaticText*          m_bed_temp_status {nullptr};
++    std::vector<RadioBox*> m_bed_temp_radios;
++    void                   set_bed_temp_offset(int offset);
++    void                   update_bed_temp_status();
++    // [ORCAPORT:BT-1] END
+ };
+ 
+ 
+diff --git a/tests/libslic3r/CMakeLists.txt b/tests/libslic3r/CMakeLists.txt
+index 1aab781eb0..8aa76fc268 100644
+--- a/tests/libslic3r/CMakeLists.txt
++++ b/tests/libslic3r/CMakeLists.txt
+@@ -43,6 +43,7 @@ add_executable(${_TEST_NAME}_tests
+     test_stl.cpp
+     test_triangle_selector.cpp
+     test_orca_support_paint.cpp
++    test_orca_bed_temp.cpp
+     test_meshboolean.cpp
+     test_marchingsquares.cpp
+     test_lay_on_face.cpp
+diff --git a/tests/libslic3r/test_orca_bed_temp.cpp b/tests/libslic3r/test_orca_bed_temp.cpp
+new file mode 100644
+index 0000000000..5f481a3385
+--- /dev/null
++++ b/tests/libslic3r/test_orca_bed_temp.cpp
+@@ -0,0 +1,59 @@
++#include <catch2/catch_all.hpp>
++
++#include "libslic3r/OrcaExt/BedTempOverride.hpp"
++
++#include <vector>
++
++using namespace Slic3r;
++
++// The offset is what the upload dialog adds to the plate temperature. It must never turn a heated
++// bed off (M140 S0) nor revive an unset plate temperature (0 = the filament is incompatible with
++// the selected plate).
++TEST_CASE("Bed temperature offset is added to the plate temperature and clamped", "[OrcaBedTemp]") {
++    CHECK(OrcaExt::apply_bed_temp_offset(60, -15) == 45);
++    CHECK(OrcaExt::apply_bed_temp_offset(60, 0) == 60);
++    CHECK(OrcaExt::apply_bed_temp_offset(45, 15) == 60);
++    CHECK(OrcaExt::apply_bed_temp_offset(0, 15) == 0);
++    CHECK(OrcaExt::apply_bed_temp_offset(10, -15) == 1);
++    CHECK(OrcaExt::apply_bed_temp_offset(120, 15) == OrcaExt::kBedTempCeiling);
++
++    CHECK(OrcaExt::clamp_bed_temp_offset(-100) == OrcaExt::kBedTempOffsetMin);
++    CHECK(OrcaExt::clamp_bed_temp_offset(100) == OrcaExt::kBedTempOffsetMax);
++}
++
++TEST_CASE("Effective first-layer bed temperature follows the bed temperature formula", "[OrcaBedTemp]") {
++    DynamicPrintConfig cfg;
++    // btPEI, the plate type whose first-layer key is hot_plate_temp_initial_layer
++    cfg.set_key_value("hot_plate_temp_initial_layer", new ConfigOptionInts{50, 70});
++
++    SECTION("a missing formula behaves as by-highest-temp") {
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPEI, std::vector<int>{0, 1}) == 70);
++    }
++
++    SECTION("by-highest-temp uses the hottest printed filament") {
++        cfg.set_key_value("bed_temperature_formula", new ConfigOptionEnum<BedTempFormula>(BedTempFormula::btfHighestTemp));
++
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPEI, std::vector<int>{0}) == 50);
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPEI, std::vector<int>{1}) == 70);
++        // an empty list means nothing is sliced yet, so every configured filament counts
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPEI, std::vector<int>{}) == 70);
++    }
++
++    SECTION("by-first-filament uses the first entry of the used list") {
++        cfg.set_key_value("bed_temperature_formula", new ConfigOptionEnum<BedTempFormula>(BedTempFormula::btfFirstFilament));
++
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPEI, std::vector<int>{0, 1}) == 50);
++    }
++
++    SECTION("a plate type with no configured temperature reads 0") {
++        CHECK(OrcaExt::effective_first_layer_bed_temp(cfg, BedType::btPTE, std::vector<int>{0}) == 0);
++    }
++}
++
++// PartPlate::get_extruders() reports 1-based filament ids (0 = unset); the config arrays are
++// 0-based, so the two must not be confused when the temperature of a used filament is looked up.
++TEST_CASE("Filament ids convert from the 1-based plate list to config indices", "[OrcaBedTemp]") {
++    CHECK(OrcaExt::to_zero_based_filaments(std::vector<int>{1, 2}) == std::vector<int>{0, 1});
++    CHECK(OrcaExt::to_zero_based_filaments(std::vector<int>{0, -1, 3}) == std::vector<int>{2});
++    CHECK(OrcaExt::to_zero_based_filaments(std::vector<int>{}) == std::vector<int>{});
++}

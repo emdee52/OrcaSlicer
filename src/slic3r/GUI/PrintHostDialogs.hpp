@@ -25,7 +25,7 @@ class wxStaticText;
 class wxWrapSizer;
 class CheckBox;
 
-namespace Slic3r { namespace GUI { class BitmapComboBox; } }
+namespace Slic3r { namespace GUI { class BitmapComboBox; class RadioBox; } }
 
 namespace Slic3r {
 
@@ -41,6 +41,8 @@ public:
     std::string group() const;
     std::string storage() const;
     bool switch_to_device_tab() const {return m_switch_to_device_tab;}
+    // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
+    int bed_temp_offset() const { return m_bed_temp_offset; }
 
     virtual void EndModal(int ret) override;
     virtual void init();
@@ -59,6 +61,18 @@ protected:
     boost::filesystem::path m_path;
     PrintHostPostUploadActions m_post_actions;
     wxArrayString m_storage_names;
+
+    // [ORCAPORT:BT-1] BEGIN - bed-temperature offset row. The value is written to the project
+    // config by the caller and applied at G-code export, so no preset is touched and no re-slice
+    // is triggered.
+    int                    m_bed_temp_offset {0};
+    int                    m_bed_temp_base {0};
+    wxString               m_bed_temp_plate_label;
+    wxStaticText*          m_bed_temp_status {nullptr};
+    std::vector<RadioBox*> m_bed_temp_radios;
+    void                   set_bed_temp_offset(int offset);
+    void                   update_bed_temp_status();
+    // [ORCAPORT:BT-1] END
 };
 
 
