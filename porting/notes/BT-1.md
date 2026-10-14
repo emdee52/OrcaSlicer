@@ -1,6 +1,6 @@
 # BT-1 - Bed temperature readout + print-time offset
 
-Status: implemented (build clean; runtime pending). Original feature - no fork source.
+Status: merged (user-verified) - `b9ba044107` on `port/integration`. Original feature - no fork source.
 
 Branch `port/BT-1`, based on `port/integration` `3d2099554d`. No Neotko/preFlight
 counterpart: `bed_temperature_formula` (the "hottest filament" behaviour, Neotko
@@ -143,9 +143,9 @@ computes the effective first-layer temperature and converts 1-based plate filame
    3mf path work needs a synchronous G-code re-export before the bundle is built; there is
    no such API in `BackgroundSlicingProcess` today.
 2. The recommendation button (suggesting a plate temperature from the part's volume /
-   footprint / count / height) is **not implemented**. The geometry is easy to compute
-   from the plate's objects, but the mapping from geometry to degrees Celsius is a thermal
-   judgement that belongs to the user, not to a guess in the code.
+   footprint / count / height) is **dropped by user decision** - do not build it. The geometry
+   is easy to compute from the plate's objects, but the mapping from geometry to degrees
+   Celsius is a thermal judgement, and the user does not want the suggestion.
 3. The offset applies to the whole print (both first-layer and later-layer bed
    temperatures), matching `bed_temperature_formula`'s whole-print behaviour. Per-layer
    offsets are not supported.
