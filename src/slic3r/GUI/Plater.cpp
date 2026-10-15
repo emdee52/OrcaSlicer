@@ -8138,6 +8138,15 @@ Plater::priv::~priv()
 
 void Plater::priv::update(unsigned int flags)
 {
+    // [ORCAPORT:BT-1] The plate bed-temperature readout follows the plate's used filaments and the
+    // print settings, and everything that mutates either one ends up here: per-object/volume
+    // filament assignment (ObjectList::set_extruder_for_selected_items), the MMU segmentation
+    // gizmo, selection edits, plate settings. Invalidate the cached label here and not only in
+    // Plater::on_config_change: the per-object filament change is not a config change, so it never
+    // reached that invalidation and the plate kept drawing the previous temperature.
+    // reload_scene() below sets the canvas dirty, so the new label is drawn on the next idle.
+    this->partplate_list.invalidate_bed_temp_textures();
+
     // the following line, when enabled, causes flickering on NVIDIA graphics cards
 //    wxWindowUpdateLocker freeze_guard(q);
 #ifdef SUPPORT_AUTOCENTER

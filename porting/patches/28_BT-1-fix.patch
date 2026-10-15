@@ -1,0 +1,55 @@
+diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
+index e90f3d55a3..8dfe7aceed 100644
+--- a/src/slic3r/GUI/PartPlate.cpp
++++ b/src/slic3r/GUI/PartPlate.cpp
+@@ -2696,18 +2696,22 @@ void PartPlate::calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &bu
+ 	float     gap_left = PARTPLATE_ICON_GAP_LEFT * factor;
+ 	p += Vec2d(gap_left, 0);
+ 
+-	// The plate number occupies [p(1) + offset_y, p(1) + size - offset_y]; the readout sits below it.
++	// The plate number occupies [p(0) + offset_x, p(0) + size - offset_x] horizontally. The readout
++	// sits on the plate immediately left of it, on the same baseline: drawn below the number it goes
++	// past the plate's front edge and out of the default "fit plate" view, and the column to its
++	// right is where the plate icons are.
+ 	float height = 0.8f * size;
+ 	float width  = (texture.m_original_height > 0)
+ 		? height * (float) texture.m_original_width / (float) texture.m_original_height
+ 		: height;
+-	float x0 = p(0) + offset_x;
+-	float y0 = p(1) + offset_y - height - PARTPLATE_ICON_GAP_Y * factor;
+-
+-	poly.contour.append({ scale_(x0)        , scale_(y0)         });
+-	poly.contour.append({ scale_(x0 + width), scale_(y0)         });
+-	poly.contour.append({ scale_(x0 + width), scale_(y0 + height) });
+-	poly.contour.append({ scale_(x0)        , scale_(y0 + height) });
++	float y0 = p(1) + offset_y;
++	float x1 = p(0) + offset_x - PARTPLATE_ICON_GAP_LEFT * factor; // right edge, a gap left of the number
++	float x0 = x1 - width;
++
++	poly.contour.append({ scale_(x0), scale_(y0)         });
++	poly.contour.append({ scale_(x1), scale_(y0)         });
++	poly.contour.append({ scale_(x1), scale_(y0 + height) });
++	poly.contour.append({ scale_(x0), scale_(y0 + height) });
+ 
+ 	if (!init_model_from_poly(buffer, poly, GROUND_Z))
+ 		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for icons\n";
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index 62c4011e72..9bd90301e3 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -8138,6 +8138,15 @@ Plater::priv::~priv()
+ 
+ void Plater::priv::update(unsigned int flags)
+ {
++    // [ORCAPORT:BT-1] The plate bed-temperature readout follows the plate's used filaments and the
++    // print settings, and everything that mutates either one ends up here: per-object/volume
++    // filament assignment (ObjectList::set_extruder_for_selected_items), the MMU segmentation
++    // gizmo, selection edits, plate settings. Invalidate the cached label here and not only in
++    // Plater::on_config_change: the per-object filament change is not a config change, so it never
++    // reached that invalidation and the plate kept drawing the previous temperature.
++    // reload_scene() below sets the canvas dirty, so the new label is drawn on the next idle.
++    this->partplate_list.invalidate_bed_temp_textures();
++
+     // the following line, when enabled, causes flickering on NVIDIA graphics cards
+ //    wxWindowUpdateLocker freeze_guard(q);
+ #ifdef SUPPORT_AUTOCENTER

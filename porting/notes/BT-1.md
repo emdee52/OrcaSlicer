@@ -91,18 +91,78 @@ computes the effective first-layer temperature and converts 1-based plate filame
 
 ## Plate readout details
 
-- `PartPlate::generate_bed_temp_texture()` mirrors `generate_plate_name_texture()`; the
-  geometry mirrors `calc_vertex_for_number()` with a negative Y offset, so the label sits
-  just below the plate number (`bed_ext[1]` corner, factor = plate depth / 200).
+- `PartPlate::generate_bed_temp_texture()` mirrors `generate_plate_name_texture()`; the geometry
+  mirrors `calc_vertex_for_number()`, placing the label on the plate immediately left of the plate
+  number on the same baseline (`bed_ext[1]` corner, factor = plate depth / 200).
 - Regenerated only when invalidated, never per frame: `preset_bundle->full_config()` is
   far too expensive for a render path.
-- Invalidation: `Plater::on_config_change` (filament temperatures, formula, preset
-  switches), `PartPlate::set_bed_type` (per-plate bed type) and the dialog OK handler
-  (the project-config write does not go through `on_config_change`).
+- Invalidation: `Plater::priv::update` (every model/config mutation - see the fix below),
+  `Plater::on_config_change` (config edits that never reach `update()`), `PartPlate::set_bed_type`
+  (per-plate bed type) and the dialog OK handler (the project-config write).
 - `effective_first_layer_bed_temp` uses the plate's **used** filaments
   (`PartPlate::get_extruders()`, 1-based), so an unused filament slot with a high bed
   temperature cannot inflate the number. Empty list (nothing sliced) falls back to every
   configured filament.
+
+## Fix (2026-10-14) - the readout ignored a per-object filament change
+
+Reported by the user after testing: changing **the object's filament** (PLA -> PETG) left the plate
+readout on the old temperature, while the print dialog showed the new one. The dialog recomputes on
+open, so the two can only differ by *time* - it was a stale cached texture.
+
+Root cause, from the code: the readout is a cached `GLTexture` invalidated only from
+`Plater::on_config_change` (plus the plate bed-type setter and the dialog OK). A per-object filament
+change does not go through any of them:
+
+- every entry point (object list, part context menu, right-click filament menu in
+  `GUI_Factories.cpp:1104`, the canvas number keys `GLCanvas3D.cpp:3635/4193`, `Selection.cpp:2202`)
+  funnels into `ObjectList::set_extruder_for_selected_items()` (`GUI_ObjectList.cpp:6600`), which
+  mutates the object/volume `extruder` config and then only calls `plater()->update()` + `Refresh()`;
+- `Plater::on_config_change` is never called, because the object's `extruder` is model state, not
+  the print config that function diffs;
+- `Plater::on_filament_change` (`Plater.cpp:20267`) is an upstream **stub** - it computes
+  `filament_type` and throws it away.
+
+The scene *did* repaint (`plater()->update()` -> `reload_scene()` -> `set_as_dirty()`, and
+`GLCanvas3D::on_idle` renders when dirty), which is exactly why the stale texture kept being drawn
+instead of the plate appearing frozen.
+
+Fix: invalidate the cached labels in `Plater::priv::update()`. That is the funnel every model/config
+mutation passes through (per-object/volume filament assignment, the MMU segmentation gizmo, the
+filament map dialog, selection edits, plate settings, config changes), so no entry point can be
+missed again. The existing invalidation in `Plater::on_config_change` stays for config edits that do
+not reach `update()`.
+
+Second defect found while verifying: the label was drawn **below and to the right of the plate
+number**, i.e. off the front-right corner of the plate and past the viewport edge in the default
+"fit plate" view (and under the plate icon column). The user's camera happened to be zoomed out,
+which is why they could see it at all. It is now drawn **on the plate, immediately left of the
+number on the same baseline**, which is inside the default view and clear of the icon column.
+
+## Fix verification (2026-10-14)
+
+All of it on the running build, over MCP, with the window captured via `PrintWindow` (the app's 3D
+canvas, so the readout is read from pixels) and the plate's sliced G-code as ground truth. Setup:
+Elegoo CC, Textured PEI plate, per-filament `textured_plate_temp_initial_layer = 80,80,60,80`
+(slots 1/2/4 PETG 80, slot 3 PLA 60); one 20 mm box, `tests/data/test_stl/ASCII/20mmbox-LF.stl`.
+
+| step | plate G-code | plate readout (capture) |
+|------|--------------|-------------------------|
+| object on filament 1 (PETG) | `M190 S80` / `M140 S80` | `80°C` |
+| object switched to filament 3 (PLA) | `M190 S60` / `M140 S60` | `60°C` |
+| second object added on filament 1 (first stays on 3) | - (see below) | `80°C` |
+
+- Row 2 is the reported bug: the readout followed the **per-object** filament change, which it did not
+  before the fix, and matches the emitted G-code exactly.
+- Row 3 checks the multi-material expectation: with filament 3 (60) and filament 1 (80) both used, the
+  readout shows 80, the highest of the plate's used filaments, i.e. the `by_highest_temp` formula the
+  slicer defaults to. This row has no G-code: slicing PLA + PETG on this printer is refused by the
+  nozzle-temperature compatibility validation (`process_completed_with_error`), so only the readout is
+  observed there; the max-over-filaments logic itself is unit-tested.
+- The captures also confirm the placement fix: the readout renders on the plate, left of the plate
+  number, inside the default "fit plate" view (before the fix it was off the front-right corner and
+  clipped by the viewport edge). Captures:
+  `build-logs/bt1fix-{before,after,multi}.png` (full window) and `.crop.png` (bottom-right zoom).
 
 ## Verification
 

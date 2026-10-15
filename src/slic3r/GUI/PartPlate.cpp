@@ -2696,18 +2696,22 @@ void PartPlate::calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &bu
 	float     gap_left = PARTPLATE_ICON_GAP_LEFT * factor;
 	p += Vec2d(gap_left, 0);
 
-	// The plate number occupies [p(1) + offset_y, p(1) + size - offset_y]; the readout sits below it.
+	// The plate number occupies [p(0) + offset_x, p(0) + size - offset_x] horizontally. The readout
+	// sits on the plate immediately left of it, on the same baseline: drawn below the number it goes
+	// past the plate's front edge and out of the default "fit plate" view, and the column to its
+	// right is where the plate icons are.
 	float height = 0.8f * size;
 	float width  = (texture.m_original_height > 0)
 		? height * (float) texture.m_original_width / (float) texture.m_original_height
 		: height;
-	float x0 = p(0) + offset_x;
-	float y0 = p(1) + offset_y - height - PARTPLATE_ICON_GAP_Y * factor;
+	float y0 = p(1) + offset_y;
+	float x1 = p(0) + offset_x - PARTPLATE_ICON_GAP_LEFT * factor; // right edge, a gap left of the number
+	float x0 = x1 - width;
 
-	poly.contour.append({ scale_(x0)        , scale_(y0)         });
-	poly.contour.append({ scale_(x0 + width), scale_(y0)         });
-	poly.contour.append({ scale_(x0 + width), scale_(y0 + height) });
-	poly.contour.append({ scale_(x0)        , scale_(y0 + height) });
+	poly.contour.append({ scale_(x0), scale_(y0)         });
+	poly.contour.append({ scale_(x1), scale_(y0)         });
+	poly.contour.append({ scale_(x1), scale_(y0 + height) });
+	poly.contour.append({ scale_(x0), scale_(y0 + height) });
 
 	if (!init_model_from_poly(buffer, poly, GROUND_Z))
 		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for icons\n";
