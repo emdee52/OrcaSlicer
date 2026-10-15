@@ -1,6 +1,7 @@
 # BT-1 - Bed temperature readout + print-time offset
 
-Status: merged (user-verified) - `b9ba044107` on `port/integration`. Original feature - no fork source.
+Status: merged (user-verified). `b9ba044107` on `port/integration` for the feature, `ae832a04aa` for
+the fix below. Original feature - no fork source.
 
 Branch `port/BT-1`, based on `port/integration` `3d2099554d`. No Neotko/preFlight
 counterpart: `bed_temperature_formula` (the "hottest filament" behaviour, Neotko
