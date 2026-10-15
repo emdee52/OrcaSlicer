@@ -140,6 +140,55 @@ number**, i.e. off the front-right corner of the plate and past the viewport edg
 which is why they could see it at all. It is now drawn **on the plate, immediately left of the
 number on the same baseline**, which is inside the default view and clear of the icon column.
 
+## Fix 2 (2026-10-15) - labels with an offset suffix rendered squished
+
+Reported by the user with four screenshots: `45°C` and `100°C` looked fine, `65°C (+10)` and
+`60°C (+5)` were visibly condensed, and the gap before the plate number varied between them.
+
+Cause: `GLTexture::generate_from_text_string()` (what the readout uses) measures the text extent
+`w x h` and then draws it into a rect of only that extent inside a **power-of-two padded** bitmap
+(`GLTexture.cpp:501-517`). `calc_vertex_for_bed_temp_texture()` sized the quad from the *original*
+aspect while mapping the *whole* padded texture onto it, so the glyphs were scaled by
+
+```
+compression = ( orig_w / orig_h ) / ( POT_w / POT_h )
+```
+
+which is ~1 only when the extent nearly fills its POT box and collapses as soon as the extent just
+crosses a power of two. At this font size (`orig_h ~ 28` -> `POT_h = 32`) that predicts the reported
+pattern: short labels ~1.0, and a longer one that lands in the 256 bucket ~0.58. The same padding also
+explains the moving gap: the quad's right edge was anchored, but the glyphs only occupy its left
+`orig_w/POT_w`, so the padding showed up as a variable gap before the plate number.
+
+Fix: size the quad by the **padded** aspect (as `generate_plate_name_texture()` already does,
+`PartPlate.cpp:2610`) and anchor the *visible text*, not the quad:
+
+```cpp
+float quad_w = height * texture.get_width() / texture.get_height();      // padded aspect
+float text_w = quad_w * texture.m_original_width / texture.get_width();  // glyphs = left part
+float x1 = p(0) + offset_x - PARTPLATE_ICON_GAP_LEFT * factor;           // text right edge
+float x0 = x1 - text_w;                                                  // quad left edge
+```
+
+Compression is now exactly 1.0 for every string, and the remainder of the quad is transparent.
+
+Measured on the running build (Snapmaker plate, window captured + the label's orange bounding box
+measured per capture, `build-logs/bt1_measure_label.ps1`):
+
+| label | before (px) | after (px) |
+|-------|-------------|------------|
+| `55°C` | 105 | 110 |
+| `70°C (+15)` | 139 | 255 |
+| long / short ratio | **1.32** | **2.32** |
+| right edge, short -> long | 2017 -> 1892 (moves 125 px) | 2031 -> 2028 (moves 3 px) |
+
+2.32 matches the natural width ratio for those strings (the suffix has narrower glyphs than the
+digits), and the gap to the plate number no longer depends on the string. Captures:
+`build-logs/bt1s-{before,after}-{short,long}.png`.
+
+Also confirmed: a taller `orig_h/POT_h ~ 0.875` shrink applies to the glyph *height* uniformly for
+every label (bottom-aligned on the number's baseline), so nothing looks wrong; left as is.
+
 ## Fix verification (2026-10-14)
 
 All of it on the running build, over MCP, with the window captured via `PrintWindow` (the app's 3D
