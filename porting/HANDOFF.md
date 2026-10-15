@@ -82,7 +82,7 @@ port intent onto Orca's pipelines.
 | ID | Feature | Status | Notes | Patch |
 |----|---------|--------|-------|-------|
 | PP-1 | Perforations gizmo (planar-face through holes) | merged (user-verified) | notes/PP-1.md | 23_PP-1.patch |
-| BT-1 | Bed temperature readout + print-time offset | merged (user-verified) + 1 fix merged; fix 2 pending user test | notes/BT-1.md | 27_BT-1.patch;28_BT-1-fix.patch;29_BT-1-fix2.patch |
+| BT-1 | Bed temperature readout + print-time offset | merged (user-verified) + 2 fixes merged | notes/BT-1.md | 27_BT-1.patch;28_BT-1-fix.patch;29_BT-1-fix2.patch |
 
 BT-1 draws the first-layer plate temperature under the plate number and adds six
 +-5/10/15 offset buttons to the "Send G-code to printer host" dialog. The offset is a
@@ -101,15 +101,15 @@ Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. 
 
 ## What to do next
 
-**Pending user test (BT-1 fix 2, 2026-10-15):** branch `port/BT-1-fix2` from `port/integration`
-`e1fe5d221f`. Labels with an offset suffix (`65°C (+10)`, `60°C (+5)`) rendered squished and sat at a
-varying distance from the plate number: the readout's quad used the text's *original* aspect while
-`generate_from_text_string()` pads the texture to a power of two, so the glyphs were scaled by
-`(orig_w/orig_h)/(POT_w/POT_h)` - ~1.0 for short labels, ~0.58 for one that crosses into the 256
-bucket. The quad now follows the padded aspect and anchors the visible text. Measured: `70°C (+15)` vs
-`55°C` width ratio 1.32 -> 2.32 (2.32 is the natural ratio) and the right edge no longer moves with the
-string (125 px -> 3 px). See `notes/BT-1.md` "Fix 2 (2026-10-15)" and patch `29_BT-1-fix2.patch`.
-Not merged/pushed - the user tests first.
+**BT-1 fix 2 is DONE and merged into `port/integration` (user-verified).** Branch `port/BT-1-fix2` from
+`port/integration` `e1fe5d221f`, merged as `8fa72e4493`. Labels with an offset suffix
+(`65°C (+10)`, `60°C (+5)`) rendered squished and sat at a varying distance from the plate number: the
+readout's quad used the text's *original* aspect while `generate_from_text_string()` pads the texture
+to a power of two, so the glyphs were scaled by `(orig_w/orig_h)/(POT_w/POT_h)` - ~1.0 for short
+labels, ~0.58 for one that crosses into the 256 bucket. The quad now follows the padded aspect and
+anchors the visible text. Measured: `70°C (+15)` vs `55°C` width ratio 1.32 -> 2.32 (2.32 is the
+natural ratio) and the right edge no longer moves with the string (125 px -> 3 px). See
+`notes/BT-1.md` "Fix 2 (2026-10-15)" and patch `29_BT-1-fix2.patch`.
 
 **BT-1 fix is DONE and merged into `port/integration` (user-verified).** Branch `port/BT-1-fix` from
 `port/integration` `91bf03992b`, merged as `ae832a04aa`. The plate bed-temperature readout did not
