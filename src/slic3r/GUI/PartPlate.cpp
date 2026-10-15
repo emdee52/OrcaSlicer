@@ -35,6 +35,7 @@
 #include "I18N.hpp"
 #include "GUI_App.hpp"
 #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] the magnet icon's availability gate
+#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1] the free-Z toggle icon's state
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "BackgroundSlicingProcess.hpp"
@@ -697,7 +698,10 @@ void PartPlate::calc_vertex_for_icons(int index, PickingModel &model)
     p += Vec2d(gap_left,-1 * (index * (size + gap_y) + gap_top));
 
     if (m_plater && m_plater->get_build_volume_type() == BuildVolume_Type::Circle)
-        p[1] -= std::max(0.0, (bed_ext.size()(1) - (size + gap_y) * 7 /* bed_icon_count */) / 2);
+        // bed_icon_count: the column now also carries the free-Z toggle ([ORCAPORT:AS-1]), 7 -> 8.
+        // A circular bed is never a dual-extruder (H2D) machine, so the filament-map slot stays empty
+        // and 8 is the full count. Keep in sync with the layout slots in update_bed_shape().
+        p[1] -= std::max(0.0, (bed_ext.size()(1) - (size + gap_y) * 8 /* bed_icon_count */) / 2);
 
     poly.contour.append({ scale_(p(0))       , scale_(p(1) - size) });
     poly.contour.append({ scale_(p(0) + size), scale_(p(1) - size) });
@@ -1207,6 +1211,20 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
                 set_hover_tooltip(_u8L("Move plate to the front"));
             } else
                 render_icon_texture(m_move_front_icon.model, m_partplate_list->m_move_front_texture);
+                // [ORCAPORT:AS-1] the free-Z toggle: gravity pulls objects onto the bed (off) versus
+                // objects staying where they are put (on). Toggled by the click handler in Plater.
+                {
+                    const bool free_z_on = OrcaExt::free_z();
+                    if (hover_id == (int)FREE_Z_HOVER_ID) {
+                        render_icon_texture(m_freez_icon.model, free_z_on
+                            ? m_partplate_list->m_freez_on_hovered_texture
+                            : m_partplate_list->m_freez_hovered_texture);
+                        set_hover_tooltip(_u8L("Allow free Z placement"));
+                    } else
+                        render_icon_texture(m_freez_icon.model, free_z_on
+                            ? m_partplate_list->m_freez_on_texture
+                            : m_partplate_list->m_freez_texture);
+                }
                 // [ORCAPORT:AS-3] the magnet: Snap & Drag options.
                 if (OrcaExt::Gui::GravitySnap::plate_icon_available()) {
                     if (hover_id == (int)SNAP_DRAG_HOVER_ID) {
@@ -1529,6 +1547,8 @@ void PartPlate::register_raycasters_for_picking(GLCanvas3D &canvas)
 	if (m_plate_name_edit_icon.mesh_raycaster != nullptr)
 		register_model_for_picking(canvas, m_plate_name_edit_icon, picking_id_component(6));
     register_model_for_picking(canvas, m_move_front_icon, picking_id_component(7));
+    // [ORCAPORT:AS-1] free-Z toggle
+    register_model_for_picking(canvas, m_freez_icon, picking_id_component(FREE_Z_HOVER_ID));
     if (OrcaExt::Gui::GravitySnap::plate_icon_available())
         register_model_for_picking(canvas, m_snapdrag_icon, picking_id_component(SNAP_DRAG_HOVER_ID));
 
@@ -3541,8 +3561,12 @@ bool PartPlate::set_shape(const Pointfs& shape, const Pointfs& exclude_areas, co
 			dual_bbl = (preset->is_bbl_vendor() && preset->get_printer_extruder_count() == 2);
 			calc_vertex_for_icons(dual_bbl ? 5 : 6, m_plate_filament_map_icon);
 			calc_vertex_for_icons(dual_bbl ? 6 : 5, m_move_front_icon);
-			// [ORCAPORT:AS-3] layout slot 7 (picking sub-id 9). Laid out unconditionally: the column slot count must not depend on a runtime toggle.
-			calc_vertex_for_icons(7, m_snapdrag_icon);
+			// [ORCAPORT:AS-1] free-Z toggle, in the slot the dual-extruder filament map leaves empty on
+			// single-extruder printers, directly above the Snap & Drag magnet. Slot 6 single / 7 dual.
+			calc_vertex_for_icons(dual_bbl ? 7 : 6, m_freez_icon);
+			// [ORCAPORT:AS-3] layout slot 7 (8 when the free-Z toggle is present), picking sub-id 9. Laid
+			// out unconditionally: the column slot count must not depend on a runtime toggle.
+			calc_vertex_for_icons(dual_bbl ? 8 : 7, m_snapdrag_icon);
 
 			calc_vertex_for_number(0, false, m_plate_idx_icon);
 			// calc vertex for plate name
@@ -4397,6 +4421,33 @@ void PartPlateList::generate_icon_textures()
 	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 	    }
 	}
+
+	// [ORCAPORT:AS-1] the free-Z toggle, off state (gravity pulls objects onto the bed) and on state
+	// (objects stay off the bed).
+	{
+	    file_name = path + (m_is_dark ? "plate_freez_dark.svg" : "plate_freez.svg");
+	    if (!m_freez_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
+	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
+	    }
+	}
+	{
+	    file_name = path + (m_is_dark ? "plate_freez_hover_dark.svg" : "plate_freez_hover.svg");
+	    if (!m_freez_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
+	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
+	    }
+	}
+	{
+	    file_name = path + (m_is_dark ? "plate_freez_on_dark.svg" : "plate_freez_on.svg");
+	    if (!m_freez_on_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
+	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
+	    }
+	}
+	{
+	    file_name = path + (m_is_dark ? "plate_freez_on_hover_dark.svg" : "plate_freez_on_hover.svg");
+	    if (!m_freez_on_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
+	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
+	    }
+	}
 	//if (m_arrange_texture.get_id() == 0)
 	{
 		file_name = path + (m_is_dark ? "plate_arrange_dark.svg" : "plate_arrange.svg");
@@ -4554,6 +4605,11 @@ void PartPlateList::release_icon_textures()
     // [ORCAPORT:AS-3]
     m_snapdrag_hovered_texture.reset();
     m_snapdrag_texture.reset();
+    // [ORCAPORT:AS-1]
+    m_freez_texture.reset();
+    m_freez_hovered_texture.reset();
+    m_freez_on_texture.reset();
+    m_freez_on_hovered_texture.reset();
 	m_arrange_texture.reset();
 	m_arrange_hovered_texture.reset();
 	m_orient_texture.reset();

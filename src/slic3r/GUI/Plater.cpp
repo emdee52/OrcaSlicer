@@ -104,6 +104,7 @@
 #include "3DBed.hpp"
 #include "PartPlate.hpp"
 #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] the magnet button owns the options panel
+#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1] the gravity button toggles free-Z placement
 #include "Camera.hpp"
 #include "Mouse3DController.hpp"
 #include "Tab.hpp"
@@ -22245,6 +22246,19 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
         p->partplate_list.update_plates();
         update();
         p->partplate_list.select_plate(0);
+    }
+    // [ORCAPORT:AS-1] the gravity button is the free-Z toggle itself: objects either obey gravity and
+    // land on the bed, or stay where they are put. No snapshot: nothing about the model changes.
+    else if ((action == (int)PartPlate::FREE_Z_HOVER_ID) && (!right_click)) {
+        const bool on = !OrcaExt::free_z();
+        wxGetApp().app_config->set_bool("orca_ext_free_z", on);
+        wxGetApp().app_config->save();
+        OrcaExt::set_free_z(on);
+        if (GLCanvas3D* canvas = get_view3D_canvas3D()) {
+            canvas->set_as_dirty();
+            canvas->request_extra_frame();
+        }
+        ret = 0;
     }
     // [ORCAPORT:AS-3] the magnet button opens/closes the Snap & Drag options panel. It does NOT
     // toggle the feature itself; the panel owns the three preferences. No snapshot: nothing about

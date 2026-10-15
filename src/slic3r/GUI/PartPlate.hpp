@@ -148,6 +148,7 @@ private:
     PickingModel m_plate_name_edit_icon;
     PickingModel m_move_front_icon;
     PickingModel m_snapdrag_icon; // [ORCAPORT:AS-3] Snap & Drag options magnet
+    PickingModel m_freez_icon;    // [ORCAPORT:AS-1] free-Z placement toggle
     GLModel m_plate_idx_icon;
     GLTexture m_texture;
 
@@ -222,11 +223,14 @@ private:
 public:
     static constexpr unsigned int PLATE_NAME_HOVER_ID = 6;
     static constexpr unsigned int PLATE_FILAMENT_MAP_ID = 8;
-    // [ORCAPORT:AS-3] sub-id of the Snap & Drag magnet (layout slot 7). GRABBER_COUNT is the STRIDE
-    // of the plate picking-id space (`plate_index * GRABBER_COUNT + sub_id`); 9 -> 10. Budget:
-    // MAX_PLATE_COUNT (36) * 10 = 360, still well under SceneRaycaster::EIdBase::Volume (1000).
+    // [ORCAPORT:AS-3] sub-id of the Snap & Drag magnet (layout slot 7, 8 when the plate column also
+    // carries the free-Z toggle). GRABBER_COUNT is the STRIDE of the plate picking-id space
+    // (`plate_index * GRABBER_COUNT + sub_id`); 10 -> 11. Budget:
+    // MAX_PLATE_COUNT (36) * 11 = 396, still well under SceneRaycaster::EIdBase::Volume (1000).
     static constexpr unsigned int SNAP_DRAG_HOVER_ID = 9;
-    static constexpr unsigned int GRABBER_COUNT = 10;
+    // [ORCAPORT:AS-1] sub-id of the free-Z placement toggle in the plate column.
+    static constexpr unsigned int FREE_Z_HOVER_ID = 10;
+    static constexpr unsigned int GRABBER_COUNT = 11;
 
     static ColorRGBA SELECT_COLOR;
     static ColorRGBA UNSELECT_COLOR;
@@ -638,6 +642,11 @@ class PartPlateList : public ObjectBase
     // [ORCAPORT:AS-3] Snap & Drag magnet
     GLTexture m_snapdrag_hovered_texture;
     GLTexture m_snapdrag_texture;
+    // [ORCAPORT:AS-1] free-Z placement toggle (off = objects drop to the bed, on = they stay)
+    GLTexture m_freez_texture;
+    GLTexture m_freez_hovered_texture;
+    GLTexture m_freez_on_texture;
+    GLTexture m_freez_on_hovered_texture;
     GLTexture m_arrange_texture;
     GLTexture m_arrange_hovered_texture;
     GLTexture m_orient_texture;
