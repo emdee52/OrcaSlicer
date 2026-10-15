@@ -101,6 +101,22 @@ Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. 
 
 ## What to do next
 
+**Pending user test (BT-1 fix, 2026-10-14):** branch `port/BT-1-fix` from `port/integration` `91bf03992b`.
+The plate bed-temperature readout did not follow a **per-object filament change** (the print dialog
+did): `ObjectList::set_extruder_for_selected_items()` mutates model state and only calls
+`plater()->update()`, never `Plater::on_config_change`, so the cached readout texture was never
+invalidated. The invalidation now lives in `Plater::priv::update()` - the funnel every model/config
+mutation passes through. The label was also moved from below/right of the plate number (off the plate
+and out of the default fit-plate view, behind the icon column) to **on the plate, immediately left of
+the number**. Verified here over MCP + window captures on a Textured PEI plate whose per-filament
+`textured_plate_temp_initial_layer` is `80,80,60,80`:
+- object on filament 3 (PLA, 60) -> label `60°C`, plate G-code `M190 S60`;
+- object switched to filament 1 (PETG, 80) -> label `80°C`, `M190 S80`;
+- a second object on filament 1 while the first stayed on 3 -> label `80°C` = the highest of the used
+  filaments, matching `bed_temperature_formula = by_highest_temp`.
+See `notes/BT-1.md` "Fix (2026-10-14)" and patch `28_BT-1-fix.patch`.
+Not merged/pushed - the user tests first.
+
 **PF-10-paint / PF-10-auto / PF-10-multisupport / PF-10-paint-qol are DONE and merged into
 `port/integration` (user-verified).** `port/PF-10-auto-fix` and `port/PF-10-multisupport` are pushed
 to `origin` and merged (`--no-ff`). Summary: an extensible `OrcaExt/SupportPaintTypes` scoring
