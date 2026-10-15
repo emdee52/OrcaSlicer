@@ -1,0 +1,334 @@
+From fd1885309623220eaa009323334a00b2fe8e5192 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Thu, 15 Oct 2026 14:45:01 -0600
+Subject: [PATCH] feat(AS-1): toggle free-Z placement from a plate-column
+ button
+
+The free-Z placement key had Preferences as its only UI. Give it a button in
+the plate column instead, between the "move plate to the front" up-arrow and
+the Snap & Drag magnet, so it sits where the objects it affects are.
+
+  - PartPlate: FREE_Z_HOVER_ID = 10, GRABBER_COUNT 10 -> 11; the icon takes
+    the slot the dual-only filament map leaves empty on single-extruder
+    printers (slot 6), so the column no longer shows a blank square there.
+    Snap & Drag moves to slot 7 / 8 accordingly, and the circular-bed
+    centering count follows.
+  - Plater: the click toggles orca_ext_free_z (app key + OrcaExt::set_free_z)
+    and repaints, which also un-dims the Snap & Drag panel.
+  - Icons: plate_freez* (off: part + gravity arrow) and plate_freez_on*
+    (on: part floating above the bed), following the plate_locked tile
+    convention for idle/hover/active.
+  - Preferences: the AS-1 checkbox is removed; the key is unchanged, so an
+    existing value still applies.
+
+[ORCAPORT:AS-1]
+---
+ resources/images/plate_freez.svg              |  1 +
+ resources/images/plate_freez_dark.svg         |  1 +
+ resources/images/plate_freez_hover.svg        |  1 +
+ resources/images/plate_freez_hover_dark.svg   |  1 +
+ resources/images/plate_freez_on.svg           |  1 +
+ resources/images/plate_freez_on_dark.svg      |  1 +
+ resources/images/plate_freez_on_hover.svg     |  1 +
+ .../images/plate_freez_on_hover_dark.svg      |  1 +
+ src/slic3r/GUI/PartPlate.cpp                  | 62 ++++++++++++++++++-
+ src/slic3r/GUI/PartPlate.hpp                  | 17 +++--
+ src/slic3r/GUI/Plater.cpp                     | 14 +++++
+ src/slic3r/GUI/Preferences.cpp                | 20 ------
+ 12 files changed, 94 insertions(+), 27 deletions(-)
+ create mode 100644 resources/images/plate_freez.svg
+ create mode 100644 resources/images/plate_freez_dark.svg
+ create mode 100644 resources/images/plate_freez_hover.svg
+ create mode 100644 resources/images/plate_freez_hover_dark.svg
+ create mode 100644 resources/images/plate_freez_on.svg
+ create mode 100644 resources/images/plate_freez_on_dark.svg
+ create mode 100644 resources/images/plate_freez_on_hover.svg
+ create mode 100644 resources/images/plate_freez_on_hover_dark.svg
+
+diff --git a/resources/images/plate_freez.svg b/resources/images/plate_freez.svg
+new file mode 100644
+index 0000000000..a50a7cc1e9
+--- /dev/null
++++ b/resources/images/plate_freez.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#e9e9e9;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#545454;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/><path d="M18,22.5v5M25,22.5v5" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/><path d="M21.5,22.5v12.5" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/><polyline points="17.5 31 21.5 35 25.5 31" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_dark.svg b/resources/images/plate_freez_dark.svg
+new file mode 100644
+index 0000000000..ca6ff87c00
+--- /dev/null
++++ b/resources/images/plate_freez_dark.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#54545a;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#b3b3b3;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/><path d="M18,22.5v5M25,22.5v5" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/><path d="M21.5,22.5v12.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/><polyline points="17.5 31 21.5 35 25.5 31" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_hover.svg b/resources/images/plate_freez_hover.svg
+new file mode 100644
+index 0000000000..acc8949e88
+--- /dev/null
++++ b/resources/images/plate_freez_hover.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#e9e9e9;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#009688;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><path d="M18,22.5v5M25,22.5v5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><path d="M21.5,22.5v12.5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><polyline points="17.5 31 21.5 35 25.5 31" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_hover_dark.svg b/resources/images/plate_freez_hover_dark.svg
+new file mode 100644
+index 0000000000..986f049181
+--- /dev/null
++++ b/resources/images/plate_freez_hover_dark.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#54545a;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#009688;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><path d="M18,22.5v5M25,22.5v5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><path d="M21.5,22.5v12.5" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/><polyline points="17.5 31 21.5 35 25.5 31" style="fill:none; stroke:#009688; stroke-linecap:round; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_on.svg b/resources/images/plate_freez_on.svg
+new file mode 100644
+index 0000000000..cde88df593
+--- /dev/null
++++ b/resources/images/plate_freez_on.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#009688;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#545454;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/><line x1="6.5" y1="36.5" x2="36.5" y2="36.5" style="fill:none; stroke:#545454; stroke-linecap:square; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_on_dark.svg b/resources/images/plate_freez_on_dark.svg
+new file mode 100644
+index 0000000000..2936437866
+--- /dev/null
++++ b/resources/images/plate_freez_on_dark.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#009688;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#b3b3b3;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/><line x1="6.5" y1="36.5" x2="36.5" y2="36.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:square; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_on_hover.svg b/resources/images/plate_freez_on_hover.svg
+new file mode 100644
+index 0000000000..f727349f2f
+--- /dev/null
++++ b/resources/images/plate_freez_on_hover.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#26a69a;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#545454;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#545454; stroke-linecap:round; stroke-linejoin:round;"/><line x1="6.5" y1="36.5" x2="36.5" y2="36.5" style="fill:none; stroke:#545454; stroke-linecap:square; stroke-linejoin:round;"/></svg>
+diff --git a/resources/images/plate_freez_on_hover_dark.svg b/resources/images/plate_freez_on_hover_dark.svg
+new file mode 100644
+index 0000000000..f65e4d9c28
+--- /dev/null
++++ b/resources/images/plate_freez_on_hover_dark.svg
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="43" height="43" viewBox="0 0 43 43"><rect x="1.5" y="1.5" width="40" height="40" rx="3.5" ry="3.5" style="fill:#26a69a;"/><path d="M38,2c1.65,0,3,1.35,3,3v33c0,1.65-1.35,3-3,3H5c-1.65,0-3-1.35-3-3V5c0-1.65,1.35-3,3-3h33M38,1H5C2.79,1,1,2.79,1,5v33c0,2.21,1.79,4,4,4h33c2.21,0,4-1.79,4-4V5c0-2.21-1.79-4-4-4h0Z" style="fill:#b3b3b3;"/><rect x="11.5" y="6.5" width="20" height="12" rx="1.5" ry="1.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:round; stroke-linejoin:round;"/><line x1="6.5" y1="36.5" x2="36.5" y2="36.5" style="fill:none; stroke:#c4c4c4; stroke-linecap:square; stroke-linejoin:round;"/></svg>
+diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
+index 6ba6740627..39c4b6799a 100644
+--- a/src/slic3r/GUI/PartPlate.cpp
++++ b/src/slic3r/GUI/PartPlate.cpp
+@@ -35,6 +35,7 @@
+ #include "I18N.hpp"
+ #include "GUI_App.hpp"
+ #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] the magnet icon's availability gate
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1] the free-Z toggle icon's state
+ #include "libslic3r/AppConfig.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+ #include "BackgroundSlicingProcess.hpp"
+@@ -697,7 +698,10 @@ void PartPlate::calc_vertex_for_icons(int index, PickingModel &model)
+     p += Vec2d(gap_left,-1 * (index * (size + gap_y) + gap_top));
+ 
+     if (m_plater && m_plater->get_build_volume_type() == BuildVolume_Type::Circle)
+-        p[1] -= std::max(0.0, (bed_ext.size()(1) - (size + gap_y) * 7 /* bed_icon_count */) / 2);
++        // bed_icon_count: the column now also carries the free-Z toggle ([ORCAPORT:AS-1]), 7 -> 8.
++        // A circular bed is never a dual-extruder (H2D) machine, so the filament-map slot stays empty
++        // and 8 is the full count. Keep in sync with the layout slots in update_bed_shape().
++        p[1] -= std::max(0.0, (bed_ext.size()(1) - (size + gap_y) * 8 /* bed_icon_count */) / 2);
+ 
+     poly.contour.append({ scale_(p(0))       , scale_(p(1) - size) });
+     poly.contour.append({ scale_(p(0) + size), scale_(p(1) - size) });
+@@ -1207,6 +1211,20 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
+                 set_hover_tooltip(_u8L("Move plate to the front"));
+             } else
+                 render_icon_texture(m_move_front_icon.model, m_partplate_list->m_move_front_texture);
++                // [ORCAPORT:AS-1] the free-Z toggle: gravity pulls objects onto the bed (off) versus
++                // objects staying where they are put (on). Toggled by the click handler in Plater.
++                {
++                    const bool free_z_on = OrcaExt::free_z();
++                    if (hover_id == (int)FREE_Z_HOVER_ID) {
++                        render_icon_texture(m_freez_icon.model, free_z_on
++                            ? m_partplate_list->m_freez_on_hovered_texture
++                            : m_partplate_list->m_freez_hovered_texture);
++                        set_hover_tooltip(_u8L("Allow free Z placement"));
++                    } else
++                        render_icon_texture(m_freez_icon.model, free_z_on
++                            ? m_partplate_list->m_freez_on_texture
++                            : m_partplate_list->m_freez_texture);
++                }
+                 // [ORCAPORT:AS-3] the magnet: Snap & Drag options.
+                 if (OrcaExt::Gui::GravitySnap::plate_icon_available()) {
+                     if (hover_id == (int)SNAP_DRAG_HOVER_ID) {
+@@ -1529,6 +1547,8 @@ void PartPlate::register_raycasters_for_picking(GLCanvas3D &canvas)
+ 	if (m_plate_name_edit_icon.mesh_raycaster != nullptr)
+ 		register_model_for_picking(canvas, m_plate_name_edit_icon, picking_id_component(6));
+     register_model_for_picking(canvas, m_move_front_icon, picking_id_component(7));
++    // [ORCAPORT:AS-1] free-Z toggle
++    register_model_for_picking(canvas, m_freez_icon, picking_id_component(FREE_Z_HOVER_ID));
+     if (OrcaExt::Gui::GravitySnap::plate_icon_available())
+         register_model_for_picking(canvas, m_snapdrag_icon, picking_id_component(SNAP_DRAG_HOVER_ID));
+ 
+@@ -3541,8 +3561,12 @@ bool PartPlate::set_shape(const Pointfs& shape, const Pointfs& exclude_areas, co
+ 			dual_bbl = (preset->is_bbl_vendor() && preset->get_printer_extruder_count() == 2);
+ 			calc_vertex_for_icons(dual_bbl ? 5 : 6, m_plate_filament_map_icon);
+ 			calc_vertex_for_icons(dual_bbl ? 6 : 5, m_move_front_icon);
+-			// [ORCAPORT:AS-3] layout slot 7 (picking sub-id 9). Laid out unconditionally: the column slot count must not depend on a runtime toggle.
+-			calc_vertex_for_icons(7, m_snapdrag_icon);
++			// [ORCAPORT:AS-1] free-Z toggle, in the slot the dual-extruder filament map leaves empty on
++			// single-extruder printers, directly above the Snap & Drag magnet. Slot 6 single / 7 dual.
++			calc_vertex_for_icons(dual_bbl ? 7 : 6, m_freez_icon);
++			// [ORCAPORT:AS-3] layout slot 7 (8 when the free-Z toggle is present), picking sub-id 9. Laid
++			// out unconditionally: the column slot count must not depend on a runtime toggle.
++			calc_vertex_for_icons(dual_bbl ? 8 : 7, m_snapdrag_icon);
+ 
+ 			calc_vertex_for_number(0, false, m_plate_idx_icon);
+ 			// calc vertex for plate name
+@@ -4397,6 +4421,33 @@ void PartPlateList::generate_icon_textures()
+ 	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
+ 	    }
+ 	}
++
++	// [ORCAPORT:AS-1] the free-Z toggle, off state (gravity pulls objects onto the bed) and on state
++	// (objects stay off the bed).
++	{
++	    file_name = path + (m_is_dark ? "plate_freez_dark.svg" : "plate_freez.svg");
++	    if (!m_freez_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
++	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
++	    }
++	}
++	{
++	    file_name = path + (m_is_dark ? "plate_freez_hover_dark.svg" : "plate_freez_hover.svg");
++	    if (!m_freez_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
++	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
++	    }
++	}
++	{
++	    file_name = path + (m_is_dark ? "plate_freez_on_dark.svg" : "plate_freez_on.svg");
++	    if (!m_freez_on_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
++	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
++	    }
++	}
++	{
++	    file_name = path + (m_is_dark ? "plate_freez_on_hover_dark.svg" : "plate_freez_on_hover.svg");
++	    if (!m_freez_on_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
++	        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
++	    }
++	}
+ 	//if (m_arrange_texture.get_id() == 0)
+ 	{
+ 		file_name = path + (m_is_dark ? "plate_arrange_dark.svg" : "plate_arrange.svg");
+@@ -4554,6 +4605,11 @@ void PartPlateList::release_icon_textures()
+     // [ORCAPORT:AS-3]
+     m_snapdrag_hovered_texture.reset();
+     m_snapdrag_texture.reset();
++    // [ORCAPORT:AS-1]
++    m_freez_texture.reset();
++    m_freez_hovered_texture.reset();
++    m_freez_on_texture.reset();
++    m_freez_on_hovered_texture.reset();
+ 	m_arrange_texture.reset();
+ 	m_arrange_hovered_texture.reset();
+ 	m_orient_texture.reset();
+diff --git a/src/slic3r/GUI/PartPlate.hpp b/src/slic3r/GUI/PartPlate.hpp
+index 1cf5e82cff..bc7644a9d1 100644
+--- a/src/slic3r/GUI/PartPlate.hpp
++++ b/src/slic3r/GUI/PartPlate.hpp
+@@ -148,6 +148,7 @@ private:
+     PickingModel m_plate_name_edit_icon;
+     PickingModel m_move_front_icon;
+     PickingModel m_snapdrag_icon; // [ORCAPORT:AS-3] Snap & Drag options magnet
++    PickingModel m_freez_icon;    // [ORCAPORT:AS-1] free-Z placement toggle
+     GLModel m_plate_idx_icon;
+     GLTexture m_texture;
+ 
+@@ -222,11 +223,14 @@ private:
+ public:
+     static constexpr unsigned int PLATE_NAME_HOVER_ID = 6;
+     static constexpr unsigned int PLATE_FILAMENT_MAP_ID = 8;
+-    // [ORCAPORT:AS-3] sub-id of the Snap & Drag magnet (layout slot 7). GRABBER_COUNT is the STRIDE
+-    // of the plate picking-id space (`plate_index * GRABBER_COUNT + sub_id`); 9 -> 10. Budget:
+-    // MAX_PLATE_COUNT (36) * 10 = 360, still well under SceneRaycaster::EIdBase::Volume (1000).
++    // [ORCAPORT:AS-3] sub-id of the Snap & Drag magnet (layout slot 7, 8 when the plate column also
++    // carries the free-Z toggle). GRABBER_COUNT is the STRIDE of the plate picking-id space
++    // (`plate_index * GRABBER_COUNT + sub_id`); 10 -> 11. Budget:
++    // MAX_PLATE_COUNT (36) * 11 = 396, still well under SceneRaycaster::EIdBase::Volume (1000).
+     static constexpr unsigned int SNAP_DRAG_HOVER_ID = 9;
+-    static constexpr unsigned int GRABBER_COUNT = 10;
++    // [ORCAPORT:AS-1] sub-id of the free-Z placement toggle in the plate column.
++    static constexpr unsigned int FREE_Z_HOVER_ID = 10;
++    static constexpr unsigned int GRABBER_COUNT = 11;
+ 
+     static ColorRGBA SELECT_COLOR;
+     static ColorRGBA UNSELECT_COLOR;
+@@ -638,6 +642,11 @@ class PartPlateList : public ObjectBase
+     // [ORCAPORT:AS-3] Snap & Drag magnet
+     GLTexture m_snapdrag_hovered_texture;
+     GLTexture m_snapdrag_texture;
++    // [ORCAPORT:AS-1] free-Z placement toggle (off = objects drop to the bed, on = they stay)
++    GLTexture m_freez_texture;
++    GLTexture m_freez_hovered_texture;
++    GLTexture m_freez_on_texture;
++    GLTexture m_freez_on_hovered_texture;
+     GLTexture m_arrange_texture;
+     GLTexture m_arrange_hovered_texture;
+     GLTexture m_orient_texture;
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index 9bd90301e3..37a33a401a 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -104,6 +104,7 @@
+ #include "3DBed.hpp"
+ #include "PartPlate.hpp"
+ #include "OrcaExt/GravitySnap.hpp" // [ORCAPORT:AS-3] the magnet button owns the options panel
++#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1] the gravity button toggles free-Z placement
+ #include "Camera.hpp"
+ #include "Mouse3DController.hpp"
+ #include "Tab.hpp"
+@@ -22246,6 +22247,19 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
+         update();
+         p->partplate_list.select_plate(0);
+     }
++    // [ORCAPORT:AS-1] the gravity button is the free-Z toggle itself: objects either obey gravity and
++    // land on the bed, or stay where they are put. No snapshot: nothing about the model changes.
++    else if ((action == (int)PartPlate::FREE_Z_HOVER_ID) && (!right_click)) {
++        const bool on = !OrcaExt::free_z();
++        wxGetApp().app_config->set_bool("orca_ext_free_z", on);
++        wxGetApp().app_config->save();
++        OrcaExt::set_free_z(on);
++        if (GLCanvas3D* canvas = get_view3D_canvas3D()) {
++            canvas->set_as_dirty();
++            canvas->request_extra_frame();
++        }
++        ret = 0;
++    }
+     // [ORCAPORT:AS-3] the magnet button opens/closes the Snap & Drag options panel. It does NOT
+     // toggle the feature itself; the panel owns the three preferences. No snapshot: nothing about
+     // the model changes.
+diff --git a/src/slic3r/GUI/Preferences.cpp b/src/slic3r/GUI/Preferences.cpp
+index ca5f5db6dc..68d5e4c9c5 100644
+--- a/src/slic3r/GUI/Preferences.cpp
++++ b/src/slic3r/GUI/Preferences.cpp
+@@ -9,7 +9,6 @@
+ #include "I18N.hpp"
+ #include "libslic3r/AppConfig.hpp"
+ #include "libslic3r/OrcaExt/IdleToolPowerDown.hpp" // [ORCAPORT:MT-1] [ORCAPORT:MT-2]
+-#include "libslic3r/OrcaExt/FreeZ.hpp" // [ORCAPORT:AS-1]
+ #include "libslic3r/Format/DRC.hpp"
+ #include "libslic3r/CAD/SketchEngine.hpp"
+ #include <wx/language.h>
+@@ -1674,25 +1673,6 @@ void PreferencesDialog::create_items()
+                              "orca_ext_idle_tool_deep_sleep", true);
+     }
+ 
+-    // [ORCAPORT:AS-1] Free-Z placement: let objects stay off the bed so separate objects can be
+-    // aligned in Z without assembling them. Printing is always done after assembling.
+-    {
+-        wxBoxSizer* item_sizer = create_item_label(_L("Allow free Z placement"),
+-            _L("Do not snap moved objects back onto the bed, so separate objects can be floated in Z "
+-               "for alignment without assembling them."));
+-        auto* checkbox = new ::CheckBox(m_parent);
+-        checkbox->SetValue(app_config->get_bool("orca_ext_free_z"));
+-        checkbox->Bind(wxEVT_TOGGLEBUTTON, [checkbox](wxCommandEvent& e) {
+-            const bool on = checkbox->GetValue();
+-            wxGetApp().app_config->set_bool("orca_ext_free_z", on);
+-            wxGetApp().app_config->save();
+-            OrcaExt::set_free_z(on);
+-            e.Skip();
+-        });
+-        item_sizer->Add(checkbox, 0, wxALIGN_CENTER);
+-        g_sizer->Add(item_sizer);
+-    }
+-
+     // [ORCAPORT:MCP-1] Embedded MCP server toggle (http://localhost:13618/mcp).
+     {
+         wxBoxSizer* item_sizer = create_item_label(_L("Enable MCP server"),
+-- 
+2.43.0.windows.1
+
