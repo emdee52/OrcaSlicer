@@ -43,7 +43,7 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 | SU-4b | NeoWave contact layer (part-bottom + support-top) | ported | notes/SU-4b.md | 13_SU-4b.patch |
 | SU-5 | Support Zones aimed pillars | ported | notes/SU-5.md | 11_SU-5.patch |
 | SU-6 | Support Zones block trees | ported (with SU-5) | notes/SU-6.md | - |
-| AS-1 | Free-Z placement | ported | notes/AS-1.md | 06_AS-1.patch |
+| AS-1 | Free-Z placement (plate-column gravity toggle) | ported | notes/AS-1.md | 06_AS-1.patch;30_AS-1-toolbar.patch |
 | AS-2 | Align & Stack + face-mate | ported | notes/AS-2.md | 07_AS-2.patch |
 | AS-3 | Snap & Drag | ported | notes/AS-3.md | 08_AS-3.patch |
 | PQ-3 | NeoArachne (a+b together) | ported | notes/PQ-3a.md, PQ-3b.md | 12_PQ-3.patch |
