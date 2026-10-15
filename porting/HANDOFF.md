@@ -21,8 +21,10 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`e0d43bbb95`** "Merge port/PF-10-multisupport: multi-pass
-  support collision avoidance" (on top of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint,
+- Latest integration commit at handoff: **`22d2f1ae83`** "Merge port/AS-1-fix1: toggle free-Z
+  placement from a plate-column button" (on top of `8d5d19d3de`, the BT-1 fix-2 handoff record).
+  Before that, the largest merge on the branch was **`e0d43bbb95`** "Merge port/PF-10-multisupport:
+  multi-pass support collision avoidance" (on top of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint,
   PF-10-auto, PF-10-multisupport and PF-10-paint-qol are merged into `port/integration` and pushed;
   the user runtime-verified auto-painting (region scoring, build-plate-only tree fallback,
   min-area/facet split, gizmo QOL) and multi-pass collision avoidance. PF-3/4/5/7/8 excluded.
@@ -43,7 +45,7 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 | SU-4b | NeoWave contact layer (part-bottom + support-top) | ported | notes/SU-4b.md | 13_SU-4b.patch |
 | SU-5 | Support Zones aimed pillars | ported | notes/SU-5.md | 11_SU-5.patch |
 | SU-6 | Support Zones block trees | ported (with SU-5) | notes/SU-6.md | - |
-| AS-1 | Free-Z placement (plate-column gravity toggle) | ported | notes/AS-1.md | 06_AS-1.patch;30_AS-1-toolbar.patch |
+| AS-1 | Free-Z placement (plate-column gravity toggle) | merged | notes/AS-1.md | 06_AS-1.patch;30_AS-1-toolbar.patch |
 | AS-2 | Align & Stack + face-mate | ported | notes/AS-2.md | 07_AS-2.patch |
 | AS-3 | Snap & Drag | ported | notes/AS-3.md | 08_AS-3.patch |
 | PQ-3 | NeoArachne (a+b together) | ported | notes/PQ-3a.md, PQ-3b.md | 12_PQ-3.patch |
@@ -278,9 +280,10 @@ Kill a running slicer before rebuilding (it holds the DLL -> `LNK1104`):
 ## Built but not runtime/print-verified (user should test)
 
 Every ported feature compiles and links. Runtime/visual-verified by the user so far: PQ-1, PF-1,
-PF-6 and PF-9 (PF-9 after several geometry fixes). Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1,
-AS-2, AS-3, SU-1/SU-4/SU-5/SU-6, PQ-3, SU-4b (both sides), PF-2a (Smart bridging) and PF-2b (paint
-smart/partial). Protocols are in each `notes/<ID>.md`.
+PF-6 and PF-9 (PF-9 after several geometry fixes). Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1
+(the plate-column toggle is user-verified; the free-Z drag/stay-off-bed protocol in
+`notes/AS-1.md` is not), AS-2, AS-3, SU-1/SU-4/SU-5/SU-6, PQ-3, SU-4b (both sides), PF-2a (Smart
+bridging) and PF-2b (paint smart/partial). Protocols are in each `notes/<ID>.md`.
 
 ## Cheat-sheet
 
