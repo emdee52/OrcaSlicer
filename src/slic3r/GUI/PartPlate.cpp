@@ -2697,20 +2697,31 @@ void PartPlate::calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &bu
 	p += Vec2d(gap_left, 0);
 
 	// The plate number occupies [p(0) + offset_x, p(0) + size - offset_x] horizontally. The readout
-	// sits on the plate immediately left of it, on the same baseline: drawn below the number it goes
-	// past the plate's front edge and out of the default "fit plate" view, and the column to its
-	// right is where the plate icons are.
+	// sits on the plate immediately left of it, on the same baseline.
+	//
+	// The texture is power-of-two padded: generate_from_text_string() draws the text into a rect of
+	// only the original extent inside a padded bitmap (GLTexture.cpp:501-517). The quad must
+	// therefore follow the PADDED aspect, or the text is compressed by original/padded in each axis -
+	// and that ratio jumps whenever the text crosses a power of two, which is why only the longer
+	// labels looked squished. generate_plate_name_texture() uses the padded aspect for the same
+	// reason (PartPlate.cpp:2610).
 	float height = 0.8f * size;
-	float width  = (texture.m_original_height > 0)
-		? height * (float) texture.m_original_width / (float) texture.m_original_height
+	float quad_w = (texture.get_height() > 0)
+		? height * (float) texture.get_width() / (float) texture.get_height()
 		: height;
+	// The glyphs occupy only the left original_width/texture_width of the quad; anchor that rather
+	// than the quad, so the gap to the plate number does not move with the string length. The
+	// transparent remainder of the quad extends to the right of x1.
+	float text_w = (texture.get_width() > 0)
+		? quad_w * (float) texture.m_original_width / (float) texture.get_width()
+		: quad_w;
 	float y0 = p(1) + offset_y;
-	float x1 = p(0) + offset_x - PARTPLATE_ICON_GAP_LEFT * factor; // right edge, a gap left of the number
-	float x0 = x1 - width;
+	float x1 = p(0) + offset_x - PARTPLATE_ICON_GAP_LEFT * factor; // right edge of the visible text
+	float x0 = x1 - text_w;                                        // left edge of the quad
 
 	poly.contour.append({ scale_(x0), scale_(y0)         });
-	poly.contour.append({ scale_(x1), scale_(y0)         });
-	poly.contour.append({ scale_(x1), scale_(y0 + height) });
+	poly.contour.append({ scale_(x0 + quad_w), scale_(y0)         });
+	poly.contour.append({ scale_(x0 + quad_w), scale_(y0 + height) });
 	poly.contour.append({ scale_(x0), scale_(y0 + height) });
 
 	if (!init_model_from_poly(buffer, poly, GROUND_Z))
