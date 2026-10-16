@@ -1,0 +1,319 @@
+diff --git a/src/libslic3r/HoleShapes.cpp b/src/libslic3r/HoleShapes.cpp
+index 183b1be13d..871e187617 100644
+--- a/src/libslic3r/HoleShapes.cpp
++++ b/src/libslic3r/HoleShapes.cpp
+@@ -77,17 +77,18 @@ indexed_triangle_set its_make_teardrop(double radius, double depth, double angle
+     return mesh;
+ }
+ 
+-indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
+-                                                double angle_deg, int segments, const Vec3d &up_dir)
++indexed_triangle_set its_make_teardrop_prism(double radius, double depth, double angle_deg,
++                                             const Vec3d &axis, const Vec3d &entry,
++                                             const Vec3d &up_dir, int segments)
+ {
+-    indexed_triangle_set local = its_make_teardrop(hole.radius, depth, angle_deg, segments);
++    indexed_triangle_set local = its_make_teardrop(radius, depth, angle_deg, segments);
+     if (local.indices.empty())
+         return local;
+ 
+-    const Vec3d a  = hole.axis.normalized();
++    const Vec3d a  = axis.normalized();
+     Vec3d       up = up_dir - a * a.dot(up_dir);
+     if (up.norm() < 1e-6)
+-        return {}; // hole parallel to up: a teardrop has no meaning
++        return {}; // axis parallel to up: a teardrop has no meaning
+     up.normalize();
+     const Vec3d right = up.cross(a).normalized(); // right x up == a, a proper rotation
+ 
+@@ -96,15 +97,23 @@ indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double
+     R.col(1) = Eigen::Vector3d(up(0), up(1), up(2));
+     R.col(2) = Eigen::Vector3d(a(0), a(1), a(2));
+ 
+-    Transform3d tr       = Transform3d::Identity();
+-    tr.linear()          = R;
+-    tr.translation()     = hole.center - R * Eigen::Vector3d(0., 0., 0.5 * depth);
++    Transform3d tr   = Transform3d::Identity();
++    tr.linear()      = R;
++    tr.translation() = entry; // local z in [0, depth] maps to entry + a * depth
+ 
+     for (stl_vertex &v : local.vertices)
+         v = (tr * Eigen::Vector3d(v(0), v(1), v(2))).cast<float>();
+     return local;
+ }
+ 
++indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
++                                                double angle_deg, int segments, const Vec3d &up_dir)
++{
++    const Vec3d a = hole.axis.normalized();
++    return its_make_teardrop_prism(hole.radius, depth, angle_deg, a,
++                                   hole.center - a * (0.5 * depth), up_dir, segments);
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // Bore / pocket primitives
+ // ---------------------------------------------------------------------------------------------
+diff --git a/src/libslic3r/HoleShapes.hpp b/src/libslic3r/HoleShapes.hpp
+index 0ea5d1bac8..6be413248e 100644
+--- a/src/libslic3r/HoleShapes.hpp
++++ b/src/libslic3r/HoleShapes.hpp
+@@ -18,6 +18,16 @@ indexed_triangle_set its_make_teardrop(double radius, double depth,
+                                        double angle_deg = 45.,
+                                        int    segments  = HOLE_SHAPE_SEGMENTS);
+ 
++// `its_make_teardrop` placed on an arbitrary axis: extruded from `entry` along `axis` for
++// `depth`, with the apex pointing along `up_dir` projected into the hole's cross-section (default:
++// world +Z). Pass the bed-up direction expressed in the same frame as the axis when the object is
++// rotated. Returns an empty mesh when the axis is parallel to `up_dir`, where a teardrop has no
++// meaning.
++indexed_triangle_set its_make_teardrop_prism(double radius, double depth, double angle_deg,
++                                             const Vec3d &axis, const Vec3d &entry,
++                                             const Vec3d &up_dir,
++                                             int segments = HOLE_SHAPE_SEGMENTS);
++
+ // `its_make_teardrop` placed on a detected hole: centred on the hole axis, extruded along it
+ // for `depth` straddling `hole.center`, with the apex pointing along `up_dir` projected into
+ // the hole's cross-section (default: world +Z). Pass the bed-up direction expressed in the
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index ec759e706b..cbdf7215fa 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -174,6 +174,7 @@ bool GLGizmoHoles::on_init()
+     m_desc["op_rim_chamfer"]   = _L("Rim chamfer");
+     m_desc["op_rim_fillet"]    = _L("Rim fillet");
+     m_desc["rim_size"]         = _L("Rim size");
++    m_desc["teardrop_head"]    = _L("Teardrop head");
+     m_desc["apex"]             = _L("Apex angle");
+     m_desc["standard"]         = _L("Standard");
+     m_desc["head"]             = _L("Head");
+@@ -350,22 +351,49 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
+     if (d <= 0. || depth <= 0.)
+         return {};
+ 
++    indexed_triangle_set its;
+     if (m_category == HoleCategory::Screw && s != nullptr) {
+         const double socket_d = s->socket_d / scale;
+         const double button_d = s->button_d / scale;
+         const double csink_d  = s->csink_d / scale;
+         if (m_head == BoreHead::SocketHead && socket_d > d)
+-            return its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
+-        if (m_head == BoreHead::ButtonHead && button_d > d)
+-            return its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
++            its = its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
++        else if (m_head == BoreHead::ButtonHead && button_d > d)
++            its = its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
+         // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
+         // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
+-        if (m_head == BoreHead::Countersink && csink_d > d)
+-            return its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
++        else if (m_head == BoreHead::Countersink && csink_d > d)
++            its = its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
+     }
+-    if (m_category == HoleCategory::Magnet)
+-        depth += sink; // sink the magnet pocket
+-    return its_make_bore(d, depth, dir, entry);
++    if (its.indices.empty()) {
++        double bore_depth = depth;
++        if (m_category == HoleCategory::Magnet)
++            bore_depth += sink; // sink the magnet pocket
++        its = its_make_bore(d, bore_depth, dir, entry);
++    }
++
++    // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
++    // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore, so
++    // merging it leaves the shaft round below and teardropped above. A counterbore head stays round
++    // unless the user asks for it too; a vertical hole has no up direction and gets nothing.
++    if (m_category == HoleCategory::Screw && m_screw_teardrop) {
++        const Vec3d          up    = object_up();
++        indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir, entry, up);
++        if (!shaft.indices.empty())
++            its_merge(its, shaft);
++
++        const bool cbore_head = s != nullptr &&
++                                ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
++                                 (m_head == BoreHead::ButtonHead && s->button_d > d));
++        if (m_screw_teardrop_head && cbore_head) {
++            const double head_d = (m_head == BoreHead::SocketHead ? s->socket_d : s->button_d) / scale;
++            const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) / scale + sink;
++            indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir, entry, up);
++            if (!head.indices.empty())
++                its_merge(its, head);
++        }
++    }
++    return its;
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
+@@ -1426,6 +1454,22 @@ void GLGizmoHoles::set_flip(bool f)
+     m_parent.set_as_dirty();
+ }
+ 
++void GLGizmoHoles::set_screw_teardrop(bool on)
++{
++    m_screw_teardrop = on;
++    if (!on)
++        m_screw_teardrop_head = false; // a head teardrop needs the shaft one
++    m_preview_dirty = true;
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoHoles::set_screw_teardrop_head(bool on)
++{
++    m_screw_teardrop_head = on;
++    m_preview_dirty       = true;
++    m_parent.set_as_dirty();
++}
++
+ void GLGizmoHoles::gizmo_toggle_hole(int idx)
+ {
+     if (m_dirty)
+@@ -1751,6 +1795,42 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+             }
+         }
+ 
++        // Screw teardrop: shape the clearance bore (and optionally a counterbore head) for a
++        // horizontal hole. The head/apex options show only once the teardrop is on.
++        if (is_screw) {
++            bool teardrop = m_screw_teardrop;
++            ImGui::AlignTextToFramePadding();
++            m_imgui->text(m_desc.at("op_teardrop"));
++            ImGui::SameLine(left_width);
++            if (ImGui::Checkbox("##screw_teardrop", &teardrop))
++                set_screw_teardrop(teardrop);
++
++            // The head teardrop sits on the same row, but only once the teardrop is on and the screw
++            // has a counterbore head to shape (a countersink has no vertical wall to teardrop).
++            const bool cbore_head = s != nullptr &&
++                                    ((m_head == BoreHead::SocketHead && s->socket_d > 0.) ||
++                                     (m_head == BoreHead::ButtonHead && s->button_d > 0.));
++            if (m_screw_teardrop && cbore_head) {
++                bool head_teardrop = m_screw_teardrop_head;
++                ImGui::SameLine();
++                m_imgui->text(m_desc.at("teardrop_head"));
++                ImGui::SameLine();
++                if (ImGui::Checkbox("##screw_teardrop_head", &head_teardrop))
++                    set_screw_teardrop_head(head_teardrop);
++            }
++
++            if (m_screw_teardrop) {
++                ImGui::AlignTextToFramePadding();
++                m_imgui->text(m_desc.at("apex"));
++                ImGui::SameLine(left_width);
++                ImGui::PushItemWidth(sliders_width);
++                float angle = m_angle_deg;
++                if (m_imgui->bbl_slider_float_style("##screw_apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
++                    set_angle(angle);
++                ImGui::PopItemWidth();
++            }
++        }
++
+         if (is_pocket) {
+             ImGui::AlignTextToFramePadding();
+             m_imgui->text(m_desc.at("fit"));
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+index 397bb790f5..6ea2329fd1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+@@ -79,6 +79,13 @@ public:
+     bool        get_flip() const { return m_flip; }
+     void        set_flip(bool f);
+ 
++    // Screw teardrop: shape a screw's clearance bore (and optionally a counterbore head) so the top
++    // of a horizontal hole is a sloped roof instead of a flat overhang.
++    bool get_screw_teardrop() const { return m_screw_teardrop; }
++    void set_screw_teardrop(bool on);
++    bool get_screw_teardrop_head() const { return m_screw_teardrop_head; }
++    void set_screw_teardrop_head(bool on);
++
+     void gizmo_toggle_hole(int idx);
+     void gizmo_apply_all();
+     void gizmo_clear_all();
+@@ -194,6 +201,8 @@ private:
+     bool          m_through{ true };
+     double        m_depth{ 10.0 };
+     bool          m_flip{ false };
++    bool          m_screw_teardrop{ false };      // teardrop a screw's clearance bore (horizontal holes)
++    bool          m_screw_teardrop_head{ false };  // also teardrop a counterbore head
+ 
+     // Candidate holes (blue), applied features (red), hovered hole (green).
+     PickingModel m_preview_all;
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+index a0359a3e43..92cdc13585 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+@@ -222,6 +222,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
+         {"head_fit", g.get_head_fit()},
+         {"true_diameter", g.true_diameter()},
+         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
++        {"screw_teardrop", g.get_screw_teardrop()},
++        {"screw_teardrop_head", g.get_screw_teardrop_head()},
+         {"volume_count", volume_count},
+         {"pocket_volumes", pocket_volumes},
+         {"face_pocket_volumes", face_pocket_volumes},
+@@ -418,18 +420,19 @@ void OrcaMCPServer::register_gizmo_tools()
+         "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', "
+         "'set_standard' (0=Custom, else 1-based index into the "
+         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
+-        "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
+-        "index), 'apply_all', 'clear_all', 'refresh', 'close'. "
++        "(tight|slip), 'set_diameter', 'set_screw_teardrop' / 'set_screw_teardrop_head' (teardrop a "
++        "screw's horizontal bore and optionally its counterbore head), 'set_through', 'set_flip', "
++        "'toggle' (one hole by index), 'apply_all', 'clear_all', 'refresh', 'close'. "
+         "Use find_holes first for indices.",
+         {
+             {"type", "object"},
+             {"properties", {
+-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
++                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_screw_teardrop | set_screw_teardrop_head | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
+                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
+                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
+                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
+                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
+-                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
++                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face / set_screw_teardrop / set_screw_teardrop_head: enable or disable."}}},
+                 {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
+                 {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
+                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert, for action=set_category."}}},
+@@ -507,6 +510,10 @@ void OrcaMCPServer::register_gizmo_tools()
+                                                             : BoreHead::None);
+                 } else if (action == "set_screw_fit") {
+                     g->set_screw_fit(params.value("screw_fit", std::string("free")) == "tap" ? ScrewFit::Tap : ScrewFit::Free);
++                } else if (action == "set_screw_teardrop") {
++                    g->set_screw_teardrop(params.value("on", true));
++                } else if (action == "set_screw_teardrop_head") {
++                    g->set_screw_teardrop_head(params.value("on", true));
+                 } else if (action == "set_fit") {
+                     const std::string f = params.value("fit", std::string("slip"));
+                     g->set_fit(f == "tight" ? HoleFit::Tight : HoleFit::Slip);
+diff --git a/tests/libslic3r/test_holeshapes.cpp b/tests/libslic3r/test_holeshapes.cpp
+index e9492e148c..69ca29d6a2 100644
+--- a/tests/libslic3r/test_holeshapes.cpp
++++ b/tests/libslic3r/test_holeshapes.cpp
+@@ -144,6 +144,27 @@ TEST_CASE("Invalid teardrop parameters produce nothing", "[HoleShapes]")
+     CHECK(its_make_teardrop(2., 10., 45., 4).empty());
+ }
+ 
++TEST_CASE("A teardrop prism runs from the entry and rises toward up", "[HoleShapes]")
++{
++    constexpr double          r = 2., depth = 6.;
++    const indexed_triangle_set td = its_make_teardrop_prism(r, depth, 45., Vec3d::UnitX(), Vec3d::Zero(), Vec3d::UnitZ());
++    REQUIRE_FALSE(td.empty());
++    CHECK(its_volume(td) > 0.f);
++
++    const BoundingBoxf3 bb = bounding_box(td);
++    CHECK_THAT(bb.min.x(), WithinAbs(0., 1e-3));                  // starts at the entry
++    CHECK_THAT(bb.max.x(), WithinAbs(depth, 1e-3));               // extrudes along the axis
++    CHECK_THAT(bb.min.z(), WithinAbs(-r, 1e-3));                  // circle half below the axis
++    CHECK_THAT(bb.max.z(), WithinAbs(apex_height(r, 45.), 1e-3)); // apex toward up
++    CHECK_THAT(double(its_volume(td)), WithinRel(teardrop_area(r, 45.) * depth, 0.02));
++}
++
++TEST_CASE("A teardrop prism on an axis parallel to up is refused", "[HoleShapes]")
++{
++    CHECK(its_make_teardrop_prism(2., 6., 45., Vec3d::UnitZ(), Vec3d::Zero(), Vec3d::UnitZ()).empty());
++    CHECK(its_make_teardrop_prism(2., 6., 45., -Vec3d::UnitZ(), Vec3d::Zero(), Vec3d::UnitZ()).empty());
++}
++
+ TEST_CASE("A bore is placed at the entry and runs along the axis", "[HoleShapes]")
+ {
+     const indexed_triangle_set bore = its_make_bore(4., 10., Vec3d::UnitZ(), Vec3d(1., 2., 3.));
