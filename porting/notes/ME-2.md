@@ -62,6 +62,28 @@ is available for bore and rim alike). The *default* side is still arbitrary: a m
 sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
 `!through`) would pick the visible entry face without the user flipping by hand.
 
+## Round (2026-10-16) - one Chamfer/Fillet operation, both ends
+
+"Rim chamfer" and "Rim fillet" were two operations under a name the user found vague. Merged into a
+single **Chamfer/Fillet** operation; "Bore / pocket" was renamed to **Bore/Pocket** to keep the X/Y
+button scheme. Inside the operation:
+
+- a **Chamfer | Fillet** toggle (highlighted, defaults to chamfer) backed by `m_rim_fillet`;
+- the size field, relabelled "Size";
+- a **Both ends** checkbox (`m_rim_both`): `rim_mesh` builds the ring at the Flip-selected mouth and,
+  when it is on and the hole is through, a second mirrored ring at the far mouth, merged into the
+  same negative volume. Flip is hidden while Both ends is on, since it has nothing left to pick.
+
+`HoleOperation::RimChamfer`/`RimFillet` collapse into `HoleOperation::ChamferFillet`; the per-hole
+`m_rim_chamfer`/`m_rim_fillet` vectors collapse into one `m_rim` flag; `toggle_rim(idx)` lost its
+`bool chamfer` argument. The volume names stay `RimChamfer#i` / `RimFillet#i`, so existing projects
+parse unchanged. MCP: op token `chamfer_fillet`, `set_rim_type` (chamfer|fillet), `set_rim_both`, and
+the status reports `rim_type` / `rim_both`.
+
+**Verification.** Build clean; `[HoleShapes]` 26 cases / 143 assertions pass. Gizmo paths are not
+unit-tested - click-test: Chamfer/Fillet -> toggle Fillet, Both ends on a through hole (rims both
+mouths, hides Flip).
+
 ## Round (2026-10-16) - unscaled teardrop/rim; shrink fill on a stretched hole
 
 Two corrections to the round below (fix4), both in `GLGizmoHoles.cpp`.
