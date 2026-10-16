@@ -10,6 +10,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/Shortcuts.hpp"
 #include "slic3r/GUI/Plater.hpp"
 
 #include <glad/gl.h>
@@ -53,7 +54,7 @@ Transform3d GLGizmoPerforation::instance_matrix() const
 
 bool GLGizmoPerforation::on_init()
 {
-    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
+    m_shortcut = Shortcut::GizmoPerforation; // [ORCAPORT:PP-1] registered in Shortcuts.cpp
 
     m_desc["pattern"]    = _L("Pattern");
     m_desc["spacing"]    = _L("Spacing");

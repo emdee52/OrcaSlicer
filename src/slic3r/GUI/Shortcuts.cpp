@@ -114,6 +114,16 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
     SHORTCUT(GizmoAssembly,     "gizmo_assembly",     L("Gizmo assemble"),                                       PLATER, { 'Y' }),
     SHORTCUT(GizmoBrimEars,     "gizmo_brim_ears",    L("Gizmo brim ears"),                                      PLATER, { 'E' }),
     SHORTCUT(GizmoDisplacement, "gizmo_displacement", L("Gizmo texture displacement painting"),                  PLATER, { 'D' }),
+    // [ORCAPORT:UI-1] the port's gizmos: bare letters, as upstream's gizmos use, and the nearest
+    // free letter to what the port had before. All five of the port's Ctrl chords are upstream's
+    // (Ctrl+K Clone Selected, Ctrl+J Print host queue, Ctrl+I Import model, Ctrl+G Export plate,
+    // Ctrl+D Delete All), bare D is texture displacement, and bare I/O are zoom in/out in the
+    // canvas context, which shares the plater.
+    SHORTCUT(GizmoCounterboreBridge, "gizmo_hole_walls",  L("Gizmo hole walls"),                                   PLATER, { 'K' }),
+    SHORTCUT(GizmoHoles,        "gizmo_holes",        L("Gizmo holes"),                                          PLATER, { 'J' }),
+    SHORTCUT(GizmoEdgeDress,    "gizmo_edge_dress",   L("Gizmo edge chamfer / fillet"),                           PLATER, { 'X' }),
+    SHORTCUT(GizmoCavityFill,   "gizmo_cavity_fill",  L("Gizmo cavity fill"),                                     PLATER, { 'G' }),
+    SHORTCUT(GizmoPerforation,  "gizmo_perforation",  L("Gizmo perforations"),                                    PLATER, { 'Z' }),
 
     // Sliders
     SHORTCUT(GoToLayer,           "go_to_layer",           L("Jump to layer"),                                   PREVIEW, { 'G', SHIFT }),

@@ -10,6 +10,7 @@
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/Shortcuts.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
 #include "slic3r/GUI/ObjectDataViewModel.hpp"
@@ -166,7 +167,7 @@ GLGizmoHoles::GLGizmoHoles(GLCanvas3D &parent, const std::string& icon_filename,
 
 bool GLGizmoHoles::on_init()
 {
-    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
+    m_shortcut = Shortcut::GizmoHoles; // [ORCAPORT:ME-2] registered in Shortcuts.cpp
 
     m_desc["operation"]        = _L("Operation");
     m_desc["op_teardrop"]      = _L("Teardrop");

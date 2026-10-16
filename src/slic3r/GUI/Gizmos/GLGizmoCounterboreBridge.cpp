@@ -19,6 +19,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/Shortcuts.hpp"
 #include "slic3r/GUI/ObjectDataViewModel.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
@@ -36,7 +37,7 @@ GLGizmoCounterboreBridge::GLGizmoCounterboreBridge(GLCanvas3D &parent, const std
 
 bool GLGizmoCounterboreBridge::on_init()
 {
-    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
+    m_shortcut = Shortcut::GizmoCounterboreBridge; // [ORCAPORT:PF-2b] registered in Shortcuts.cpp
 
     m_desc["mode"]           = _L("Bridge type");
     m_desc["smart"]          = _L("Smart (stepped)");

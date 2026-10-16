@@ -9,6 +9,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/Shortcuts.hpp"
 #include "slic3r/GUI/ObjectDataViewModel.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
@@ -461,7 +462,7 @@ std::vector<std::array<double, 3>> GLGizmoHoleFill::gizmo_list_fills() const
 
 bool GLGizmoHoleFill::on_init()
 {
-    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
+    m_shortcut = Shortcut::GizmoCavityFill; // [ORCAPORT:HF-1] registered in Shortcuts.cpp
 
     m_desc["name"]        = _L("Cavity fill");
     m_desc["radius"]      = _L("Brush width");

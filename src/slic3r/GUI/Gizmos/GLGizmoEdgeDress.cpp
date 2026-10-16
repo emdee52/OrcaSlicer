@@ -10,6 +10,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/Shortcuts.hpp"
 #include "slic3r/GUI/ObjectDataViewModel.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
@@ -919,7 +920,7 @@ bool GLGizmoEdgeDress::gizmo_apply_loop(int facet, int index)
 
 bool GLGizmoEdgeDress::on_init()
 {
-    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
+    m_shortcut = Shortcut::GizmoEdgeDress; // [ORCAPORT:EF-1] registered in Shortcuts.cpp
 
     m_desc["name"]          = _L("Edge chamfer / fillet");
     m_desc["chamfer"]       = _L("Chamfer");
