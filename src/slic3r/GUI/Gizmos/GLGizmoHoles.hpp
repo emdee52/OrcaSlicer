@@ -79,6 +79,13 @@ public:
     bool        get_flip() const { return m_flip; }
     void        set_flip(bool f);
 
+    // Screw teardrop: shape a screw's clearance bore (and optionally a counterbore head) so the top
+    // of a horizontal hole is a sloped roof instead of a flat overhang.
+    bool get_screw_teardrop() const { return m_screw_teardrop; }
+    void set_screw_teardrop(bool on);
+    bool get_screw_teardrop_head() const { return m_screw_teardrop_head; }
+    void set_screw_teardrop_head(bool on);
+
     void gizmo_toggle_hole(int idx);
     void gizmo_apply_all();
     void gizmo_clear_all();
@@ -194,6 +201,8 @@ private:
     bool          m_through{ true };
     double        m_depth{ 10.0 };
     bool          m_flip{ false };
+    bool          m_screw_teardrop{ false };      // teardrop a screw's clearance bore (horizontal holes)
+    bool          m_screw_teardrop_head{ false };  // also teardrop a counterbore head
 
     // Candidate holes (blue), applied features (red), hovered hole (green).
     PickingModel m_preview_all;

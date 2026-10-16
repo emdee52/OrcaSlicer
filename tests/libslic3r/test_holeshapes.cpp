@@ -144,6 +144,27 @@ TEST_CASE("Invalid teardrop parameters produce nothing", "[HoleShapes]")
     CHECK(its_make_teardrop(2., 10., 45., 4).empty());
 }
 
+TEST_CASE("A teardrop prism runs from the entry and rises toward up", "[HoleShapes]")
+{
+    constexpr double          r = 2., depth = 6.;
+    const indexed_triangle_set td = its_make_teardrop_prism(r, depth, 45., Vec3d::UnitX(), Vec3d::Zero(), Vec3d::UnitZ());
+    REQUIRE_FALSE(td.empty());
+    CHECK(its_volume(td) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(td);
+    CHECK_THAT(bb.min.x(), WithinAbs(0., 1e-3));                  // starts at the entry
+    CHECK_THAT(bb.max.x(), WithinAbs(depth, 1e-3));               // extrudes along the axis
+    CHECK_THAT(bb.min.z(), WithinAbs(-r, 1e-3));                  // circle half below the axis
+    CHECK_THAT(bb.max.z(), WithinAbs(apex_height(r, 45.), 1e-3)); // apex toward up
+    CHECK_THAT(double(its_volume(td)), WithinRel(teardrop_area(r, 45.) * depth, 0.02));
+}
+
+TEST_CASE("A teardrop prism on an axis parallel to up is refused", "[HoleShapes]")
+{
+    CHECK(its_make_teardrop_prism(2., 6., 45., Vec3d::UnitZ(), Vec3d::Zero(), Vec3d::UnitZ()).empty());
+    CHECK(its_make_teardrop_prism(2., 6., 45., -Vec3d::UnitZ(), Vec3d::Zero(), Vec3d::UnitZ()).empty());
+}
+
 TEST_CASE("A bore is placed at the entry and runs along the axis", "[HoleShapes]")
 {
     const indexed_triangle_set bore = its_make_bore(4., 10., Vec3d::UnitZ(), Vec3d(1., 2., 3.));

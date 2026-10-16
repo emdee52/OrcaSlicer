@@ -77,17 +77,18 @@ indexed_triangle_set its_make_teardrop(double radius, double depth, double angle
     return mesh;
 }
 
-indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
-                                                double angle_deg, int segments, const Vec3d &up_dir)
+indexed_triangle_set its_make_teardrop_prism(double radius, double depth, double angle_deg,
+                                             const Vec3d &axis, const Vec3d &entry,
+                                             const Vec3d &up_dir, int segments)
 {
-    indexed_triangle_set local = its_make_teardrop(hole.radius, depth, angle_deg, segments);
+    indexed_triangle_set local = its_make_teardrop(radius, depth, angle_deg, segments);
     if (local.indices.empty())
         return local;
 
-    const Vec3d a  = hole.axis.normalized();
+    const Vec3d a  = axis.normalized();
     Vec3d       up = up_dir - a * a.dot(up_dir);
     if (up.norm() < 1e-6)
-        return {}; // hole parallel to up: a teardrop has no meaning
+        return {}; // axis parallel to up: a teardrop has no meaning
     up.normalize();
     const Vec3d right = up.cross(a).normalized(); // right x up == a, a proper rotation
 
@@ -96,13 +97,21 @@ indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double
     R.col(1) = Eigen::Vector3d(up(0), up(1), up(2));
     R.col(2) = Eigen::Vector3d(a(0), a(1), a(2));
 
-    Transform3d tr       = Transform3d::Identity();
-    tr.linear()          = R;
-    tr.translation()     = hole.center - R * Eigen::Vector3d(0., 0., 0.5 * depth);
+    Transform3d tr   = Transform3d::Identity();
+    tr.linear()      = R;
+    tr.translation() = entry; // local z in [0, depth] maps to entry + a * depth
 
     for (stl_vertex &v : local.vertices)
         v = (tr * Eigen::Vector3d(v(0), v(1), v(2))).cast<float>();
     return local;
+}
+
+indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double depth,
+                                                double angle_deg, int segments, const Vec3d &up_dir)
+{
+    const Vec3d a = hole.axis.normalized();
+    return its_make_teardrop_prism(hole.radius, depth, angle_deg, a,
+                                   hole.center - a * (0.5 * depth), up_dir, segments);
 }
 
 // ---------------------------------------------------------------------------------------------
