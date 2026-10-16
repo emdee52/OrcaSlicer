@@ -900,7 +900,9 @@ void GLGizmoMove3D::render_extra_move_ui()
         if (m_imgui->button(_L("Pick pivot")))
             start_pick_pivot();
         if (m_face_frame_active) {
-            ImGui::SameLine();
+            // The move window pushes ItemSpacing.x = 0 (its XYZ fields butt together), so a bare
+            // SameLine() leaves no gap: space the buttons like the window's own columns.
+            ImGui::SameLine(0.f, m_imgui->get_style_scaling() * 8.f);
             if (m_imgui->button(_L("Reset pivot")))
                 clear_face_frame();
         }
