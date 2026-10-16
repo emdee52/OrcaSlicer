@@ -3,7 +3,9 @@
 - Source: **fork-original**, no Neotko release note. Design log: `docs/handoff.md` sections 3, 11, 12.
 - Category: B (feature). Not a port of `OrcaFS-NeotkoCM` — that fork has no `GLGizmoHoles`.
 - Status: **ported**, merged into `port/integration` (`port/ME-1`, `port/ME-2`, `port/ME-2c`,
-  `port/ME-2d`, `port/RIM-1`).
+  `port/ME-2d`, `port/RIM-1`). The flush shrink tube below is merged `--no-ff` as `098e627827`
+  (branch `port/ME-2-fix`), user-verified in the app 2026-10-15: the ring step at both mouths is
+  gone and the shrunk holes are otherwise unchanged.
 
 ## What it is
 
