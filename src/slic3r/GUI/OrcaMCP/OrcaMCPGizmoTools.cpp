@@ -165,13 +165,12 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
                    : g.get_operation() == HoleOperation::Bore        ? "bore"
                    : g.get_operation() == HoleOperation::RimChamfer  ? "rim_chamfer"
                                                                      : "rim_fillet";
-    const char *cat = "custom";
+    const char *cat = "screw";
     switch (g.get_category()) {
     case HoleCategory::Screw:  cat = "screw"; break;
     case HoleCategory::Nut:    cat = "nut"; break;
     case HoleCategory::Magnet: cat = "magnet"; break;
     case HoleCategory::Insert: cat = "insert"; break;
-    case HoleCategory::Custom: cat = "custom"; break;
     }
 
     // Volume bookkeeping helps diagnose whether features are actually being added.
@@ -433,7 +432,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
                 {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
-                {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert | custom, for action=set_category."}}},
+                {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
                 {"head", {{"type", "string"}, {"description", "none | socket | button | countersink, for action=set_head."}}},
@@ -489,12 +488,11 @@ void OrcaMCPServer::register_gizmo_tools()
                         return {{"status", "error"}, {"error", "needs 'size'"}};
                     g->set_rim_size(params["size"].get<double>());
                 } else if (action == "set_category") {
-                    const std::string c = params.value("category", std::string("custom"));
-                    g->set_category(c == "screw" ? HoleCategory::Screw
-                                   : c == "nut" ? HoleCategory::Nut
+                    const std::string c = params.value("category", std::string("screw"));
+                    g->set_category(c == "nut" ? HoleCategory::Nut
                                    : c == "magnet" ? HoleCategory::Magnet
                                    : c == "insert" ? HoleCategory::Insert
-                                                   : HoleCategory::Custom);
+                                                   : HoleCategory::Screw);
                 } else if (action == "set_angle") {
                     if (!need("angle")) return {{"status", "error"}, {"error", "needs 'angle'"}};
                     g->set_angle(params["angle"].get<float>());

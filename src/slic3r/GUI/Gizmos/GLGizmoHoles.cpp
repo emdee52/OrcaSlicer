@@ -83,9 +83,21 @@ bool category_matches(HoleCategory cat, HoleStandardKind kind)
     case HoleCategory::Nut:    return kind == HoleStandardKind::Nut;
     case HoleCategory::Magnet: return kind == HoleStandardKind::Magnet;
     case HoleCategory::Insert: return kind == HoleStandardKind::Insert;
-    case HoleCategory::Custom: return false;
     }
     return false;
+}
+
+// The standard kind a category authors. A Custom size has no standard but keeps its category's
+// behaviour (a custom nut is still a hex pocket, a custom insert still a fit-derived pocket).
+HoleStandardKind standard_kind(HoleCategory cat)
+{
+    switch (cat) {
+    case HoleCategory::Screw:  return HoleStandardKind::Screw;
+    case HoleCategory::Nut:    return HoleStandardKind::Nut;
+    case HoleCategory::Magnet: return HoleStandardKind::Magnet;
+    case HoleCategory::Insert: return HoleStandardKind::Insert;
+    }
+    return HoleStandardKind::Screw;
 }
 
 // Category button icon, loaded once from resources/images.
@@ -102,7 +114,6 @@ ImTextureID category_icon(HoleCategory cat)
     case HoleCategory::Nut:    file = "hole_cat_nut.svg"; break;
     case HoleCategory::Magnet: file = "hole_cat_magnet.svg"; break;
     case HoleCategory::Insert: file = "hole_cat_insert.svg"; break;
-    case HoleCategory::Custom: file = "hole_cat_custom.svg"; break;
     }
     ImTextureID tex = nullptr;
     if (file != nullptr)
@@ -118,7 +129,6 @@ wxString category_label(HoleCategory cat)
     case HoleCategory::Nut:    return _L("Nut");
     case HoleCategory::Magnet: return _L("Magnet");
     case HoleCategory::Insert: return _L("Insert");
-    case HoleCategory::Custom: return _L("Custom");
     }
     return {};
 }
@@ -197,8 +207,7 @@ bool GLGizmoHoles::on_init()
 
     // Preload the category button icons here (the GL context is current), never inside the
     // ImGui render pass where a texture upload can trip glsafe.
-    for (HoleCategory c : {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet, HoleCategory::Insert,
-                           HoleCategory::Custom})
+    for (HoleCategory c : {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet, HoleCategory::Insert})
         category_icon(c);
     return true;
 }
@@ -274,14 +283,22 @@ std::string GLGizmoHoles::standard_name(int idx) const
 
 double GLGizmoHoles::bore_diameter() const
 {
-    const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
-                                ? &hole_standards()[m_standard]
-                                : nullptr;
-    // Insert / magnet pockets derive their tolerance from the fit; screws, nuts and custom use
-    // the editable tolerance field.
-    const bool fitted = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
-    const double tol = fitted ? hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit)) : m_tolerance;
+    // Insert / magnet pockets derive their tolerance from the fit; screws, nuts and a custom size
+    // use the editable tolerance field. The category, not the standard, decides: a Custom entry has
+    // no standard but keeps its category's behaviour.
+    const bool   fitted = m_category == HoleCategory::Insert || m_category == HoleCategory::Magnet;
+    const double tol    = fitted ? hole_fit_diameter_delta(standard_kind(m_category), m_diameter, HoleFit(m_fit))
+                                 : m_tolerance;
     return std::max(0.1, m_diameter + tol);
+}
+
+bool GLGizmoHoles::hole_usable(int idx) const
+{
+    if (idx < 0 || idx >= int(m_holes.size()))
+        return false;
+    // A teardrop only helps a hole whose top is an overhang, i.e. a horizontal one. Bore and rim
+    // work on any hole.
+    return m_operation != HoleOperation::Teardrop || m_holes[idx].horizontal;
 }
 
 void GLGizmoHoles::feature_frame(const DetectedHole &h, Vec3d &dir, Vec3d &entry) const
@@ -304,8 +321,8 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                 ? &hole_standards()[m_standard]
                                 : nullptr;
-    const bool is_nut    = s != nullptr && s->kind == HoleStandardKind::Nut;
-    const bool is_pocket = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
+    const bool is_nut    = m_category == HoleCategory::Nut;
+    const bool is_pocket = m_category == HoleCategory::Insert || m_category == HoleCategory::Magnet;
 
     // All dimensions below are mm in world space and are converted to object space with `scale`
     // so the feature measures its stated size even when the object is scaled.
@@ -324,14 +341,16 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
 
     if (is_nut) {
         const double across = std::max(0.1, (m_diameter + m_tolerance) / scale);
-        return its_make_nut_pocket(across, depth + sink, s->clearance_d / scale, depth, dir, entry);
+        // A catalogued nut carries its coaxial clearance bore; a Custom across-flats has none.
+        const double clearance = s != nullptr ? s->clearance_d / scale : 0.;
+        return its_make_nut_pocket(across, depth + sink, clearance, depth, dir, entry);
     }
 
     const double d = bore_diameter() / scale;
     if (d <= 0. || depth <= 0.)
         return {};
 
-    if (s != nullptr && s->kind == HoleStandardKind::Screw) {
+    if (m_category == HoleCategory::Screw && s != nullptr) {
         const double socket_d = s->socket_d / scale;
         const double button_d = s->button_d / scale;
         const double csink_d  = s->csink_d / scale;
@@ -344,17 +363,14 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
         if (m_head == BoreHead::Countersink && csink_d > d)
             return its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
     }
-    if (s != nullptr && s->kind == HoleStandardKind::Magnet)
+    if (m_category == HoleCategory::Magnet)
         depth += sink; // sink the magnet pocket
     return its_make_bore(d, depth, dir, entry);
 }
 
 indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
 {
-    const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
-                                ? &hole_standards()[m_standard]
-                                : nullptr;
-    if (s != nullptr && s->kind == HoleStandardKind::Nut)
+    if (m_category == HoleCategory::Nut)
         return {}; // a hex pocket has no round shrink tube
 
     const double target_d = bore_diameter() / object_scale(); // object space, to match exist_d
@@ -439,6 +455,9 @@ void GLGizmoHoles::on_set_hover_id()
     if (m_place_face_mode)
         m_hover_id = -1; // detected-hole picking is off while placing on a face
     if (m_hover_id < -1 || m_hover_id >= int(m_holes.size()))
+        m_hover_id = -1;
+    // Do not let the cursor hold a hole the current operation cannot act on.
+    if (m_hover_id >= 0 && !hole_usable(m_hover_id))
         m_hover_id = -1;
     m_preview_dirty = true;
     m_parent.set_as_dirty();
@@ -609,6 +628,8 @@ void GLGizmoHoles::rebuild_previews()
     }
 
     for (size_t i = 0; i < m_holes.size(); ++i) {
+        if (!hole_usable(int(i)))
+            continue; // the operation cannot act on this hole (e.g. a vertical hole in teardrop mode)
         const bool applied = m_operation == HoleOperation::Teardrop ? m_teardrop[i] != 0
                            : m_operation == HoleOperation::Bore      ? m_bore[i] != 0
                            : m_operation == HoleOperation::RimChamfer ? m_rim_chamfer[i] != 0
@@ -1325,16 +1346,12 @@ void GLGizmoHoles::set_fit(HoleFit f)
 void GLGizmoHoles::set_category(HoleCategory c)
 {
     m_category = c;
-    if (c == HoleCategory::Custom) {
-        m_standard = -1;
-    } else {
-        const std::vector<HoleStandard> &t = hole_standards();
-        for (size_t i = 0; i < t.size(); ++i)
-            if (category_matches(c, t[i].kind)) {
-                set_standard(int(i) + 1);
-                break;
-            }
-    }
+    const std::vector<HoleStandard> &t = hole_standards();
+    for (size_t i = 0; i < t.size(); ++i)
+        if (category_matches(c, t[i].kind)) {
+            set_standard(int(i) + 1);
+            break;
+        }
     m_preview_dirty = true;
     m_parent.set_as_dirty();
 }
@@ -1585,7 +1602,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
     } else if (m_operation == HoleOperation::Bore) {
         // Category buttons (image buttons in Orca's toolbar style).
         const HoleCategory categories[] = {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet,
-                                           HoleCategory::Insert, HoleCategory::Custom};
+                                           HoleCategory::Insert};
         // `scaled()` multiplies by the font size, so keep this a small factor (~1.5 line heights).
         const float icon_sz = m_imgui->scaled(1.5f);
         for (HoleCategory cat : categories) {
@@ -1603,35 +1620,37 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         }
         ImGui::NewLine();
 
-        // Items of the chosen category.
+        // Items of the chosen category, led by a Custom entry: a size with no catalogue match keeps
+        // the category (and so its geometry) but takes the typed size.
         {
             std::vector<std::string>         names;
             std::vector<int>                 idxs;
+            names.push_back("Custom");
+            idxs.push_back(0); // -> set_standard(0) -> m_standard = -1
             const std::vector<HoleStandard> &t = hole_standards();
             for (size_t i = 0; i < t.size(); ++i)
                 if (category_matches(m_category, t[i].kind)) {
                     names.push_back(t[i].designation);
                     idxs.push_back(int(i) + 1);
                 }
-            if (!names.empty()) {
-                int sel = 0;
-                for (size_t k = 0; k < idxs.size(); ++k)
-                    if (idxs[k] == m_standard + 1) {
-                        sel = int(k);
-                        break;
-                    }
-                const int prev = sel;
-                if (render_combo(m_desc.at("standard").ToStdString(), names, sel, left_width, m_imgui->scaled(12.0f)) && sel != prev)
-                    set_standard(idxs[sel]);
-            }
+            int sel = 0;
+            for (size_t k = 0; k < idxs.size(); ++k)
+                if (idxs[k] == m_standard + 1) {
+                    sel = int(k);
+                    break;
+                }
+            const int prev = sel;
+            if (render_combo(m_desc.at("standard").ToStdString(), names, sel, left_width, m_imgui->scaled(12.0f)) && sel != prev)
+                set_standard(idxs[sel]);
         }
 
         const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
                                     ? &hole_standards()[m_standard]
                                     : nullptr;
-        const bool is_screw  = s != nullptr && s->kind == HoleStandardKind::Screw;
-        const bool is_nut    = s != nullptr && s->kind == HoleStandardKind::Nut;
-        const bool is_pocket = s != nullptr && (s->kind == HoleStandardKind::Insert || s->kind == HoleStandardKind::Magnet);
+        // The category decides the geometry; a Custom entry has no standard but keeps the category.
+        const bool is_screw  = m_category == HoleCategory::Screw;
+        const bool is_nut    = m_category == HoleCategory::Nut;
+        const bool is_pocket = m_category == HoleCategory::Insert || m_category == HoleCategory::Magnet;
 
         // Diameter is always editable; typing an existing standard's size relabels the combo.
         ImGui::AlignTextToFramePadding();
@@ -1649,7 +1668,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::SameLine(left_width);
         ImGui::PushItemWidth(sliders_width);
         if (is_pocket) {
-            float t = float(hole_fit_diameter_delta(s->kind, m_diameter, HoleFit(m_fit)));
+            float t = float(hole_fit_diameter_delta(standard_kind(m_category), m_diameter, HoleFit(m_fit)));
             m_imgui->disabled_begin(true);
             ImGui::InputFloat("##tol", &t, 0.f, 0.f, "%.2f");
             m_imgui->disabled_end();
@@ -1671,7 +1690,22 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::PopItemWidth();
         m_imgui->disabled_end();
 
-        if (is_screw) {
+        // A quick style for the row of mutually exclusive buttons below: the active one is filled
+        // teal, so the current Head / Fit is obvious.
+        auto sel_button = [&](const wxString &label, bool on, auto cb) {
+            if (on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+            }
+            const bool clicked = m_imgui->button(label);
+            if (on)
+                ImGui::PopStyleColor(3);
+            if (clicked)
+                cb();
+        };
+
+        if (is_screw && s != nullptr) {
             // Free (clearance) or Tap (thread-forming into plastic). Only the fits this screw
             // actually has are shown.
             const bool has_free = s->clearance_d > 0.;
@@ -1682,15 +1716,13 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
                 ImGui::SameLine(left_width);
                 bool first = true;
                 if (has_free) {
-                    if (m_imgui->button(m_desc.at("fit_free")))
-                        set_screw_fit(ScrewFit::Free);
+                    sel_button(m_desc.at("fit_free"), m_screw_fit == ScrewFit::Free, [&] { set_screw_fit(ScrewFit::Free); });
                     first = false;
                 }
                 if (has_tap) {
                     if (!first)
                         ImGui::SameLine();
-                    if (m_imgui->button(m_desc.at("fit_tap")))
-                        set_screw_fit(ScrewFit::Tap);
+                    sel_button(m_desc.at("fit_tap"), m_screw_fit == ScrewFit::Tap, [&] { set_screw_fit(ScrewFit::Tap); });
                 }
             }
 
@@ -1700,22 +1732,21 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
                 ImGui::AlignTextToFramePadding();
                 m_imgui->text(m_desc.at("head"));
                 ImGui::SameLine(left_width);
-                if (m_imgui->button(m_desc.at("head_none")))
-                    set_head(BoreHead::None);
+                sel_button(m_desc.at("head_none"), m_head == BoreHead::None, [&] { set_head(BoreHead::None); });
                 if (s->socket_d > 0.) {
                     ImGui::SameLine();
-                    if (m_imgui->button(m_desc.at("head_socket")))
-                        set_head(BoreHead::SocketHead);
+                    sel_button(m_desc.at("head_socket"), m_head == BoreHead::SocketHead,
+                               [&] { set_head(BoreHead::SocketHead); });
                 }
                 if (s->button_d > 0.) {
                     ImGui::SameLine();
-                    if (m_imgui->button(m_desc.at("head_button")))
-                        set_head(BoreHead::ButtonHead);
+                    sel_button(m_desc.at("head_button"), m_head == BoreHead::ButtonHead,
+                               [&] { set_head(BoreHead::ButtonHead); });
                 }
                 if (s->csink_d > 0.) {
                     ImGui::SameLine();
-                    if (m_imgui->button(m_desc.at("head_csink")))
-                        set_head(BoreHead::Countersink);
+                    sel_button(m_desc.at("head_csink"), m_head == BoreHead::Countersink,
+                               [&] { set_head(BoreHead::Countersink); });
                 }
             }
         }
@@ -1724,20 +1755,18 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             ImGui::AlignTextToFramePadding();
             m_imgui->text(m_desc.at("fit"));
             ImGui::SameLine(left_width);
-            if (m_imgui->button(m_desc.at("fit_tight")))
-                set_fit(HoleFit::Tight);
+            sel_button(m_desc.at("fit_tight"), m_fit == int(HoleFit::Tight), [&] { set_fit(HoleFit::Tight); });
             ImGui::SameLine();
-            if (m_imgui->button(m_desc.at("fit_slip")))
-                set_fit(HoleFit::Slip);
+            sel_button(m_desc.at("fit_slip"), m_fit == int(HoleFit::Slip), [&] { set_fit(HoleFit::Slip); });
         }
 
         // Head fit: sink the head / pocket below the surface by 0.08 or 0.16 mm (Z tolerance).
         {
-            const bool head_active = is_screw && m_head != BoreHead::None &&
+            const bool head_active = is_screw && s != nullptr && m_head != BoreHead::None &&
                                      ((m_head == BoreHead::SocketHead && s->socket_d > 0.) ||
                                       (m_head == BoreHead::ButtonHead && s->button_d > 0.) ||
                                       (m_head == BoreHead::Countersink && s->csink_d > 0.));
-            const bool show = head_active || is_nut || (s != nullptr && s->kind == HoleStandardKind::Magnet);
+            const bool show = head_active || is_nut || m_category == HoleCategory::Magnet;
             if (show) {
                 ImGui::AlignTextToFramePadding();
                 m_imgui->text(m_desc.at("head_fit"));
@@ -1840,9 +1869,14 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
                                    : m_operation == HoleOperation::RimChamfer  ? m_rim_chamfer
                                                                                : m_rim_fillet;
     const int applied = int(std::count_if(flags.begin(), flags.end(), [](char a) { return a != 0; }));
-    m_imgui->text(wxString::Format("%s: %d (%d applied)", m_desc.at("holes").c_str(), int(m_holes.size()), applied));
+    // Only the holes the current operation can act on (teardrop: horizontal only).
+    int usable = 0;
+    for (int i = 0; i < int(m_holes.size()); ++i)
+        if (hole_usable(i))
+            ++usable;
+    m_imgui->text(wxString::Format("%s: %d (%d applied)", m_desc.at("holes").c_str(), usable, applied));
 
-    m_imgui->disabled_begin(m_holes.empty());
+    m_imgui->disabled_begin(usable == 0);
     if (m_imgui->button(m_desc.at("all")))
         gizmo_apply_all();
     m_imgui->disabled_end();
