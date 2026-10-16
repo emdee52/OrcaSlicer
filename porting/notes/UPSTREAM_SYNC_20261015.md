@@ -82,13 +82,27 @@ brace balance):
   7/8 and 8/9) and `bed_icon_count` went 8 -> 9. All uses are symbolic; the picking-id budget
   is 36 * 12 = 432 < `SceneRaycaster::EIdBase::Volume` (1000).
 
-**Decision taken in `CAD/CadDocument.cpp` (review wanted):** the port replaced the CAD Hole
-feature's local `HoleStdEntry` table with the shared `HoleStandards` module ("the CAD Hole
+**Decision taken in `CAD/CadDocument.cpp` (resolved after review):** the port replaced the CAD
+Hole feature's local `HoleStdEntry` table with the shared `HoleStandards` module ("the CAD Hole
 feature and the mesh tool cannot diverge"), while upstream *improved* that local table in this
 range (ISO 10642 countersink angles, ASME `#10-24`, `UNC` designations plus the bare form,
-`hole_std_lookup` returning a pointer). The port's dedup was kept, so upstream's table and its
-values are dropped. If upstream's data should win it has to be ported into
-`src/libslic3r/HoleStandards.cpp`, which currently ships its own numbers.
+`hole_std_lookup` returning a pointer). Rather than drop either side, upstream's values were
+adopted into `src/libslic3r/HoleStandards.{hpp,cpp}` (commit "port(ME-2): adopt upstream's hole
+standard seat dimensions"):
+
+- `HoleStandard` gained seat columns `cbore_d` / `cbore_depth` / `csink_pocket_d`, kept row for
+  row with upstream's table next to the port's head dimensions (`socket_d/k`, `button_d/k`,
+  `csink_d`), so a future upstream table edit is a straight copy into this table.
+- `CadDocument::add_hole_standard()` now passes those seat columns (and the canonical
+  designation) to `add_hole_styled()`, so the CAD feature behaves as upstream's did.
+- Inch rows carry upstream's clearances, the UNC series names, the added `#10-24 UNC` size and
+  82 deg seats; `find_hole_standard()` accepts the bare size ("1/4-20") as well, so documents
+  written with the old bare designations still resolve.
+- `tests/libslic3r/test_holestandards.cpp` covers the seat columns, the UNC/bare lookup and the
+  82 deg inch angle.
+
+The port's mesh bore/pocket tool is unchanged in shape (it sizes its seat as head dimension +
+its own `sink` setting); the inch sizes it offers now use upstream's ASME numbers.
 
 **Other notable resolutions:** `src/OrcaSlicer.cpp` keeps upstream's refactored CLI preset
 resolvers and re-applies the three `[BUILDFIX:VS17.8]` `config_substitution_rule` captures
@@ -105,22 +119,23 @@ resolvers and re-applies the three `[BUILDFIX:VS17.8]` `config_substitution_rule
 
 ## Verification still to do
 
-Committed on `sync/upstream-20261015` but **not built and not merged into
-`port/integration`**. Next:
+Committed on `sync/upstream-20261015` and **being built**:
+`build_win.bat -ds -j 8` (deps + slicer). Upstream changed `deps/` and removed
+GLEW/OpenCSG/Clipper1, so the existing `build/` tree needs a reconfigure - `-s --no-configure`
+is not enough. Then:
 
-1. Build: `build_win.bat -ds`. Upstream changed `deps/` and removed GLEW/OpenCSG/Clipper1, so
-   the existing `build/` tree needs a reconfigure - `-s --no-configure` is not enough.
-2. Expect a compile-fix pass anyway. Watch: the `SegmentsUniforms` / `LayerColorsUniforms`
+1. Expect a compile-fix pass anyway. Watch: the `SegmentsUniforms` / `LayerColorsUniforms`
    refactor in `libvgcode`, `do_move(snapshot_type, force_volume_move)` callers in
    `GLCanvas3D`, and the belt/IMEX helpers.
-3. `ctest --test-dir build/tests -C Release`.
-4. Off-by-default equivalence: with every port option at its default, the sliced output must
+2. `ctest --test-dir build/tests -C Release` (the suites are off by default, so the configure
+   has to include them).
+3. Off-by-default equivalence: with every port option at its default, the sliced output must
    match stock 2.5. Then the MCP runtime pass per feature.
-5. `scripts/run_gettext.bat --full` (the port adds `_L()` strings; upstream churned the
+4. `scripts/run_gettext.bat --full` (the port adds `_L()` strings; upstream churned the
    catalogs).
-6. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
+5. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
    upstream's section view; its object-scoped shell clipping is still the port's).
-7. Only then merge into `port/integration`, after the user has tested the build.
+6. Only then merge into `port/integration`, after the user has tested the build.
 
 ## Gaps found while resolving
 
