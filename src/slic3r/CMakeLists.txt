@@ -20,6 +20,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Widgets/FilamentLoad.hpp
     GUI/AboutDialog.cpp
     GUI/AboutDialog.hpp
+    GUI/AnimatedTexture.cpp
+    GUI/AnimatedTexture.hpp
     GUI/AmsMappingPopup.cpp
     GUI/AmsMappingPopupUpdate.cpp
     GUI/AmsMappingPopup.hpp
@@ -123,8 +125,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/PluginPickerDialog.hpp
     GUI/PluginsDialog.cpp
     GUI/PluginsDialog.hpp
+    GUI/Shortcuts.cpp
+    GUI/Shortcuts.hpp
     GUI/SpeedDialDialog.cpp
     GUI/SpeedDialDialog.hpp
+    GUI/ColorPickerDialog.cpp
+    GUI/ColorPickerDialog.hpp
     GUI/ActionRegistry.cpp
     GUI/ActionRegistry.hpp
     GUI/NativeCommands.cpp
@@ -137,8 +143,18 @@ set(SLIC3R_GUI_SOURCES
     GUI/TerminalDialog.hpp
     GUI/PluginProgressDialog.cpp
     GUI/PluginProgressDialog.hpp
-    GUI/PluginWebDialog.cpp
-    GUI/PluginWebDialog.hpp
+    GUI/WebDialog.cpp
+    GUI/WebDialog.hpp
+    GUI/DockPanel.cpp
+    GUI/DockPanel.hpp
+    GUI/WebPanel.cpp
+    GUI/WebPanel.hpp
+    GUI/Widgets/WebHosting.cpp
+    GUI/Widgets/WebHosting.hpp
+    GUI/AuiMgr.cpp
+    GUI/AuiMgr.hpp
+    GUI/AuiPaneLayout.cpp
+    GUI/AuiPaneLayout.hpp
     GUI/DragCanvas.cpp
     GUI/DragCanvas.hpp
     GUI/EditGCodeDialog.cpp
@@ -167,20 +183,20 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GizmoStyle.hpp
     GUI/Gizmos/GLGizmoBase.cpp
     GUI/Gizmos/GLGizmoBase.hpp
+    GUI/Gizmos/GLGizmoAlignment.cpp
+    GUI/Gizmos/GLGizmoAlignment.hpp
     GUI/Gizmos/GLGizmoBrimEars.cpp
     GUI/Gizmos/GLGizmoBrimEars.hpp
     GUI/Gizmos/GLGizmoCut.cpp
     GUI/Gizmos/GLGizmoCut.hpp
     GUI/Gizmos/GLGizmoEmboss.cpp
     GUI/Gizmos/GLGizmoEmboss.hpp
-    #GUI/Gizmos/GLGizmoFaceDetector.cpp
-    #GUI/Gizmos/GLGizmoFaceDetector.hpp
     GUI/Gizmos/GLGizmoFdmSupports.cpp
     GUI/Gizmos/GLGizmoFdmSupports.hpp
     GUI/Gizmos/GLGizmoFlatten.cpp
     GUI/Gizmos/GLGizmoFlatten.hpp
-GUI/Gizmos/GLGizmoFuzzySkin.cpp
-GUI/Gizmos/GLGizmoFuzzySkin.hpp
+    GUI/Gizmos/GLGizmoFuzzySkin.cpp
+    GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Gizmos/GLGizmoCounterboreBridge.cpp
     GUI/Gizmos/GLGizmoCounterboreBridge.hpp
     GUI/Gizmos/GLGizmoHoles.cpp
@@ -191,8 +207,6 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Gizmos/GLGizmoHoleFill.hpp
     GUI/Gizmos/GLGizmoPerforation.cpp
     GUI/Gizmos/GLGizmoPerforation.hpp
-    #GUI/Gizmos/GLGizmoHollow.cpp
-    #GUI/Gizmos/GLGizmoHollow.hpp
     GUI/Gizmos/GLGizmoMeasure.cpp
     GUI/Gizmos/GLGizmoMeasure.hpp
     GUI/Gizmos/GLGizmoMeshBoolean.cpp
@@ -213,18 +227,17 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Gizmos/GLGizmoSeam.hpp
     GUI/Gizmos/GLGizmoSimplify.cpp
     GUI/Gizmos/GLGizmoSimplify.hpp
-    #GUI/Gizmos/GLGizmoSlaSupports.cpp
-    #GUI/Gizmos/GLGizmoSlaSupports.hpp
     GUI/Gizmos/GLGizmosManager.cpp
     GUI/Gizmos/GLGizmosManager.hpp
     GUI/Gizmos/GLGizmoSVG.cpp
     GUI/Gizmos/GLGizmoSVG.hpp
+    GUI/Gizmos/GLGizmoTextureDisplacement.cpp
+    GUI/Gizmos/GLGizmoTextureDisplacement.hpp
     GUI/Gizmos/GLGizmoUtils.cpp
     GUI/Gizmos/GLGizmoUtils.hpp
-    #GUI/Gizmos/GLGizmoText.cpp
-    #GUI/Gizmos/GLGizmoText.hpp
     GUI/GLCanvas3D.cpp
     GUI/GLCanvas3D.hpp
+    GUI/SequentialPrintClearance.hpp
     GUI/OrcaExt/GravitySnap.cpp
     GUI/OrcaExt/GravitySnap.hpp
     GUI/OrcaExt/ObjectSnap.cpp
@@ -247,6 +260,7 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/GLToolbar.hpp
     GUI/ImageDPIFrame.cpp
     GUI/ImageDPIFrame.hpp
+    GUI/IMediaController.hpp
     GUI/GUI_App.cpp
     GUI/GUI_App.hpp
     GUI/GUI_AuxiliaryList.cpp
@@ -297,6 +311,12 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/FilamentMapDialog.hpp
     GUI/IconManager.cpp
     GUI/IconManager.hpp
+    GUI/IMEXFilamentPickerPopover.cpp
+    GUI/IMEXFilamentPickerPopover.hpp
+    GUI/IMEXModesCtrl.cpp
+    GUI/IMEXModesCtrl.hpp
+    GUI/IdleScheduler.cpp
+    GUI/IdleScheduler.hpp
     GUI/ImageGrid.cpp
     GUI/ImageGrid.h
     GUI/ImGuiWrapper.cpp
@@ -350,12 +370,26 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Jobs/SLAImportDialog.hpp
     GUI/Jobs/SLAImportJob.cpp
     GUI/Jobs/SLAImportJob.hpp
+    GUI/Jobs/TextureDisplacementBakeJob.cpp
+    GUI/Jobs/TextureDisplacementBakeJob.hpp
+    GUI/Jobs/TextureDisplacementPrepareJob.cpp
+    GUI/Jobs/TextureDisplacementPrepareJob.hpp
+    GUI/Jobs/TextureDisplacementDebugJob.cpp
+    GUI/Jobs/TextureDisplacementDebugJob.hpp
+    GUI/Jobs/TextureDisplacementPreviewJob.cpp
+    GUI/Jobs/TextureDisplacementPreviewJob.hpp
     GUI/Jobs/ThreadSafeQueue.hpp
     GUI/Jobs/UpgradeNetworkJob.cpp
     GUI/Jobs/UpgradeNetworkJob.hpp
     GUI/Jobs/Worker.hpp
     GUI/KBShortcutsDialog.cpp
     GUI/KBShortcutsDialog.hpp
+    GUI/KeyChord.cpp
+    GUI/KeyChord.hpp
+    GUI/Lazy.cpp
+    GUI/Lazy.hpp
+    GUI/LazyPage.cpp
+    GUI/LazyPage.hpp
     GUI/LibVGCode/LibVGCodeWrapper.hpp
     GUI/LibVGCode/LibVGCodeWrapper.cpp
     GUI/LinuxDisplayBackend.cpp
@@ -368,6 +402,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/MediaFilePanel.h
     GUI/MediaPlayCtrl.cpp
     GUI/MediaPlayCtrl.h
+    GUI/WebRtcMediaController.cpp
+    GUI/WebRtcMediaController.hpp
     GUI/MeshUtils.cpp
     GUI/MeshUtils.hpp
     GUI/ModelMall.cpp
@@ -408,8 +444,6 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/MultiSendMachineModel.hpp
     GUI/MultiTaskManagerPage.cpp
     GUI/MultiTaskManagerPage.hpp
-    GUI/MultiTaskModel.cpp
-    GUI/MultiTaskModel.hpp
     GUI/NetworkTestDialog.cpp
     GUI/NetworkTestDialog.hpp
     GUI/Notebook.cpp
@@ -418,8 +452,6 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/NotificationManager.hpp
     GUI/OAuthDialog.cpp
     GUI/OAuthDialog.hpp
-    GUI/ObjColorDialog.cpp
-    GUI/ObjColorDialog.hpp
     GUI/ObjectDataViewModel.cpp
     GUI/ObjectDataViewModel.hpp
     GUI/OG_CustomCtrl.cpp
@@ -451,6 +483,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/ParamsPanel.hpp
     GUI/PartPlate.cpp
     GUI/PartPlate.hpp
+    GUI/BeltPurgeTower.cpp
+    GUI/BeltPurgeTower.hpp
     GUI/FilamentGroupPopup.hpp
     GUI/FilamentGroupPopup.cpp
     GUI/PhysicalPrinterDialog.cpp
@@ -459,6 +493,7 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/Plater.hpp
     GUI/PlateSettingsDialog.cpp
     GUI/PlateSettingsDialog.hpp
+    GUI/PrebuildQueue.hpp
     GUI/Preferences.cpp
     GUI/Preferences.hpp
     GUI/PresetBundleDialog.cpp
@@ -489,8 +524,6 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/ProjectDirtyStateManager.cpp
     GUI/ProjectDirtyStateManager.hpp
     GUI/Project.hpp
-    GUI/PublishDialog.cpp
-    GUI/PublishDialog.hpp
     GUI/PublishSettingsDialog.cpp
     GUI/PublishSettingsDialog.hpp
     GUI/PurgeModeDialog.cpp
@@ -509,6 +542,10 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/SceneRaycaster.hpp
     GUI/SceneCache.cpp
     GUI/SceneCache.hpp
+    GUI/FrameProfiler.cpp
+    GUI/FrameProfiler.hpp
+    GUI/SceneBenchmark.cpp
+    GUI/SceneBenchmark.hpp
     GUI/PartSkipCommon.hpp
     GUI/PartSkipDialog.cpp
     GUI/PartSkipDialog.hpp
@@ -538,6 +575,7 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/SliceInfoPanel.hpp
     GUI/SlicingProgressNotification.cpp
     GUI/SlicingProgressNotification.hpp
+    GUI/StagedBuild.hpp
     GUI/StatusPanel.cpp
     GUI/StatusPanel.hpp
     GUI/StepMeshDialog.cpp
@@ -554,6 +592,10 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/TaskManager.hpp
     GUI/TextLines.cpp
     GUI/TextLines.hpp
+    GUI/TextureLibrary.cpp
+    GUI/TextureLibrary.hpp
+    GUI/TextureProjectorFrame.cpp
+    GUI/TextureProjectorFrame.hpp
     GUI/TickCode.cpp
     GUI/TickCode.hpp
     GUI/TroubleshootDialog.cpp
@@ -570,14 +612,16 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     GUI/UserManager.hpp
     GUI/UserNotification.cpp
     GUI/UserNotification.hpp
-    GUI/WebDownPluginDlg.cpp
-    GUI/WebDownPluginDlg.hpp
+    GUI/UVEditorCanvas.cpp
+    GUI/UVEditorCanvas.hpp
     GUI/WebGuideDialog.cpp
     GUI/WebGuideDialog.hpp
     GUI/WebUserLoginDialog.cpp
     GUI/WebUserLoginDialog.hpp
     GUI/WebViewDialog.cpp
     GUI/WebViewDialog.hpp
+    GUI/WebMediaController.hpp
+    GUI/WebMediaController.cpp
     GUI/Widgets/AMSControl.cpp
     GUI/Widgets/AMSControl.hpp
     GUI/Widgets/AMSItem.cpp
@@ -684,6 +728,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     plugin/host/PluginHostUi.hpp
     plugin/host/PluginPages.cpp
     plugin/host/PluginPages.hpp
+    plugin/host/PluginResourceTextures.cpp
+    plugin/host/PluginResourceTextures.hpp
     plugin/CloudPluginService.cpp
     plugin/CloudPluginService.hpp
     plugin/PluginFsUtils.cpp
@@ -707,6 +753,9 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     plugin/pluginTypes/pages/PagesPluginCapability.hpp
     plugin/pluginTypes/pages/PagesPluginCapability.cpp
     plugin/pluginTypes/pages/PagesPluginCapabilityTrampoline.hpp
+    plugin/pluginTypes/resourceTexture/ResourceTexturePluginCapability.hpp
+    plugin/pluginTypes/resourceTexture/ResourceTexturePluginCapability.cpp
+    plugin/pluginTypes/resourceTexture/ResourceTexturePluginCapabilityTrampoline.hpp
     plugin/pluginTypes/script/ScriptPluginCapability.hpp
     plugin/pluginTypes/script/ScriptPluginCapability.cpp
     plugin/pluginTypes/script/ScriptPluginCapabilityTrampoline.hpp
@@ -772,6 +821,7 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     Utils/NetworkAgentFactory.cpp
     Utils/ICloudServiceAgent.hpp
     Utils/IPrinterAgent.hpp
+    Utils/ICameraSignalingChannel.hpp
     Utils/OrcaCloudServiceAgent.cpp
     Utils/OrcaCloudServiceAgent.hpp
     Utils/OrcaPrinterAgent.cpp
@@ -800,8 +850,6 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     Utils/PrintHost.hpp
     Utils/Process.cpp
     Utils/Process.hpp
-    Utils/ProfileDescription.hpp
-    Utils/Profile.hpp
     Utils/RaycastManager.cpp
     Utils/RaycastManager.hpp
     Utils/Repetier.cpp
@@ -814,6 +862,8 @@ GUI/Gizmos/GLGizmoFuzzySkin.hpp
     Utils/SimplyPrint.hpp
     Utils/TCPConsole.cpp
     Utils/TCPConsole.hpp
+    Utils/UltiMaker.cpp
+    Utils/UltiMaker.hpp
     Utils/UndoRedo.cpp
     Utils/UndoRedo.hpp
     Utils/WebSocketClient.hpp
@@ -836,6 +886,10 @@ if (SLIC3R_CAD)
     list(APPEND SLIC3R_GUI_SOURCES
         GUI/CAD/DesignPanel.cpp
         GUI/CAD/DesignPanel.hpp
+        GUI/CAD/DesignRowList.cpp
+        GUI/CAD/DesignRowList.hpp
+        GUI/CAD/DesignTextDialog.cpp
+        GUI/CAD/DesignTextDialog.hpp
         GUI/CAD/DesignCanvas.cpp
         GUI/CAD/DesignCanvas.hpp
         GUI/CAD/DesignSketchTool.cpp
@@ -846,11 +900,6 @@ if (SLIC3R_CAD)
         GUI/CAD/SketchInlineEditor.hpp
         GUI/CAD/McpControl.cpp
         GUI/CAD/McpControl.hpp
-        GUI/Gizmos/GLGizmoSketch.cpp
-        GUI/Gizmos/GLGizmoSketch.hpp
-        # Needs GeometryEngine (make_primitive / apply_fillet / tessellate).
-        GUI/Gizmos/GLGizmoPrimitive.cpp
-        GUI/Gizmos/GLGizmoPrimitive.hpp
     )
 endif ()
 
@@ -940,7 +989,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions
@@ -997,29 +1046,32 @@ endif ()
 
 if (APPLE)
     # Static FFmpeg from the deps install: nothing to bundle into the .app,
-    # no rpath/install_name handling. Order matters: avcodec -> swscale -> avutil.
+    # no rpath/install_name handling. Order matters: avformat -> avcodec -> swscale -> avutil.
+    find_library(LIBAVFORMAT_LIBRARY NAMES libavformat.a PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBAVCODEC_LIBRARY NAMES libavcodec.a PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBSWSCALE_LIBRARY NAMES libswscale.a PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBAVUTIL_LIBRARY NAMES libavutil.a PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
-    if (NOT LIBAVCODEC_LIBRARY OR NOT LIBSWSCALE_LIBRARY OR NOT LIBAVUTIL_LIBRARY)
-        message(FATAL_ERROR "Static FFmpeg (libavcodec.a/libswscale.a/libavutil.a) not found under ${CMAKE_PREFIX_PATH}/lib. Rebuild the deps — FFMPEG builds static-only on macOS.")
+    if (NOT LIBAVFORMAT_LIBRARY OR NOT LIBAVCODEC_LIBRARY OR NOT LIBSWSCALE_LIBRARY OR NOT LIBAVUTIL_LIBRARY)
+        message(FATAL_ERROR "Static FFmpeg (libavformat.a/libavcodec.a/libswscale.a/libavutil.a) not found under ${CMAKE_PREFIX_PATH}/lib. Rebuild the deps — FFMPEG builds static-only on macOS.")
     endif ()
-    target_link_libraries(libslic3r_gui ${LIBAVCODEC_LIBRARY} ${LIBSWSCALE_LIBRARY} ${LIBAVUTIL_LIBRARY})
+    target_link_libraries(libslic3r_gui ${LIBAVFORMAT_LIBRARY} ${LIBAVCODEC_LIBRARY} ${LIBSWSCALE_LIBRARY} ${LIBAVUTIL_LIBRARY})
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${CMAKE_PREFIX_PATH}/include)
 elseif (WIN32)
     # Prebuilt shared FFmpeg from the deps install. Windows has no pkg-config,
     # so resolve the import libraries out of the deps prefix directly; the DLLs
     # are copied next to the executable by the top level CMakeLists.
+    find_library(LIBAVFORMAT_LIBRARY NAMES avformat PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBAVCODEC_LIBRARY NAMES avcodec PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBSWSCALE_LIBRARY NAMES swscale PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
     find_library(LIBAVUTIL_LIBRARY NAMES avutil PATHS ${CMAKE_PREFIX_PATH}/lib NO_DEFAULT_PATH)
-    if (NOT LIBAVCODEC_LIBRARY OR NOT LIBSWSCALE_LIBRARY OR NOT LIBAVUTIL_LIBRARY)
-        message(FATAL_ERROR "FFmpeg (avcodec/swscale/avutil) not found under ${CMAKE_PREFIX_PATH}/lib. Rebuild the deps.")
+    if (NOT LIBAVFORMAT_LIBRARY OR NOT LIBAVCODEC_LIBRARY OR NOT LIBSWSCALE_LIBRARY OR NOT LIBAVUTIL_LIBRARY)
+        message(FATAL_ERROR "FFmpeg (avformat/avcodec/swscale/avutil) not found under ${CMAKE_PREFIX_PATH}/lib. Rebuild the deps.")
     endif ()
-    target_link_libraries(libslic3r_gui ${LIBAVCODEC_LIBRARY} ${LIBSWSCALE_LIBRARY} ${LIBAVUTIL_LIBRARY})
+    target_link_libraries(libslic3r_gui ${LIBAVFORMAT_LIBRARY} ${LIBAVCODEC_LIBRARY} ${LIBSWSCALE_LIBRARY} ${LIBAVUTIL_LIBRARY})
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${CMAKE_PREFIX_PATH}/include)
 else ()
     pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+        libavformat
         libavcodec
         libswscale
         libavutil
@@ -1035,14 +1087,9 @@ if (UNIX AND NOT APPLE)
     find_package(GTK${SLIC3R_GTK} REQUIRED)
     pkg_check_modules(LIBSECRET REQUIRED libsecret-1)
     pkg_check_modules(webkit2gtk REQUIRED webkit2gtk-4.1)
-    if (FLATPAK)
-        # I don't know why this is needed, but for whatever reason slic3r isn't
-        # linking to X11 and webkit2gtk. force it.
-        find_package(X11 REQUIRED)
-        target_link_libraries(libslic3r_gui ${X11_LIBRARIES} ${webkit2gtk_LIBRARIES})
-    endif()
+    find_package(X11 REQUIRED)
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${GTK${SLIC3R_GTK}_INCLUDE_DIRS} ${LIBSECRET_INCLUDE_DIRS} ${webkit2gtk_INCLUDE_DIRS})
-    target_link_libraries(libslic3r_gui ${GTK${SLIC3R_GTK}_LIBRARIES} fontconfig ${LIBSECRET_LIBRARIES})
+    target_link_libraries(libslic3r_gui ${GTK${SLIC3R_GTK}_LIBRARIES} fontconfig ${LIBSECRET_LIBRARIES} ${webkit2gtk_LIBRARIES} ${X11_LIBRARIES})
 
     # Propagate GDK backend detection results as compile definitions so that
     # LinuxDisplayBackend.cpp can include the right GDK headers.

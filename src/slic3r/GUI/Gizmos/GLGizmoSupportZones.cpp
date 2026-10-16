@@ -2073,7 +2073,7 @@ std::vector<Vec2d> GLGizmoSupportZones::ring_outline_world(double edge_mm) const
 
     const ExPolygons ring = (std::abs(edge_mm) < 1e-6)
         ? mk->area
-        : offset_ex(mk->area, scaled<float>(- edge_mm), ClipperLib::jtRound);
+        : offset_ex(mk->area, scaled<float>(- edge_mm), jtRound);
     if (ring.empty())
         return out;   // te has pasado metiendo: no hay forma, y eso es una respuesta
 
@@ -2470,7 +2470,7 @@ bool GLGizmoSupportZones::build_block_tree_mesh(TriangleMesh &out_world) const
     const double     e   = double(m_footprint_shrink_mm);
     const ExPolygons raw = (std::abs(e) < 1e-6)
         ? mk->area
-        : offset_ex(mk->area, scaled<float>(- e), ClipperLib::jtRound);
+        : offset_ex(mk->area, scaled<float>(- e), jtRound);
     if (raw.empty())
         return false;
 
@@ -2650,7 +2650,7 @@ bool GLGizmoSupportZones::build_pillar_mesh(TriangleMesh &out_world) const
         const double e = edge_at((ri == 0) ? (z_high + ROOF_LIFT_MM) : r.z);
         const ExPolygons ring_area = (std::abs(e) < 1e-6)
             ? mk->area
-            : offset_ex(mk->area, scaled<float>(- e), ClipperLib::jtRound);
+            : offset_ex(mk->area, scaled<float>(- e), jtRound);
         // 🚨 s299 — AQUÍ ES DONDE SE NOTA EL COLAPSO, y por eso ya no hay que predecirlo. Si te has
         // pasado metiendo, Clipper devuelve vacío y no se construye nada. La versión de antes
         // intentaba adivinar ese punto con una condición local que no veía chocar dos aristas

@@ -54,6 +54,7 @@ __pycache__/
 *.opc
 /.test/
 docs/superpowers/
+ctest_results.xml
 /*.stl
 /*.3mf
 /.openchamber/

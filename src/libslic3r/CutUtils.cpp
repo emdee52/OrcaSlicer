@@ -1,6 +1,8 @@
 
 #include "CutUtils.hpp"
 #include "Geometry.hpp"
+#include "Point.hpp"
+#include "TriangleMesh.hpp"
 #include "libslic3r.h"
 #include "MeshBoolean.hpp"
 #include "Model.hpp"
@@ -9,7 +11,17 @@
 #include "TriangleSelector.hpp"
 #include "ObjectID.hpp"
 
+#include <algorithm>
 #include <boost/log/trivial.hpp>
+#include <cassert>
+#include <string>
+#include <vector>
+#include <utility>
+#include <cstddef>
+#include <optional>
+#include <math.h>
+#include <cmath>
+#include "BoundingBox.hpp"
 
 #include <algorithm>
 #include <cmath>

@@ -4,6 +4,11 @@
 #include "GLGizmoBase.hpp"
 //BBS: add size adjust related
 #include "GizmoObjectManipulation.hpp"
+#include "libslic3r/Point.hpp"
+#include "slic3r/GUI/GLModel.hpp"
+#include <array>
+#include <string>
+#include <wx/event.h>
 #include "GLGizmosCommon.hpp"
 // ORCAPORT: pivot snapping and the Alt pivot snap reuse the object-snap core
 #include "slic3r/GUI/OrcaExt/ObjectSnap.hpp"
@@ -32,6 +37,8 @@ class GLGizmoMove3D : public GLGizmoBase
         Vec3d old_center{ Vec3d::Zero() };
     };
     std::array<GrabberConnection, 3> m_grabber_connections;
+    // Unit square previewing the target plane of the hovered align or distribute icon.
+    GLModel m_align_plane;
 
     //BBS: add size adjust related
     GizmoObjectManipulation* m_object_manipulation;
@@ -76,6 +83,7 @@ protected:
 
 private:
     double calc_projection(const UpdateData& data) const;
+    void   render_align_preview();
     void   change_cs_by_selection(); //cs mean Coordinate System
 
     // ORCAPORT: face-aligned move frame

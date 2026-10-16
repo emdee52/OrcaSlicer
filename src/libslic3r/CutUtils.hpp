@@ -6,6 +6,7 @@
 #include "Model.hpp"
 
 #include <functional>
+#include <optional>
 #include <vector>
 
 namespace Slic3r {

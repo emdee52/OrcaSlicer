@@ -1,12 +1,19 @@
 #ifndef slic3r_Http_App_hpp_
 #define slic3r_Http_App_hpp_
 
+#include <boost/asio/ip/basic_endpoint.hpp>
+#include <functional>
+#include <boost/asio/io_service.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/streambuf.hpp>
 // [ORCAPORT:MCP-1] BEGIN - algorithm/cctype for header normalization
 #include <algorithm>
 #include <cctype>
 // [ORCAPORT:MCP-1] END
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <sstream>
 #include <stack>
 
 #include <boost/beast/core.hpp>
