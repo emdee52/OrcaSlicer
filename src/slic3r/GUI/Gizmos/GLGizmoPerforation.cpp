@@ -417,7 +417,19 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
 
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
+    // [ORCAPORT:UI-1] Left-aligned under the icon while the panel fits to its right. Once it would run
+    // past the canvas edge, hang it to the left instead of letting GizmoImguiSetNextWIndowPos()'s
+    // left-aligned clamp slide it along that edge: the panel's right edge then stays under its own
+    // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+#if BBS_TOOLBAR_ON_TOP
+    float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
+        GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+    else
+        GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+#else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
     ImGuiWrapper::push_toolbar_style(scale);
 
     // Column widths, computed before Begin so the constraint below can use them. calc_text_size
@@ -504,16 +516,19 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     m_imgui->text(m_desc.at("click_hint"));
     m_imgui->text(m_desc.at("depth_hint"));
 
-    // Advisory only: the geometry uses the width exactly as set. Both notices share reserved rows
-    // in the fixed-width panel, so showing one changes neither the width nor the height.
+    // Advisory only: the geometry uses the width exactly as set. Drawn only when set - the reserved
+    // empty row pair left a blank block under the last hint, and the panel's pinned width already
+    // keeps a slider from moving when a notice appears.
     const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
     const bool show_horizontal = m_hover_horizontal;
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-    ImGui::BeginGroup();
-    m_imgui->text(show_reduced ? m_desc.at("reduced") : wxString());
-    m_imgui->text(show_horizontal ? m_desc.at("horizontal") : wxString());
-    ImGui::EndGroup();
-    ImGui::PopStyleColor();
+    if (show_reduced || show_horizontal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+        if (show_reduced)
+            m_imgui->text(m_desc.at("reduced"));
+        if (show_horizontal)
+            m_imgui->text(m_desc.at("horizontal"));
+        ImGui::PopStyleColor();
+    }
 
     ImGui::PopTextWrapPos();
     GizmoImguiEnd();

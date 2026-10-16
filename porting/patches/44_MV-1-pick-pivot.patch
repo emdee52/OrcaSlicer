@@ -1,0 +1,144 @@
+diff --git a/src/slic3r/GUI/GLCanvas3D.cpp b/src/slic3r/GUI/GLCanvas3D.cpp
+index ab30373630..d0632d7960 100644
+--- a/src/slic3r/GUI/GLCanvas3D.cpp
++++ b/src/slic3r/GUI/GLCanvas3D.cpp
+@@ -4242,6 +4242,11 @@ bool GLCanvas3D::handle_shortcut(const KeyChord& chord)
+         });
+         break;
+     default:
++        // [ORCAPORT:MV-1] an action inside the open gizmo first, then the shortcuts that open one.
++        if (m_gizmos.handle_gizmo_shortcut(shortcut)) {
++            m_dirty = true;
++            break;
++        }
+         if (!m_gizmos.open_gizmo_by_shortcut(shortcut))
+             return false;
+         m_dirty = true;
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp b/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
+index 914f51fff6..a61f86f87f 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
+@@ -649,6 +649,17 @@ void GLGizmoMove3D::clear_face_frame()
+     m_parent.request_extra_frame();
+ }
+ 
++// [ORCAPORT:MV-1] Enter face picking. The pick-pivot shortcut and the panel button both come through
++// here, so picking works whether or not a pivot is already set; cancelling keeps the one that was set.
++bool GLGizmoMove3D::start_pick_pivot()
++{
++    if (get_state() != On)
++        return false;
++    m_pick_face_mode = true;
++    m_parent.set_as_dirty();
++    return true;
++}
++
+ // The pivot candidate set belongs to the face under the cursor; drop it with the highlight.
+ void GLGizmoMove3D::clear_pivot_candidates()
+ {
+@@ -883,13 +894,19 @@ void GLGizmoMove3D::render_extra_move_ui()
+             }
+         m_imgui->text(_L("Click a face to place the pivot."));
+         m_imgui->text(_L("It sticks to corners and to edge and face midpoints."));
+-    } else if (m_face_frame_active) {
+-        if (m_imgui->button(_L("Reset pivot")))
+-            clear_face_frame();
+-        m_imgui->text(_L("Pivot") + ": " + pivot_kind_name(m_pivot_kind));
+     } else {
++        // [ORCAPORT:MV-1] both actions stay available: the pivot can be moved to another face without
++        // resetting it first, and cancelling the re-pick keeps the pivot that was set.
+         if (m_imgui->button(_L("Pick pivot")))
+-            { m_pick_face_mode = true; m_parent.set_as_dirty(); }
++            start_pick_pivot();
++        if (m_face_frame_active) {
++            ImGui::SameLine();
++            if (m_imgui->button(_L("Reset pivot")))
++                clear_face_frame();
++        }
++        // Read the flag again: a reset above has just cleared the pivot.
++        if (m_face_frame_active)
++            m_imgui->text(_L("Pivot") + ": " + pivot_kind_name(m_pivot_kind));
+     }
+ }
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMove.hpp b/src/slic3r/GUI/Gizmos/GLGizmoMove.hpp
+index 56c8dcf38f..b060dbb4a8 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMove.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMove.hpp
+@@ -63,6 +63,10 @@ public:
+ 
+     bool render_follows_cursor() const override;
+ 
++    // [ORCAPORT:MV-1] Enter face picking for the pivot. Shared by the panel button and the pick-pivot
++    // shortcut, so it also works when a pivot is already set.
++    bool start_pick_pivot();
++
+     /// <summary>
+     /// Detect reduction of move for wipetover on selection change
+     /// </summary>
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+index cc4072cbea..d95a32bc5a 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+@@ -647,6 +647,18 @@ bool GLGizmosManager::open_gizmo_by_shortcut(Shortcut shortcut)
+     return open_gizmo(EType(it - m_gizmos.begin()));
+ }
+ 
++// [ORCAPORT:MV-1] A shortcut for an action inside a gizmo rather than for opening one: only the open
++// gizmo can consume it, and only the move tool has such an action today.
++bool GLGizmosManager::handle_gizmo_shortcut(Shortcut shortcut)
++{
++    if (!m_enabled || m_current == Undefined)
++        return false;
++
++    if (GLGizmoMove3D *move = dynamic_cast<GLGizmoMove3D *>(m_gizmos[m_current].get()))
++        return shortcut == Shortcut::GizmoMovePickPivot && move->start_pick_pivot();
++    return false;
++}
++
+ bool GLGizmosManager::on_delete_key()
+ {
+     const bool processed = (m_current == Cut || m_current == Measure || m_current == Assembly) && gizmo_event(SLAGizmoEventType::Delete);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+index 9400336292..aa41a8570b 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+@@ -328,6 +328,8 @@ public:
+     bool is_running() const;
+     // Opens the gizmo bound to a Plater-context shortcut; false when no gizmo has it or it cannot open now.
+     bool open_gizmo_by_shortcut(Shortcut shortcut);
++    // Lets the current gizmo consume one of its own actions bound to a shortcut; false when it has none.
++    bool handle_gizmo_shortcut(Shortcut shortcut);
+     // Lets the current gizmo consume the delete key; false when it did not.
+     bool on_delete_key();
+ 
+diff --git a/src/slic3r/GUI/Shortcuts.cpp b/src/slic3r/GUI/Shortcuts.cpp
+index bab7b6a601..a6a5db9127 100644
+--- a/src/slic3r/GUI/Shortcuts.cpp
++++ b/src/slic3r/GUI/Shortcuts.cpp
+@@ -100,6 +100,9 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
+ 
+     // Gizmos
+     SHORTCUT(GizmoMove,         "gizmo_move",         L("Gizmo move"),                                           PLATER, { 'M' }),
++    // [ORCAPORT:MV-1] the move tool's pick-pivot action, deliberately with no default chord: it is an
++    // action inside an open gizmo, so the user assigns one in Preferences > Keyboard shortcuts.
++    SHORTCUT(GizmoMovePickPivot, "gizmo_move_pick_pivot", L("Gizmo move - Pick pivot"),                          PLATER, KeyChord{}),
+     SHORTCUT(GizmoRotate,       "gizmo_rotate",       L("Gizmo rotate"),                                         PLATER, { 'R' }),
+     SHORTCUT(GizmoScale,        "gizmo_scale",        L("Gizmo scale"),                                          PLATER, { 'S' }),
+     SHORTCUT(GizmoFlatten,      "gizmo_flatten",      L("Gizmo place face on bed"),                              PLATER, { 'F' }),
+diff --git a/src/slic3r/GUI/Shortcuts.hpp b/src/slic3r/GUI/Shortcuts.hpp
+index dd281a246a..5e33fda11e 100644
+--- a/src/slic3r/GUI/Shortcuts.hpp
++++ b/src/slic3r/GUI/Shortcuts.hpp
+@@ -37,7 +37,10 @@ enum class Shortcut : uint8_t {
+     Arrange, ArrangePlate, Orient, OrientPlate,
+     MoveSelectionLeft, MoveSelectionRight, MoveSelectionUp, MoveSelectionDown, RotateSelectionLeft, RotateSelectionRight,
+     // Gizmos
+-    GizmoMove, GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
++    GizmoMove,
++    // [ORCAPORT:MV-1] a gizmo-local action of the move tool, not a "open this gizmo" shortcut
++    GizmoMovePickPivot,
++    GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
+     GizmoMmuSegmentation, GizmoEmboss, GizmoMeasure, GizmoAssembly, GizmoBrimEars, GizmoDisplacement,
+     // [ORCAPORT:UI-1] the port's gizmos: appended here so the table order still matches this enum.
+     GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoCavityFill, GizmoPerforation,

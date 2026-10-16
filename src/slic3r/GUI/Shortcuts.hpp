@@ -37,7 +37,10 @@ enum class Shortcut : uint8_t {
     Arrange, ArrangePlate, Orient, OrientPlate,
     MoveSelectionLeft, MoveSelectionRight, MoveSelectionUp, MoveSelectionDown, RotateSelectionLeft, RotateSelectionRight,
     // Gizmos
-    GizmoMove, GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
+    GizmoMove,
+    // [ORCAPORT:MV-1] a gizmo-local action of the move tool, not a "open this gizmo" shortcut
+    GizmoMovePickPivot,
+    GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
     GizmoMmuSegmentation, GizmoEmboss, GizmoMeasure, GizmoAssembly, GizmoBrimEars, GizmoDisplacement,
     // [ORCAPORT:UI-1] the port's gizmos: appended here so the table order still matches this enum.
     GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoCavityFill, GizmoPerforation,

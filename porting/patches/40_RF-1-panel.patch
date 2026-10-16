@@ -1,0 +1,24 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+index 411aac64ff..0f48716fef 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+@@ -133,15 +133,14 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
+             cb();
+     };
+ 
+-    // [ORCAPORT:RF-1] Feature selector: bridge painting or hole strengthening.
++    // [ORCAPORT:RF-1] Feature selector: bridge painting or hole strengthening, with the active one
++    // filled by the same helper the mode row uses.
+     ImGui::AlignTextToFramePadding();
+     m_imgui->text(m_desc.at("feature"));
+     ImGui::SameLine(left_width);
+-    if (m_imgui->button(m_desc.at("feat_bridge")))
+-        set_strengthen_mode(false);
++    sel_button(m_desc.at("feat_bridge"), !m_strengthen, [&] { set_strengthen_mode(false); });
+     ImGui::SameLine();
+-    if (m_imgui->button(m_desc.at("feat_strengthen")))
+-        set_strengthen_mode(true);
++    sel_button(m_desc.at("feat_strengthen"), m_strengthen, [&] { set_strengthen_mode(true); });
+     ImGui::Separator();
+ 
+     if (m_strengthen) {

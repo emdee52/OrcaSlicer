@@ -1,0 +1,49 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+index 7be4e4ac11..411aac64ff 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+@@ -118,6 +118,21 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
+         left_width = std::max(left_width, m_imgui->calc_text_size(m_desc.at(key)).x);
+     left_width += m_imgui->scaled(1.5f);
+ 
++    // [ORCAPORT:PF-2b] A row of mutually exclusive buttons: the active one is filled teal, so the
++    // current choice is obvious without a trailing piece of text beside the buttons.
++    auto sel_button = [&](const wxString &label, bool on, auto cb) {
++        if (on) {
++            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
++            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
++            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
++        }
++        const bool clicked = m_imgui->button(label);
++        if (on)
++            ImGui::PopStyleColor(3);
++        if (clicked)
++            cb();
++    };
++
+     // [ORCAPORT:RF-1] Feature selector: bridge painting or hole strengthening.
+     ImGui::AlignTextToFramePadding();
+     m_imgui->text(m_desc.at("feature"));
+@@ -165,17 +180,15 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
+         ImGui::Separator();
+     } else {
+ 
+-    // Bridge type: smart stepped vs partial.
++    // Bridge type: smart stepped vs partial. The filled button carries the choice, so no trailing
++    // "(smart: stepped ramp)" text is needed - that row was the widest item in the panel and set its
++    // width.
+     ImGui::AlignTextToFramePadding();
+     m_imgui->text(m_desc.at("mode"));
+     ImGui::SameLine(left_width);
+-    if (m_imgui->button(m_desc.at("smart")))
+-        m_partial = false;
+-    ImGui::SameLine();
+-    if (m_imgui->button(m_desc.at("partial")))
+-        m_partial = true;
++    sel_button(m_desc.at("smart"), !m_partial, [&] { m_partial = false; });
+     ImGui::SameLine();
+-    m_imgui->text(m_partial ? _L("(partial: single bridge layer)") : _L("(smart: stepped ramp)"));
++    sel_button(m_desc.at("partial"), m_partial, [&] { m_partial = true; });
+ 
+     ImGui::Separator();
+ 

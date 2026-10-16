@@ -466,9 +466,8 @@ bool GLGizmoHoleFill::on_init()
 
     m_desc["name"]        = _L("Cavity fill");
     m_desc["radius"]      = _L("Brush width");
-    m_desc["apply"]       = _L("Fill under cursor");
     m_desc["clear"]       = _L("Clear all");
-    m_desc["hover_hint"]  = _L("Drag over an engraved mark to fill it; a plain wall is left alone.");
+    m_desc["hover_hint"]  = _L("Drag over an engraved mark to fill it.");
     m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
     m_desc["cavity"]      = _L("Depression under the cursor.");
     m_desc["already"]     = _L("Already filled.");
@@ -612,7 +611,19 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
 
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
+    // [ORCAPORT:UI-1] Left-aligned under the icon while the panel fits to its right. Once it would run
+    // past the canvas edge, hang it to the left instead of letting GizmoImguiSetNextWIndowPos()'s
+    // left-aligned clamp slide it along that edge: the panel's right edge then stays under its own
+    // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+#if BBS_TOOLBAR_ON_TOP
+    float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
+        GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+    else
+        GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+#else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
     ImGuiWrapper::push_toolbar_style(scale);
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
@@ -627,17 +638,17 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
     if (m_imgui->bbl_slider_float_style("##fill_radius", &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX), "%.1f", 0.1f, true))
         set_radius(radius);
     ImGui::PopItemWidth();
-    // A field next to the slider, so an exact radius can be typed instead of dragged.
+    // A field next to the slider, so an exact radius can be typed instead of dragged. ImGui carves the
+    // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
+    // scaled(4.5) clipped the value.
     ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-    ImGui::PushItemWidth(m_imgui->scaled(4.5f));
+    ImGui::PushItemWidth(m_imgui->scaled(5.5f));
     float typed = float(m_radius);
     if (ImGui::InputFloat("##fill_radius_in", &typed, 0.1f, 1.0f, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
         set_radius(typed);
     ImGui::PopItemWidth();
 
-    if (m_imgui->button(m_desc.at("apply")))
-        gizmo_apply_hovered();
-    ImGui::SameLine();
+    // Left-dragging over a cavity already fills it (on_mouse), so there is no separate fill button.
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 

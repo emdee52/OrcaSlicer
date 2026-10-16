@@ -100,6 +100,9 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
 
     // Gizmos
     SHORTCUT(GizmoMove,         "gizmo_move",         L("Gizmo move"),                                           PLATER, { 'M' }),
+    // [ORCAPORT:MV-1] the move tool's pick-pivot action, deliberately with no default chord: it is an
+    // action inside an open gizmo, so the user assigns one in Preferences > Keyboard shortcuts.
+    SHORTCUT(GizmoMovePickPivot, "gizmo_move_pick_pivot", L("Gizmo move - Pick pivot"),                          PLATER, KeyChord{}),
     SHORTCUT(GizmoRotate,       "gizmo_rotate",       L("Gizmo rotate"),                                         PLATER, { 'R' }),
     SHORTCUT(GizmoScale,        "gizmo_scale",        L("Gizmo scale"),                                          PLATER, { 'S' }),
     SHORTCUT(GizmoFlatten,      "gizmo_flatten",      L("Gizmo place face on bed"),                              PLATER, { 'F' }),

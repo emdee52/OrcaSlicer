@@ -927,9 +927,8 @@ bool GLGizmoEdgeDress::on_init()
     m_desc["fillet"]        = _L("Fillet");
     m_desc["size"]          = _L("Size");
     m_desc["loop"]          = _L("Whole loop / rim");
-    m_desc["apply"]         = _L("Apply to hovered edge");
     m_desc["clear"]         = _L("Clear all");
-    m_desc["hover_hint"]    = _L("Hover an edge, then click it or use Apply.");
+    m_desc["hover_hint"]    = _L("Hover an edge, then click it to apply.");
     m_desc["no_edge"]       = _L("No edge under the cursor.");
     m_desc["edge_hovered"]  = _L("Edge under the cursor.");
     m_desc["already_done"]  = _L("Already chamfered or filleted.");
@@ -1057,7 +1056,19 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
 
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
+    // [ORCAPORT:UI-1] Left-aligned under the icon while the panel fits to its right. Once it would run
+    // past the canvas edge, hang it to the left instead of letting GizmoImguiSetNextWIndowPos()'s
+    // left-aligned clamp slide it along that edge: the panel's right edge then stays under its own
+    // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+#if BBS_TOOLBAR_ON_TOP
+    float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
+        GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+    else
+        GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+#else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
     ImGuiWrapper::push_toolbar_style(scale);
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
@@ -1107,17 +1118,18 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     if (m_imgui->bbl_slider_float_style("##edge_size", &size, float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", 0.05f, true))
         set_size(size);
     ImGui::PopItemWidth();
-    // A field next to the slider, so an exact size can be typed instead of dragged.
+    // A field next to the slider, so an exact size can be typed instead of dragged. ImGui carves the
+    // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
+    // scaled(4.5) clipped the value.
     ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-    ImGui::PushItemWidth(m_imgui->scaled(4.5f));
+    ImGui::PushItemWidth(m_imgui->scaled(5.5f));
     float typed = float(m_size);
     if (ImGui::InputFloat("##edge_size_in", &typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
         set_size(typed);
     ImGui::PopItemWidth();
 
-    if (m_imgui->button(m_desc.at("apply")))
-        gizmo_apply_hovered();
-    ImGui::SameLine();
+    // Clicking an edge in the viewport already applies the chamfer/fillet (on_mouse), so there is no
+    // separate apply button.
     if (m_imgui->button(m_desc.at("clear")))
         gizmo_clear_all();
 

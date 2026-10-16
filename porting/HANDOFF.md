@@ -112,6 +112,13 @@ Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. 
 
 ## What to do next
 
+**Gizmo panel chrome is DONE on `port/gizmo-ui-panels` and awaits your test.** Branched from
+`port/integration` `9e5ce7fb2b`; nine single-ID commits (UI-1 panel anchor + overflow flip, PF-2b/RF-1
+hole-walls selectors, EF-1 edge chamfer, HF-1 cavity fill, PP-1 perforations, MV-1 pick-pivot shortcut
+and button spacing) plus a `port:` docs commit, patches `38`-`46`. Not merged and not pushed. The
+rationale, the manual checklist and the two pre-existing gaps it leaves are in `docs/handoff.md` section
+27; `manifest.tsv` gained rows for EF-1, HF-1 and RF-1, which had markers in the tree without a row.
+
 **BT-1 fix 2 is DONE and merged into `port/integration` (user-verified).** Branch `port/BT-1-fix2` from
 `port/integration` `e1fe5d221f`, merged as `8fa72e4493`. Labels with an offset suffix
 (`65°C (+10)`, `60°C (+5)`) rendered squished and sat at a varying distance from the plate number: the
