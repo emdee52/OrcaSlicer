@@ -50,11 +50,25 @@ std::string GLGizmoMove3D::get_tooltip() const
 }
 
 bool GLGizmoMove3D::on_mouse(const wxMouseEvent &mouse_event) {
-    // ORCAPORT: face-aligned move frame
+    // ORCAPORT: face-aligned move frame. The placing click belongs to the pick session: if its release
+    // were left to the canvas it would run the "left-up on empty space -> deselect all" path and close
+    // the gizmo - and the snap coordinates sit on silhouette edges, where the hover raycast that gates
+    // that path is a coin flip.
+    //
+    // Motion is deliberately NOT consumed: the canvas's own move branch is what marks the overlay
+    // dirty, and on_idle renders nothing when neither dirty flag is set. Swallowing it stopped the
+    // scene re-rendering, which killed the hover highlight and the snap markers.
+    if (m_pick_click_pending) {
+        if (mouse_event.LeftUp() || mouse_event.Leaving())
+            m_pick_click_pending = false;
+        return !mouse_event.Moving();
+    }
     if (m_pick_face_mode) {
         if (mouse_event.LeftDown()) {
             const wxPoint p = mouse_event.GetPosition();
             pick_face_at(Vec2d(double(p.x), double(p.y)));
+            m_pick_face_mode     = false;
+            m_pick_click_pending = true;
             return true;
         }
         if (mouse_event.RightDown()) {
@@ -62,6 +76,7 @@ bool GLGizmoMove3D::on_mouse(const wxMouseEvent &mouse_event) {
             m_face_highlight.reset();
             m_hover_volume = nullptr;
             m_hover_facet  = -1;
+            clear_pivot_candidates();
             m_parent.set_as_dirty();
             return true;
         }
@@ -132,12 +147,22 @@ void GLGizmoMove3D::on_start_dragging()
         m_starting_box_center = box.center();
     m_starting_box_bottom_center = box.center();
     m_starting_box_bottom_center(2) = box.min(2);
+
+    // ORCAPORT:MV-3 the pivot (the gizmo origin) lands on another object's coordinate while Alt is
+    // held. Its drag-start world position is fixed for the rest of the drag, because the drag
+    // displacement is measured from the drag-start cache (see apply_pivot_snap).
+    clear_pivot_snap();
+    m_parent.clear_objsnap_markers();
+    m_snap_pivot_start_world = gizmo_base_matrix().translation();
+    m_snap_drag_latched      = true;
 }
 
 void GLGizmoMove3D::on_stop_dragging()
 {
     m_parent.do_move(L("Gizmo-Move"));
     m_displacement = Vec3d::Zero();
+    m_snap_drag_latched = false;
+    clear_pivot_snap();
 }
 
 void GLGizmoMove3D::on_dragging(const UpdateData& data)
@@ -148,7 +173,14 @@ void GLGizmoMove3D::on_dragging(const UpdateData& data)
         m_displacement.y() = calc_projection(data);
     else if (m_hover_id == 2)
         m_displacement.z() = calc_projection(data);
-        
+
+    // [ORCAPORT:MV-3] Alt held: override the axis displacement so the placed pivot lands on the
+    // nearest snap coordinate of another object (see apply_pivot_snap).
+    if (wxGetKeyState(WXK_ALT))
+        apply_pivot_snap(data.mouse_pos.cast<double>());
+    else
+        clear_pivot_snap();
+
     Selection &selection = m_parent.get_selection();
     TransformationType trafo_type;
     trafo_type.set_relative();
@@ -174,11 +206,10 @@ void GLGizmoMove3D::on_render()
     glsafe(::glEnable(GL_DEPTH_TEST));
 
     const auto &[ref_box, box_trafo]    = selection.get_bounding_box_in_current_reference_system();
-    Transform3d  base_matrix = box_trafo;
+    Transform3d  base_matrix = m_face_frame_active ? face_frame_world() : box_trafo;
     BoundingBoxf3 render_box = ref_box;
     // ORCAPORT: face-aligned move frame
     if (m_face_frame_active) {
-        base_matrix = face_frame_world();
         const Transform3d inv = base_matrix.inverse();
         const BoundingBoxf3 world_box = selection.get_bounding_box();
         BoundingBoxf3 local_box;
@@ -203,12 +234,22 @@ void GLGizmoMove3D::on_render()
 
     const Vec3d zero = Vec3d::Zero();
 
+    // ORCAPORT: the face frame's origin is the picked coordinate, not the box centre, so the stock
+    // "box.max" arrow length collapses on the axis the origin already sits at the end of (usually the
+    // face normal). The half-extent equals box.max when the frame is centred and stays proportional to
+    // the object otherwise; the floor keeps a thin axis grabbable.
+    Vec3d arrow = render_box.max;
+    if (m_face_frame_active) {
+        const Vec3d extent = render_box.max - render_box.min;
+        arrow = (0.5 * extent).cwiseMax(Vec3d::Constant(0.1 * extent.maxCoeff()));
+    }
+
     // x axis
-    m_grabbers[0].center = {render_box.max.x() + space_size, 0, 0};
+    m_grabbers[0].center = {arrow.x() + space_size, 0, 0};
     // y axis
-    m_grabbers[1].center = {0, render_box.max.y() + space_size,0};
+    m_grabbers[1].center = {0, arrow.y() + space_size,0};
     // z axis
-    m_grabbers[2].center = {0,0, render_box.max.z() + space_size};
+    m_grabbers[2].center = {0,0, arrow.z() + space_size};
 
     for (int i = 0; i < 3; ++i) {
         m_grabbers[i].color       = AXES_COLOR[i];
@@ -326,11 +367,19 @@ void GLGizmoMove3D::on_render()
         }
     }
 
-    // ORCAPORT: highlight the face under the cursor while picking
+    // ORCAPORT: highlight the face under the cursor while picking, and show the pivot's snap
+    // coordinates on it
     if (m_pick_face_mode) {
-        update_face_highlight();
+        update_face_highlight(m_parent.get_local_mouse_position());
         render_face_highlight();
     }
+
+    // ORCAPORT:MV-3 the Alt pivot-snap markers, dropped the moment Alt is released
+    if (!wxGetKeyState(WXK_ALT))
+        clear_pivot_snap();
+    const Camera& mk_camera = wxGetApp().plater()->get_camera();
+    m_objsnap_pivot_marker.render(mk_camera);
+    m_objsnap_target_markers.render(mk_camera);
 }
 
 void GLGizmoMove3D::on_register_raycasters_for_picking()
@@ -413,7 +462,16 @@ Transform3d GLGizmoMove3D::face_frame_world() const
     return m_face_frame_local;
 }
 
-void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx)
+// The gizmo's own frame: the face frame once a pivot is picked, the reference-system box otherwise.
+// This is the base matrix on_render builds, so the pivot it reports matches the drawn axes.
+Transform3d GLGizmoMove3D::gizmo_base_matrix() const
+{
+    if (m_face_frame_active)
+        return face_frame_world();
+    return m_parent.get_selection().get_bounding_box_in_current_reference_system().second;
+}
+
+void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx, FaceSnapKind kind)
 {
     Vec3d z = normal.normalized();
     if (z.squaredNorm() < 0.5)
@@ -444,9 +502,11 @@ void GLGizmoMove3D::set_face_frame(const Vec3d& hit_world, const Vec3d& normal, 
     m_face_frame_volume_idx = volume_idx;
     m_face_frame_active = true;
     m_pick_face_mode    = false;
+    m_pivot_kind        = kind;
     m_face_highlight.reset();
     m_hover_volume = nullptr;
     m_hover_facet  = -1;
+    clear_pivot_candidates();
     if (m_object_manipulation)
         m_object_manipulation->m_move_window_combo_disabled = true;
     m_parent.set_as_dirty();
@@ -457,14 +517,26 @@ void GLGizmoMove3D::clear_face_frame()
 {
     m_face_frame_active = false;
     m_pick_face_mode    = false;
+    m_pick_click_pending = false;
     m_face_frame_local  = Transform3d::Identity();
+    m_pivot_kind        = FaceSnapKind::None;
     m_face_highlight.reset();
     m_hover_volume = nullptr;
     m_hover_facet  = -1;
+    clear_pivot_candidates();
     if (m_object_manipulation)
         m_object_manipulation->m_move_window_combo_disabled = false;
     m_parent.set_as_dirty();
     m_parent.request_extra_frame();
+}
+
+// The pivot candidate set belongs to the face under the cursor; drop it with the highlight.
+void GLGizmoMove3D::clear_pivot_candidates()
+{
+    m_pivot_points.clear();
+    m_pivot_candidates.clear();
+    m_pivot_active = OrcaExt::Gui::ObjectSnap::SnapHit::no_candidate;
+    m_pivot_markers.clear();
 }
 
 void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
@@ -472,6 +544,10 @@ void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
     int obj_idx = -1;
     ModelObject* mo = m_parent.get_selection().get_selected_single_object(obj_idx);
     if (mo != nullptr) {
+        // [ORCAPORT:MV-2] refresh the coordinates of the face under the click, so the pivot can stick
+        // to the one the cursor is on instead of to the raw raycast hit.
+        update_face_highlight(mouse_pos);
+
         const GLVolume* vol = nullptr;
         const ModelVolume* mv = nullptr;
         size_t facet = 0;
@@ -485,7 +561,13 @@ void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
                     break;
                 }
             }
-            set_face_frame(hit_world, normal, vol_idx);
+            Vec3d        pivot = hit_world;
+            FaceSnapKind kind  = FaceSnapKind::None;
+            if (m_pivot_active < m_pivot_candidates.size()) {
+                pivot = m_pivot_candidates[m_pivot_active].world;
+                kind  = m_pivot_candidates[m_pivot_active].kind;
+            }
+            set_face_frame(pivot, normal, vol_idx, kind);
             return;
         }
     }
@@ -493,11 +575,13 @@ void GLGizmoMove3D::pick_face_at(const Vec2d& mouse_pos)
     m_face_highlight.reset();
     m_hover_volume = nullptr;
     m_hover_facet  = -1;
+    clear_pivot_candidates();
     m_parent.set_as_dirty();
 }
 
-// ORCAPORT: hover highlight while picking a face (reused from the cut gizmo)
-void GLGizmoMove3D::update_face_highlight()
+// ORCAPORT: hover highlight while picking a face (reused from the cut gizmo), plus the face's snap
+// coordinates (MV-2): the pivot sticks to the nearest one under the cursor.
+void GLGizmoMove3D::update_face_highlight(const Vec2d& mouse_pos)
 {
     int obj_idx = -1;
     ModelObject* mo = m_parent.get_selection().get_selected_single_object(obj_idx);
@@ -505,51 +589,161 @@ void GLGizmoMove3D::update_face_highlight()
     const ModelVolume* hover_mv = nullptr;
     size_t hover_facet = 0;
     Vec3d  hit_world;
-    const bool hit = mo != nullptr && raycast_object_face(m_parent.get_local_mouse_position(), m_parent.get_selection(), mo,
+    const bool hit = mo != nullptr && raycast_object_face(mouse_pos, m_parent.get_selection(), mo,
                                                           nullptr, hover_volume, hover_mv, hover_facet, hit_world, nullptr);
     if (!hit) {
         if (m_hover_volume != nullptr || m_face_highlight.is_initialized())
             m_face_highlight.reset();
         m_hover_volume = nullptr;
         m_hover_facet  = -1;
+        clear_pivot_candidates();
         return;
     }
-    if (hover_volume == m_hover_volume && int(hover_facet) == m_hover_facet)
-        return;
-    m_hover_volume = hover_volume;
-    m_hover_facet  = int(hover_facet);
 
-    m_face_highlight.reset();
-    const std::vector<int> region = coplanar_region(hover_mv, hover_facet, m_face_cache);
-    if (!region.empty()) {
-        indexed_triangle_set patch = build_coplanar_patch(hover_mv, region, m_face_cache, 0.10f);
-        if (!patch.indices.empty()) {
-            m_face_highlight.init_from(patch);
-            m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+    // The face changed: rebuild the highlight patch and its snap coordinates (world space). Only the
+    // cursor moves between frames, so the pick below is all that runs while it stays on one face.
+    if (hover_volume != m_hover_volume || int(hover_facet) != m_hover_facet) {
+        m_hover_volume = hover_volume;
+        m_hover_facet  = int(hover_facet);
+
+        m_face_highlight.reset();
+        const std::vector<int> region = coplanar_region(hover_mv, hover_facet, m_face_cache);
+        if (!region.empty()) {
+            indexed_triangle_set patch = build_coplanar_patch(hover_mv, region, m_face_cache, 0.10f);
+            if (!patch.indices.empty()) {
+                m_face_highlight.init_from(patch);
+                m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+            }
         }
+
+        clear_pivot_candidates();
+        const Transform3d to_world = hover_volume->world_matrix();
+        for (const FaceSnapPoint& p : build_face_snap_points(hover_mv, region)) {
+            m_pivot_points.push_back({ p.kind, to_world * p.pos });
+            m_pivot_candidates.push_back({ to_world * p.pos, p.kind });
+        }
+        m_pivot_markers.set(m_pivot_candidates, OrcaExt::Gui::ObjectSnap::SnapHit::no_candidate);
+    }
+
+    // Which coordinate the cursor is on, through the shared adaptive-tolerance pick. Only the active
+    // sphere is rebuilt, so a moving cursor does not re-merge the per-kind meshes every frame.
+    size_t active = OrcaExt::Gui::ObjectSnap::SnapHit::no_candidate;
+    if (!m_pivot_points.empty()) {
+        const Camera& camera = wxGetApp().plater()->get_camera();
+        const auto    project = [&camera](const Vec3d& world) { return world_to_screen(camera, world); };
+        FaceSnapPoint best;
+        if (nearest_face_snap(m_pivot_points, project, mouse_pos, best, 8.0, 48.0)) {
+            for (size_t i = 0; i < m_pivot_points.size(); ++i) {
+                if (m_pivot_points[i].pos == best.pos) {
+                    active = i;
+                    break;
+                }
+            }
+        }
+    }
+    if (active != m_pivot_active) {
+        m_pivot_active = active;
+        m_pivot_markers.set_active(m_pivot_candidates, m_pivot_active);
     }
     m_parent.set_as_dirty();
 }
 
 void GLGizmoMove3D::render_face_highlight()
 {
-    if (!m_face_highlight.is_initialized() || m_hover_volume == nullptr)
-        return;
-    GLShaderProgram* shader = wxGetApp().get_shader("flat");
-    if (shader == nullptr)
-        return;
-    shader->start_using();
-    glsafe(::glEnable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE));
-    glsafe(::glEnable(GL_BLEND));
-    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
     const Camera& camera = wxGetApp().plater()->get_camera();
-    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
-    shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_hover_volume->world_matrix());
-    m_face_highlight.render();
-    glsafe(::glDisable(GL_BLEND));
-    glsafe(::glEnable(GL_CULL_FACE));
-    shader->stop_using();
+
+    if (m_face_highlight.is_initialized() && m_hover_volume != nullptr) {
+        GLShaderProgram* shader = wxGetApp().get_shader("flat");
+        if (shader != nullptr) {
+            shader->start_using();
+            glsafe(::glEnable(GL_DEPTH_TEST));
+            glsafe(::glDisable(GL_CULL_FACE));
+            glsafe(::glEnable(GL_BLEND));
+            glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+            shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+            shader->set_uniform("view_model_matrix", camera.get_view_matrix() * m_hover_volume->world_matrix());
+            m_face_highlight.render();
+            glsafe(::glDisable(GL_BLEND));
+            glsafe(::glEnable(GL_CULL_FACE));
+            shader->stop_using();
+        }
+    }
+
+    // ORCAPORT:MV-2 the snap coordinates of the hovered face; the active one is drawn larger
+    m_pivot_markers.render(camera);
+}
+
+// ORCAPORT:MV-3 Alt held while dragging a grabber: the pivot lands on the nearest snap coordinate of
+// another object. Only the dragged axis is free, so the snap slides the object along that axis until
+// the pivot's projection reaches the target's - the gizmo's axis constraint is kept.
+void GLGizmoMove3D::apply_pivot_snap(const Vec2d& mouse_pos)
+{
+    if (!m_snap_drag_latched)
+        return;
+
+    const Model* model = m_parent.get_model();
+    if (model == nullptr) {
+        clear_pivot_snap();
+        return;
+    }
+
+    std::set<std::pair<int, int>> moving;
+    for (unsigned int idx : m_parent.get_selection().get_volume_idxs()) {
+        const GLVolume* gv = m_parent.get_volumes().volumes[idx];
+        if (gv == nullptr || gv->is_wipe_tower || gv->is_modifier)
+            continue;
+        moving.insert({ gv->object_idx(), gv->instance_idx() });
+    }
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const std::optional<OrcaExt::Gui::ObjectSnap::SnapHit> hit =
+        OrcaExt::Gui::ObjectSnap::hit_under_cursor(*model, m_parent.get_volumes(), camera, moving, mouse_pos);
+
+    m_objsnap_target_markers.clear();
+    m_objsnap_pivot_marker.clear();
+    if (!hit)
+        return;
+    m_objsnap_target_markers.set(hit->candidates, hit->active);
+    if (!hit->has_point())
+        return;
+
+    // Selection::translate moves the selection by `base.linear() * m_displacement`, so column
+    // `m_hover_id` is the world direction of the dragged axis and its length scales one unit of
+    // m_displacement. Solve m_displacement[k] so the pivot's world motion is the distance from the
+    // pivot to the target along that axis.
+    const Transform3d base    = gizmo_base_matrix();
+    const Vec3d       col     = base.linear().col(m_hover_id);
+    const double      col_len = col.norm();
+    if (col_len <= 1e-12)
+        return;
+    const Vec3d  axis   = col / col_len;
+    const Vec3d  target = hit->point().world;
+    const double dist   = (target - m_snap_pivot_start_world).dot(axis);
+
+    m_displacement[m_hover_id] = dist / col_len;
+
+    const std::vector<OrcaExt::Gui::ObjectSnap::SnapCandidate> pivot = {
+        { m_snap_pivot_start_world + axis * dist, FaceSnapKind::None } };
+    m_objsnap_pivot_marker.set(pivot, 0, OrcaExt::Gui::ObjectSnap::MarkerRole::Mover);
+}
+
+void GLGizmoMove3D::clear_pivot_snap()
+{
+    m_objsnap_target_markers.clear();
+    m_objsnap_pivot_marker.clear();
+}
+
+// ORCAPORT:MV-2 the snapped feature, named the way Plasticity's tip help does
+static const char* pivot_kind_name(FaceSnapKind kind)
+{
+    switch (kind) {
+    case FaceSnapKind::Corner:      return "Corner";
+    case FaceSnapKind::EdgeMid:     return "Edge mid";
+    case FaceSnapKind::FaceCenter:  return "Face centre";
+    case FaceSnapKind::EdgeQuarter: return "Edge 1/4";
+    case FaceSnapKind::FaceQuarter: return "Face 1/4";
+    default:                        return "Free";
+    }
 }
 
 void GLGizmoMove3D::render_extra_move_ui()
@@ -559,20 +753,23 @@ void GLGizmoMove3D::render_extra_move_ui()
 
     ImGui::Spacing();
     if (m_pick_face_mode) {
-        if (m_imgui->button(_L("Cancel face pick")))
+        if (m_imgui->button(_L("Cancel pivot")))
             {
                 m_pick_face_mode = false;
                 m_face_highlight.reset();
                 m_hover_volume = nullptr;
                 m_hover_facet  = -1;
+                clear_pivot_candidates();
                 m_parent.set_as_dirty();
             }
-        m_imgui->text(_L("Click a flat face on the model."));
+        m_imgui->text(_L("Click a face to place the pivot."));
+        m_imgui->text(_L("It sticks to corners and to edge and face midpoints."));
     } else if (m_face_frame_active) {
-        if (m_imgui->button(_L("Reset axis")))
+        if (m_imgui->button(_L("Reset pivot")))
             clear_face_frame();
+        m_imgui->text(_L("Pivot") + ": " + pivot_kind_name(m_pivot_kind));
     } else {
-        if (m_imgui->button(_L("Pick face")))
+        if (m_imgui->button(_L("Pick pivot")))
             { m_pick_face_mode = true; m_parent.set_as_dirty(); }
     }
 }

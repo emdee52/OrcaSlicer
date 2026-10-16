@@ -5855,6 +5855,14 @@ void GLCanvas3D::_render_snapdrag_indicator()
     m_snapdrag_indicator.render();
 }
 
+// [ORCAPORT:MV-3] called when a Move-gizmo grabber drag starts: the SNAP-8 Alt-hover preview does not
+// run during a gizmo drag, so without this its spheres would sit on top of the gizmo's own.
+void GLCanvas3D::clear_objsnap_markers()
+{
+    m_objsnap_markers.clear();
+    m_objsnap_mover_markers.clear();
+}
+
 void GLCanvas3D::_render_objsnap_markers() // [ORCAPORT:SNAP-8]
 {
     // Alt released without any mouse event: the move/drag callbacks only run on input, so drop the

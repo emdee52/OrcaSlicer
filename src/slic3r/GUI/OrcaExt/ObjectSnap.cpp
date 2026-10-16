@@ -226,6 +226,19 @@ void Markers::set(const std::vector<SnapCandidate> &candidates, size_t active, M
     m_visible = true;
 }
 
+void Markers::set_active(const std::vector<SnapCandidate> &candidates, size_t active, MarkerRole role)
+{
+    m_active.reset();
+    if (!m_visible || active >= candidates.size())
+        return;
+    const double radius = candidate_radius(candidates);
+    indexed_triangle_set sphere = its_make_sphere(radius * 1.4, PI / 12.0);
+    its_translate(sphere, candidates[active].world.cast<float>());
+    m_active.init_from(sphere);
+    m_active.set_color(role == MarkerRole::Mover ? ColorRGBA(1.00f, 0.55f, 0.10f, 1.0f)
+                                                 : ColorRGBA(1.00f, 1.00f, 1.00f, 1.0f));
+}
+
 void Markers::clear()
 {
     for (GUI::GLModel &m : m_kind)

@@ -88,6 +88,9 @@ class Markers
 {
 public:
     void set(const std::vector<SnapCandidate> &candidates, size_t active, MarkerRole role = MarkerRole::Target);
+    // Rebuild only the highlighted sphere, so a caller that follows a moving cursor does not re-merge
+    // the per-kind meshes every frame. `set` must have been called first for the same geometry.
+    void set_active(const std::vector<SnapCandidate> &candidates, size_t active, MarkerRole role = MarkerRole::Target);
     void clear();
     bool is_visible() const { return m_visible; }
     void render(const GUI::Camera &camera);
