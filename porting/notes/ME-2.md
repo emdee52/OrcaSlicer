@@ -60,6 +60,36 @@ is available for bore and rim alike). The *default* side is still arbitrary: a m
 sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
 `!through`) would pick the visible entry face without the user flipping by hand.
 
+## Round (2026-10-15) - screw-bore teardrop
+
+New feature (user request): bore/pocket, **Screw** category, gets a **Teardrop** checkbox that shapes
+the clearance bore's cross-section as a teardrop, so the top of a horizontal screw hole is a sloped
+roof rather than a flat overhang.
+
+- `libslic3r`: new `its_make_teardrop_prism(radius, depth, angle, axis, entry, up, segments)` -
+  `its_make_teardrop` placed from `entry` along `axis` toward `up`. It is the old
+  `its_make_teardrop_for_hole` body generalized; that function is now a thin wrapper over it and
+  keeps its geometry, so its existing tests are unchanged. Returns empty when `axis` is parallel to
+  `up`.
+- `GLGizmoHoles`: `bore_negative_mesh` builds the round screw profile as before, then unions the
+  shaft teardrop prism (radius `bore_d/2`, full depth). A teardrop is a superset of the round bore,
+  so the shaft comes out teardropped above and round below. A counterbore head stays round; a
+  **Teardrop head** checkbox unions a second prism of the head diameter x head height. New state
+  `m_screw_teardrop` / `m_screw_teardrop_head` (+ setters); turning the shaft teardrop off also
+  clears the head one.
+- The **apex angle reuses the Teardrop operation's `m_angle_deg`** (not a separate field). The apex
+  and the head option show only while the teardrop is on, and the head option only for a counterbore
+  head - a countersink is a cone with no vertical wall to teardrop.
+- A vertical hole has no up direction perpendicular to its axis, so the prism comes back empty and
+  the bore stays round; the option is harmless there.
+- MCP `holes_gizmo`: reports `screw_teardrop` / `screw_teardrop_head` and adds
+  `set_screw_teardrop` / `set_screw_teardrop_head`.
+- Tests (`test_holeshapes.cpp`): "A teardrop prism runs from the entry and rises toward up" (spans
+  entry -> along the axis, `-r` to apex across, volume = teardrop area x depth) and "A teardrop
+  prism on an axis parallel to up is refused"; `[HoleShapes]` 26 cases / 143 assertions pass.
+
+Branch `port/ME-2-screw-td`, stacked on the (unmerged) `port/ME-2-fix2` + `port/ME-2-fix3`.
+
 ## Round (2026-10-15) - teardrop gating, Custom sizes, selected-state buttons
 
 Four user-reported issues, all in `GLGizmoHoles.cpp` / `GLGizmoHoles.hpp` (+ the MCP mapping in

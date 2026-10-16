@@ -222,6 +222,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"head_fit", g.get_head_fit()},
         {"true_diameter", g.true_diameter()},
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
+        {"screw_teardrop", g.get_screw_teardrop()},
+        {"screw_teardrop_head", g.get_screw_teardrop_head()},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"face_pocket_volumes", face_pocket_volumes},
@@ -418,18 +420,19 @@ void OrcaMCPServer::register_gizmo_tools()
         "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', "
         "'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
-        "(tight|slip), 'set_diameter', 'set_through', 'set_flip', 'toggle' (one hole by "
-        "index), 'apply_all', 'clear_all', 'refresh', 'close'. "
+        "(tight|slip), 'set_diameter', 'set_screw_teardrop' / 'set_screw_teardrop_head' (teardrop a "
+        "screw's horizontal bore and optionally its counterbore head), 'set_through', 'set_flip', "
+        "'toggle' (one hole by index), 'apply_all', 'clear_all', 'refresh', 'close'. "
         "Use find_holes first for indices.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_screw_teardrop | set_screw_teardrop_head | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
-                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face: enable or disable face placing."}}},
+                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face / set_screw_teardrop / set_screw_teardrop_head: enable or disable."}}},
                 {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
                 {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert, for action=set_category."}}},
@@ -507,6 +510,10 @@ void OrcaMCPServer::register_gizmo_tools()
                                                             : BoreHead::None);
                 } else if (action == "set_screw_fit") {
                     g->set_screw_fit(params.value("screw_fit", std::string("free")) == "tap" ? ScrewFit::Tap : ScrewFit::Free);
+                } else if (action == "set_screw_teardrop") {
+                    g->set_screw_teardrop(params.value("on", true));
+                } else if (action == "set_screw_teardrop_head") {
+                    g->set_screw_teardrop_head(params.value("on", true));
                 } else if (action == "set_fit") {
                     const std::string f = params.value("fit", std::string("slip"));
                     g->set_fit(f == "tight" ? HoleFit::Tight : HoleFit::Slip);

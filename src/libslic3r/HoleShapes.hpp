@@ -18,6 +18,16 @@ indexed_triangle_set its_make_teardrop(double radius, double depth,
                                        double angle_deg = 45.,
                                        int    segments  = HOLE_SHAPE_SEGMENTS);
 
+// `its_make_teardrop` placed on an arbitrary axis: extruded from `entry` along `axis` for
+// `depth`, with the apex pointing along `up_dir` projected into the hole's cross-section (default:
+// world +Z). Pass the bed-up direction expressed in the same frame as the axis when the object is
+// rotated. Returns an empty mesh when the axis is parallel to `up_dir`, where a teardrop has no
+// meaning.
+indexed_triangle_set its_make_teardrop_prism(double radius, double depth, double angle_deg,
+                                             const Vec3d &axis, const Vec3d &entry,
+                                             const Vec3d &up_dir,
+                                             int segments = HOLE_SHAPE_SEGMENTS);
+
 // `its_make_teardrop` placed on a detected hole: centred on the hole axis, extruded along it
 // for `depth` straddling `hole.center`, with the apex pointing along `up_dir` projected into
 // the hole's cross-section (default: world +Z). Pass the bed-up direction expressed in the

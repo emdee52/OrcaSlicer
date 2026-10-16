@@ -174,6 +174,7 @@ bool GLGizmoHoles::on_init()
     m_desc["op_rim_chamfer"]   = _L("Rim chamfer");
     m_desc["op_rim_fillet"]    = _L("Rim fillet");
     m_desc["rim_size"]         = _L("Rim size");
+    m_desc["teardrop_head"]    = _L("Teardrop head");
     m_desc["apex"]             = _L("Apex angle");
     m_desc["standard"]         = _L("Standard");
     m_desc["head"]             = _L("Head");
@@ -350,22 +351,49 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
     if (d <= 0. || depth <= 0.)
         return {};
 
+    indexed_triangle_set its;
     if (m_category == HoleCategory::Screw && s != nullptr) {
         const double socket_d = s->socket_d / scale;
         const double button_d = s->button_d / scale;
         const double csink_d  = s->csink_d / scale;
         if (m_head == BoreHead::SocketHead && socket_d > d)
-            return its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
-        if (m_head == BoreHead::ButtonHead && button_d > d)
-            return its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
+            its = its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
+        else if (m_head == BoreHead::ButtonHead && button_d > d)
+            its = its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
         // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
         // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
-        if (m_head == BoreHead::Countersink && csink_d > d)
-            return its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
+        else if (m_head == BoreHead::Countersink && csink_d > d)
+            its = its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
     }
-    if (m_category == HoleCategory::Magnet)
-        depth += sink; // sink the magnet pocket
-    return its_make_bore(d, depth, dir, entry);
+    if (its.indices.empty()) {
+        double bore_depth = depth;
+        if (m_category == HoleCategory::Magnet)
+            bore_depth += sink; // sink the magnet pocket
+        its = its_make_bore(d, bore_depth, dir, entry);
+    }
+
+    // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
+    // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore, so
+    // merging it leaves the shaft round below and teardropped above. A counterbore head stays round
+    // unless the user asks for it too; a vertical hole has no up direction and gets nothing.
+    if (m_category == HoleCategory::Screw && m_screw_teardrop) {
+        const Vec3d          up    = object_up();
+        indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir, entry, up);
+        if (!shaft.indices.empty())
+            its_merge(its, shaft);
+
+        const bool cbore_head = s != nullptr &&
+                                ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
+                                 (m_head == BoreHead::ButtonHead && s->button_d > d));
+        if (m_screw_teardrop_head && cbore_head) {
+            const double head_d = (m_head == BoreHead::SocketHead ? s->socket_d : s->button_d) / scale;
+            const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) / scale + sink;
+            indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir, entry, up);
+            if (!head.indices.empty())
+                its_merge(its, head);
+        }
+    }
+    return its;
 }
 
 indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
@@ -1426,6 +1454,22 @@ void GLGizmoHoles::set_flip(bool f)
     m_parent.set_as_dirty();
 }
 
+void GLGizmoHoles::set_screw_teardrop(bool on)
+{
+    m_screw_teardrop = on;
+    if (!on)
+        m_screw_teardrop_head = false; // a head teardrop needs the shaft one
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
+void GLGizmoHoles::set_screw_teardrop_head(bool on)
+{
+    m_screw_teardrop_head = on;
+    m_preview_dirty       = true;
+    m_parent.set_as_dirty();
+}
+
 void GLGizmoHoles::gizmo_toggle_hole(int idx)
 {
     if (m_dirty)
@@ -1748,6 +1792,42 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
                     sel_button(m_desc.at("head_csink"), m_head == BoreHead::Countersink,
                                [&] { set_head(BoreHead::Countersink); });
                 }
+            }
+        }
+
+        // Screw teardrop: shape the clearance bore (and optionally a counterbore head) for a
+        // horizontal hole. The head/apex options show only once the teardrop is on.
+        if (is_screw) {
+            bool teardrop = m_screw_teardrop;
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(m_desc.at("op_teardrop"));
+            ImGui::SameLine(left_width);
+            if (ImGui::Checkbox("##screw_teardrop", &teardrop))
+                set_screw_teardrop(teardrop);
+
+            // The head teardrop sits on the same row, but only once the teardrop is on and the screw
+            // has a counterbore head to shape (a countersink has no vertical wall to teardrop).
+            const bool cbore_head = s != nullptr &&
+                                    ((m_head == BoreHead::SocketHead && s->socket_d > 0.) ||
+                                     (m_head == BoreHead::ButtonHead && s->button_d > 0.));
+            if (m_screw_teardrop && cbore_head) {
+                bool head_teardrop = m_screw_teardrop_head;
+                ImGui::SameLine();
+                m_imgui->text(m_desc.at("teardrop_head"));
+                ImGui::SameLine();
+                if (ImGui::Checkbox("##screw_teardrop_head", &head_teardrop))
+                    set_screw_teardrop_head(head_teardrop);
+            }
+
+            if (m_screw_teardrop) {
+                ImGui::AlignTextToFramePadding();
+                m_imgui->text(m_desc.at("apex"));
+                ImGui::SameLine(left_width);
+                ImGui::PushItemWidth(sliders_width);
+                float angle = m_angle_deg;
+                if (m_imgui->bbl_slider_float_style("##screw_apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
+                    set_angle(angle);
+                ImGui::PopItemWidth();
             }
         }
 
