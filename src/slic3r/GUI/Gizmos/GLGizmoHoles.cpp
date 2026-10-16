@@ -166,7 +166,7 @@ GLGizmoHoles::GLGizmoHoles(GLCanvas3D &parent, const std::string& icon_filename,
 
 bool GLGizmoHoles::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_J;
+    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
 
     m_desc["operation"]        = _L("Operation");
     m_desc["op_teardrop"]      = _L("Teardrop");
@@ -2036,13 +2036,13 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
         ImGui::AlignTextToFramePadding();
         m_imgui->text(m_desc.at("clipping_of_view"));
     } else if (m_imgui->button(m_desc.at("reset_direction"))) {
-        wxGetApp().CallAfter([this]() { m_c->object_clipper()->set_position_by_ratio(-1., false); });
+        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
     }
     auto clp_dist = float(m_c->object_clipper()->get_position());
     ImGui::SameLine(left_width);
     ImGui::PushItemWidth(sliders_width);
     if (m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true))
-        m_c->object_clipper()->set_position_by_ratio(clp_dist, true);
+        m_parent.set_section_view_ratio(clp_dist);
     ImGui::PopItemWidth();
 
     ImGui::Separator();

@@ -87,7 +87,7 @@ GLGizmoSupportZones::GLGizmoSupportZones(GLCanvas3D &parent, const std::string &
 
 bool GLGizmoSupportZones::on_init()
 {
-    m_shortcut_key = 0; // no global shortcut yet
+    m_shortcut.reset(); // no global shortcut yet
     return true;
 }
 
@@ -5848,11 +5848,11 @@ void GLGizmoSupportZones::render_view_strip()
         float clp = float(m_c->object_clipper()->get_position());
         if (gizmo_row_slider("##clp", _u8L("section").c_str(), &clp, 0.f, 1.f, "%.2f",
                            _u8L("Cut the part away to look inside. It is the same section view the support painter has, so the plane keeps whatever direction you gave it there.").c_str()))
-            m_c->object_clipper()->set_position_by_ratio(clp, true);
+            m_parent.set_section_view_ratio(clp);
         if (clp != 0.f) {
             ImGui::SameLine();
             if (ImGui::SmallButton(_u8L("reset direction").c_str()))
-                wxGetApp().CallAfter([this]() { m_c->object_clipper()->set_position_by_ratio(-1., false); });
+                wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
         }
     }
 

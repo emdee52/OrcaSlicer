@@ -6492,7 +6492,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type, bool force_volume_mov
                     m_selection.notify_instance_update(i.first, i.second);
                 }
             }
-        } else if (!mi->auto_drop) {
+        } else if (!mo->auto_drop) {
             continue;
         } else if (!OrcaExt::free_z() && (current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
             const Vec3d shift(0.0, 0.0, -shift_z);

@@ -36,7 +36,7 @@ GLGizmoCounterboreBridge::GLGizmoCounterboreBridge(GLCanvas3D &parent, const std
 
 bool GLGizmoCounterboreBridge::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_K;
+    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
 
     m_desc["mode"]           = _L("Bridge type");
     m_desc["smart"]          = _L("Smart (stepped)");
@@ -193,13 +193,13 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
         ImGui::AlignTextToFramePadding();
         m_imgui->text(m_desc.at("clipping_of_view"));
     } else if (m_imgui->button(m_desc.at("reset_direction"))) {
-        wxGetApp().CallAfter([this]() { m_c->object_clipper()->set_position_by_ratio(-1., false); });
+        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
     }
     auto clp_dist = float(m_c->object_clipper()->get_position());
     ImGui::SameLine(left_width);
     ImGui::PushItemWidth(sliders_width);
     if (m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true))
-        m_c->object_clipper()->set_position_by_ratio(clp_dist, true);
+        m_parent.set_section_view_ratio(clp_dist);
 
     ImGui::Separator();
 

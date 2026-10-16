@@ -578,7 +578,9 @@ void GLGizmosManager::set_hover_id(int id)
 
 void GLGizmosManager::update_section_view()
 {
-    if (m_current != FdmSupports && m_current != Seam && m_current != MmSegmentation && m_current != FuzzySkin && m_current != BrimEars)
+    // The port's gizmos share the same section view, so they are driven by the same clipper.
+    if (m_current != FdmSupports && m_current != Seam && m_current != MmSegmentation && m_current != FuzzySkin && m_current != BrimEars
+        && m_current != CounterboreBridge && m_current != Holes && m_current != SupportZones) // [ORCAPORT:SU-5] [ORCAPORT:ME-2] [ORCAPORT:PF-2b]
         return;
 
     CommonGizmosDataObjects::ObjectClipper* clipper = m_common_gizmos_data ? m_common_gizmos_data->object_clipper() : nullptr;

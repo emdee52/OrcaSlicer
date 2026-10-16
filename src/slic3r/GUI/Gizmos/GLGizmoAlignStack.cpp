@@ -252,7 +252,7 @@ GLGizmoAlignStack::GLGizmoAlignStack(GLCanvas3D& parent, const std::string& icon
 
 bool GLGizmoAlignStack::on_init()
 {
-    m_shortcut_key = 0; // no global shortcut by default
+    m_shortcut.reset(); // no global shortcut by default
     return true;
 }
 

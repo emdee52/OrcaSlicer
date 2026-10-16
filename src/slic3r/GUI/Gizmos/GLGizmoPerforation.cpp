@@ -53,7 +53,7 @@ Transform3d GLGizmoPerforation::instance_matrix() const
 
 bool GLGizmoPerforation::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_I;
+    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
 
     m_desc["pattern"]    = _L("Pattern");
     m_desc["spacing"]    = _L("Spacing");

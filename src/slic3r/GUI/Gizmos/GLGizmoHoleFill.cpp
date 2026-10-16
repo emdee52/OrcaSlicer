@@ -461,7 +461,7 @@ std::vector<std::array<double, 3>> GLGizmoHoleFill::gizmo_list_fills() const
 
 bool GLGizmoHoleFill::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_G;
+    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
 
     m_desc["name"]        = _L("Cavity fill");
     m_desc["radius"]      = _L("Brush width");

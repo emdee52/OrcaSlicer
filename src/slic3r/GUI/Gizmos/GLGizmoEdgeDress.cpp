@@ -919,7 +919,7 @@ bool GLGizmoEdgeDress::gizmo_apply_loop(int facet, int index)
 
 bool GLGizmoEdgeDress::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_D;
+    m_shortcut.reset(); // [ORCAPORT] no entry in upstream's shortcut registry; opened from the toolbar
 
     m_desc["name"]          = _L("Edge chamfer / fillet");
     m_desc["chamfer"]       = _L("Chamfer");
