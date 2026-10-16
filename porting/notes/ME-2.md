@@ -60,6 +60,43 @@ is available for bore and rim alike). The *default* side is still arbitrary: a m
 sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
 `!through`) would pick the visible entry face without the user flipping by hand.
 
+## Round (2026-10-15) - teardrop gating, Custom sizes, selected-state buttons
+
+Four user-reported issues, all in `GLGizmoHoles.cpp` / `GLGizmoHoles.hpp` (+ the MCP mapping in
+`OrcaMCPGizmoTools.cpp`).
+
+1. **Teardrop acted on vertical holes.** `detect()` already flags `horizontal`
+   (`|axis·up| < HORIZONTAL_COS`, 0.5), but only `gizmo_toggle_hole`/`gizmo_apply_all` consulted
+   it. `rebuild_previews` built a ghost for every hole, and for a near-vertical axis (~1e-3 off the
+   up vector) `its_make_teardrop_for_hole` does not hit its `1e-6` parallel guard, so it built a
+   teardrop with a garbage `up` direction; the pick cylinder kept the hole hoverable too. A new
+   `hole_usable(idx)` (= `m_operation != Teardrop || m_holes[idx].horizontal`) now gates the
+   previews, `on_set_hover_id` and the `Detected holes:` count/`Apply all` enabled state. Bore and
+   rim keep every hole.
+2. **Wrong standard after editing the diameter.** The category combo listed only catalogue
+   standards, so a size with no match left `m_standard == -1` (Custom) but the combo had no Custom
+   row and fell back to `sel = 0` = the lowest-order entry (M2 screw / M3 nut) - the label lied.
+3. **A custom nut became a circle.** `is_screw/is_nut/is_pocket` were read from `s->kind`; with
+   `s == nullptr` (Custom) all three were false, so `bore_negative_mesh` fell through to a plain
+   round bore and the label switched from "Across flats" to "Diameter".
+   - Fix for 2+3: the combo now leads with a **Custom** row (id 0 -> `set_standard(0)` ->
+     `m_standard = -1`), and `is_screw/is_nut/is_pocket` (and `bore_diameter`'s `fitted`) derive from
+     `m_category`, so a Custom size keeps its category's geometry - a hex nut stays hex, an
+     insert/magnet keeps its fit-derived tolerance. The standalone **Custom category button** is
+     gone (`HoleCategory::Custom` removed from the enum, icon map, label map, `category_matches`, the
+     button array and the MCP `category` string). `standard_kind(HoleCategory)` supplies the kind
+     where `hole_fit_diameter_delta` needs one.
+   - **Size-only Custom** (user decision): a Custom screw/nut carries no catalogue extras - no screw
+     head styles (so `bore_negative_mesh`'s head block is guarded on `s != nullptr`), and no coaxial
+     clearance bore for a nut (`its_make_nut_pocket` gets `clearance_d = 0`).
+4. **Head / Fit buttons had no selected state.** The Head (None/Socket/Button/Sink), screw Fit
+   (Free/Tap) and pocket Fit (Tight/Slip) buttons were plain; a shared `sel_button(label, on, cb)`
+   helper (same teal fill as the op/category buttons) now highlights the active one.
+
+No `HoleShapes` geometry changed; its tests are untouched. The UI paths are gizmo code and are not
+unit-tested - app build + user click-test. Branch stacked on `port/ME-2-fix2` (the flip fix, not yet
+merged), so a build of this branch contains both.
+
 ## Round (2026-10-15) - rim side selectable, Place on face gated to bore
 
 Two user-reported bugs, both in `GLGizmoHoles.cpp` (`on_render_input_window`, `set_operation`,
