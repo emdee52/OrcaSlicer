@@ -304,8 +304,14 @@ bridging) and PF-2b (paint smart/partial). Protocols are in each `notes/<ID>.md`
 ## Cheat-sheet
 
 - Target: `OrcaSlicer/` | Neotko fork: `OrcaFS-NeotkoCM/` | preFlight: `preFlight/` |
-  Snapmaker base for Neotko diffs: `snapmaker/OrcaSlicer` tag `v2.3.5`.
-- Isolate a Neotko change: `git -C OrcaFS-NeotkoCM diff v2.3.5 HEAD -- <path>`.
+  Snapmaker base for Neotko diffs: `snapmaker/OrcaSlicer` tag **`v2.4.0`** (current base,
+  2026-09-17). Tag `v2.3.5` is the OLD base - correct only for Neotko 2.4.5 (`cf1255c741`) and
+  earlier. The rebase to 2.4.0 is fork commit `7e426bff85` (Snapmaker's work, not Neotko's).
+- Isolate a Neotko change: **prefer the fork's own commit** - `git -C OrcaFS-NeotkoCM show <sha>`
+  (exact, no vendor tag needed). Aggregate view: `git -C OrcaFS-NeotkoCM diff v2.4.0 HEAD -- <path>`;
+  for pre-rebase features `git -C OrcaFS-NeotkoCM diff v2.3.5 cf1255c741 -- <path>`. A tag diff is a
+  guide, not ground truth: the fork also adds `tests/catch2/**`, `docs/tour/**` and its own Flutter
+  web layout.
 - Port artifacts: `OrcaSlicer/porting/` (plan, guidelines, 2 inventories, manifest, notes,
   patches, BUILD).
 - Startup: `OrcaSlicer/build/src/Release/orca-slicer.exe`.

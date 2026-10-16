@@ -7,7 +7,9 @@ Source: `OrcaFS-NeotkoCM/NEOTKOCM_RELEASE_2_3.md` ... `NEOTKOCM_RELEASE_2_45.md`
 
 - This list is transcribed from Neotko's own release notes, **not** verified against the
   fork's diff or against upstream OrcaSlicer 2.5. Per `AGENTS.md`, the notes are an index,
-  not ground truth. Every item must be confirmed against `v2.3.5..HEAD` before porting.
+  not ground truth. Every item must be confirmed against the actual diff before porting - for the
+  pre-rebase features below that is `v2.3.5..cf1255c741`, because Neotko later rebased onto
+  Snapmaker **2.4.0** (fork commit `7e426bff85`); see `AGENTS.md` for the current base.
 - "Since" is the first release note that describes the item, not necessarily the first
   commit.
 - Effort (S/M/L/XL) and "value" are my **estimates**, not measured. They will move once the

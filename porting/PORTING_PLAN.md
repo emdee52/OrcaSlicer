@@ -535,3 +535,39 @@ branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
   state space, support styles) - keep backward compatibility and append enum values last.
 - PF-8 (Serpentine) and PF-10 (Baobab) are large; treat effort estimates as ranges.
 
+---
+
+# Addendum 2 - next phases (2026-10-16, PROPOSAL)
+
+Scope: the useful part of Neotko 2.4.6-2.4.8, selected by the user. Full detail, evidence and
+open decisions: **`OrcaSlicer/porting/PORTING_PLAN_NEXT.md`**. Per-feature review of the whole
+2.4.6-2.4.8 batch: `NEOTKO_RELEASE_2_46_2_48_REVIEW.md`.
+
+Note: the Neotko base moved from Snapmaker Orca 2.3.5 to **2.4.0** in fork commit `7e426bff85`
+(845 files, not Neotko's work). All new diffs must be taken against Snapmaker 2.4.0; the
+`v2.3.5` instruction in `AGENTS.md` is stale.
+
+Phase order (rationale in the plan):
+
+```
+Phase 8   Support Zones fixes        SU-14 map uses plate-down, SU-15 bed foot, SU-16 straight down
+Phase 9   Support Zones UX           SU-17 overhang-only brush, SU-18 view from below
+Phase 10  Support Zones cut tool     SU-19 SUPPORT_BLOCKER volume + slice-time subtraction
+Phase 11  NeoArachne single-line     PQ-4  spine mode, default OFF (fork defaults it on)
+Phase 12  Extrude / Fill gizmo       HF-3  port SurfaceExtrude + merge HF-1/HF-2 (our own design)
+Phase 13  Hardening, tests, manifest, docs
+```
+
+New IDs `SU-14..SU-19`, `PQ-4`, `HF-3` (checked against the markers already in the tree:
+`CUT-1`, `SNAP-8` and `SU-8..SU-13` are taken by other work).
+
+Explicitly dropped by user decision: everything ColorStitch/sticker/NeoTower/RealColor,
+**NeoStroke** (WIP, unstable, `NeoDebug`-gated), **Align & Construct**, **Stacked objects: real
+layers**, and **SkyLane** (private, not in the public tree). Two NeoArachne changes in the
+batch are rejected: the fork's `inner_walls` default flip (ArachneStock -> Classic) violates
+our behaviour-neutral rule, and the spine's on-by-default.
+
+Open decisions are listed in section 8 of `PORTING_PLAN_NEXT.md` (SU-19 data model, PQ-4
+default and naming, HF-3 shape and whether HF-2/EF-1 join it, MCP tool naming, gesture JSON
+version bump).
+
