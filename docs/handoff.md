@@ -66,7 +66,7 @@ Alt-drag snap (SNAP-8) is the newest of them.
 | `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
 | `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
 | `port/MV-1` | merged (`f6f42220e1`) | Move gizmo: axes align to a picked flat face |
-| `port/MV-2` | this branch | Move pivot sticks to face coordinates; Alt lands it on another object (section 26) |
+| `port/MV-2` | merged (`56b5a6acba`) | Move pivot sticks to face coordinates; Alt lands it on another object (section 26) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -833,7 +833,8 @@ assembly.
 - **Where.** `GLCanvas3D::on_mouse`'s volume-drag branch (`GLCanvas3D.cpp:4786`). The snap correction is
   folded into the single `m_selection.translate(...)` call, because `Selection::translate` writes instance
   offsets ABSOLUTELY from the drag-start cache — a second call in the same frame would overwrite the first
-  instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up.
+  instead of compounding. No new gizmo; hosting it in the Move gizmo is a follow-up — **done in
+  section 26 (MV-3)**, which snaps the placed pivot while a grabber is dragged.
 - **Anchoring.** The anchor is a coordinate of the dragged object itself, not the raw cursor: grabbing
   a corner a few pixels off always left that corner short of the target. `mover_hit_under_cursor`
   raycasts only the moving volumes (same loop as `hit_under_cursor`, shared through a `want_moving`
@@ -1198,5 +1199,7 @@ nothing — the axis grabbers, the coordinate-system combo and the XYZ fields ar
   midpoint / face centre and check the marker and the label; then drag a grabber with Alt onto
   another object and check the pivot lands on its coordinate; release Alt and the object follows the
   cursor again.
-- **Branch state**: `port/MV-2`, from `port/integration` at `556e074830`. Not merged — the merge is
-  the user's gate (section 0).
+- **Branch state**: `port/MV-2`, from `port/integration` at `556e074830`. Merged `--no-ff` as
+  `56b5a6acba` (user-verified in the app 2026-10-15: arrows full length on a placed pivot, hover
+  markers back, and the placing click no longer closes the tool). See section 0 for why a branch only
+  merges once the user has tested it.
