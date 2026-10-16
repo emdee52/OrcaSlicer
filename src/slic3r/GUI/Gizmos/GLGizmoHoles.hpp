@@ -27,7 +27,7 @@ namespace GUI {
 enum class HoleOperation { Teardrop, Bore, RimChamfer, RimFillet };
 enum class BoreHead { None, SocketHead, ButtonHead, Countersink };
 enum class ScrewFit { Free, Tap };
-enum class HoleCategory { Screw, Nut, Magnet, Insert, Custom };
+enum class HoleCategory { Screw, Nut, Magnet, Insert };
 
 class GLGizmoHoles : public GLGizmoBase
 {
@@ -126,6 +126,8 @@ private:
     // material, `entry` is a point on the axis at the near end.
     void feature_frame(const DetectedHole& hole, Vec3d& dir, Vec3d& entry) const;
     double bore_diameter() const; // resolved from the standard / custom diameter + fit
+    // Whether the current operation can act on hole `idx` (teardrop is horizontal-only).
+    bool hole_usable(int idx) const;
 
     indexed_triangle_set teardrop_mesh(const DetectedHole& hole) const;
     indexed_triangle_set bore_negative_mesh(const DetectedHole& hole) const; // empty when nothing to cut
