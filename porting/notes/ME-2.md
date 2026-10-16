@@ -3,7 +3,9 @@
 - Source: **fork-original**, no Neotko release note. Design log: `docs/handoff.md` sections 3, 11, 12.
 - Category: B (feature). Not a port of `OrcaFS-NeotkoCM` — that fork has no `GLGizmoHoles`.
 - Status: **ported**, merged into `port/integration` (`port/ME-1`, `port/ME-2`, `port/ME-2c`,
-  `port/ME-2d`, `port/RIM-1`). The flush shrink tube below is merged `--no-ff` as `098e627827`
+  `port/ME-2d`, `port/RIM-1`, and this session's `port/ME-2-fix2` = `61f46aabff`,
+  `port/ME-2-fix3` = `030e512e89`, `port/ME-2-screw-td` = `be3367cdeb`, all user-verified
+  2026-10-15). The flush shrink tube below is merged `--no-ff` as `098e627827`
   (branch `port/ME-2-fix`), user-verified in the app 2026-10-15: the ring step at both mouths is
   gone and the shrunk holes are otherwise unchanged.
 
@@ -88,7 +90,8 @@ roof rather than a flat overhang.
   entry -> along the axis, `-r` to apex across, volume = teardrop area x depth) and "A teardrop
   prism on an axis parallel to up is refused"; `[HoleShapes]` 26 cases / 143 assertions pass.
 
-Branch `port/ME-2-screw-td`, stacked on the (unmerged) `port/ME-2-fix2` + `port/ME-2-fix3`.
+Branch `port/ME-2-screw-td`, stacked on `port/ME-2-fix2` + `port/ME-2-fix3`; merged into
+`port/integration` as `be3367cdeb`, user-verified 2026-10-15.
 
 ## Round (2026-10-15) - teardrop gating, Custom sizes, selected-state buttons
 
@@ -124,8 +127,8 @@ Four user-reported issues, all in `GLGizmoHoles.cpp` / `GLGizmoHoles.hpp` (+ the
    helper (same teal fill as the op/category buttons) now highlights the active one.
 
 No `HoleShapes` geometry changed; its tests are untouched. The UI paths are gizmo code and are not
-unit-tested - app build + user click-test. Branch stacked on `port/ME-2-fix2` (the flip fix, not yet
-merged), so a build of this branch contains both.
+unit-tested - app build + user click-test. Was stacked on `port/ME-2-fix2` (the flip fix); both are
+now merged into `port/integration` (as `030e512e89` and `61f46aabff`, user-verified 2026-10-15).
 
 ## Round (2026-10-15) - rim side selectable, Place on face gated to bore
 
