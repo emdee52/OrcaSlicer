@@ -1,1 +1,6 @@
-<?xml version="1.0" encoding="UTF-8"?><svg id="a" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" style="fill:#009688;"/><rect x="11" y="11" width="4" height="4" style="fill:#000000;"/><rect x="18" y="11" width="4" height="4" style="fill:#000000;"/><rect x="25" y="11" width="4" height="4" style="fill:#000000;"/><rect x="11" y="18" width="4" height="4" style="fill:#000000;"/><rect x="18" y="18" width="4" height="4" style="fill:#000000;"/><rect x="25" y="18" width="4" height="4" style="fill:#000000;"/><rect x="11" y="25" width="4" height="4" style="fill:#000000;"/><rect x="18" y="25" width="4" height="4" style="fill:#000000;"/><rect x="25" y="25" width="4" height="4" style="fill:#000000;"/></svg>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <!-- Perforations: a pattern stamped through a face. Base = the face, accent = the pattern. -->
+  <rect x="6.5" y="6.5" width="27" height="27" style="fill:none;stroke:#2b3436;stroke-width:1.6"/>
+  <path d="M12.5 12.5h4v4h-4Z M18 12.5h4v4h-4Z M23.5 12.5h4v4h-4Z M12.5 18h4v4h-4Z M18 18h4v4h-4Z M23.5 18h4v4h-4Z M12.5 23.5h4v4h-4Z M18 23.5h4v4h-4Z M23.5 23.5h4v4h-4Z" style="fill:#009688"/>
+</svg>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <!-- Hole walls: a plate in section, bored vertically and thickened either side of the bore.
+       Base = the plate and the bore, accent = the added wall. -->
+  <rect x="4.5" y="13.5" width="31" height="13" style="fill:none;stroke:#b6b6b6;stroke-width:1.6"/>
+  <rect x="13.5" y="13.5" width="4" height="13" style="fill:#009688"/>
+  <rect x="22.5" y="13.5" width="4" height="13" style="fill:#009688"/>
+  <path d="M17.5 13.5 V26.5 M22.5 13.5 V26.5" style="fill:none;stroke:#b6b6b6;stroke-width:1.6"/>
+</svg>

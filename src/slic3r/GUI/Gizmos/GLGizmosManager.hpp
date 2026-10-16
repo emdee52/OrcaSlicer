@@ -123,6 +123,13 @@ private:
         float scaled_gap_x() const { return scale * gap_x; }
         float scaled_stride_x() const { return scale * stride_x(); }
 
+        // [ORCAPORT:UI-1] Width of the in-row divider cell. Like GLToolbar's separators it replaces
+        // the icon of a cell, so a row with one divider is a divider narrower than the row would be
+        // without it. Half an icon matches seperator.svg (a 20x40 line in a square tile).
+        float separator_size() const { return 0.5f * icons_size; }
+        float scaled_separator_size() const { return scale * separator_size(); }
+        float scaled_separator_stride_x() const { return scale * (separator_size() + gap_x); }
+
         float stride_y() const { return icons_size + gap_y;}
 
         float scaled_icons_size() const { return scale * icons_size; }
@@ -136,6 +143,10 @@ private:
     std::vector<std::unique_ptr<GLGizmoBase>> m_gizmos;
     GLTexture m_icons_texture;
     bool m_icons_texture_dirty;
+    // [ORCAPORT:UI-1] Rows in the icon atlas: one per gizmo plus the toolbar divider. The dividers
+    // sprite is appended last, so its row is m_gizmos.size().
+    int m_icon_rows{ 0 };
+    int m_separator_row{ -1 };
     BackgroundTexture m_background_texture;
     GLTexture m_arrow_texture;
     Layout m_layout;
@@ -148,6 +159,12 @@ private:
 
     std::vector<size_t> get_selectable_idxs() const;
     EType get_gizmo_from_mouse(const Vec2d &mouse_pos) const;
+
+    // [ORCAPORT:UI-1] Position (in get_selectable_idxs() order) the toolbar divider is drawn before,
+    // or -1 when there is none. The fork's gizmos are appended after the upstream ones, so the
+    // divider sits between the two groups without reordering anything.
+    int divider_selectable_pos() const;
+    void render_toolbar_separator(float tile_left, float top_y, float tile_w, float tile_h) const;
 
     bool activate_gizmo(EType type);
 
@@ -346,8 +363,6 @@ private:
     void update_hover_state(const EType &type);
     bool grabber_contains_mouse() const;
 };
-
-std::string get_name_from_gizmo_etype(GLGizmosManager::EType type);
 
 } // namespace GUI
 } // namespace Slic3r

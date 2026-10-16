@@ -1,16 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-  <!-- NEOTKO_SUPPORTZONES_TAG s286 — Support Zones: a leaning pillar running from a
-       downward-facing surface to a footprint on the bed. The lean IS the feature, so the
-       pillar is never drawn vertical.
-       Fills only (nanosvg-safe); avoid pure black (RGB==0 reads as background in the
-       gizmo icon recolor pipeline). -->
-  <!-- the overhang the zone holds up -->
-  <polygon points="14,5 37,5 37,10 14,10" style="fill:#2b3436"/>
-  <!-- downward-facing target patch, highlighted -->
-  <polygon points="19,10 31,10 31,12 19,12" style="fill:#009688"/>
-  <!-- the leaning pillar -->
-  <polygon points="19,12 31,12 17,32 5,32" style="fill:#009688"/>
-  <!-- landing footprint on the bed -->
-  <polygon points="3,34 19,34 19,37 3,37" style="fill:#2b3436"/>
+  <!-- Support Zones: a leaning pillar aimed at an overhang. The lean IS the feature, so the pillar is
+       never drawn vertical. Base = the overhang and the bed, accent = the pillar. -->
+  <path d="M14 5.5 H36 V11.5 H14 Z" style="fill:none;stroke:#2b3436;stroke-width:1.6"/>
+  <path d="M4 31.5 H36 V35.5 H4 Z" style="fill:none;stroke:#2b3436;stroke-width:1.6"/>
+  <path d="M18 11.5 H30 L18 31.5 H6 Z" style="fill:none;stroke:#009688;stroke-width:1.6"/>
 </svg>

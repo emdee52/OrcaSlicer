@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <!-- Edge chamfer / fillet: a block whose corner is dressed. Base = the block, accent = the band. -->
+  <path d="M7 33 V16 A9 9 0 0 1 16 7 H33" style="fill:none;stroke:#2b3436;stroke-width:1.6"/>
+  <path d="M7 16 A9 9 0 0 1 16 7" style="fill:none;stroke:#009688;stroke-width:3"/>
+</svg>

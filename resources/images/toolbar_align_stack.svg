@@ -1,16 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-  <!-- Align & Stack: isometric cube with a plane descending onto its top face.
-       Fills only (nanosvg-safe); avoid pure black (RGB==0 is treated as
-       background by the gizmo icon recolor pipeline). -->
-  <!-- descending plane -->
-  <polygon points="20,3 29.5,7.8 20,12.6 10.5,7.8"
-           style="fill:none;stroke:#009688;stroke-width:1.6"/>
-  <!-- flanking down arrows -->
-  <polygon points="5,8 5,14 3,14 6.5,19 10,14 8,14 8,8" style="fill:#009688"/>
-  <polygon points="32,8 32,14 30,14 33.5,19 37,14 35,14 35,8" style="fill:#009688"/>
-  <!-- cube: top / left / right faces -->
-  <polygon points="20,16 31,21.5 20,27 9,21.5" style="fill:#009688"/>
-  <polygon points="9,21.5 20,27 20,38 9,32.5" style="fill:#2b3436"/>
-  <polygon points="20,27 31,21.5 31,32.5 20,38" style="fill:#2b3436"/>
+  <!-- Align & Stack: a plane descending onto a cube. Base = context, accent = the moved object. -->
+  <polygon points="20,4 29.5,8.8 20,13.6 10.5,8.8" style="fill:none;stroke:#009688;stroke-width:1.5"/>
+  <polygon points="5,10 5,15 3.2,15 6.7,20 10.2,15 8.4,15 8.4,10" style="fill:#009688"/>
+  <polygon points="30,10 30,15 28.2,15 31.7,20 35.2,15 33.4,15 33.4,10" style="fill:#009688"/>
+  <polygon points="20,17 30.5,22.2 20,27.4 9.5,22.2" style="fill:#009688"/>
+  <polygon points="9.5,22.2 20,27.4 20,38 9.5,32.8" style="fill:none;stroke:#2b3436;stroke-width:1.5"/>
+  <polygon points="30.5,22.2 20,27.4 20,38 30.5,32.8" style="fill:none;stroke:#2b3436;stroke-width:1.5"/>
 </svg>
