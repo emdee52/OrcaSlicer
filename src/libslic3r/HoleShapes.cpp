@@ -334,6 +334,23 @@ indexed_triangle_set its_make_tube(double outer_d, double inner_d, double depth,
     return its;
 }
 
+indexed_triangle_set its_make_shrink_tube(double wall_d, double inner_d, double wall_depth,
+                                          const Vec3d &axis, const Vec3d &entry, int segments)
+{
+    // Nothing to fill when the new bore is not smaller than the wall it replaces.
+    if (wall_d <= 0. || inner_d <= 0. || inner_d >= wall_d - 0.01 || wall_depth <= 0. ||
+        !axis.allFinite() || axis.squaredNorm() < 1e-18)
+        return {};
+
+    // Both caps land exactly on the detected wall's ends, which is where that wall runs into the
+    // part's surfaces, so the fill ends up flush with both faces. Overshooting the far end made a
+    // boss: a detected axis carries no material-side sign, so it stuck out of whichever face
+    // `axis` happened to point through. Stopping even 0.05 short of it leaves a ring step at both
+    // mouths. The radial overlap into the old wall is what keeps the union watertight.
+    constexpr double WALL_OVERLAP_D = 0.4; // extra diameter biting into the old wall
+    return its_make_tube(wall_d + WALL_OVERLAP_D, inner_d, wall_depth, axis, entry);
+}
+
 indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_depth,
                                          double clearance_d, double bore_depth,
                                          const Vec3d &axis, const Vec3d &entry, int segments)

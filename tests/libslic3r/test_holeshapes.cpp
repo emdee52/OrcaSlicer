@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 using namespace Slic3r;
 using Catch::Matchers::WithinAbs;
@@ -34,6 +35,18 @@ indexed_triangle_set plate_with_pocket()
     TriangleMesh cutter(its_make_cube(6., 6., 3.));
     cutter.translate(Vec3f(7.f, 7.f, 2.f)); // z in [2, 5], pokes above the plate top
     MeshBoolean::cgal::minus(plate, cutter);
+    its_merge_vertices(plate.its);
+    return plate.its;
+}
+
+// A 20x20 plate `thickness` tall with a through hole of radius `r` at (10, 10): the hole the
+// Holes tool detects, shrinks and has to come out flush with the plate's two faces.
+indexed_triangle_set plate_with_through_hole(double thickness, double r)
+{
+    TriangleMesh plate(its_make_cube(20., 20., thickness));
+    TriangleMesh bore(its_make_cylinder(r, thickness + 4.));
+    bore.translate(Vec3f(10.f, 10.f, -2.f));
+    MeshBoolean::cgal::minus(plate, bore);
     its_merge_vertices(plate.its);
     return plate.its;
 }
@@ -179,6 +192,71 @@ TEST_CASE("A tube is an annulus with a bore", "[HoleShapes]")
     CHECK_THAT(bb.min.x(), WithinAbs(-3., 1e-3));
     CHECK_THAT(bb.max.z(), WithinAbs(5., 1e-3));
     CHECK_THAT(double(its_volume(tube)), WithinRel(PI * (9. - 4.) * 5., 0.03));
+}
+
+TEST_CASE("A shrink tube spans the wall exactly", "[HoleShapes]")
+{
+    // An M4 wall shrunk to an M3 bore through 5 mm of material.
+    const indexed_triangle_set tube = its_make_shrink_tube(4., 3., 5., Vec3d::UnitZ(), Vec3d(1., 2., 0.));
+    REQUIRE_FALSE(tube.empty());
+    CHECK(its_volume(tube) > 0.f);
+
+    const BoundingBoxf3 bb = bounding_box(tube);
+    CHECK_THAT(bb.min.z(), WithinAbs(0., 1e-4));   // caps land on the wall's ends, so both faces are flush
+    CHECK_THAT(bb.max.z(), WithinAbs(5., 1e-4));
+    CHECK_THAT(bb.max.x(), WithinAbs(3.2, 1e-3));  // outer 4.4 overlaps the M4 hole, offset by the entry x
+    CHECK_THAT(double(its_volume(tube)), WithinRel(PI * (2.2 * 2.2 - 1.5 * 1.5) * 5., 0.03));
+}
+
+TEST_CASE("A shrink tube is empty when it would not fill anything", "[HoleShapes]")
+{
+    CHECK(its_make_shrink_tube(3., 3., 5., Vec3d::UnitZ(), Vec3d::Zero()).indices.empty()); // matching
+    CHECK(its_make_shrink_tube(3., 4., 5., Vec3d::UnitZ(), Vec3d::Zero()).indices.empty()); // enlarging
+    CHECK(its_make_shrink_tube(4., 3., 0., Vec3d::UnitZ(), Vec3d::Zero()).indices.empty()); // no wall
+}
+
+TEST_CASE("A shrunk hole comes out flush with the faces it was bored through", "[HoleShapes]")
+{
+    // Guards both directions of the same mistake: a fill that stops short of the face (a ring
+    // step at the mouth) or one that stands proud of it (a boss around the hole).
+    constexpr double thickness = 4., old_r = 2., new_d = 3.;
+    const indexed_triangle_set part = plate_with_through_hole(thickness, old_r);
+
+    const std::vector<DetectedHole> holes = detect_holes(part);
+    REQUIRE(holes.size() == 1);
+    const DetectedHole &h = holes.front();
+    CHECK_THAT(2. * h.radius, WithinAbs(2. * old_r, 0.02));
+    CHECK_THAT(h.depth, WithinAbs(thickness, 1e-3));
+
+    // The gizmo's frame: dir is the detected axis, the entry is one end of the detected wall.
+    const Vec3d dir   = h.axis.normalized();
+    const Vec3d entry = h.center - dir * (0.5 * h.depth);
+    const indexed_triangle_set fill = its_make_shrink_tube(2. * h.radius, new_d, h.depth, dir, entry);
+    REQUIRE_FALSE(fill.empty());
+
+    indexed_triangle_set both = part;
+    MeshBoolean::cgal::plus(both, fill);
+    its_merge_vertices(both);
+
+    // First surface the ray meets, or NaN when it passes clean through. Probes are named by their
+    // distance from the hole's axis: 1.7 is inside the filled annulus, 2.1 is under the radial
+    // overlap, 1.4 is inside the new bore.
+    auto surface_z = [&](double rho, bool from_above) -> double {
+        const Vec3d o(10. + rho, 10., from_above ? thickness + 6. : -6.);
+        const AABBMesh mesh(both);
+        double        best = 1e30;
+        for (const AABBMesh::hit_result &hit : mesh.query_ray_hits(o, Vec3d(0., 0., from_above ? -1. : 1.)))
+            if (hit.is_hit())
+                best = std::min(best, hit.distance());
+        if (best > 1e29)
+            return std::numeric_limits<double>::quiet_NaN();
+        return from_above ? thickness + 6. - best : -6. + best;
+    };
+
+    CHECK_THAT(surface_z(1.7, true), WithinAbs(thickness, 1e-4));  // flush at the entry face
+    CHECK_THAT(surface_z(1.7, false), WithinAbs(0., 1e-4));        // and at the far face
+    CHECK_THAT(surface_z(2.1, true), WithinAbs(thickness, 1e-4));  // and across the overlap ring
+    CHECK(std::isnan(surface_z(1.4, true)));                       // the new bore is open through
 }
 
 TEST_CASE("A bore follows an arbitrary axis", "[HoleShapes]")

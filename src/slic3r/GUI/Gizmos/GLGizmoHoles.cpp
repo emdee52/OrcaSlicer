@@ -359,14 +359,10 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
 
     const double target_d = bore_diameter() / object_scale(); // object space, to match exist_d
     const double exist_d  = 2.0 * h.radius;
-    if (target_d <= 0. || target_d >= exist_d - 0.01)
-        return {}; // enlarging or matching: no fill needed
 
     Vec3d dir, entry;
     feature_frame(h, dir, entry);
-    const double outer_d = exist_d + 0.4; // overlap the existing wall
-    const double depth   = h.depth + std::max(0.4, 0.2 * h.depth);
-    return its_make_tube(outer_d, target_d, depth, dir, entry);
+    return its_make_shrink_tube(exist_d, target_d, h.depth, dir, entry);
 }
 
 indexed_triangle_set GLGizmoHoles::rim_mesh(const DetectedHole &h) const
@@ -1571,7 +1567,9 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
             set_angle(angle);
         ImGui::PopItemWidth();
         ImGui::SameLine();
-        ImGui::PushItemWidth(m_imgui->scaled(4.0f));
+        // Face the widest value ("60") plus the spinner's +/- buttons: ImGui carves both buttons
+        // out of the item width, which clipped the value at scaled(4).
+        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
         if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
             set_angle(angle);
         ImGui::PopItemWidth();
