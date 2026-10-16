@@ -55,6 +55,15 @@ indexed_triangle_set its_make_tube(double outer_d, double inner_d, double depth,
                                    const Vec3d &axis, const Vec3d &entry,
                                    int segments = HOLE_SHAPE_SEGMENTS);
 
+// Shrink an existing hole: a positive annulus filling the gap between a detected wall `wall_d`
+// and the new `inner_d` bore, spanning `wall_depth` of that wall. The outer wall overlaps the old
+// one radially, which keeps the boolean watertight; the caps land exactly on the wall's ends, so
+// the fill is flush with the part's faces there rather than standing proud of them or stopping
+// short. Returns an empty mesh when the bore is not smaller than the wall.
+indexed_triangle_set its_make_shrink_tube(double wall_d, double inner_d, double wall_depth,
+                                          const Vec3d &axis, const Vec3d &entry,
+                                          int segments = HOLE_SHAPE_SEGMENTS);
+
 // Hexagonal nut pocket (across-flats) with a coaxial clearance bore through it.
 indexed_triangle_set its_make_nut_pocket(double across_flats, double pocket_depth,
                                          double clearance_d, double bore_depth,
