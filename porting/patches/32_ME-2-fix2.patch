@@ -1,0 +1,70 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index 39aa6baa7b..1b6ca5ff2d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -703,6 +703,10 @@ void GLGizmoHoles::set_place_face_mode(bool on)
+ {
+     if (m_place_face_mode == on)
+         return;
++    // Authoring on a bare face only produces a bore/pocket; the mode is unreachable for the other
++    // operations (its button is hidden) and refused here so the MCP action cannot enable it either.
++    if (on && m_operation != HoleOperation::Bore)
++        return;
+     m_place_face_mode = on;
+     if (on)
+         m_hover_id = -1; // suppress detected-hole hover while placing
+@@ -1242,7 +1246,10 @@ void GLGizmoHoles::set_operation(HoleOperation op)
+ {
+     if (m_operation == op)
+         return;
+-    m_operation     = op;
++    m_operation = op;
++    // Leaving bore hides the Place-on-face button, so end the mode rather than stranding it.
++    if (m_place_face_mode && op != HoleOperation::Bore)
++        set_place_face_mode(false);
+     m_preview_dirty = true;
+     m_parent.set_as_dirty();
+ }
+@@ -1537,8 +1544,10 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+         op_button(m_desc.at("op_rim_fillet"), HoleOperation::RimFillet);
+     }
+ 
+-    // Place a new pocket on any flat face, instead of only reworking detected holes.
+-    {
++    // Place a new pocket on any flat face, instead of only reworking detected holes. This only
++    // makes sense for a bore/pocket: a rim needs an existing hole edge and a teardrop is centred
++    // on a detected hole, so neither has anything to author on a bare face.
++    if (m_operation == HoleOperation::Bore) {
+         const bool on = m_place_face_mode;
+         if (on) {
+             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+@@ -1802,12 +1811,6 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+                 ImGui::PopItemWidth();
+             }
+         }
+-
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("entry"));
+-        ImGui::SameLine(left_width);
+-        if (m_imgui->button(m_desc.at("entry")))
+-            set_flip(!m_flip);
+     } else if (m_operation == HoleOperation::RimChamfer || m_operation == HoleOperation::RimFillet) {
+         // Rim chamfer / fillet: one size, the chamfer leg or the fillet radius at the hole edge.
+         ImGui::AlignTextToFramePadding();
+@@ -1820,6 +1823,16 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+         ImGui::PopItemWidth();
+     }
+ 
++    // Entry end (Flip) applies to bore and rim: both place their feature at the chosen mouth. A
++    // teardrop is centred on the hole and ignores the entry, so it gets no Flip control.
++    if (m_operation != HoleOperation::Teardrop) {
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("entry"));
++        ImGui::SameLine(left_width);
++        if (m_imgui->button(m_desc.at("entry")))
++            set_flip(!m_flip);
++    }
++
+     ImGui::Separator();
+ 
+     const std::vector<char> &flags = m_operation == HoleOperation::Teardrop   ? m_teardrop

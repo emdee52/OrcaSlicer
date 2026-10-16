@@ -55,10 +55,31 @@ Closing that needs a fill whose end face follows the surrounding surface, i.e. a
 variant of `cavity_fill_local` (the Cavity fill tool's plug, whose header defers full through
 holes). Second, `feature_frame` derives `dir` from the canonical axis plus the user's *Flip*
 toggle, so for a *detected* hole `dir` points out of the material about half the time; the shrink
-tube no longer cares, but `rim_mesh` and `teardrop_mesh` place their ring near `entry`, so on a
-detected hole they can land at the far end instead of the entry face. Fixing that needs a
-material-aware axis sign (a ray cast along ±axis against the merged mesh, or orienting toward the
-capped end when `!through`).
+tube no longer cares, and `rim_mesh` places its ring at whichever mouth *Flip* selects (the control
+is available for bore and rim alike). The *default* side is still arbitrary: a material-aware axis
+sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
+`!through`) would pick the visible entry face without the user flipping by hand.
+
+## Round (2026-10-15) - rim side selectable, Place on face gated to bore
+
+Two user-reported bugs, both in `GLGizmoHoles.cpp` (`on_render_input_window`, `set_operation`,
+`set_place_face_mode`).
+
+1. **Rim only on one end.** The *Flip* (entry) control was rendered inside the bore branch only, so
+   `m_flip` - the sole way `feature_frame` moves a feature to the other mouth - could not be toggled
+   while a rim operation was selected. On a detected hole the canonical axis sign ignores the
+   material, so the ring could land on the end the user did not want with no way back. The control
+   now renders for bore and rim; a teardrop is centred on the hole and ignores the entry, so it
+   still gets none.
+2. **Place on face outside bore.** The button was always shown and stamped `face_shape_mesh()`, the
+   current operation's shape, onto a picked face: a meaningless ring groove for a rim (there is no
+   hole edge to chamfer) and the "fall back to a plain bore" path for a teardrop. It now shows only
+   for bore/pocket; `set_place_face_mode(true)` refuses to enable it for any other operation (covers
+   the MCP `set_place_face` action) and `set_operation` exits the mode when leaving bore, so the mode
+   cannot outlive its button.
+
+No geometry changed; `HoleShapes` and its tests are untouched. The UI paths are gizmo code and are
+not unit-tested - app build + user click-test.
 
 ## Round (2026-10-15) - flush shrink tube, apex field width
 
