@@ -261,6 +261,10 @@ public:
 
     float get_layout_scale();
 
+    // [ORCAPORT:UI-1] The drawn size of one gizmo icon cell, in canvas pixels. The panels use it to
+    // anchor under their own icon; m_parent.get_scale() is the camera zoom, not the toolbar layout.
+    float get_scaled_icons_size() const { return m_layout.scaled_icons_size(); }
+
     bool init_arrow(const std::string& filename);
 
     template<class Archive>

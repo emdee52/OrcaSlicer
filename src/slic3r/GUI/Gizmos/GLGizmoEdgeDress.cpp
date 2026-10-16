@@ -1056,10 +1056,16 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
 
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
-    // [ORCAPORT:UI-1] the toolbar-on-top layout passes the icon's left edge, so the panel is anchored
-    // there; the side layout passes its right edge.
+    // [ORCAPORT:UI-1] Left-aligned under the icon while the panel fits to its right. Once it would run
+    // past the canvas edge, hang it to the left instead of letting GizmoImguiSetNextWIndowPos()'s
+    // left-aligned clamp slide it along that edge: the panel's right edge then stays under its own
+    // icon. Width 0 skips the clamp, which only makes sense for a left edge.
 #if BBS_TOOLBAR_ON_TOP
-    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+    float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
+        GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+    else
+        GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
 #else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
 #endif
