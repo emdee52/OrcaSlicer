@@ -128,10 +128,15 @@ reconfigure and the deps step, and four fixes (all committed separately):
 1. **`Model.hpp` default ctor** - the merge had kept the port's opening line complete *and*
    upstream's continuation lines, so `object(nullptr) {` closed the ctor early and the rest of
    the class body was parsed as a function body. One line; it produced every error of that run.
-2. **`m_shortcut_key` -> `m_shortcut.reset()`** in the port's seven gizmos: upstream replaced
-   the raw key code with a `Shortcut` registry. The port's gizmos have no registry entry, so they
-   lose their `Ctrl+<key>` openers (toolbar unaffected) - wiring them into
-   `Shortcut`/`GLGizmoBase`/the keys dialog is a follow-up, not a merge fix.
+2. **Gizmo shortcuts** - upstream replaced the raw key code on `GLGizmoBase` with a `Shortcut`
+   registry, and every `Ctrl+<key>` the port had used was already upstream's (Ctrl+K Clone
+   Selected, Ctrl+J Print host queue, Ctrl+I Import model, Ctrl+G Export plate, Ctrl+D Delete
+   All). The port's five keyed gizmos are now registered on the bare letters upstream's own
+   gizmos use - **K** hole walls, **J** holes, **X** edge chamfer/fillet (bare D is texture
+   displacement), **G** cavity fill, **Z** perforations (bare I/O are zoom in/out in the canvas
+   context, which shares the plater) - and each sets `m_shortcut` in `on_init()`. `AlignStack`
+   and `SupportZones` stay unregistered, as they deliberately were. All rebindable in
+   Preferences -> Keyboard shortcuts.
 3. **Section view**: `ObjectClipper::set_position_by_ratio(double, bool)` became
    `(double, const Vec3d& normal)` because upstream moved the section view onto
    `GLCanvas3D`. The port's gizmos now drive it (`set_section_view_ratio`,
@@ -157,14 +162,20 @@ Still open:
 
 1. Off-by-default equivalence: with every port option at its default, the sliced output must
    match stock 2.5. Then the MCP runtime pass per feature (the toolchain is in-tree).
-2. `scripts/run_gettext.bat --full` is run by the build script itself; it produced no catalog
-   changes here.
+2. **Catalogs are stale relative to the source.** A `scripts/run_gettext.bat --full` run rewrites
+   `OrcaSlicer.pot` and all 24 catalogs (about 17.8k added lines) and *removes* 396 non-empty
+   `msgstr` lines, so it needs reviewing as its own change rather than riding along with a
+   feature. That run is parked in `git stash@{0}` ("gettext --full regeneration 2026-10-16").
+   Until then the port's newer strings, including these five shortcut labels, show as untranslated
+   English - which is how they render today anyway.
 3. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
-   upstream's section view; its object-scoped shell clipping is still the port's), and record the
-   two deliberate behaviour deltas: the port's seven gizmos lost their `Ctrl+<key>` openers
-   (no entry in upstream's shortcut registry yet), and the mesh Holes tool's inch sizes now use
-   upstream's ASME values.
-4. Only then merge into `port/integration`, after the user has tested the build.
+   upstream's section view; its object-scoped shell clipping is still the port's). The mesh Holes
+   tool's inch sizes now follow upstream's ASME table - that one is recorded in ME-2's row.
+4. The manifest still has no rows for the later port phases - `verify-markers.ps1` lists them
+   (`EF-*`, `HF-*`, `SNAP-*`, `CUT-*`, `MV-3`, `RF-1`, `PF-2`, `SU-8..13`), and 23 markers are
+   written as `// ORCAPORT:` comments no script can find. Both are reported as warnings by the
+   gate; each needs a per-site read to fix properly.
+5. Only then merge further work into `port/integration`, after the user has tested the build.
 
 ## Gaps found while resolving
 

@@ -28,9 +28,10 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   unpainted support path" - the 2026-10-15 upstream sync (1352 commits, 44 conflicts) merged on top
   of **`00f4969058`** "port: mark ME-2 chamfer/fillet merged and user-verified". The sync is built
   (Release) and the suite passes 2407/2407; **read `porting/notes/UPSTREAM_SYNC_20261015.md`** for
-  what it changed, the four fallout fixes, and the two deliberate behaviour deltas (the port's
-  gizmos lost their `Ctrl+<key>` openers with the shortcut registry, and the mesh Holes tool's inch
-  sizes follow upstream's ASME table). Before it, the largest merge on the branch was
+  what it changed, the four fallout fixes, and what it left open (the stale gettext catalogs, the
+  manifest rows still missing for the later phases, and the two behaviour deltas - the port's
+  gizmos now open on bare K/J/X/G/Z because upstream owns every Ctrl chord they used, and the mesh
+  Holes tool's inch sizes follow upstream's ASME table). Before it, the largest merge on the branch was
   **`e0d43bbb95`** "Merge port/PF-10-multisupport: multi-pass support collision avoidance" (on top
   of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint, PF-10-auto, PF-10-multisupport and
   PF-10-paint-qol are merged into `port/integration` and pushed; the user runtime-verified
