@@ -510,16 +510,19 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     m_imgui->text(m_desc.at("click_hint"));
     m_imgui->text(m_desc.at("depth_hint"));
 
-    // Advisory only: the geometry uses the width exactly as set. Both notices share reserved rows
-    // in the fixed-width panel, so showing one changes neither the width nor the height.
+    // Advisory only: the geometry uses the width exactly as set. Drawn only when set - the reserved
+    // empty row pair left a blank block under the last hint, and the panel's pinned width already
+    // keeps a slider from moving when a notice appears.
     const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
     const bool show_horizontal = m_hover_horizontal;
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-    ImGui::BeginGroup();
-    m_imgui->text(show_reduced ? m_desc.at("reduced") : wxString());
-    m_imgui->text(show_horizontal ? m_desc.at("horizontal") : wxString());
-    ImGui::EndGroup();
-    ImGui::PopStyleColor();
+    if (show_reduced || show_horizontal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
+        if (show_reduced)
+            m_imgui->text(m_desc.at("reduced"));
+        if (show_horizontal)
+            m_imgui->text(m_desc.at("horizontal"));
+        ImGui::PopStyleColor();
+    }
 
     ImGui::PopTextWrapPos();
     GizmoImguiEnd();
