@@ -3,8 +3,8 @@
 Session summary so the next session can pick up: what was built, where it lives, and the failure
 modes already understood so they are not rediscovered. Work is mesh-only (no CAD reconstruction):
 Prepare-tab gizmos that add positive/negative volumes and paint-free edits to a loaded STL. Sections
-2-6 are the shared ground; 7 onward is one section per feature, oldest first, ending with sections 19
-and 20 for the rim dress and the edge chamfer / fillet tool.
+2-6 are the shared ground; 7 onward is one section per feature, oldest first, ending with the hole
+tooling, the rim/edge dress, and the UI-1 toolbar cleanup in section 25.
 
 Living tracker with the full idea backlog lives in `docs/superpowers/ME-roadmap.md` (gitignored).
 
@@ -115,8 +115,10 @@ the branch too but was superseded by `656714103a`.
   `SLIC3R_CAD=OFF`). `CadDocument::add_hole_standard` consumes it (socket head is the CAD counterbore).
 
 ### GUI
-- `src/slic3r/GUI/Gizmos/GLGizmoHoles.{hpp,cpp}` — "Holes" tool, `EType::Holes`, shortcut `Ctrl+J`.
-  Operation buttons (Teardrop / Bore-pocket); Bore reveals category image buttons
+- `src/slic3r/GUI/Gizmos/GLGizmoHoles.{hpp,cpp}` — "Holes" tool, `EType::Holes`, shortcut `Ctrl+J`
+  (icon `toolbar_holes{,_dark}.svg`). Was "Horizontal holes" until UI-1: only teardrop is horizontal,
+  bore/pocket work on any axis. Operation buttons (Teardrop / Bore-pocket / Rim chamfer / Rim fillet);
+  Bore reveals category image buttons
   (Screw/Nut/Magnet/Insert/Custom) then the item dropdown and parameters.
   - Teardrop: horizontal holes only, apex 45-60°.
   - Bore: screw bore with optional socket/button/countersink head, heat-set insert, magnet, nut,
@@ -126,7 +128,9 @@ the branch too but was superseded by `656714103a`.
   - Preview: candidate ghosts blue, applied volumes red, hover green.
   - Icons: `resources/images/hole_cat_{screw,nut,magnet,insert,custom}.svg`.
 - `src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.{hpp,cpp}` — "Edge chamfer / fillet" tool,
-  `EType::EdgeDress`, shortcut `Ctrl+D` (icon `design_filletedge.svg`). Chamfer / Fillet buttons, a
+  `EType::EdgeDress`, shortcut `Ctrl+D` (icon `toolbar_edge_dress{,_dark}.svg` since UI-1; it used to
+  borrow the CAD panel's `design_filletedge.svg`, which is 24x24, stroke-only and has no dark
+  variant). Chamfer / Fillet buttons, a
   0.5-3.0 mm size slider with a typed field beside it, and a "Whole loop / rim" checkbox (off by
   default). Straight edges are picked by screen-space distance; loop mode dresses the boundary loop
   of the flat face under the cursor. Applied features are drawn red, are not dressed twice, and a
@@ -897,13 +901,14 @@ count* than the rest of the object, so the hole the screw cuts into is solid pla
 first feature in this line that writes a `PARAMETER_MODIFIER` volume (every earlier hole feature
 writes a negative volume).
 
-- **Where.** The strengthening lives in the counterbore-bridge gizmo, renamed **Vertical holes**
+- **Where.** The strengthening lives in the counterbore-bridge gizmo, renamed **Hole walls**
   (`GLGizmoCounterboreBridge::on_get_name`, `Ctrl+K`), which now has two top-level modes: **Bridging**
   (the pre-existing painted bridge, with its smart-stepped / partial sub-options) and **Strengthen
-  hole**. The holes gizmo keeps its original identity — name **Horizontal holes**, icon
-  `toolbar_horizontal_holes(_dark).svg` (`Ctrl+J`, `GLGizmoHoles`); the RF-1 rename and icon that were
-  briefly attached to it are gone. The counterbore gizmo took the new `toolbar_vertical_holes(_dark).svg`
-  instead, so painters and strengtheners share one "vertical holes" tool as requested.
+  hole**. The holes gizmo keeps its original identity — name **Holes** (was **Horizontal holes** until
+  UI-1), icon `toolbar_holes(_dark).svg` (`Ctrl+J`, `GLGizmoHoles`); the RF-1 rename and icon that were
+  briefly attached to it are gone. The counterbore gizmo took
+  `toolbar_hole_walls(_dark).svg` instead, so painters and strengtheners share one tool as requested.
+  Both names and both icons were revisited in UI-1 (section 25).
 - **Defaults.** Two parameters: **Wall thickness** (the radial thickness of the added ring, default
   `0.8` mm) and **Extra loops** (wall loops added on top of the object's own count, default `1`). Off
   by default: the mode is one of two and a fresh object starts in Bridging, so the G-code is untouched.
@@ -950,11 +955,10 @@ writes a negative volume).
   and `gizmo_clear_reinforce` restrict to vertical holes, and the pick raycasters are registered only
   in strengthen mode (`register_pickers`), so Bridging keeps its brush behaviour.
 - **Icon.** The stock counterbore icon made no sense for a tool that now also strengthens holes, so it
-  took the new monochrome 40×40 SVGs `resources/images/toolbar_vertical_holes.svg` and
-  `toolbar_vertical_holes_dark.svg` (teal `#009688` thick-walled cylinder with a bore, accent
-  `#2b3436` light / `#b6b6b6` dark), wired in the `GLGizmosManager` ctor and the dark-mode filename
-  switch, with the tooltip name in `get_name_from_gizmo_etype`. The holes gizmo went back to
-  `toolbar_horizontal_holes(_dark).svg`.
+  took monochrome 40×40 SVGs (teal `#009688` cylinder with a bore, accent `#2b3436` light / `#b6b6b6`
+  dark), wired in the `GLGizmosManager` ctor and the dark-mode filename switch. Redrawn again in UI-1
+  as `resources/images/toolbar_hole_walls{,_dark}.svg` (section 25); `get_name_from_gizmo_etype`, the
+  dead lookup that carried the old tooltip name, was deleted at the same time.
 - **MCP.** Not exposed. The strengthen mode belongs to the counterbore gizmo, which has no MCP tool,
   so the feature is UI-driven. The `holes_gizmo` `reinforce` operation and its two parameters were
   reverted when the feature moved.
@@ -1051,3 +1055,47 @@ fitted to the surface, so the fill is flush by construction rather than by appro
   only if the leftover geometry becomes a problem in practice.
 - **Branch state**: on `port/HF-2`, branched from `port/HF-1`. The user tested it in the app and
   confirmed it works, so it is merged `--no-ff` into `port/integration`.
+
+
+## 25. UI-1 — toolbar divider, tool names and icon set (branch `port/UI-1`)
+
+Three QOL fixes for the gizmo toolbar at the top of the 3D view: a divider between the stock gizmos
+and this fork's, names that describe what the tools do, and one consistent icon set.
+
+- **Where the toolbar lives.** `GLGizmosManager` draws the row itself (`do_render_overlay`), unlike
+  the main toolbar, which is a `GLToolbar`. It had no notion of a separator at all; the only divider
+  on screen was `GLCanvas3D::m_separator_toolbar`, a one-item toolbar rendering
+  `resources/images/seperator.svg` (`GLCanvas3D.cpp` `_render_separator_toolbar_{left,right}`).
+- **The divider.** `is_orcaport_gizmo()` marks the fork's gizmos, and `divider_selectable_pos()`
+  returns the drawn position of the first one, so the divider lands between `BrimEars` and
+  `AlignStack` — no gizmo had to be reordered. `get_scaled_total_width()` adds one `separator_size()
+  + gap_x` (half an icon, like `GLToolbar`'s separators, which replace an icon's cell), and
+  `get_gizmo_from_mouse()` skips that cell so the divider is not clickable and every icon after it
+  still maps to the right tooltip. `get_scaled_total_width()` feeds `GLCanvas3D`'s auto-fit, which
+  treats the extra width as non-item width, so the icons keep their size.
+- **The line** is `seperator.svg` appended to the icon atlas as one extra sprite row
+  (`generate_icons_texture`; `m_icon_rows` is now rows+1 and `m_separator_row` the new row). It is
+  drawn in the atlas's *Activable* state, which is the state the pipeline tints with the toolbar's
+  normal colour — that is what makes it follow light/dark for free. Loading it directly would not:
+  the asset is `#2b3436` at 50% opacity and is invisible on the dark bar. The tile is square while
+  the line inside it sits a quarter of the way in, so the tile is offset to centre the line in the
+  divider cell.
+- **Names.** `GLGizmoHoles` "Horizontal holes" → **"Holes"** (only teardrop is horizontal; bore,
+  pocket, rim chamfer and rim fillet are not), and `GLGizmoCounterboreBridge` "Vertical holes" →
+  **"Hole walls"** (it bridges counterbores *and* thickens hole walls, which is what its panel already
+  says: Wall thickness / Extra loops). The lookups that carried the old strings —
+  `get_name_from_gizmo_etype()`, dead code, and the manager's `switch_gizmos_icon_filename` — were
+  updated or deleted. Only `on_get_name()` is user visible; it is what the toolbar tooltip shows.
+- **Icons.** All seven were redrawn to the stock language: 40×40, two colours (`#2b3436` light /
+  `#b6b6b6` dark plus the `#009688` accent), line art with negative space, no pure black. The three
+  real defects were: EdgeDress borrowed the CAD panel's `design_filletedge.svg` (24×24, stroke-only,
+  hardcoded `#b6b6b6`, no dark variant, so it was a near-invisible pale line on the light bar);
+  `toolbar_perforation_dark.svg` was byte-identical to the light icon and its holes were pure black;
+  and `toolbar_counterbore_bridge{,_dark}.svg` was referenced from nowhere. The two hole icons were
+  renamed with their tools: `toolbar_horizontal_holes` → `toolbar_holes`, `toolbar_vertical_holes` →
+  `toolbar_hole_walls`; the dead counterbore pair was deleted. Nothing else referenced these files
+  (the MCP tools open gizmos by `EType`, not by name).
+- **Not done.** None of these strings are in `localization/i18n/OrcaSlicer.pot` — the catalogs were
+  never regenerated for them, so they show English in every language. Renaming loses no translation
+  that existed; running `scripts/run_gettext.bat --full` to pick the new msgids up is still pending.
+- **Branch state**: on `port/UI-1`, branched from `port/integration`. Not merged — see section 0.
