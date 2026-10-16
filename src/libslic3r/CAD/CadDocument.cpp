@@ -1059,8 +1059,11 @@ int CadDocument::add_hole_standard(const std::string& designation, int style, bo
     const HoleStandard* std = find_hole_standard(designation);
     if (std == nullptr)
         throw std::runtime_error("unknown hole standard \"" + designation + "\"");
+    // The seat comes from the standard's own columns, not from the head dimensions the mesh
+    // bore/pocket tool sizes its seat from, and the feature stores the canonical designation.
     return add_hole_styled(screw_nominal_diameter(*std, false), depth, through, x, y, plane, style,
-                           std->socket_d, std->socket_k, std->csink_d, std->csink_angle, designation, name);
+                           std->cbore_d, std->cbore_depth, std->csink_pocket_d, std->csink_angle,
+                           std->designation, name);
 }
 
 int CadDocument::add_thread(double radius, double pitch, double height, double depth,

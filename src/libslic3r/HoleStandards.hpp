@@ -32,6 +32,16 @@ struct HoleStandard {
     double csink_d{ 0. };   // countersunk head diameter (DIN 7991 dk)
     double csink_angle{ 90. };
 
+    // Seat (pocket) dimensions for the same screw sizes: the counterbore a socket-head cap screw
+    // sits in, and for a countersunk screw the seat diameter at the entry face. These are the
+    // values the CAD Hole feature applies, and they are kept row for row with upstream
+    // OrcaSlicer's hole table (DIN 974-1 counterbores for ISO 4762, ASME B18.3 / B18.6.3 for the
+    // inch sizes, ISO 10642 seats, 82 deg for inch flat heads) so an upstream update to that
+    // table is a straight copy into this one.
+    double cbore_d{ 0. };
+    double cbore_depth{ 0. };
+    double csink_pocket_d{ 0. };
+
     // Insert / magnet: nominal pocket outer diameter and depth.
     double pocket_d{ 0. };
     double pocket_depth{ 0. };

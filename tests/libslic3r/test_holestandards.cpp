@@ -83,4 +83,31 @@ TEST_CASE("Nuts expose an across-flats and height", "[HoleStandards]")
     CHECK(find_hole_standard("M2.5 nut") == nullptr);
 }
 
+TEST_CASE("A screw standard carries the head seat dimensions", "[HoleStandards]")
+{
+    const HoleStandard *m3 = find_hole_standard("M3");
+    REQUIRE(m3 != nullptr);
+    // DIN 974-1 counterbore for an ISO 4762 head, and the ISO 10642 countersink seat.
+    CHECK_THAT(m3->cbore_d, WithinAbs(6.5, 1e-9));
+    CHECK_THAT(m3->cbore_depth, WithinAbs(3.4, 1e-9));
+    CHECK_THAT(m3->csink_pocket_d, WithinAbs(6.7, 1e-9));
+    CHECK_THAT(m3->csink_angle, WithinAbs(90., 1e-9));
+}
+
+TEST_CASE("Inch screws are listed with their series and answered without it", "[HoleStandards]")
+{
+    // The UNC spelling is the one in the table; the bare size has to keep resolving.
+    const HoleStandard *unc  = find_hole_standard("1/4-20 UNC");
+    const HoleStandard *bare = find_hole_standard("1/4-20");
+    REQUIRE(unc != nullptr);
+    REQUIRE(bare != nullptr);
+    CHECK(bare == unc);
+    CHECK_THAT(unc->clearance_d, WithinAbs(6.8, 1e-9));
+    CHECK_THAT(unc->csink_angle, WithinAbs(82., 1e-9)); // inch flat heads are 82 deg
+    CHECK(find_hole_standard("10-24") == nullptr);       // no bogus prefix match
+    const HoleStandard *ten = find_hole_standard("#10-24 UNC");
+    REQUIRE(ten != nullptr);
+    CHECK_THAT(ten->clearance_d, WithinAbs(5.1, 1e-9));
+}
+
 
