@@ -647,6 +647,18 @@ bool GLGizmosManager::open_gizmo_by_shortcut(Shortcut shortcut)
     return open_gizmo(EType(it - m_gizmos.begin()));
 }
 
+// [ORCAPORT:MV-1] A shortcut for an action inside a gizmo rather than for opening one: only the open
+// gizmo can consume it, and only the move tool has such an action today.
+bool GLGizmosManager::handle_gizmo_shortcut(Shortcut shortcut)
+{
+    if (!m_enabled || m_current == Undefined)
+        return false;
+
+    if (GLGizmoMove3D *move = dynamic_cast<GLGizmoMove3D *>(m_gizmos[m_current].get()))
+        return shortcut == Shortcut::GizmoMovePickPivot && move->start_pick_pivot();
+    return false;
+}
+
 bool GLGizmosManager::on_delete_key()
 {
     const bool processed = (m_current == Cut || m_current == Measure || m_current == Assembly) && gizmo_event(SLAGizmoEventType::Delete);

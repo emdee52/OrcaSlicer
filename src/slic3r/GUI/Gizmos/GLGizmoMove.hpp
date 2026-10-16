@@ -63,6 +63,10 @@ public:
 
     bool render_follows_cursor() const override;
 
+    // [ORCAPORT:MV-1] Enter face picking for the pivot. Shared by the panel button and the pick-pivot
+    // shortcut, so it also works when a pivot is already set.
+    bool start_pick_pivot();
+
     /// <summary>
     /// Detect reduction of move for wipetover on selection change
     /// </summary>

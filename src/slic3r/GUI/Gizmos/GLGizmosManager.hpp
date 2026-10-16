@@ -328,6 +328,8 @@ public:
     bool is_running() const;
     // Opens the gizmo bound to a Plater-context shortcut; false when no gizmo has it or it cannot open now.
     bool open_gizmo_by_shortcut(Shortcut shortcut);
+    // Lets the current gizmo consume one of its own actions bound to a shortcut; false when it has none.
+    bool handle_gizmo_shortcut(Shortcut shortcut);
     // Lets the current gizmo consume the delete key; false when it did not.
     bool on_delete_key();
 

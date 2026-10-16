@@ -4242,6 +4242,11 @@ bool GLCanvas3D::handle_shortcut(const KeyChord& chord)
         });
         break;
     default:
+        // [ORCAPORT:MV-1] an action inside the open gizmo first, then the shortcuts that open one.
+        if (m_gizmos.handle_gizmo_shortcut(shortcut)) {
+            m_dirty = true;
+            break;
+        }
         if (!m_gizmos.open_gizmo_by_shortcut(shortcut))
             return false;
         m_dirty = true;

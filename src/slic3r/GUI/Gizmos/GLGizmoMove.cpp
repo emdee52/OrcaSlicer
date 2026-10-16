@@ -649,6 +649,17 @@ void GLGizmoMove3D::clear_face_frame()
     m_parent.request_extra_frame();
 }
 
+// [ORCAPORT:MV-1] Enter face picking. The pick-pivot shortcut and the panel button both come through
+// here, so picking works whether or not a pivot is already set; cancelling keeps the one that was set.
+bool GLGizmoMove3D::start_pick_pivot()
+{
+    if (get_state() != On)
+        return false;
+    m_pick_face_mode = true;
+    m_parent.set_as_dirty();
+    return true;
+}
+
 // The pivot candidate set belongs to the face under the cursor; drop it with the highlight.
 void GLGizmoMove3D::clear_pivot_candidates()
 {
@@ -883,13 +894,19 @@ void GLGizmoMove3D::render_extra_move_ui()
             }
         m_imgui->text(_L("Click a face to place the pivot."));
         m_imgui->text(_L("It sticks to corners and to edge and face midpoints."));
-    } else if (m_face_frame_active) {
-        if (m_imgui->button(_L("Reset pivot")))
-            clear_face_frame();
-        m_imgui->text(_L("Pivot") + ": " + pivot_kind_name(m_pivot_kind));
     } else {
+        // [ORCAPORT:MV-1] both actions stay available: the pivot can be moved to another face without
+        // resetting it first, and cancelling the re-pick keeps the pivot that was set.
         if (m_imgui->button(_L("Pick pivot")))
-            { m_pick_face_mode = true; m_parent.set_as_dirty(); }
+            start_pick_pivot();
+        if (m_face_frame_active) {
+            ImGui::SameLine();
+            if (m_imgui->button(_L("Reset pivot")))
+                clear_face_frame();
+        }
+        // Read the flag again: a reset above has just cleared the pivot.
+        if (m_face_frame_active)
+            m_imgui->text(_L("Pivot") + ": " + pivot_kind_name(m_pivot_kind));
     }
 }
 
