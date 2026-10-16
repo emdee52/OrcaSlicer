@@ -1,0 +1,106 @@
+# ME-2 - Holes tool (teardrop / bore-pocket / rim)
+
+- Source: **fork-original**, no Neotko release note. Design log: `docs/handoff.md` sections 3, 11, 12.
+- Category: B (feature). Not a port of `OrcaFS-NeotkoCM` — that fork has no `GLGizmoHoles`.
+- Status: **ported**, merged into `port/integration` (`port/ME-1`, `port/ME-2`, `port/ME-2c`,
+  `port/ME-2d`, `port/RIM-1`).
+
+## What it is
+
+`DetectedHole`s (cylindrical walls found by `detect_holes`) are listed as candidates; each picked
+hole gets one *operation* volume: a teardrop negative (horizontal holes), a bore/pocket negative
+(screw, heat-set insert, magnet, nut, custom), or a rim chamfer/fillet negative. Everything is a
+mesh volume — no CAD, no boolean on the object itself. Bore/pocket can also be authored on any
+flat face (*Place on face*).
+
+- `src/libslic3r/HoleDetector.{hpp,cpp}` — patch growth by vertex adjacency, PCA-of-normals axis,
+  Kasa circle fit, angular coverage, cap flood-fill for `through`. Returns
+  `DetectedHole{axis, center, radius, depth, through, confidence, facets}`. `axis` is only
+  *canonicalized* (toward +Z, else +X/+Y) — **its sign carries no material information**.
+- `src/libslic3r/HoleShapes.{hpp,cpp}` — the solid primitives: `its_make_teardrop(_for_hole)`,
+  `its_make_bore`, `its_make_counterbore`, `its_make_countersink`, `its_make_tube`,
+  `its_make_shrink_tube`, `its_make_nut_pocket`, `its_make_rim_chamfer` / `its_make_rim_fillet`,
+  and the shared right-handed `place_on_axis`.
+- `src/libslic3r/HoleStandards.{hpp,cpp}` — screw/insert/magnet/nut table + `HoleFit`.
+- `src/slic3r/GUI/Gizmos/GLGizmoHoles.{hpp,cpp}` — the tool (`EType::Holes`, `Ctrl+J`).
+- `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp` — `find_holes`, `holes_gizmo`.
+- Tests: `tests/libslic3r/test_holeshapes.cpp`.
+
+## Keys / markers
+
+- No config or preference keys; the tool writes ordinary model volumes on demand.
+- Markers `ME-1` (detection, teardrop, registration) and `ME-2` (shared standards, unified tool,
+  bore/pocket, shrink tube) appear in `GLGizmoHoles.{hpp,cpp}`, `GLGizmosManager.{hpp,cpp}`,
+  `OrcaMCPGizmoTools.cpp`, `OrcaMCPServer.{hpp,cpp}`.
+
+## Shim: shrinking a hole (M4 -> M3)
+
+Shrinking cannot remove material, so the rework adds a **positive** annulus (`MODEL_PART`): it
+fills the gap between the old wall and the new smaller bore. `toggle_bore` adds the tube first and
+then the negative bore, so the bore also clips the tube's inner wall.
+
+Both caps of the tube land exactly on the ends of the detected wall, and the outer wall overlaps the
+old one by 0.4 mm in diameter. The radial overlap is what keeps the union watertight; putting the
+caps on the wall's ends is what makes the fill flush with whatever the hole was bored through.
+Because the ends are taken from the wall itself, the result does not depend on the sign of
+`feature_frame`'s `dir`.
+
+**Known gap (not fixed):** a flat cap can only be flush where the mouth is a plane square to the
+hole axis (the usual case: the hole is bored straight through a flat face). Where the surface
+curves away over the mouth, no flat cap can follow it — the cap sits proud of the surface by up to
+the mouth's own axial spread, `(r_old² - r_new²) / 2R` for a mouth on a cylinder of radius `R`.
+Closing that needs a fill whose end face follows the surrounding surface, i.e. a *through-hole*
+variant of `cavity_fill_local` (the Cavity fill tool's plug, whose header defers full through
+holes). Second, `feature_frame` derives `dir` from the canonical axis plus the user's *Flip*
+toggle, so for a *detected* hole `dir` points out of the material about half the time; the shrink
+tube no longer cares, but `rim_mesh` and `teardrop_mesh` place their ring near `entry`, so on a
+detected hole they can land at the far end instead of the entry face. Fixing that needs a
+material-aware axis sign (a ray cast along ±axis against the merged mesh, or orienting toward the
+capped end when `!through`).
+
+## Round (2026-10-15) - flush shrink tube, apex field width
+
+Two user-reported bugs, both in `GLGizmoHoles.cpp` / `HoleShapes.cpp`.
+
+1. **Boss around a shrunk hole.** `bore_tube_mesh` extruded the tube for
+   `h.depth + max(0.4, 0.2 * h.depth)` from `entry`, i.e. it overshot the far end of the detected
+   wall on purpose. Since a detected hole's axis sign ignores the material, that overshoot landed
+   on the *visible* face and the positive volume became a collar (OD `old_d + 0.4`, height
+   `max(0.4, 0.2 * depth)` — ~1 mm on a 5 mm wall, which is exactly the ratio in the report).
+   - Fix: the extent math moved into `libslic3r` as `its_make_shrink_tube(wall_d, inner_d,
+     wall_depth, axis, entry)` (`HoleShapes.cpp`) and `bore_tube_mesh` became a one-liner over it.
+2. **Ring step at both mouths (2nd round).** The first cut of that fix recessed both caps
+   `min(0.05, 0.2 * wall_depth)` inside the wall's faces, to keep the caps off the part's surfaces.
+   0.05 mm is not invisible after all: at a realistic zoom it reads as a ring step around the hole,
+   and it is *both* ends, so a through hole shows two.
+   - Measured, not inferred: on the user's `test.3mf` (two 6.2775 mm tabs, a Ø3.89 hole bored
+     through each flat face) the fill spanned x ∈ [6.575, 12.752] against faces at 6.523 and
+     12.800 — 0.052 and 0.048 short, i.e. exactly the constant.
+   - Fix: drop the recess. The caps now go exactly on the wall's ends, which is where that wall
+     meets the part's surfaces, so the fill is flush at both mouths. `entry` no longer needs the
+     axial nudge, and the geometry is direction-independent by construction.
+   - Cost, stated plainly: the fill's cap is coplanar with the part's face over the 0.2 mm
+     circumference where the fill's outer wall overlaps into the material. That is the case the
+     recess was there to dodge. The regression test below runs the union through `cgal::plus` and
+     probes that ring, so if a future mcut/CGAL change makes coincident faces misbehave, the test
+     caught it first, not a print.
+3. **Apex angle field clipped.** The typed apex field used `PushItemWidth(scaled(4))`. ImGui carves
+   the `+`/`-` step buttons out of the item width, leaving ~2 characters, so `50` rendered as `5(`
+   (`on_render_input_window`). Widened to `scaled(5.5)`.
+
+## Verification
+
+- `tests/libslic3r/test_holeshapes.cpp`:
+  - "A shrink tube spans the wall exactly" — M4 -> M3 over 5 mm: the caps land on the wall's ends
+    (to 1e-4), the outer Ø is the M4 hole + 0.4 mm overlap, and the annulus volume matches.
+  - "A shrunk hole comes out flush with the faces it was bored through" — the end-to-end guard for
+    bugs 1 and 2 on a real part: a plate with a Ø4 through hole, `detect_holes`, the fill, then
+    `cgal::plus`, and rays from both sides. Asserts the surface is the plate's face to **1e-4** at
+    the filled annulus *and* across the overlap ring, and that the new bore is open clean through.
+    It fails against either bug: the old `+max(0.4, 0.2·depth)` overshoot puts the surface outside
+    the face, the 0.05 recess puts it 0.05 inside.
+  - "A shrink tube is empty when it would not fill anything" — matching diameter, enlarging, no wall.
+- Gizmo paths are not unit-tested (`bore_tube_mesh` is a private GUI method); the geometry it feeds
+  is what the tests above cover. App build + user click-test for the rest.
+- Not covered: the curved-mouth gap above, and the model-part union itself beyond the probe above.
+
