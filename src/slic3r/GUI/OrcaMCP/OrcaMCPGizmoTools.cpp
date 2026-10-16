@@ -161,10 +161,9 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
             {"has_bore", g.hole_has_bore(i)},
         });
     }
-    const char *op = g.get_operation() == HoleOperation::Teardrop   ? "teardrop"
-                   : g.get_operation() == HoleOperation::Bore        ? "bore"
-                   : g.get_operation() == HoleOperation::RimChamfer  ? "rim_chamfer"
-                                                                     : "rim_fillet";
+    const char *op = g.get_operation() == HoleOperation::Teardrop ? "teardrop"
+                   : g.get_operation() == HoleOperation::Bore ? "bore"
+                                                             : "chamfer_fillet";
     const char *cat = "screw";
     switch (g.get_category()) {
     case HoleCategory::Screw:  cat = "screw"; break;
@@ -224,6 +223,8 @@ nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
         {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
         {"screw_teardrop", g.get_screw_teardrop()},
         {"screw_teardrop_head", g.get_screw_teardrop_head()},
+        {"rim_type", g.get_rim_fillet() ? "fillet" : "chamfer"},
+        {"rim_both", g.get_rim_both()},
         {"volume_count", volume_count},
         {"pocket_volumes", pocket_volumes},
         {"face_pocket_volumes", face_pocket_volumes},
@@ -417,7 +418,8 @@ void OrcaMCPServer::register_gizmo_tools()
         "holes_gizmo",
         "Control the Holes tool. Actions: 'open' (activate it; selects the object if needed), "
         "'status' (detected holes + which are teardropped / bored), 'set_operation' "
-        "(teardrop|bore|rim_chamfer|rim_fillet), 'set_angle', 'set_rim_size', "
+        "(teardrop|bore|chamfer_fillet), 'set_angle', 'set_rim_size', 'set_rim_type' "
+        "(chamfer|fillet), 'set_rim_both' (both mouths), "
         "'set_standard' (0=Custom, else 1-based index into the "
         "standards list), 'set_head' (none|counterbore|countersink), 'set_fit' "
         "(tight|slip), 'set_diameter', 'set_screw_teardrop' / 'set_screw_teardrop_head' (teardrop a "
@@ -427,14 +429,15 @@ void OrcaMCPServer::register_gizmo_tools()
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_standard | set_head | set_screw_fit | set_screw_teardrop | set_screw_teardrop_head | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_operation | set_category | set_angle | set_rim_size | set_rim_type | set_rim_both | set_standard | set_head | set_screw_fit | set_screw_teardrop | set_screw_teardrop_head | set_fit | set_diameter | set_tolerance | set_head_fit | set_through | set_depth | set_flip | toggle | apply_all | clear_all | refresh | set_place_face | place_face | hover_face | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"hole_index", {{"type", "integer"}, {"description", "Hole index for action=toggle."}}},
                 {"screen_x", {{"type", "number"}, {"description", "Canvas X for place_face / hover_face. Defaults to the viewport centre."}}},
                 {"screen_y", {{"type", "number"}, {"description", "Canvas Y for place_face / hover_face. Defaults to the viewport centre."}}},
-                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face / set_screw_teardrop / set_screw_teardrop_head: enable or disable."}}},
-                {"operation", {{"type", "string"}, {"description", "teardrop | bore | rim_chamfer | rim_fillet, for action=set_operation."}}},
-                {"size", {{"type", "number"}, {"description", "Rim chamfer leg / fillet radius mm, for action=set_rim_size."}}},
+                {"on", {{"type", "boolean"}, {"description", "For action=set_place_face / set_screw_teardrop / set_screw_teardrop_head / set_rim_both: enable or disable."}}},
+                {"operation", {{"type", "string"}, {"description", "teardrop | bore | chamfer_fillet, for action=set_operation."}}},
+                {"size", {{"type", "number"}, {"description", "Chamfer leg / fillet radius mm, for action=set_rim_size."}}},
+                {"rim_type", {{"type", "string"}, {"description", "chamfer | fillet, for action=set_rim_type."}}},
                 {"category", {{"type", "string"}, {"description", "screw | nut | magnet | insert, for action=set_category."}}},
                 {"angle", {{"type", "number"}, {"description", "Apex angle (45-60) for action=set_angle."}}},
                 {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}},
@@ -482,14 +485,18 @@ void OrcaMCPServer::register_gizmo_tools()
 
                 if (action == "set_operation") {
                     const std::string o = params.value("operation", std::string("teardrop"));
-                    g->set_operation(o == "rim_chamfer" ? HoleOperation::RimChamfer
-                                    : o == "rim_fillet"  ? HoleOperation::RimFillet
-                                    : o == "bore"        ? HoleOperation::Bore
-                                                         : HoleOperation::Teardrop);
+                    g->set_operation(o == "chamfer_fillet" ? HoleOperation::ChamferFillet
+                                    : o == "bore"          ? HoleOperation::Bore
+                                                           : HoleOperation::Teardrop);
                 } else if (action == "set_rim_size") {
                     if (!need("size"))
                         return {{"status", "error"}, {"error", "needs 'size'"}};
                     g->set_rim_size(params["size"].get<double>());
+                } else if (action == "set_rim_type") {
+                    const std::string t = params.value("rim_type", std::string("chamfer"));
+                    g->set_rim_fillet(t == "fillet");
+                } else if (action == "set_rim_both") {
+                    g->set_rim_both(params.value("on", true));
                 } else if (action == "set_category") {
                     const std::string c = params.value("category", std::string("screw"));
                     g->set_category(c == "nut" ? HoleCategory::Nut
