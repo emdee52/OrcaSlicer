@@ -1,0 +1,39 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+index 2f31280784..aa217b13d7 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+@@ -927,9 +927,8 @@ bool GLGizmoEdgeDress::on_init()
+     m_desc["fillet"]        = _L("Fillet");
+     m_desc["size"]          = _L("Size");
+     m_desc["loop"]          = _L("Whole loop / rim");
+-    m_desc["apply"]         = _L("Apply to hovered edge");
+     m_desc["clear"]         = _L("Clear all");
+-    m_desc["hover_hint"]    = _L("Hover an edge, then click it or use Apply.");
++    m_desc["hover_hint"]    = _L("Hover an edge, then click it to apply.");
+     m_desc["no_edge"]       = _L("No edge under the cursor.");
+     m_desc["edge_hovered"]  = _L("Edge under the cursor.");
+     m_desc["already_done"]  = _L("Already chamfered or filleted.");
+@@ -1113,17 +1112,18 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
+     if (m_imgui->bbl_slider_float_style("##edge_size", &size, float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", 0.05f, true))
+         set_size(size);
+     ImGui::PopItemWidth();
+-    // A field next to the slider, so an exact size can be typed instead of dragged.
++    // A field next to the slider, so an exact size can be typed instead of dragged. ImGui carves the
++    // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
++    // scaled(4.5) clipped the value.
+     ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
+-    ImGui::PushItemWidth(m_imgui->scaled(4.5f));
++    ImGui::PushItemWidth(m_imgui->scaled(5.5f));
+     float typed = float(m_size);
+     if (ImGui::InputFloat("##edge_size_in", &typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+         set_size(typed);
+     ImGui::PopItemWidth();
+ 
+-    if (m_imgui->button(m_desc.at("apply")))
+-        gizmo_apply_hovered();
+-    ImGui::SameLine();
++    // Clicking an edge in the viewport already applies the chamfer/fillet (on_mouse), so there is no
++    // separate apply button.
+     if (m_imgui->button(m_desc.at("clear")))
+         gizmo_clear_all();
+ 

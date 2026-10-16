@@ -1203,3 +1203,76 @@ nothing — the axis grabbers, the coordinate-system combo and the XYZ fields ar
   `56b5a6acba` (user-verified in the app 2026-10-15: arrows full length on a placed pivot, hover
   markers back, and the placing click no longer closes the tool). See section 0 for why a branch only
   merges once the user has tested it.
+
+## 27. Gizmo panel chrome — anchored panels and trimmed rows (branch `port/gizmo-ui-panels`)
+
+Six small defects in the fork's own gizmo panels, one of them shared by four of them. No slicing
+behaviour, no config keys, no new files; every panel is anchored or trimmed in place.
+
+- **The shared defect: the panel anchor.** `GLGizmosManager::do_render_overlay` calls
+  `render_input_window(x, ...)` with `x` = the **left edge** of the gizmo's own icon cell (`top_x`
+  before it is advanced by `stride_x`). A panel must therefore be anchored with pivot `(0,0)`.
+  `Holes`, `EdgeDress`, `HoleFill` and `Perforation` used the side-toolbar branch's pivot `(1,0)`
+  unconditionally, which pins the window's *right* edge to the icon's left edge — every one of them
+  opened to the left of its own icon. `GLGizmoCounterboreBridge`, `FuzzySkin`, `Seam` and
+  `FdmSupports` already choose by layout (`#if BBS_TOOLBAR_ON_TOP`, defined in `GLGizmosManager.hpp`
+  as 1); the four now do the same, so the side layout keeps `(1,0)`. This is also why
+  `GizmoImguiSetNextWIndowPos`'s overflow clamp (`x = canvas_width - w`) only makes sense with
+  pivot 0: it treats `x` as a left edge.
+- **Hole walls, the width.** Not an anchor bug: an `AlwaysAutoResize` window is as wide as its widest
+  row, and the bridge-type row was `left_width + [Smart (stepped)] + [Partial] + "(smart: stepped
+  ramp)"`, which is what made the panel fill most of the canvas. `ImGui::Separator()` is *not* a
+  contributor — `SeparatorEx` deliberately does not report its width to the layout ("so that it
+  doesn't get feed back into AutoFit") — and `GLGizmoUtils::begin_right_aligned_buttons` settles at
+  the current width instead of growing it. Removing the trailing text and filling the active button
+  with the `sel_button` helper the hole tool already uses drops the panel to the Feature row's width.
+  The Feature row got the same treatment, so the active mode is visible without reading the controls
+  below it.
+- **Edge chamfer / cavity fill, the typed fields.** `m_imgui->scaled(x) = x * font_size`, and an
+  `InputFloat` with a step carves its two buttons *out of* the item width, so `scaled(4.5)` clipped
+  the value — the same ceiling `GLGizmoHoles` documents at `scaled(4)`. Both fields now use the hole
+  tool's `scaled(5.5)`.
+- **Redundant buttons, removed.** EdgeDress's "Apply to hovered edge" and HoleFill's "Fill under
+  cursor" duplicated the viewport gesture: `on_mouse` left-click already applies (`gizmo_apply_hovered`
+  for the edge; a stroke that `commit_stroke`s on release for the cavity). Only the panel buttons go;
+  `gizmo_apply_hovered` stays for the mouse path and the MCP tools (`edge_dress_gizmo`,
+  `hole_fill_gizmo`). The hover hints lost the wording that referred to the buttons, which also
+  narrowed the cavity panel.
+- **Perforations, the reserved rows.** The two advisory lines (width too large for the spacing /
+  near-horizontal face) were emitted every frame with an empty string when unset — an empty `text()`
+  still consumes a line — leaving a blank block under the last hint. They are now drawn only when set.
+  The rows were reserved to stop a notice from moving a slider, and that is already guaranteed by the
+  panel's `SetNextWindowSizeConstraints` width pin; only the height changes now.
+- **MV-1: a Pick pivot shortcut, unbound.** `Shortcut::GizmoMovePickPivot` (`gizmo_move_pick_pivot`,
+  `"Gizmo move - Pick pivot"`, Plater context) is registered with no default chord — `KeyChord{}` is
+  `WXK_NONE`, which the registry already treats as unbound (`display()` empty, `with_key()` returns
+  the plain text, `UNBOUND = "none"` in the AppConfig) — so Preferences > Keyboard shortcuts lists it
+  under **Gizmos** with an empty key and an Edit button. Nothing persists the numeric enum value
+  (`load`/`save` go through `ShortcutInfo::key`), so it is inserted next to `GizmoMove` in both
+  `Shortcuts.hpp` and the table, which the `table_is_in_enum_order()` static_assert enforces.
+- **Dispatch: a gizmo-local action is not a gizmo opener.** `GLCanvas3D::handle_shortcut`'s `default`
+  branch only knew `open_gizmo_by_shortcut`, which matches a gizmo's *own* shortcut. It now tries
+  `GLGizmosManager::handle_gizmo_shortcut` first, which routes to the **current** gizmo
+  (`dynamic_cast<GLGizmoMove3D *>` -> `start_pick_pivot()`). Nothing else consumes a shortcut this way
+  yet, so it stays one hardcoded action rather than a virtual on the gizmo base.
+- **MV-1: pick and reset are no longer exclusive.** `render_extra_move_ui` was an if/else chain, so
+  once a pivot was set "Pick pivot" disappeared and only "Reset pivot" was left. Both are now shown
+  together; re-picking overwrites the frame (`set_face_frame`), and cancelling a re-pick keeps the
+  pivot that was set — `on_mouse`'s right-click and the panel's Cancel pivot only clear
+  `m_pick_face_mode`. The `"Pivot: <kind>"` line is read after the reset branch, so a reset cannot
+  print a stale "Free" for one frame.
+- **Verification.** GUI only, so it is a manual checklist: each of the five panels opens under its own
+  icon (Perforations is the right-most fork icon, so it also exercises the overflow clamp); "1.00" and
+  "2.5" are fully readable with both step buttons; there is no "Apply to hovered edge"; Perforations
+  has no blank rows but still shows the orange notice when Hole width exceeds Spacing, without the
+  panel moving; hole walls is narrower with the active Bridge type and Feature filled teal; and the
+  shortcut dialog lists "Gizmo move - Pick pivot" under Gizmos with an empty key, which can be bound
+  and then pressed with the Move tool open. `porting/scripts/verify-markers.ps1` gains no new
+  unmanifested marker.
+- **Rows that were missing.** EF-1, HF-1 and RF-1 had markers in the tree but no `manifest.tsv` row
+  (the verifier reports exactly that). They now have one, covering the anchor fix and the panel trims
+  above. The `MV-2`/`MV-3` markers in `GLGizmoMove.*` still use the unbracketed `// ORCAPORT:` form and
+  are still reported; not touched here.
+- **Branch state**: `port/gizmo-ui-panels`, from `port/integration` at `9e5ce7fb2b`. Seven single-ID
+  commits (UI-1, PF-2b, RF-1, EF-1, HF-1, PP-1, MV-1) plus a `port:` docs commit, patches `38`-`44`.
+  Not merged and not pushed: the merge is the user's gate after testing.
