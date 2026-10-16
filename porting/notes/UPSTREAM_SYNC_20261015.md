@@ -119,23 +119,40 @@ resolvers and re-applies the three `[BUILDFIX:VS17.8]` `config_substitution_rule
 
 ## Verification still to do
 
-Committed on `sync/upstream-20261015` and **being built**:
-`build_win.bat -ds -j 8` (deps + slicer). Upstream changed `deps/` and removed
-GLEW/OpenCSG/Clipper1, so the existing `build/` tree needs a reconfigure - `-s --no-configure`
-is not enough. Then:
+Committed on `sync/upstream-20261015`. **The Release build succeeds**
+(`build_win.bat -s -j 8`, 3m 7s): `libslic3r`, `libvgcode`, `libslic3r_gui`,
+`OrcaSlicer.dll`, `orca-slicer.exe`, the profile validator and the dev-utils all link, with
+only the pre-existing `C4805`/`LNK4098` warnings. The first build of the merged tree needed a
+reconfigure and the deps step, and four fixes (all committed separately):
 
-1. Expect a compile-fix pass anyway. Watch: the `SegmentsUniforms` / `LayerColorsUniforms`
-   refactor in `libvgcode`, `do_move(snapshot_type, force_volume_move)` callers in
-   `GLCanvas3D`, and the belt/IMEX helpers.
-2. `ctest --test-dir build/tests -C Release` (the suites are off by default, so the configure
-   has to include them).
-3. Off-by-default equivalence: with every port option at its default, the sliced output must
+1. **`Model.hpp` default ctor** - the merge had kept the port's opening line complete *and*
+   upstream's continuation lines, so `object(nullptr) {` closed the ctor early and the rest of
+   the class body was parsed as a function body. One line; it produced every error of that run.
+2. **`m_shortcut_key` -> `m_shortcut.reset()`** in the port's seven gizmos: upstream replaced
+   the raw key code with a `Shortcut` registry. The port's gizmos have no registry entry, so they
+   lose their `Ctrl+<key>` openers (toolbar unaffected) - wiring them into
+   `Shortcut`/`GLGizmoBase`/the keys dialog is a follow-up, not a merge fix.
+3. **Section view**: `ObjectClipper::set_position_by_ratio(double, bool)` became
+   `(double, const Vec3d& normal)` because upstream moved the section view onto
+   `GLCanvas3D`. The port's gizmos now drive it (`set_section_view_ratio`,
+   `align_section_view_to_camera`) and `GLGizmosManager::update_section_view()` re-applies the
+   clipper for `CounterboreBridge`/`Holes`/`SupportZones` as it already did for the painter
+   gizmos.
+4. **`[BUILDFIX:VS17.8]` again** - upstream's new `load_project_preset` lambda in
+   `src/OrcaSlicer.cpp` hits the same MSVC 14.38 C3493 false positive as the three older ones;
+   `config_substitution_rule` was added to its capture list and the `BUILD.md` row updated.
+
+Still open:
+
+1. `build_win.bat -s --run-tests` - the suites are off by default, so the configure has to
+   include them. This is where the hole-standard tests and the slicing regressions get caught.
+2. Off-by-default equivalence: with every port option at its default, the sliced output must
    match stock 2.5. Then the MCP runtime pass per feature.
-4. `scripts/run_gettext.bat --full` (the port adds `_L()` strings; upstream churned the
-   catalogs).
-5. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
+3. `scripts/run_gettext.bat --full` is run by the build script itself; it produced no catalog
+   changes here.
+4. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
    upstream's section view; its object-scoped shell clipping is still the port's).
-6. Only then merge into `port/integration`, after the user has tested the build.
+5. Only then merge into `port/integration`, after the user has tested the build.
 
 ## Gaps found while resolving
 

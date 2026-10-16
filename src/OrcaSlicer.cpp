@@ -3088,7 +3088,9 @@ int CLI::run(int argc, char **argv)
     // Load the project's printer and process settings as the GUI loads its presets: over the default preset,
     // with every key the project does not list as changed, including keys saved before an option existed,
     // taken from its current system preset.
-    auto load_project_preset = [this, &ensure_system_preset_resolver, &current_different_settings, filament_count](const std::string &system_name, Preset::Type type) {
+    // [BUILDFIX:VS17.8] config_substitution_rule is added to the capture list below: the nested
+    // load_external_config callback uses it and MSVC 14.38 rejects the implicit capture.
+    auto load_project_preset = [this, &ensure_system_preset_resolver, &current_different_settings, config_substitution_rule, filament_count](const std::string &system_name, Preset::Type type) {
         if (system_name.empty())
             return;
         // Preset bookkeeping the CLI keeps in its own groups, e.g. inherits_group and print_compatible_printers.
