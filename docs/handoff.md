@@ -65,6 +65,8 @@ Alt-drag snap (SNAP-8) is the newest of them.
 | `port/EF-2` | merged | whole-loop (rim) mode, mitred loops, applied-state marks |
 | `port/EF-4` | merged | irregular rims: crease-bounded regions, round-over and hidden-side picks |
 | `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
+| `port/MV-1` | merged (`f6f42220e1`) | Move gizmo: axes align to a picked flat face |
+| `port/MV-2` | this branch | Move pivot sticks to face coordinates; Alt lands it on another object (section 26) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -1120,3 +1122,81 @@ and this fork's, names that describe what the tools do, and one consistent icon 
   shrinks, so at a narrow window the row reaches the window edge and the tail of the fork's gizmos
   can be pushed off it. Pre-existing and driven by upstream's `_check_and_update_toolbar_icon_scale`,
   not by this change — but it is the reason seven extra gizmos are worth watching.
+
+
+## 26. MV-1 / MV-2 — a Plasticity-style Move pivot (branches `port/MV-1`, `port/MV-2`)
+
+Give the stock Move gizmo a placed pivot that sticks to a model's features and, with Alt held,
+lands on another object's features. This mirrors Plasticity's Move: `V` sets the pivot (snapping it
+to ends and midpoints), and `Ctrl` while moving snaps the geometry onto another body. It replaces
+nothing — the axis grabbers, the coordinate-system combo and the XYZ fields are unchanged.
+
+- **MV-1 (merged, `f6f42220e1`) — the frame.** `GLGizmoMove.cpp`: a **Pick face** button on the Move
+  window raycasts a flat face on the selected object, then `set_face_frame(hit, normal, volume)`
+  re-centres the gizmo at the hit and points its Z axis along the face normal towards the camera.
+  The frame is stored as `m_face_frame_local = vol->world_matrix().inverse() * world_frame`, so it
+  follows the object. `change_cs_by_selection` disables the coordinate combo while a frame is
+  active, and `on_dragging` translates along `face_frame_world().linear()`. `update_face_highlight`
+  paints a translucent patch over the hovered coplanar region (`coplanar_region` +
+  `build_coplanar_patch`). This is the pivot half; it is not documented anywhere else.
+- **MV-2 pivot snapping (this branch).** The pivot no longer lands on the raw raycast hit: while
+  picking, `update_face_highlight` builds the face's snap coordinates
+  (`build_face_snap_points`, world space) and `nearest_face_snap` picks the one under the cursor
+  with the shared 8–48 px adaptive tolerance; `pick_face_at` then puts the frame origin on it and
+  remembers the `FaceSnapKind`. `ObjectSnap::Markers` draws the coordinates as per-kind spheres —
+  the same palette the Holes and Cut tools use — and the window shows `Pivot: Corner` / `Edge mid` /
+  `Face centre` / `Edge 1/4` / `Face 1/4` / `Free`. A click that is not near a coordinate keeps the
+  raw hit, so curved faces still place a pivot. `Markers` gained `set_active`, which rebuilds only
+  the highlighted sphere: a moving cursor would otherwise re-merge the whole per-kind mesh set every
+  frame.
+- **The arrows follow the frame, not box.max.** The frame origin is the picked coordinate, not the box
+  centre, so `on_render` sizes the grabbers from the box **half-extent** (floored at a tenth of the
+  longest side) whenever a frame is active. The stock `box.max + margin` length collapses to a stub on
+  the axis the pivot already sits at the end of — the face normal, so the blue arrow degenerated to a
+  dot. Half-extent is the same value as `box.max` when the frame is centred.
+- **The placing click belongs to the gizmo, but only the click.** `m_pick_click_pending` is set on the
+  placing LeftDown and swallows the release (and the Leaving that can end it) instead of letting it
+  reach the canvas. Released on its own, that event ran `GLCanvas3D`'s "left-up on empty space ->
+  `deselect_all()`" path and closed the tool roughly half the time, because the snap coordinates sit
+  on silhouette edges where the hover raycast that gates the path is a coin flip. **Motion must still
+  fall through**: the canvas's own move branch is what marks the overlay dirty, and `on_idle` renders
+  nothing when neither dirty flag is set — consuming the move stopped the scene re-rendering and the
+  hover highlight and snap markers went with it.
+- **MV-3 Alt pivot snap (this branch).** Dragging a grabber with Alt held runs
+  `ObjectSnap::hit_under_cursor` over the non-moving volumes and overrides the axis displacement so
+  the pivot reaches the target coordinate. The gizmo is a **one-axis** drag, so the snap keeps the
+  constraint: it slides the object along the dragged axis until the pivot's projection reaches the
+  target's. The geometry is a scalar projection — `Selection::translate` moves the selection by
+  `base.linear() * m_displacement`, so column `m_hover_id` of the gizmo's base matrix is the axis's
+  world direction and its length is one displacement unit; `m_displacement[k] = dist / |col|` with
+  `dist = (target - pivot_start)·axis`. `pivot_start` and the frame are latched in `on_start_dragging`
+  (the drag is measured from the selection cache, so this holds), and the markers are dropped whenever
+  Alt is up. Starting the drag also clears the SNAP-8 Alt-hover markers
+  (`GLCanvas3D::clear_objsnap_markers`): that preview does not run during a gizmo drag, so its spheres
+  would otherwise sit on top of the gizmo's own.
+- **Alt, not Ctrl.** Plasticity uses Ctrl, but in OrcaSlicer Ctrl is additive-select in the preview
+  and Alt is already `Part selection` in the Move shortcut list; SNAP-8 (object-to-object Alt snap in
+  the preview) set the precedent, so MV-3 uses Alt too. The two gestures are independent: SNAP-8
+  needs a raw preview drag, MV-3 a gizmo grabber drag, and the gizmo consumes the event first.
+- **Off by default.** No app key, no config key: with no pivot picked and no Alt held the gizmo is
+  stock (MV-1 already made the frame opt-in through the button). G-code is untouched.
+- **Reuses, does not duplicate.** `CutUtils::face_snap_points` / `nearest_face_snap` / `FaceSnapKind`,
+  `GLGizmosCommon::{coplanar_region, build_coplanar_patch, build_face_snap_points, world_to_screen,
+  raycast_object_face, facet_normal_in_world}` and `OrcaExt::Gui::ObjectSnap::{hit_under_cursor,
+  Markers}`. No new geometry.
+- **Ceilings, stated deliberately.** (a) The Alt snap keeps the axis constraint, so the pivot lands on
+  the *projection* of the target onto the dragged axis, not on the target itself; a freestyle (no
+  axis) move is not in v1. (b) A multiple-instance selection rotates each instance by its own R, so
+  the one-axis landing is only exact for a single instance; the pivot then follows the reference
+  frame. (c) Local coordinates depend on the volume transform, so the projection is approximate
+  there. (d) The window label is text, not the in-scene tip help Plasticity draws beside the cursor.
+- **Align & Stack stays.** AS-2 also does face-to-face mate (depth / rotate / flip / mirror) and
+  touch/flush/center stacking, which a point snap does not cover. Do not delete it on the strength
+  of MV-2 alone.
+- **Verification.** `[CutUtils]` covers the snap math and is untouched. The gesture has to be tested
+  by hand (MCP cannot hold a modifier); the manual protocol is: pick a pivot near a corner / edge
+  midpoint / face centre and check the marker and the label; then drag a grabber with Alt onto
+  another object and check the pivot lands on its coordinate; release Alt and the object follows the
+  cursor again.
+- **Branch state**: `port/MV-2`, from `port/integration` at `556e074830`. Not merged — the merge is
+  the user's gate (section 0).
