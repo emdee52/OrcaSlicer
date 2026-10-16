@@ -5,6 +5,8 @@
 //BBS: add size adjust related
 #include "GizmoObjectManipulation.hpp"
 #include "GLGizmosCommon.hpp"
+// ORCAPORT: pivot snapping and the Alt pivot snap reuse the object-snap core
+#include "slic3r/GUI/OrcaExt/ObjectSnap.hpp"
 
 
 namespace Slic3r {
@@ -78,6 +80,7 @@ private:
 
     // ORCAPORT: face-aligned move frame
     bool          m_pick_face_mode{ false };
+    bool          m_pick_click_pending{ false }; // the release of the placing click, swallowed by the gizmo
     bool          m_face_frame_active{ false };
     // frame stored relative to the picked volume, so it follows the object
     Transform3d   m_face_frame_local{ Transform3d::Identity() };
@@ -87,12 +90,30 @@ private:
     const GLVolume* m_hover_volume{ nullptr };
     int           m_hover_facet{ -1 };
     Transform3d   face_frame_world() const;
+    Transform3d   gizmo_base_matrix() const;
     void          pick_face_at(const Vec2d& mouse_pos);
-    void          set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx);
+    void          set_face_frame(const Vec3d& hit_world, const Vec3d& normal, unsigned int volume_idx,
+                                 FaceSnapKind kind = FaceSnapKind::None);
     void          clear_face_frame();
     void          render_extra_move_ui();
-    void          update_face_highlight();
+    void          update_face_highlight(const Vec2d& mouse_pos);
     void          render_face_highlight();
+
+    // ORCAPORT: pivot snapping (MV-2) - the pivot sticks to a face's snap coordinates
+    std::vector<FaceSnapPoint>                           m_pivot_points;     // world space
+    std::vector<OrcaExt::Gui::ObjectSnap::SnapCandidate> m_pivot_candidates; // world space, drawn
+    size_t                                               m_pivot_active{ OrcaExt::Gui::ObjectSnap::SnapHit::no_candidate };
+    FaceSnapKind                                         m_pivot_kind{ FaceSnapKind::None };
+    OrcaExt::Gui::ObjectSnap::Markers                    m_pivot_markers;
+    void clear_pivot_candidates();
+
+    // ORCAPORT: Alt pivot snap while dragging (MV-3) - the pivot lands on another object's coordinate
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_target_markers;
+    OrcaExt::Gui::ObjectSnap::Markers m_objsnap_pivot_marker;
+    bool  m_snap_drag_latched{ false };
+    Vec3d m_snap_pivot_start_world{ Vec3d::Zero() };
+    void  apply_pivot_snap(const Vec2d& mouse_pos);
+    void  clear_pivot_snap();
 private:
     int m_last_selected_obejct_idx, m_last_selected_volume_idx;
 };

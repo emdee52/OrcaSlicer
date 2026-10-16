@@ -917,6 +917,9 @@ public:
 
     unsigned int get_volumes_count() const { return (unsigned int)m_volumes.volumes.size(); }
     const GLVolumeCollection& get_volumes() const { return m_volumes; }
+    // [ORCAPORT:MV-3] the SNAP-8 Alt-hover preview never runs during a gizmo grabber drag, so its
+    // spheres would linger over the gizmo's own; drop them when such a drag starts.
+    void clear_objsnap_markers();
     void reset_volumes();
     ModelInstanceEPrintVolumeState check_volumes_outside_state(ObjectFilamentResults* object_results = nullptr) const;
     void check_volumes_outside_state(GLVolumeCollection& volumes) const { check_volumes_outside_state(volumes, nullptr, false); }
