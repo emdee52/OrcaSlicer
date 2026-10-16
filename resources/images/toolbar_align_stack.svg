@@ -1,16 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-  <!-- Align & Stack: isometric cube with a plane descending onto its top face.
-       Fills only (nanosvg-safe); avoid pure black (RGB==0 is treated as
-       background by the gizmo icon recolor pipeline). -->
-  <!-- descending plane -->
-  <polygon points="20,3 29.5,7.8 20,12.6 10.5,7.8"
-           style="fill:none;stroke:#009688;stroke-width:1.6"/>
-  <!-- flanking down arrows -->
-  <polygon points="5,8 5,14 3,14 6.5,19 10,14 8,14 8,8" style="fill:#009688"/>
-  <polygon points="32,8 32,14 30,14 33.5,19 37,14 35,14 35,8" style="fill:#009688"/>
-  <!-- cube: top / left / right faces -->
-  <polygon points="20,16 31,21.5 20,27 9,21.5" style="fill:#009688"/>
-  <polygon points="9,21.5 20,27 20,38 9,32.5" style="fill:#2b3436"/>
-  <polygon points="20,27 31,21.5 31,32.5 20,38" style="fill:#2b3436"/>
+  <!-- Align & Stack: pick an anchor, then drop the second object onto it. Two squares with the
+       descending one marked, and the travel arrow beside them. -->
+  <path d="M11.5 4 H24.5 A1.5 1.5 0 0 1 26 5.5 V19 H10 V5.5 A1.5 1.5 0 0 1 11.5 4 Z" style="fill:none;stroke:#009688;stroke-width:1.5;stroke-linejoin:round"/>
+  <path d="M11.5 21 H24.5 A1.5 1.5 0 0 1 26 22.5 V33.5 A1.5 1.5 0 0 1 24.5 35 H11.5 A1.5 1.5 0 0 1 10 33.5 V22.5 A1.5 1.5 0 0 1 11.5 21 Z" style="fill:none;stroke:#2b3436;stroke-width:1.3;stroke-linejoin:round"/>
+  <path d="M31.1 8 H32.9 V22 H35 L32 28 L29 22 H31.1 Z" style="fill:#009688"/>
 </svg>

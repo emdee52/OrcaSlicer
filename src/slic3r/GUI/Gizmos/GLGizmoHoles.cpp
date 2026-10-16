@@ -203,7 +203,7 @@ bool GLGizmoHoles::on_init()
     return true;
 }
 
-std::string GLGizmoHoles::on_get_name() const { return _u8L("Horizontal holes"); }
+std::string GLGizmoHoles::on_get_name() const { return _u8L("Holes"); } // [ORCAPORT:UI-1] was "Horizontal holes" - only teardrop is horizontal
 
 ModelObject *GLGizmoHoles::model_object() const
 {

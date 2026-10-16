@@ -58,7 +58,7 @@ bool GLGizmoCounterboreBridge::on_init()
 
 std::string GLGizmoCounterboreBridge::on_get_name() const
 {
-    return _u8L("Vertical holes");
+    return _u8L("Hole walls"); // [ORCAPORT:UI-1] was "Vertical holes" - the tool also bridges counterbores
 }
 
 void GLGizmoCounterboreBridge::on_shutdown()

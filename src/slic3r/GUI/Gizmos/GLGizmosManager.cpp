@@ -9,6 +9,8 @@
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
 
+#include <algorithm>
+
 #include "slic3r/GUI/Gizmos/GLGizmoMove.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoScale.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoRotate.hpp"
@@ -91,6 +93,34 @@ std::vector<size_t> GLGizmosManager::get_selectable_idxs() const
     return out;
 }
 
+// [ORCAPORT:UI-1] Gizmos added by this fork. They are registered after every upstream gizmo, so a
+// single divider between the two groups keeps the toolbar readable. Keep this list in sync with the
+// registration order in the constructor.
+static bool is_orcaport_gizmo(GLGizmosManager::EType type)
+{
+    switch (type) {
+    case GLGizmosManager::AlignStack:
+    case GLGizmosManager::SupportZones:
+    case GLGizmosManager::CounterboreBridge:
+    case GLGizmosManager::Holes:
+    case GLGizmosManager::EdgeDress:
+    case GLGizmosManager::HoleFill:
+    case GLGizmosManager::Perforation:
+        return true;
+    default:
+        return false;
+    }
+}
+
+int GLGizmosManager::divider_selectable_pos() const
+{
+    const std::vector<size_t> selectable = get_selectable_idxs();
+    for (size_t pos = 0; pos < selectable.size(); ++pos)
+        if (is_orcaport_gizmo(static_cast<EType>(m_gizmos[selectable[pos]]->get_sprite_id())))
+            return pos > 0 ? (int)pos : -1; // nothing to divide when the fork's gizmos come first
+    return -1;
+}
+
 //BBS: GUI refactor: GLToolbar&&Gizmo adjust
 GLGizmosManager::EType GLGizmosManager::get_gizmo_from_mouse(const Vec2d &mouse_pos) const
 {
@@ -119,16 +149,28 @@ GLGizmosManager::EType GLGizmosManager::get_gizmo_from_mouse(const Vec2d &mouse_
     // is mouse vertically in the area?
     //if ((border <= (float)mouse_pos(0) && ((float)mouse_pos(0) <= border + icons_size))) {
     if (((top_y + border) <= (float)mouse_pos(1)) && ((float)mouse_pos(1) <= (top_y + border + icons_size))) {
-        // which icon is it on?
-        int from_left = (float) mouse_pos(0) - top_x < 0 ? -1 : (int) ((float) mouse_pos(0) - top_x) / stride_x;
-        if (from_left < 0)
+        float x_local = (float)mouse_pos(0) - top_x;
+        if (x_local < 0)
             return Undefined;
-        // is it really on the icon or already past the border?
-        if ((float)mouse_pos(0) <= top_x + from_left * stride_x + icons_size) {
-            std::vector<size_t> selectable = get_selectable_idxs();
-            if (from_left < selectable.size())
-                return static_cast<EType>(selectable[from_left]);
+
+        const std::vector<size_t> selectable = get_selectable_idxs();
+
+        // [ORCAPORT:UI-1] Skip past the in-row divider: it owns a cell of its own and is not an icon.
+        const int sep_pos = divider_selectable_pos();
+        if (sep_pos >= 0) {
+            const float sep_left  = (float)sep_pos * stride_x;
+            const float sep_width = m_layout.scaled_separator_stride_x();
+            if (x_local >= sep_left && x_local < sep_left + sep_width)
+                return Undefined;
+            if (x_local >= sep_left + sep_width)
+                x_local -= sep_width;
         }
+
+        // which icon is it on?
+        int from_left = (int)(x_local / stride_x);
+        // is it really on the icon or already past the border?
+        if (x_local <= from_left * stride_x + icons_size && from_left < (int)selectable.size())
+            return static_cast<EType>(selectable[from_left]);
     }
     return Undefined;
 }
@@ -196,13 +238,13 @@ void GLGizmosManager::switch_gizmos_icon_filename()
             gizmo->set_icon_filename(m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg");
             break;
         case (EType::CounterboreBridge): // [ORCAPORT:PF-2b]
-            gizmo->set_icon_filename(m_is_dark ? "toolbar_vertical_holes_dark.svg" : "toolbar_vertical_holes.svg");
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_hole_walls_dark.svg" : "toolbar_hole_walls.svg"); // [ORCAPORT:UI-1]
             break;
         case (EType::Holes): // [ORCAPORT:ME-1]
-            gizmo->set_icon_filename(m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg");
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_holes_dark.svg" : "toolbar_holes.svg"); // [ORCAPORT:UI-1]
             break;
         case (EType::EdgeDress): // [ORCAPORT:EF-1]
-            gizmo->set_icon_filename(m_is_dark ? "design_filletedge.svg" : "design_filletedge.svg");
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg"); // [ORCAPORT:UI-1]
             break;
         case (EType::HoleFill): // [ORCAPORT:HF-1]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg");
@@ -263,9 +305,9 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoBrimEars(m_parent, m_is_dark ? "toolbar_brimears_dark.svg" : "toolbar_brimears.svg", EType::BrimEars));
     m_gizmos.emplace_back(new GLGizmoAlignStack(m_parent, m_is_dark ? "toolbar_align_stack_dark.svg" : "toolbar_align_stack.svg", EType::AlignStack)); // [ORCAPORT:AS-2]
     m_gizmos.emplace_back(new GLGizmoSupportZones(m_parent, m_is_dark ? "toolbar_support_zones_dark.svg" : "toolbar_support_zones.svg", EType::SupportZones)); // [ORCAPORT:SU-5]
-    m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_vertical_holes_dark.svg" : "toolbar_vertical_holes.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
-    m_gizmos.emplace_back(new GLGizmoHoles(m_parent, m_is_dark ? "toolbar_horizontal_holes_dark.svg" : "toolbar_horizontal_holes.svg", EType::Holes)); // [ORCAPORT:ME-1]
-    m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "design_filletedge.svg" : "design_filletedge.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
+    m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_hole_walls_dark.svg" : "toolbar_hole_walls.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
+    m_gizmos.emplace_back(new GLGizmoHoles(m_parent, m_is_dark ? "toolbar_holes_dark.svg" : "toolbar_holes.svg", EType::Holes)); // [ORCAPORT:ME-1]
+    m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
     m_gizmos.emplace_back(new GLGizmoHoleFill(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::HoleFill)); // [ORCAPORT:HF-1]
     m_gizmos.emplace_back(new GLGizmoPerforation(m_parent, m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg", EType::Perforation)); // [ORCAPORT:PP-1]
 #ifdef SLIC3R_CAD
@@ -1249,6 +1291,31 @@ void GLGizmosManager::render_background(float left, float top, float right, floa
     }
 }
 
+void GLGizmosManager::render_toolbar_separator(float tile_left, float top_y, float tile_w, float tile_h) const
+{
+    // [ORCAPORT:UI-1] Draws seperator.svg out of the icon atlas, in its "Activable" state: that is the
+    // state the atlas tints with the toolbar's normal colour, so the divider follows the light/dark
+    // theme for free (the raw asset is #2b3436 at 50% opacity, which is invisible on a dark bar).
+    const unsigned int tex_id = m_icons_texture.get_id();
+    const int tex_width       = m_icons_texture.get_width();
+    const int tex_height      = m_icons_texture.get_height();
+    if (tex_id == 0 || tex_width <= 1 || tex_height <= 1 || m_separator_row < 0)
+        return;
+
+    const float du = (float)(tex_width - 1) / (6.0f * (float)tex_width);
+    const float dv = (float)(tex_height - 1) / (float)(std::max(1, m_icon_rows) * tex_height);
+    const float u_offset = 1.0f / (float)tex_width;
+    const float v_offset = 1.0f / (float)tex_height;
+
+    const float u_left   = u_offset;
+    const float u_right  = u_left + du - u_offset;
+    const float v_top    = v_offset + m_separator_row * dv;
+    const float v_bottom = v_top + dv - v_offset;
+
+    GLTexture::render_sub_texture(tex_id, tile_left, tile_left + tile_w, top_y - tile_h, top_y,
+                                  { { u_left, v_bottom }, { u_right, v_bottom }, { u_right, v_top }, { u_left, v_top } });
+}
+
 void GLGizmosManager::render_arrow(const GLCanvas3D& parent, EType highlighted_type) const
 {
     const std::vector<size_t> selectable_idxs = get_selectable_idxs();
@@ -1350,15 +1417,30 @@ void GLGizmosManager::do_render_overlay(bool draw_icons) const
         return;
 
     const float du = (float)(tex_width - 1) / (6.0f * (float)tex_width); // 6 is the number of possible states if the icons
-    const float dv = (float)(tex_height - 1) / (float)(m_gizmos.size() * tex_height);
+    const float dv = (float)(tex_height - 1) / (float)(std::max(1, m_icon_rows) * tex_height);
 
     // tiles in the texture are spaced by 1 pixel
     const float u_offset = 1.0f / (float)tex_width;
     const float v_offset = 1.0f / (float)tex_height;
 
+    // [ORCAPORT:UI-1] in-row divider between the upstream gizmos and the fork's own
+    const int   sep_pos      = divider_selectable_pos();
+    const float sep_size_x   = 2.0f * m_layout.scaled_separator_size() * inv_cnv_w;
+    const float sep_stride_x = 2.0f * m_layout.scaled_separator_stride_x() * inv_cnv_w;
+
     bool is_render_current = false;
+    int  pos = 0;
 
     for (size_t idx : selectable_idxs) {
+        if (pos == sep_pos) {
+            if (draw_icons)
+                // seperator.svg is a 20x40 line rasterised into a square tile, so the line sits a
+                // quarter of the way into the tile: shift the tile to centre it in the divider cell.
+                render_toolbar_separator(top_x + 0.5f * sep_size_x - 0.25f * icons_size_x, top_y, icons_size_x, icons_size_y);
+            top_x += sep_stride_x;
+        }
+        ++pos;
+
         GLGizmoBase* gizmo = m_gizmos[idx].get();
         const unsigned int sprite_id = gizmo->get_sprite_id();
         // higlighted state needs to be decided first so its highlighting in every other state
@@ -1406,7 +1488,10 @@ float GLGizmosManager::get_scaled_total_width() const
 {
 //BBS: GUI refactor: to support top layout
 #if BBS_TOOLBAR_ON_TOP
-    return m_layout.scale * (2.0f * m_layout.border + (float)get_selectable_idxs().size() * m_layout.stride_x() - m_layout.gap_x);
+    // [ORCAPORT:UI-1] the divider cell is narrower than an icon cell, so it widens the row by
+    // separator_size + gap_x rather than by a full stride.
+    return m_layout.scale * (2.0f * m_layout.border + (float)get_selectable_idxs().size() * m_layout.stride_x() - m_layout.gap_x
+                             + (divider_selectable_pos() >= 0 ? m_layout.separator_size() + m_layout.gap_x : 0.0f));
 #else
     return 2.0f * m_layout.scaled_border() + m_layout.scaled_icons_size();
 #endif
@@ -1450,6 +1535,12 @@ bool GLGizmosManager::generate_icons_texture()
                 filenames.push_back(path + icon_filename);
         }
     }
+
+    // [ORCAPORT:UI-1] ...and one extra row for the in-row divider, appended last so every gizmo keeps
+    // its sprite row (index == sprite_id).
+    filenames.push_back(path + "seperator.svg");
+    m_icon_rows     = (int)m_gizmos.size() + 1;
+    m_separator_row = (int)m_gizmos.size();
 
     std::vector<std::pair<int, bool>> states;
     states.push_back(std::make_pair(1, false)); // Activable
@@ -1581,39 +1672,6 @@ bool GLGizmosManager::is_hiding_instances() const
     return (m_common_gizmos_data
          && m_common_gizmos_data->instances_hider()
          && m_common_gizmos_data->instances_hider()->is_valid());
-}
-
-std::string get_name_from_gizmo_etype(GLGizmosManager::EType type)
-{
-    switch (type) {
-    case GLGizmosManager::EType::Move:
-        return "Move";
-    case GLGizmosManager::EType::Rotate:
-        return "Rotate";
-    case GLGizmosManager::EType::Scale:
-        return "Scale";
-    case GLGizmosManager::EType::Flatten:
-        return "Flatten";
-    case GLGizmosManager::EType::Cut:
-        return "Cut";
-    case GLGizmosManager::EType::MeshBoolean:
-        return "MeshBoolean";
-    case GLGizmosManager::EType::FdmSupports:
-        return "FdmSupports";
-    case GLGizmosManager::EType::Seam:
-        return "Seam";
-    case GLGizmosManager::EType::Emboss:
-        return "Text";
-    case GLGizmosManager::EType::MmSegmentation:
-        return "Color Painting";
-    case GLGizmosManager::EType::FuzzySkin:
-        return "Fuzzy Skin Painting";
-    case GLGizmosManager::EType::CounterboreBridge: // [ORCAPORT:PF-2b]
-        return "Vertical holes";
-    default:
-        return "";
-    }
-    return "";
 }
 
 } // namespace GUI
