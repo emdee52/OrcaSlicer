@@ -1095,6 +1095,22 @@ and this fork's, names that describe what the tools do, and one consistent icon 
   renamed with their tools: `toolbar_horizontal_holes` → `toolbar_holes`, `toolbar_vertical_holes` →
   `toolbar_hole_walls`; the dead counterbore pair was deleted. Nothing else referenced these files
   (the MCP tools open gizmos by `EType`, not by name).
+- **Icon grammar (final).** The stock idiom for a part-face tool is a **rounded square you do
+  something to** — `toolbar_cut` splits it, `toolbar_seam` / `toolbar_fuzzy_skin_paint` draw inside it
+  and hang a brush off the corner. Five of ours now share that container exactly, rounded square
+  (4,4)–(35,35) r1.5, so they no longer read as bigger or smaller than the stock squares:
+  `holes` (bore + teardrop inside), `hole_walls` (bore with a thick concentric wall ring),
+  `edge_dress` (three sharp corners, one filleted — the square is drawn *without* the sharp corner),
+  `cavity_fill` (notch plugged flush from the top edge), `perforation` (the 3×3 grid on the shared
+  container). Support Zones stays a scene (overhang slab + leaning pillar + bed) but is tightened to
+  the same 4–35 footprint, and Align & Stack is two squares with a descending arrow. An isometric-cube
+  pass was tried in between and discarded: it was not what "square" meant here.
+- **Why the shapes are line art and not two-tone fills.** `load_from_svg_files_as_sprites_array`
+  (`GLTexture.cpp`) gives the *rest* state (`Activable`, sprite column 0) a single flat ink colour —
+  every non-black pixel is overwritten with `#2b3436` (light) or `#b6b6b6` (dark). The accent is only
+  visible in the hover / selected / highlighted columns, which keep the file's own colours. So an
+  icon must read as a **silhouette** with negative space, and two adjacent fills of different colours
+  merge into one blob at rest. Checking a new icon means checking it both ways.
 - **Not done.** None of these strings are in `localization/i18n/OrcaSlicer.pot` — the catalogs were
   never regenerated for them, so they show English in every language. Renaming loses no translation
   that existed; running `scripts/run_gettext.bat --full` to pick the new msgids up is still pending.
