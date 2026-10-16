@@ -1,0 +1,260 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index cbdf7215fa..b5b600b581 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -257,13 +257,38 @@ Vec3d GLGizmoHoles::object_up() const
+ 
+ double GLGizmoHoles::object_scale() const
+ {
+-    // Uniform scale of the instance's linear part. A circle cannot stay exact under a non-uniform
+-    // scale, so the mean of the three axis scales is used as the best single factor.
++    // A single object -> world factor for lengths that have no axis (radii, thin-wall margins).
++    // Exact under a uniform scale; under a non-uniform one it is the mean of the three axis
++    // scales, the best single factor for a quantity that has no direction.
+     const Matrix3d linear = instance_matrix().linear();
+     const double   s      = (linear.col(0).norm() + linear.col(1).norm() + linear.col(2).norm()) / 3.0;
+     return (std::isfinite(s) && s > 1e-9) ? s : 1.0;
+ }
+ 
++Vec3d GLGizmoHoles::world_dir(const Vec3d &dir) const
++{
++    const Vec3d d = instance_matrix().linear() * dir;
++    return (d.allFinite() && d.norm() > 1e-12) ? d.normalized() : dir.normalized();
++}
++
++Vec3d GLGizmoHoles::world_point(const Vec3d &p) const { return instance_matrix() * p; }
++
++double GLGizmoHoles::axis_len_scale(const Vec3d &dir) const
++{
++    const Vec3d d = instance_matrix().linear() * dir.normalized();
++    return (d.allFinite() && d.norm() > 1e-12) ? d.norm() : object_scale();
++}
++
++void GLGizmoHoles::world_to_object(indexed_triangle_set &its) const
++{
++    const Transform3d M = instance_matrix();
++    if (!M.linear().allFinite() || std::abs(M.linear().determinant()) < 1e-12)
++        return; // degenerate instance: leave the world mesh as-is
++    const Transform3d inv = M.inverse();
++    for (stl_vertex &v : its.vertices)
++        v = (inv * Eigen::Vector3d(v(0), v(1), v(2))).cast<float>();
++}
++
+ double GLGizmoHoles::teardrop_depth(const DetectedHole &hole) const
+ {
+     const double margin = hole.through ? std::max(0.5, 0.25 * hole.radius) : 0.0;
+@@ -311,7 +336,16 @@ void GLGizmoHoles::feature_frame(const DetectedHole &h, Vec3d &dir, Vec3d &entry
+ 
+ indexed_triangle_set GLGizmoHoles::teardrop_mesh(const DetectedHole &h) const
+ {
+-    return its_make_teardrop_for_hole(h, teardrop_depth(h), m_angle_deg, HOLE_SHAPE_SEGMENTS, object_up());
++    // Build in world space (round, mm) and pull back to object space, so an anisotropic instance
++    // scale does not flatten the prism; the apex points along world up. Centred on the hole.
++    DetectedHole wh;
++    wh.axis   = world_dir(h.axis);
++    wh.center = world_point(h.center);
++    wh.radius = h.radius * object_scale();
++    const double         depth_w = teardrop_depth(h) * axis_len_scale(h.axis);
++    indexed_triangle_set its = its_make_teardrop_for_hole(wh, depth_w, m_angle_deg, HOLE_SHAPE_SEGMENTS, Vec3d::UnitZ());
++    world_to_object(its);
++    return its;
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) const
+@@ -319,80 +353,81 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
+     Vec3d dir, entry;
+     feature_frame(h, dir, entry);
+ 
++    // Build in world space (mm) and pull back to object space, so the instance transform restores a
++    // round, correctly sized feature even under a non-uniform scale.
++    const Vec3d  dir_w   = world_dir(dir);
++    const Vec3d  entry_w = world_point(entry);
++    const double rscale  = object_scale();        // object radius  -> world radius
++    const double lscale  = axis_len_scale(dir);   // object length along the axis -> world length
++
+     const HoleStandard *s = (m_standard >= 0 && m_standard < int(hole_standards().size()))
+                                 ? &hole_standards()[m_standard]
+                                 : nullptr;
+     const bool is_nut    = m_category == HoleCategory::Nut;
+     const bool is_pocket = m_category == HoleCategory::Insert || m_category == HoleCategory::Magnet;
+ 
+-    // All dimensions below are mm in world space and are converted to object space with `scale`
+-    // so the feature measures its stated size even when the object is scaled.
+-    const double scale = object_scale();
+-
+-    const double margin = std::max(0.5, 0.25 * h.radius); // h.radius is already object space
++    const double margin = std::max(0.5, 0.25 * h.radius * rscale); // world
+     double       depth  = 0.;
+     if (is_pocket || is_nut)
+-        depth = std::max(0.1, m_depth / scale); // editable pocket depth
++        depth = std::max(0.1, m_depth); // editable pocket depth, mm
+     else if (m_through)
+-        depth = h.depth + 2.0 * margin;
++        depth = h.depth * lscale + 2.0 * margin;
+     else
+-        depth = std::max(0.1, m_depth / scale);
++        depth = std::max(0.1, m_depth);
+ 
+-    const double sink = std::max(0.0, -m_head_fit) / scale; // depth the head/pocket is sunk below the surface
++    const double sink = std::max(0.0, -m_head_fit); // mm the head/pocket is sunk below the surface
+ 
++    indexed_triangle_set its;
+     if (is_nut) {
+-        const double across = std::max(0.1, (m_diameter + m_tolerance) / scale);
++        const double across = std::max(0.1, m_diameter + m_tolerance);
+         // A catalogued nut carries its coaxial clearance bore; a Custom across-flats has none.
+-        const double clearance = s != nullptr ? s->clearance_d / scale : 0.;
+-        return its_make_nut_pocket(across, depth + sink, clearance, depth, dir, entry);
+-    }
++        const double clearance = s != nullptr ? s->clearance_d : 0.;
++        its = its_make_nut_pocket(across, depth + sink, clearance, depth, dir_w, entry_w);
++    } else {
++        const double d = bore_diameter();
++        if (d <= 0. || depth <= 0.)
++            return {};
++
++        if (m_category == HoleCategory::Screw && s != nullptr) {
++            if (m_head == BoreHead::SocketHead && s->socket_d > d)
++                its = its_make_counterbore(d, s->socket_d, s->socket_k + sink, depth, dir_w, entry_w);
++            else if (m_head == BoreHead::ButtonHead && s->button_d > d)
++                its = its_make_counterbore(d, s->button_d, s->button_k + sink, depth, dir_w, entry_w);
++            // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
++            // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
++            else if (m_head == BoreHead::Countersink && s->csink_d > d)
++                its = its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir_w, entry_w);
++        }
++        if (its.indices.empty()) {
++            double bore_depth = depth;
++            if (m_category == HoleCategory::Magnet)
++                bore_depth += sink; // sink the magnet pocket
++            its = its_make_bore(d, bore_depth, dir_w, entry_w);
++        }
+ 
+-    const double d = bore_diameter() / scale;
+-    if (d <= 0. || depth <= 0.)
+-        return {};
++        // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
++        // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore,
++        // so merging it leaves the shaft round below and teardropped above. A counterbore head stays
++        // round unless the user asks for it too; a vertical hole has no up direction and gets
++        // nothing.
++        if (m_screw_teardrop) {
++            indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
++            if (!shaft.indices.empty())
++                its_merge(its, shaft);
+ 
+-    indexed_triangle_set its;
+-    if (m_category == HoleCategory::Screw && s != nullptr) {
+-        const double socket_d = s->socket_d / scale;
+-        const double button_d = s->button_d / scale;
+-        const double csink_d  = s->csink_d / scale;
+-        if (m_head == BoreHead::SocketHead && socket_d > d)
+-            its = its_make_counterbore(d, socket_d, s->socket_k / scale + sink, depth, dir, entry);
+-        else if (m_head == BoreHead::ButtonHead && button_d > d)
+-            its = its_make_counterbore(d, button_d, s->button_k / scale + sink, depth, dir, entry);
+-        // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
+-        // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
+-        else if (m_head == BoreHead::Countersink && csink_d > d)
+-            its = its_make_countersink(d, csink_d + 2.0 * sink, s->csink_angle, depth, dir, entry);
+-    }
+-    if (its.indices.empty()) {
+-        double bore_depth = depth;
+-        if (m_category == HoleCategory::Magnet)
+-            bore_depth += sink; // sink the magnet pocket
+-        its = its_make_bore(d, bore_depth, dir, entry);
+-    }
+-
+-    // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
+-    // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore, so
+-    // merging it leaves the shaft round below and teardropped above. A counterbore head stays round
+-    // unless the user asks for it too; a vertical hole has no up direction and gets nothing.
+-    if (m_category == HoleCategory::Screw && m_screw_teardrop) {
+-        const Vec3d          up    = object_up();
+-        indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir, entry, up);
+-        if (!shaft.indices.empty())
+-            its_merge(its, shaft);
+-
+-        const bool cbore_head = s != nullptr &&
+-                                ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
+-                                 (m_head == BoreHead::ButtonHead && s->button_d > d));
+-        if (m_screw_teardrop_head && cbore_head) {
+-            const double head_d = (m_head == BoreHead::SocketHead ? s->socket_d : s->button_d) / scale;
+-            const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) / scale + sink;
+-            indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir, entry, up);
+-            if (!head.indices.empty())
+-                its_merge(its, head);
++            const bool cbore_head = s != nullptr &&
++                                    ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
++                                     (m_head == BoreHead::ButtonHead && s->button_d > d));
++            if (m_screw_teardrop_head && cbore_head) {
++                const double head_d = m_head == BoreHead::SocketHead ? s->socket_d : s->button_d;
++                const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) + sink;
++                indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
++                if (!head.indices.empty())
++                    its_merge(its, head);
++            }
+         }
+     }
++    world_to_object(its);
+     return its;
+ }
+ 
+@@ -401,22 +436,32 @@ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
+     if (m_category == HoleCategory::Nut)
+         return {}; // a hex pocket has no round shrink tube
+ 
+-    const double target_d = bore_diameter() / object_scale(); // object space, to match exist_d
+-    const double exist_d  = 2.0 * h.radius;
+-
+     Vec3d dir, entry;
+     feature_frame(h, dir, entry);
+-    return its_make_shrink_tube(exist_d, target_d, h.depth, dir, entry);
++    const Vec3d  dir_w    = world_dir(dir);
++    const Vec3d  entry_w  = world_point(entry);
++    const double exist_d  = 2.0 * h.radius * object_scale(); // world wall
++    const double target_d = bore_diameter();                 // mm
++    const double wall_d   = h.depth * axis_len_scale(dir);   // world wall length
++    indexed_triangle_set its = its_make_shrink_tube(exist_d, target_d, wall_d, dir_w, entry_w);
++    world_to_object(its);
++    return its;
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::rim_mesh(const DetectedHole &h) const
+ {
+     Vec3d dir, entry;
+     feature_frame(h, dir, entry);
++    const Vec3d  dir_w   = world_dir(dir);
++    const Vec3d  entry_w = world_point(entry);
+     // A rim ring only meets material for radii >= the hole radius and for a positive size.
+-    const double size = std::max(0.01, m_rim_size / object_scale());
+-    return m_operation == HoleOperation::RimFillet ? its_make_rim_fillet(h.radius, size, dir, entry)
+-                                                   : its_make_rim_chamfer(h.radius, size, dir, entry);
++    const double hole_r = h.radius * object_scale(); // world hole radius
++    const double size   = std::max(0.01, m_rim_size); // mm
++    indexed_triangle_set its = m_operation == HoleOperation::RimFillet
++                                   ? its_make_rim_fillet(hole_r, size, dir_w, entry_w)
++                                   : its_make_rim_chamfer(hole_r, size, dir_w, entry_w);
++    world_to_object(its);
++    return its;
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::shape_mesh(const DetectedHole &h) const
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+index 6ea2329fd1..cc6d45500d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+@@ -136,6 +136,14 @@ private:
+     // Whether the current operation can act on hole `idx` (teardrop is horizontal-only).
+     bool hole_usable(int idx) const;
+ 
++    // The instance transform (object -> world) maps the added features too, so each feature is built
++    // in world space and pulled back to object space: a non-uniform instance scale then restores a
++    // round, correctly sized feature instead of flattening it into an ellipse.
++    Vec3d  world_dir(const Vec3d& dir) const;      // object direction -> world direction (unit)
++    Vec3d  world_point(const Vec3d& p) const;      // object point -> world point
++    double axis_len_scale(const Vec3d& dir) const; // world length of a unit object step along dir
++    void   world_to_object(indexed_triangle_set& its) const;
++
+     indexed_triangle_set teardrop_mesh(const DetectedHole& hole) const;
+     indexed_triangle_set bore_negative_mesh(const DetectedHole& hole) const; // empty when nothing to cut
+     indexed_triangle_set bore_tube_mesh(const DetectedHole& hole) const;     // empty unless shrinking

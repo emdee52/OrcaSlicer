@@ -1,0 +1,97 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index b5b600b581..9e91b2ab6e 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -336,16 +336,9 @@ void GLGizmoHoles::feature_frame(const DetectedHole &h, Vec3d &dir, Vec3d &entry
+ 
+ indexed_triangle_set GLGizmoHoles::teardrop_mesh(const DetectedHole &h) const
+ {
+-    // Build in world space (round, mm) and pull back to object space, so an anisotropic instance
+-    // scale does not flatten the prism; the apex points along world up. Centred on the hole.
+-    DetectedHole wh;
+-    wh.axis   = world_dir(h.axis);
+-    wh.center = world_point(h.center);
+-    wh.radius = h.radius * object_scale();
+-    const double         depth_w = teardrop_depth(h) * axis_len_scale(h.axis);
+-    indexed_triangle_set its = its_make_teardrop_for_hole(wh, depth_w, m_angle_deg, HOLE_SHAPE_SEGMENTS, Vec3d::UnitZ());
+-    world_to_object(its);
+-    return its;
++    // Object space: a teardrop does not need to be round, so it is left in the hole's own frame and
++    // the instance scale applies to it like the rest of the hole.
++    return its_make_teardrop_for_hole(h, teardrop_depth(h), m_angle_deg, HOLE_SHAPE_SEGMENTS, object_up());
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) const
+@@ -433,35 +426,33 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
+ 
+ indexed_triangle_set GLGizmoHoles::bore_tube_mesh(const DetectedHole &h) const
+ {
+-    if (m_category == HoleCategory::Nut)
+-        return {}; // a hex pocket has no round shrink tube
+-
+-    Vec3d dir, entry;
++    // Fill the old wall so the negative re-bores it smaller. Object space, so the plug matches the
++    // hole exactly even under a non-uniform instance scale (the detected wall is a circle in object
++    // space). The new feature is round in world space, i.e. an ellipse in object space, so the plug's
++    // inner wall is put well inside that ellipse (new_d / sigma_max, with the Frobenius norm as a
++    // safe upper bound for sigma_max) and the negative clips the plug's centre cleanly.
++    const double outer_w = 2.0 * h.radius * object_scale(); // world hole diameter, mean
++    const double new_d_w = m_category == HoleCategory::Nut ? std::max(0.1, m_diameter + m_tolerance)
++                                                           : bore_diameter();
++    if (new_d_w >= outer_w - 0.01)
++        return {}; // enlarging or equal: nothing to fill
++
++    const double inner_d = new_d_w / std::max(1e-9, instance_matrix().linear().norm());
++    Vec3d        dir, entry;
+     feature_frame(h, dir, entry);
+-    const Vec3d  dir_w    = world_dir(dir);
+-    const Vec3d  entry_w  = world_point(entry);
+-    const double exist_d  = 2.0 * h.radius * object_scale(); // world wall
+-    const double target_d = bore_diameter();                 // mm
+-    const double wall_d   = h.depth * axis_len_scale(dir);   // world wall length
+-    indexed_triangle_set its = its_make_shrink_tube(exist_d, target_d, wall_d, dir_w, entry_w);
+-    world_to_object(its);
+-    return its;
++    return its_make_shrink_tube(2.0 * h.radius, inner_d, h.depth, dir, entry);
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::rim_mesh(const DetectedHole &h) const
+ {
+     Vec3d dir, entry;
+     feature_frame(h, dir, entry);
+-    const Vec3d  dir_w   = world_dir(dir);
+-    const Vec3d  entry_w = world_point(entry);
++    // Object space: the rim follows the hole's own (circular) edge in object space, so it stays
++    // flush with the mouth under any instance scale - it does not need to be round in world space.
+     // A rim ring only meets material for radii >= the hole radius and for a positive size.
+-    const double hole_r = h.radius * object_scale(); // world hole radius
+-    const double size   = std::max(0.01, m_rim_size); // mm
+-    indexed_triangle_set its = m_operation == HoleOperation::RimFillet
+-                                   ? its_make_rim_fillet(hole_r, size, dir_w, entry_w)
+-                                   : its_make_rim_chamfer(hole_r, size, dir_w, entry_w);
+-    world_to_object(its);
+-    return its;
++    const double size = std::max(0.01, m_rim_size / object_scale());
++    return m_operation == HoleOperation::RimFillet ? its_make_rim_fillet(h.radius, size, dir, entry)
++                                                   : its_make_rim_chamfer(h.radius, size, dir, entry);
+ }
+ 
+ indexed_triangle_set GLGizmoHoles::shape_mesh(const DetectedHole &h) const
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+index cc6d45500d..ef482a3a09 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+@@ -136,9 +136,10 @@ private:
+     // Whether the current operation can act on hole `idx` (teardrop is horizontal-only).
+     bool hole_usable(int idx) const;
+ 
+-    // The instance transform (object -> world) maps the added features too, so each feature is built
+-    // in world space and pulled back to object space: a non-uniform instance scale then restores a
+-    // round, correctly sized feature instead of flattening it into an ellipse.
++    // The instance transform (object -> world) maps the added features too. Bore/pocket is built in
++    // world space and pulled back to object space, so a non-uniform instance scale restores a round,
++    // correctly sized hole instead of flattening it into an ellipse. Teardrop and rim stay in object
++    // space: they follow the hole's own (circular) edge and do not need to be round in world space.
+     Vec3d  world_dir(const Vec3d& dir) const;      // object direction -> world direction (unit)
+     Vec3d  world_point(const Vec3d& p) const;      // object point -> world point
+     double axis_len_scale(const Vec3d& dir) const; // world length of a unit object step along dir

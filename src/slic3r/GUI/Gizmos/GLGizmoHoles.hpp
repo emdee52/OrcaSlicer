@@ -136,6 +136,15 @@ private:
     // Whether the current operation can act on hole `idx` (teardrop is horizontal-only).
     bool hole_usable(int idx) const;
 
+    // The instance transform (object -> world) maps the added features too. Bore/pocket is built in
+    // world space and pulled back to object space, so a non-uniform instance scale restores a round,
+    // correctly sized hole instead of flattening it into an ellipse. Teardrop and rim stay in object
+    // space: they follow the hole's own (circular) edge and do not need to be round in world space.
+    Vec3d  world_dir(const Vec3d& dir) const;      // object direction -> world direction (unit)
+    Vec3d  world_point(const Vec3d& p) const;      // object point -> world point
+    double axis_len_scale(const Vec3d& dir) const; // world length of a unit object step along dir
+    void   world_to_object(indexed_triangle_set& its) const;
+
     indexed_triangle_set teardrop_mesh(const DetectedHole& hole) const;
     indexed_triangle_set bore_negative_mesh(const DetectedHole& hole) const; // empty when nothing to cut
     indexed_triangle_set bore_tube_mesh(const DetectedHole& hole) const;     // empty unless shrinking
