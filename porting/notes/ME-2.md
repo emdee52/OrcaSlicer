@@ -62,6 +62,38 @@ is available for bore and rim alike). The *default* side is still arbitrary: a m
 sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
 `!through`) would pick the visible entry face without the user flipping by hand.
 
+## Round (2026-10-15) - round features under a non-uniform scale
+
+The gizmo built every feature in object space and only divided the user/standard dimensions by
+`object_scale()` - the mean of the instance's three axis scales, the ME-2d fix for a **uniform**
+scale. Under a non-uniform scale a circle in object space is still flattened by the instance
+transform, so a Ø5 bore on a `(2,1,1)` instance read as a 7.5 x 3.75 ellipse in the viewport, exactly
+like the detected hole it was reworking.
+
+Fix: build each feature in **world space** and pull the vertices back to object space through
+`instance_matrix().inverse()`; the instance transform then restores a round, correctly sized feature.
+
+- New helpers `world_dir`, `world_point`, `axis_len_scale` (object length along the hole axis ->
+  world), `world_to_object` (apply `M^-1`); `object_scale()` is repurposed as the object radius ->
+  world radius factor (a single mean, the best choice for a quantity with no direction).
+- `teardrop_mesh`, `bore_negative_mesh`, `bore_tube_mesh`, `rim_mesh` build in world and pull back;
+  place-on-face inherits it (its sizes are already mm).
+- The teardrop is built on a world-space hole with `up = UnitZ`, so the apex points along world up;
+  `object_up()` stays for detection's horizontal test.
+- Detection, pick cylinders and previews stay object-space; previews render through
+  `instance_matrix()`, so they come out round with no change.
+- Uniform scale and pure rotation are unchanged: for those, `M^-1` applied to a world feature is the
+  same as the old object-space build (the pull-back is the exact inverse of the old division).
+
+**Limitations (by nature, not bugs).** The rim and shrink-tube radii come from the detected hole,
+which is elliptical under a non-uniform scale, so they use the mean `object_scale()` and are
+approximate there; bore/pocket and teardrop sizes are the user's mm and exact. Re-scaling the
+instance after a feature is added re-stretches it (detection is object-space, like every hole).
+
+**Verification.** `libslic3r_tests [HoleShapes]` unchanged (26 cases / 143 assertions; the
+primitives are untouched). The gizmo paths are not unit-tested - click-test: scale an instance
+non-uniformly (e.g. 2x in X), add a bore/pocket, and confirm it is round (previously an ellipse).
+
 ## Round (2026-10-15) - screw-bore teardrop
 
 New feature (user request): bore/pocket, **Screw** category, gets a **Teardrop** checkbox that shapes
