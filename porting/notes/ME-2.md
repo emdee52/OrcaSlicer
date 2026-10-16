@@ -62,7 +62,38 @@ is available for bore and rim alike). The *default* side is still arbitrary: a m
 sign (a ray cast along ±axis against the merged mesh, or orienting toward the capped end when
 `!through`) would pick the visible entry face without the user flipping by hand.
 
+## Round (2026-10-16) - unscaled teardrop/rim; shrink fill on a stretched hole
+
+Two corrections to the round below (fix4), both in `GLGizmoHoles.cpp`.
+
+1. **Only bore/pocket needs to be round in world space.** Teardrop and rim chamfer/fillet follow the
+   hole's own edge: in object space they are a teardrop / ring on the hole's (circular in object
+   space) mouth, which is what they are, and scaling the instance scales them like the hole. Built
+   round-in-world they stopped being flush with the mouth. Both are back to the object-space build
+   (`its_make_teardrop_for_hole`, `its_make_rim_*` on `h.radius`). The world<->object helpers stay,
+   used by `bore_negative_mesh`.
+2. **The shrink fill missed a stretched hole.** `bore_tube_mesh` was building a round-in-world tube;
+   under a non-uniform scale it was smaller than the stretched hole along the major axis, so it left
+   gaps, and for a nut it returned `{}` outright (a smaller nut in a stretched hole had nothing
+   around the negative at all). It is object space again, so the plug matches the hole exactly, and it
+   no longer excludes nuts.
+   - Inner wall: the new feature is round in world space, i.e. an ellipse in object space, so the
+     plug's inner circle is placed inside that ellipse - `new_d / sigma_max`, with the Frobenius norm
+     of the instance linear part as a safe upper bound for `sigma_max` (Eigen `Matrix3d::norm()`).
+     The negative then clips the plug's centre cleanly; the old mean-scale inner wall left a lip.
+   - Guard: fill only when `new_d_world < 2 * h.radius * object_scale()` (the hole's mean world
+     diameter), where `new_d_world` is `across_flats` for a nut and `bore_diameter()` otherwise.
+   - Built with `its_make_shrink_tube(2*h.radius, inner_d, h.depth, dir, entry)`, object space, so the
+     caps land on the wall's ends as before.
+
+**Verification.** `[HoleShapes]` 26 cases / 143 assertions pass. Gizmo paths are not unit-tested -
+click-test: scale an instance non-uniformly, add a smaller screw / magnet / countersink **and a nut**,
+and confirm the old wall is filled all the way round (previously gaps, and the nut had no fill).
+
 ## Round (2026-10-15) - round features under a non-uniform scale
+
+(Partially reverted by the round above: only bore/pocket is built round-in-world; teardrop, rim and
+the shrink fill are object space.)
 
 The gizmo built every feature in object space and only divided the user/standard dimensions by
 `object_scale()` - the mean of the instance's three axis scales, the ME-2d fix for a **uniform**
