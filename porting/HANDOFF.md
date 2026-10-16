@@ -13,6 +13,9 @@ lives in `porting/notes/<ID>.md`; this file is the map.
 5. `OrcaSlicer/porting/manifest.tsv` (status per feature ID - source of truth)
 6. `OrcaSlicer/porting/notes/<ID>.md` for the feature about to be worked on
 7. `OrcaSlicer/porting/BUILD.md` before building
+8. `OrcaSlicer/porting/notes/UPSTREAM_SYNC_<date>.md` - the most recent upstream sync: what the
+   merge changed, what it deliberately dropped, and what is still open (latest:
+   `notes/UPSTREAM_SYNC_20261015.md`)
 
 Root `AGENTS.md` has the workspace mission and session protocol.
 
@@ -21,13 +24,18 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`22d2f1ae83`** "Merge port/AS-1-fix1: toggle free-Z
-  placement from a plate-column button" (on top of `8d5d19d3de`, the BT-1 fix-2 handoff record).
-  Before that, the largest merge on the branch was **`e0d43bbb95`** "Merge port/PF-10-multisupport:
-  multi-pass support collision avoidance" (on top of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint,
-  PF-10-auto, PF-10-multisupport and PF-10-paint-qol are merged into `port/integration` and pushed;
-  the user runtime-verified auto-painting (region scoring, build-plate-only tree fallback,
-  min-area/facet split, gizmo QOL) and multi-pass collision avoidance. PF-3/4/5/7/8 excluded.
+- Latest integration commit at handoff: **`478a290ae5`** "port(sync): keep the belt Z shift on the
+  unpainted support path" - the 2026-10-15 upstream sync (1352 commits, 44 conflicts) merged on top
+  of **`00f4969058`** "port: mark ME-2 chamfer/fillet merged and user-verified". The sync is built
+  (Release) and the suite passes 2407/2407; **read `porting/notes/UPSTREAM_SYNC_20261015.md`** for
+  what it changed, the four fallout fixes, and the two deliberate behaviour deltas (the port's
+  gizmos lost their `Ctrl+<key>` openers with the shortcut registry, and the mesh Holes tool's inch
+  sizes follow upstream's ASME table). Before it, the largest merge on the branch was
+  **`e0d43bbb95`** "Merge port/PF-10-multisupport: multi-pass support collision avoidance" (on top
+  of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint, PF-10-auto, PF-10-multisupport and
+  PF-10-paint-qol are merged into `port/integration` and pushed; the user runtime-verified
+  auto-painting (region scoring, build-plate-only tree fallback, min-area/facet split, gizmo QOL)
+  and multi-pass collision avoidance. PF-3/4/5/7/8 excluded.
 - Two sources: `OrcaFS-NeotkoCM/` (Snapmaker/Neotko Orca) and `preFlight/` (PrusaSlicer fork).
   Both are outside `OrcaSlicer/`; only selected features are ported.
 
