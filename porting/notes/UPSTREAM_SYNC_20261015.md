@@ -141,18 +141,30 @@ reconfigure and the deps step, and four fixes (all committed separately):
 4. **`[BUILDFIX:VS17.8]` again** - upstream's new `load_project_preset` lambda in
    `src/OrcaSlicer.cpp` hits the same MSVC 14.38 C3493 false positive as the three older ones;
    `config_substitution_rule` was added to its capture list and the `BUILD.md` row updated.
+5. **Belt supports below the belt floor** - the test suite caught this one. The port's
+   `if (painted.empty()) { ... return; }` early-out in `PrintObject::generate_support_material()`
+   skipped upstream's "Global Z offset for support layers" block, which upstream runs for both the
+   tree and the classic branch; organic (and `auto`) tree supports therefore kept the local Z and
+   sat ~18 mm below the belt floor (`Belt supports reach the belt under a leading overhang`). The
+   block is now a single `shift_organic_belt_supports` lambda called on both paths, so they cannot
+   drift apart again.
+
+Verified: `build_win.bat -s --run-tests` -> **2407/2407 tests pass** (six unrelated tests are
+skipped, as before), including the port's own suites (`HoleStandards`, `OrcaSupportPaint`,
+`Perforation`, `CutUtils`, `EdgeProfiles`, `FSM-1`, `Regression/Belt`, `Support`, `TreeSupport`).
 
 Still open:
 
-1. `build_win.bat -s --run-tests` - the suites are off by default, so the configure has to
-   include them. This is where the hole-standard tests and the slicing regressions get caught.
-2. Off-by-default equivalence: with every port option at its default, the sliced output must
-   match stock 2.5. Then the MCP runtime pass per feature.
-3. `scripts/run_gettext.bat --full` is run by the build script itself; it produced no catalog
+1. Off-by-default equivalence: with every port option at its default, the sliced output must
+   match stock 2.5. Then the MCP runtime pass per feature (the toolchain is in-tree).
+2. `scripts/run_gettext.bat --full` is run by the build script itself; it produced no catalog
    changes here.
-4. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
-   upstream's section view; its object-scoped shell clipping is still the port's).
-5. Only then merge into `port/integration`, after the user has tested the build.
+3. Update `manifest.tsv` for anything upstream has adopted (PF-6's toolpath clipping is now
+   upstream's section view; its object-scoped shell clipping is still the port's), and record the
+   two deliberate behaviour deltas: the port's seven gizmos lost their `Ctrl+<key>` openers
+   (no entry in upstream's shortcut registry yet), and the mesh Holes tool's inch sizes now use
+   upstream's ASME values.
+4. Only then merge into `port/integration`, after the user has tested the build.
 
 ## Gaps found while resolving
 

@@ -5004,6 +5004,27 @@ void PrintObject::_generate_support_material()
                 painted.push_back(&t);
         }
     }
+    // Global Z offset for support layers:
+    // - Normal support: generated in the object frame above and shifted afterwards.
+    // - Non-organic tree support (slim/strong/hybrid): plan_layer_heights() reads
+    //   from globally-offset object layers, so support layers already have it.
+    // - Organic tree support: generate_tree_support_3D() computes its own Z values
+    //   independently and does NOT inherit the offset - apply it here.
+    // Belt floor polygon clipping for non-organic tree support is done inside
+    // draw_circles() before area_groups and toolpaths are built.
+    // Called by both paths: the painted multi-pass below, and the legacy single pass above it.
+    auto shift_organic_belt_supports = [&]() {
+        if (is_tree(m_config.support_type.value) && std::abs(m_belt_global_z_offset) > EPSILON) {
+            // Resolve effective support style (same logic as SupportParameters).
+            auto style = m_config.support_style.value;
+            if (style == smsDefault)
+                style = smsTreeOrganic;
+            if (style == smsTreeOrganic) {
+                for (SupportLayer *sl : m_support_layers)
+                    sl->print_z += m_belt_global_z_offset;
+            }
+        }
+    };
     if (painted.empty()) {
         if (is_tree(m_config.support_type.value)) {
             TreeSupport tree_support(*this, m_slicing_params);
@@ -5044,6 +5065,7 @@ void PrintObject::_generate_support_material()
                     sl->print_z += global_z;
             }
         }
+        shift_organic_belt_supports();
         return;
     }
 
@@ -5175,24 +5197,7 @@ void PrintObject::_generate_support_material()
 
     this->merge_duplicate_support_layers();
     restore();
-    // Global Z offset for support layers:
-    // - Normal support: generated in the object frame above and shifted afterwards.
-    // - Non-organic tree support (slim/strong/hybrid): plan_layer_heights() reads
-    //   from globally-offset object layers, so support layers already have it.
-    // - Organic tree support: generate_tree_support_3D() computes its own Z values
-    //   independently and does NOT inherit the offset — apply it here.
-    // Belt floor polygon clipping for non-organic tree support is done inside
-    // draw_circles() before area_groups and toolpaths are built.
-    if (is_tree(m_config.support_type.value) && std::abs(m_belt_global_z_offset) > EPSILON) {
-        // Resolve effective support style (same logic as SupportParameters).
-        auto style = m_config.support_style.value;
-        if (style == smsDefault)
-            style = smsTreeOrganic;
-        if (style == smsTreeOrganic) {
-            for (SupportLayer *sl : m_support_layers)
-                sl->print_z += m_belt_global_z_offset;
-        }
-    }
+    shift_organic_belt_supports();
 
 }
 
