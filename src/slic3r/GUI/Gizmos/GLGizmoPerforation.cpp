@@ -417,7 +417,13 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
 
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
+    // [ORCAPORT:UI-1] the toolbar-on-top layout passes the icon's left edge, so the panel is anchored
+    // there; the side layout passes its right edge.
+#if BBS_TOOLBAR_ON_TOP
+    GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+#else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
     ImGuiWrapper::push_toolbar_style(scale);
 
     // Column widths, computed before Begin so the constraint below can use them. calc_text_size
