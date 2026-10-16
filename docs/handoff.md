@@ -1114,4 +1114,9 @@ and this fork's, names that describe what the tools do, and one consistent icon 
 - **Not done.** None of these strings are in `localization/i18n/OrcaSlicer.pot` — the catalogs were
   never regenerated for them, so they show English in every language. Renaming loses no translation
   that existed; running `scripts/run_gettext.bat --full` to pick the new msgids up is still pending.
-- **Branch state**: on `port/UI-1`, branched from `port/integration`. Not merged — see section 0.
+- **Branch state**: on `port/UI-1`, branched from `port/integration`. Merged `--no-ff` as `eec7a7b0fd`
+  (user-verified in the app 2026-10-16: divider in place, both renames showing as tooltips, all seven
+  icons reading as one set). Open, unrelated: the icon bar's auto-scale (`toolkit_size`) never
+  shrinks, so at a narrow window the row reaches the window edge and the tail of the fork's gizmos
+  can be pushed off it. Pre-existing and driven by upstream's `_check_and_update_toolbar_icon_scale`,
+  not by this change — but it is the reason seven extra gizmos are worth watching.
