@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-  <!-- Edge chamfer / fillet: a block whose corner is dressed. Base = the block, accent = the band. -->
-  <path d="M7 33 V16 A9 9 0 0 1 16 7 H33" style="fill:none;stroke:#b6b6b6;stroke-width:1.6"/>
-  <path d="M7 16 A9 9 0 0 1 16 7" style="fill:none;stroke:#009688;stroke-width:3"/>
+  <!-- Edge chamfer / fillet: a part face with three sharp corners and one dressed (filleted) corner.
+       Base = the face, accent = the fillet surface. -->
+  <path d="M25 4 A10 10 0 0 1 35 14 V33.5 A1.5 1.5 0 0 1 33.5 35 H5.5 A1.5 1.5 0 0 1 4 33.5 V5.5 A1.5 1.5 0 0 1 5.5 4 Z" style="fill:none;stroke:#b6b6b6;stroke-width:1.3;stroke-linejoin:round"/>
+  <path d="M25 4 A10 10 0 0 1 35 14" style="fill:none;stroke:#009688;stroke-width:1.8"/>
 </svg>

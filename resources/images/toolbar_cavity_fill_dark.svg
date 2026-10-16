@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-  <!-- Cavity fill: a recess in a wall closed flush. Base = the wall, accent = the plug. -->
-  <rect x="5.5" y="10.5" width="29" height="19" style="fill:none;stroke:#b6b6b6;stroke-width:1.6"/>
-  <path d="M14 10 V19 H26 V10" style="fill:none;stroke:#b6b6b6;stroke-width:1.6"/>
-  <rect x="14" y="10.5" width="12" height="8.5" style="fill:#009688"/>
+  <!-- Cavity fill: a recess in a part face, closed flush. Base = the face, accent = the plug. -->
+  <path d="M5.5 4 H33.5 A1.5 1.5 0 0 1 35 5.5 V33.5 A1.5 1.5 0 0 1 33.5 35 H5.5 A1.5 1.5 0 0 1 4 33.5 V5.5 A1.5 1.5 0 0 1 5.5 4 Z" style="fill:none;stroke:#b6b6b6;stroke-width:1.3"/>
+  <path d="M14 4 V15 H26 V4" style="fill:none;stroke:#b6b6b6;stroke-width:1.3;stroke-linejoin:round"/>
+  <rect x="14" y="4" width="12" height="11" style="fill:#009688"/>
 </svg>
