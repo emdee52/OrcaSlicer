@@ -1276,3 +1276,21 @@ behaviour, no config keys, no new files; every panel is anchored or trimmed in p
 - **Branch state**: `port/gizmo-ui-panels`, from `port/integration` at `9e5ce7fb2b`. Seven single-ID
   commits (UI-1, PF-2b, RF-1, EF-1, HF-1, PP-1, MV-1) plus a `port:` docs commit, patches `38`-`44`.
   Not merged and not pushed: the merge is the user's gate after testing.
+
+**Follow-up on the same branch (patches 45-46).** Two things the panels still got wrong:
+
+- **The overflow flip.** `GizmoImguiSetNextWIndowPos`'s clamp treats `x` as a left edge
+  (`x = canvas_width - w`), so on the four right-most fork icons the left-anchored panel was slid
+  along the canvas right edge: butted against it, with its left side under the button. When the panel
+  would run past that edge, `Holes` / `EdgeDress` / `HoleFill` / `Perforation` are now right-aligned
+  instead — pivot `(1,0)` with width `0` to skip the clamp (the idiom the texture-displacement panel
+  already uses), anchored at the icon's **right** edge, so the panel hangs to the left with its right
+  edge still under its own icon. While the panel fits to the right of the icon nothing changes, and the
+  other fork panels keep the plain left anchor. The icon width the anchor needs is
+  `GLGizmosManager::get_scaled_icons_size()` (new); `m_parent.get_scale()` is the camera zoom, not the
+  toolbar layout scale. Ceiling: the right-aligned branch has no clamp of its own, so a panel wider than
+  the icon's distance from the canvas left edge would lose its left part — that needs an already broken
+  narrow layout (the `toolkit_size` gap above).
+- **Button spacing.** The move window pushes `ImGuiStyleVar_ItemSpacing, ImVec2(0.0, 6.0)` so its XYZ
+  fields butt together, which left the bare `SameLine()` between Pick pivot and Reset pivot with no
+  gap. They are now spaced by the window's own column unit (`get_style_scaling() * 8`).
