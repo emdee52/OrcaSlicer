@@ -1888,8 +1888,9 @@ void GLGizmoHoles::render_panel_body()
                 int cur = 0;
                 for (size_t i = 0; i < heads.size(); ++i)
                     if (heads[i] == m_head) cur = int(i);
-                const int sel = gizmo_row_segment("##head", m_desc.at("head").utf8_str().data(),
-                                                  lbl.data(), int(lbl.size()), cur, label_w);
+                // Its own line, without the caption: four head names plus the label column are wider
+                // than a standard panel, and the names read on their own.
+                const int sel = gizmo_segment("##head", lbl.data(), int(lbl.size()), cur);
                 if (sel >= 0) set_head(heads[sel]);
             }
         }

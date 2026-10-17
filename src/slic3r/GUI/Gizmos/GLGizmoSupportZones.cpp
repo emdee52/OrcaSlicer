@@ -4691,7 +4691,10 @@ void GLGizmoSupportZones::on_render_input_window(float x, float y, float /*botto
     // fijos dejaban las etiquetas pegadas a los deslizadores; 22 alturas de fuente da la misma
     // holgura con cualquier fuente y cualquier DPI, y el suelo de 380 evita que una fuente diminuta
     // deje el alzado sin sitio para leerse.
-    const float win_w = std::max(380.f, 22.0f * ImGui::GetFontSize());
+    // La anchura del panel ya no se define aquí: es gizmo_panel_width() de GizmoStyle.hpp, que usa
+    // exactamente esta expresión (22 alturas de fuente con un suelo de 380), porque era la única que
+    // daba una barra de deslizador del tamaño que el dueño quería.
+    const float win_w = gizmo_panel_width();
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
     // 🚨 s287-bis — EL PANEL SE ABRÍA ESTRECHÍSIMO Y LA CAUSA ES UNA PESCADILLA.
     //

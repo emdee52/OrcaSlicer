@@ -1415,6 +1415,30 @@ the reference. The one deliberate exception is the mouth of a hole, which has to
 (`pp_*` in `GLGizmoPerforation.cpp`, `me_*` in `GLGizmoHoles.cpp`), never a resource, so it scales with
 the DPI without asking the resource packer for anything and a wrong glyph is fixed where it is used.
 
+### The panel width (one expression, in font heights)
+
+```cpp
+inline float gizmo_panel_width() { return std::max(380.f, 22.f * gizmo_u()); }
+```
+
+Support Zones' own expression, promoted to the standard (patch `62_panel-width.patch`). The first
+version was a fixed **360 px at the reference font** (`360 * font/13.5`), which is 26.7 font heights
+against Support Zones' 22 — so every slider in the migrated panels came out about a third wider than
+the one the owner was comparing them against. In font heights the panel also keeps its proportions at
+any font or DPI, which a pixel width does not, and the 380 floor stops a small font squeezing a panel
+into nothing.
+
+**Two rows were sized for the wider panel** and had to change with it, because they were the widest
+thing in their panel:
+
+- Holes' **head choice** (`None | Socket | Button | Sink`) lost its caption and sits on its own line.
+  Four head names plus the label column do not fit 396 px, and the names read on their own.
+- Hole walls' strengthening **`Strengthen all vertical holes` + `Clear strengthening`** went from one
+  row to one button per line — together they are ~415 px.
+
+Anything that must fit a panel width should be measured against `gizmo_panel_width()`, never against a
+number copied from a mockup.
+
 ### The recipe, as HF-3 does it
 
 ```cpp

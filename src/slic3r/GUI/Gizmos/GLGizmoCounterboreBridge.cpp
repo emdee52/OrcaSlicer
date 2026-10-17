@@ -240,7 +240,7 @@ void GLGizmoCounterboreBridge::render_strengthen_body()
     if (m_imgui->button(m_desc.at("reinforce_all")))
         gizmo_reinforce_all();
     m_imgui->disabled_end();
-    ImGui::SameLine();
+    // One button per line: the two labels together are wider than a standard panel.
     m_imgui->disabled_begin(applied == 0);
     if (m_imgui->button(m_desc.at("clear_holes")))
         gizmo_clear_reinforce();
