@@ -1869,3 +1869,62 @@ cmake -B build -DBUILD_TESTS=OFF      # put the tree back the way the build scri
 - **Merged** into `port/integration` as `21aa42f159` (user-tested 2026-10-17). Three product
   commits (`ee9e313d1f` MCP-3, `8f69ee6840` teardrop, `a1aeb336af` boolean) plus the `port:` docs
   commit; `port/PP-5-fixes` is pushed. Section 37 is closed.
+
+
+## 38. PP-6 - Lines reaches 90 degrees, and the proposal follows the drag (branch `port/PP-6`)
+
+Two follow-ups on Perforations the owner asked for after living with PP-1/PP-2, plus the MCP schema
+regeneration MCP-3's own note asked for.
+
+- **Lines turns through the full quarter.** The panel's angle bound was a single shared constant,
+  `PERFORATION_MAX_ANGLE_DEG = 45`, used in exactly one place. The reasoning behind the 45 (a family
+  plus its 90-degree cross covers every orientation) is true for a **pair** and false for a **single
+  family**: Grid at θ and at 90-θ is the same pair mirrored, but Lines at 100° is not Lines at 80° - it
+  is that family mirrored, which is different geometry on an asymmetric face. So 45° was only ever the
+  diagonal and **vertical lines were unreachable**. `PERFORATION_MAX_ANGLE_LINES_DEG = 90.0` now sits
+  beside it, the header comment says which bound belongs to which pattern, and `render_panel_body()`
+  picks `ANGLE_MAX` from the current kind. Nothing in the generator changed - `line_family()` rotates
+  the domain by `-theta` and always accepted any angle, so this was a UI bound, not a geometry limit.
+- **A kind change does not re-clamp the angle**, kept from PP-1's "no value is ever changed behind the
+  user's back": switching Lines(80°) → Grid leaves 80 in the field with the slider grabber pinned to
+  its 45° maximum (ImGui clamps the *grabber ratio* in `ScaleRatioFromValueT` and never writes a
+  clamped value back) and 80° is a perfectly valid Grid - it is the same two families as -10°. The
+  first slider touch pulls it into range.
+- **The proposal follows a drag.** `on_render()` rebuilt the yellow pattern only when
+  `! m_editing && m_pick_dirty`, where `m_editing` latched `ImGui::IsAnyItemActive()` and re-armed the
+  flag when the item went inactive - so the highlight only caught up when the mouse was released. The
+  sliders already set `m_pick_dirty` on **every** frame whose value changed, so the gate was the whole
+  delay. Its stated reason died with the cursor-following hover ghost that PP-2 replaced with a
+  preview anchored to a cached pick; `GLGizmoExtrude` has rebuilt its own preview live
+  (`m_preview_dirty`, no gate) since it was written. The gate and the `m_editing` member are gone.
+- **Cost, accepted, no throttle** (owner's call): a rebuild is the whole pipeline - coplanar-region
+  union, Clipper union of the pattern, triangulation, the PP-5 weld, then `GLModel::reset()` + a VBO
+  upload. At the extremes the UI allows (spacing 1 mm on a large face) that is a few frames per second
+  during the drag, and no throttle changes that: it is the mesh rebuild, not the frame rate. The
+  builder's own `MAX_FEATURES = 20000` is what bounds it; a frame-time guard on `m_pick_dirty` is the
+  upgrade path if it ever bites.
+- **The MCP `angle` description** now carries both ranges, since that string is what a client shows
+  the model: "0-90 for lines, 0-45 for grid. Honeycomb and circles are isotropic and ignore it."
+- **Verification.** `build_win.bat -s --tests` green; the four touched translation units are in the
+  log. `[PerforationPattern]` is 7 cases / 422 assertions and the new case is the orientation one:
+  on a 100 x 60 mm face the 0° slots come out wider than tall and the 90° slots taller than wide
+  (that is what "vertical lines" means, and it fails on the old bound - a 45° slot is a near-square
+  diagonal). Not asserted on purpose: equal area between 0° and 90°. On that rectangle the two happen
+  to agree (6 rows x 100 mm = 10 columns x 60 mm = 600 mm of slot) but that is the numbers lining up,
+  not a property - the strip phase differs between the two axes. Full `ctest --test-dir build/tests -C
+  Release`: **2411 passed, 0 failed** (the new case included; seven `RequiresApp`/plugin cases skipped
+  as usual).
+- **Also in this batch: `scripts/tools_schema.py` regenerated.** The static list the bridge serves
+  when the app is not reachable had **63** of the server's tools; the live server now reports **77**,
+  the 14 new ones being `cut_gizmo`, `edge_dress_gizmo`, `extrude_gizmo`, `find_holes`,
+  `get_app_preferences`, `get_log_tail`, `get_object_features`, `get_suppressed_dialogs`,
+  `holes_gizmo`, `list_orcaext_keys`, `mesh_boolean_gizmo`, `perforation_gizmo`,
+  `set_app_preference` and `ui_screenshot`. Regenerated against a build started with `ORCA_EXT_MCP=1`,
+  and the file proves which binary produced it: `perforation_gizmo`'s `angle` description is the new
+  one. Trap for the next time: the endpoint took about two minutes after launch before it accepted a
+  request, so a regen that gives up after 60 s gets a false "not running" (the listener is up but
+  `Invoke-WebRequest` times out); poll with `curl`/`urllib` and a longer budget.
+- **Branch state**: `port/PP-6`, branched from `port/integration` `d324e81f3c`. Product commit, a
+  `tools_schema.py` commit, then the `port:` docs+patch commit. Not merged and not pushed - the merge
+  is the owner's gate.
+

@@ -1,0 +1,126 @@
+diff --git a/src/libslic3r/PerforationPattern.hpp b/src/libslic3r/PerforationPattern.hpp
+index 8bb6760596..6d886d9767 100644
+--- a/src/libslic3r/PerforationPattern.hpp
++++ b/src/libslic3r/PerforationPattern.hpp
+@@ -19,7 +19,7 @@ enum class PerforationKind : int {
+ 
+ struct PerforationParams {
+     PerforationKind kind{PerforationKind::Honeycomb};
+-    double angle_deg{0.0};  // in-plane rotation, 0..45 deg
++    double angle_deg{0.0};  // in-plane rotation; the usable range depends on `kind`, see below
+     double spacing{6.0};    // hole / slot centre-to-centre distance, mm
+     double width{2.0};      // hole / slot width, mm
+     double margin{2.0};     // boundary inset from the face outline, mm
+@@ -32,10 +32,17 @@ struct PerforationParams {
+ // is the geometry, merged or not.
+ inline constexpr double PERFORATION_MIN_WALL = 1.0;
+ 
+-// Upper bound of the in-plane angle. A single line family plus its 90-degree cross covers
+-// every orientation within 0..45; beyond that only repeats the same set mirrored.
++// Upper bound of the in-plane angle for a pattern made of TWO families (Grid). A family crossed with
++// its own 90-degree cross is the same pair at `angle` and at `90 - angle` (mirrored), so 0..45 already
++// covers every distinct pair; beyond that only repeats the same set mirrored.
+ inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
+ 
++// [ORCAPORT:PP-6] Upper bound for a pattern made of ONE family (Lines). The pair argument above does
++// not apply to it: a single family at 100 deg is not the family at 80 deg, it is that family mirrored,
++// and on an asymmetric face that is different geometry. 0..90 is what turns the family from horizontal
++// to vertical; 90..180 would be the mirrored half, so the range stops at the vertical.
++inline constexpr double PERFORATION_MAX_ANGLE_LINES_DEG = 90.0;
++
+ // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
+ // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
+ // empty. The result never has overlapping polygons.
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+index 050542a2ad..1ef139b60b 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+@@ -626,10 +626,12 @@ void GLGizmoPerforation::on_render()
+     }
+     update_hover();
+ 
+-    // The proposed pattern is rebuilt only when it can have changed: a new pick, a value change, or the
+-    // release of the slider that set it. It is one mesh per hole, so building it every frame is what
+-    // made the old hover ghost flicker while a slider was dragged.
+-    if (! m_editing && m_pick_dirty) {
++    // [ORCAPORT:PP-6] The proposal follows the values LIVE, the drag included: a slider marks it dirty on
++    // every frame whose value changed. It used to wait for the release of the item that set it, which is
++    // why the highlight only caught up when the mouse was let go. The flicker that rule was written for
++    // came from the old cursor-following hover ghost, gone since PP-2, and Extrude already rebuilds its
++    // preview this way.
++    if (m_pick_dirty) {
+         rebuild_proposed_pattern();
+         m_pick_dirty = false;
+     }
+@@ -730,7 +732,11 @@ void GLGizmoPerforation::render_panel_body()
+     constexpr double SPACING_MIN = 1.0,  SPACING_MAX = 25.0;
+     constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
+     constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
+-    constexpr double ANGLE_MIN   = 0.0,  ANGLE_MAX   = PERFORATION_MAX_ANGLE_DEG;
++    constexpr double ANGLE_MIN   = 0.0;
++    // [ORCAPORT:PP-6] A single family (Lines) gets the full quarter, horizontal -> vertical; Grid keeps
++    // 0..45 because its own 90-degree cross already covers the rest (see PerforationPattern.hpp).
++    const double     ANGLE_MAX   = m_params.kind == PerforationKind::Lines ? PERFORATION_MAX_ANGLE_LINES_DEG
++                                                                          : PERFORATION_MAX_ANGLE_DEG;
+ 
+     // Pattern: the four choices as icons with the name on hover (section 28 records the icon button
+     // standard). Drawn without a caption, like the Extrude panel's own mode row.
+@@ -828,14 +834,10 @@ void GLGizmoPerforation::render_panel_body()
+     if (show_horizontal)
+         gizmo_hint(m_desc.at("horizontal").utf8_str().data(), GizmoCol::Warn);
+ 
+-    // The proposed pattern is not rebuilt while an item is being edited, so the preview cannot flicker
+-    // and the walls-too-thin notice settles after the drag (the slider status this used to read went
+-    // away with the stock slider; "some item in this panel is active" is the same condition). Releasing
+-    // the item is what makes the proposal catch up.
+-    const bool editing = ImGui::IsAnyItemActive();
+-    if (m_editing && ! editing)
+-        m_pick_dirty = true;
+-    m_editing = editing;
++    // [ORCAPORT:PP-6] Every row above marks the proposal dirty on the frame the value changes, and
++    // on_render() rebuilds it on the next one, so the yellow pattern tracks the sliders live. Nothing is
++    // deferred to the release of the item any more, and the walls-too-thin notice below reads the
++    // parameters directly, so it was always live.
+ 
+     // A changed value (or pattern) is no longer what the last Cut applied, so the proposal comes back.
+     if (m_params.kind != before.kind || m_params.invert != before.invert || m_params.spacing != before.spacing ||
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
+index bbd49eb586..781b4990b2 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
+@@ -103,8 +103,10 @@ private:
+     GLModel              m_pattern_proposed;   // the pattern the current values would cut (yellow)
+     GLModel              m_patterns_applied;   // every committed perforation (red)
+     Pick                 m_pick;
+-    // The proposed pattern is rebuilt only when it can have changed: a new pick, a value change, or
+-    // the release of the slider that set it. One mesh per hole is not something to build every frame.
++    // The proposed pattern is rebuilt whenever this is set: a new pick, or a value change. [ORCAPORT:PP-6]
++    // A slider sets it on every frame it changes, so the preview follows a drag live. One mesh per hole
++    // is not free, so a tiny spacing on a large face rebuilds slowly - the builder's own MAX_FEATURES cap
++    // bounds it. A frame-time guard is the upgrade path if that ever bites.
+     bool                 m_pick_dirty{ true };
+     // False while the proposal IS what was just cut: the red applied overlay already marks that area,
+     // and yellow over red reads as neither colour. Any value change (or a new pick) brings it back.
+@@ -117,9 +119,6 @@ private:
+     FaceRegionCache      m_face_cache;
+     indexed_triangle_set m_merged_its;
+     bool                 m_merged_dirty{ true };
+-    // True while a slider is being dragged: the proposed pattern is not rebuilt until release, so the
+-    // preview cannot flicker and the params-driven notice settles after the drag.
+-    bool                 m_editing{ false };
+     int                  m_old_volume_count{ -1 };
+     const ModelObject*   m_old_model_object{ nullptr };
+     std::map<std::string, wxString> m_desc;
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+index 673e7209b7..cfb380b032 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+@@ -922,7 +922,7 @@ void OrcaMCPServer::register_gizmo_tools()
+                 {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
+                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
+                 {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
+-                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
++                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees: 0-90 for lines, 0-45 for grid. Honeycomb and circles are isotropic and ignore it."}}},
+                 {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
+                 {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
+                 {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},
