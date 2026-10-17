@@ -52,10 +52,14 @@ constexpr float GHOST_MIX = 0.62f;
 constexpr double FILL_RADIUS_MIN = 0.5;
 constexpr double FILL_RADIUS_MAX = 50.0;
 
-// [ORCAPORT:HF-3] Extrude-face limits, in mm. Height must stay positive; the offset may be negative
+// [ORCAPORT:HF-3] Extrude-face limits, in mm. The distance is signed (positive grows out of the face,
+// negative cuts into it); the offset may be negative
 // (it shrinks the outline) as long as the shape survives, which extrude_outline() checks.
-constexpr double EXTRUDE_HEIGHT_MIN = 0.05;
-constexpr double EXTRUDE_HEIGHT_MAX = 200.0;
+// [ORCAPORT:HF-4] How far the picked face is grown, in mm. SIGNED: positive grows a solid out of the
+// face, negative cuts a pocket into it. The negative side only has to reach through a real part, which
+// is what fixes its bound; the typed field beside the slider is what sets a precise value.
+constexpr double EXTRUDE_DISTANCE_MIN = -50.0;
+constexpr double EXTRUDE_DISTANCE_MAX = 200.0;
 constexpr double EXTRUDE_OFFSET_MIN = -20.0;
 constexpr double EXTRUDE_OFFSET_MAX = 20.0;
 
@@ -381,9 +385,16 @@ indexed_triangle_set GLGizmoExtrude::picked_prism(std::string *why) const
     if (outline.empty())
         return fail(_u8L("That face has no holes.").c_str());
 
-    // Out of the face, or half out and half into the model.
-    const double h  = m_extrude_height;
-    const double z0 = m_extrude_both ? m_pick.face_z - 0.5 * h : m_pick.face_z;
+    // Out of the face, or half out and half into the model. `face_z` grows OUT of the face, so a
+    // positive distance starts at the face and a negative one starts inside the model - the same
+    // prism either way, and the sign alone decides whether it is added as a solid or as a cut (see
+    // create_from_pick). Both directions straddles the face, which the sign cannot change, so it
+    // takes the magnitude.
+    const double d = m_extrude_distance;
+    if (std::abs(d) < 1e-9)
+        return fail(_u8L("Set a distance: a positive one grows out of the face, a negative one cuts into it.").c_str());
+    const double h  = std::abs(d);
+    const double z0 = m_extrude_both ? m_pick.face_z - 0.5 * h : m_pick.face_z + std::min(d, 0.);
     indexed_triangle_set out = SurfaceExtrude::extrude_outline(outline, m_extrude_offset, z0, h);
     if (out.indices.empty())
         return fail(_u8L("With that offset nothing is left of the shape.").c_str());
@@ -502,7 +513,7 @@ void GLGizmoExtrude::rebuild_preview()
         // [ORCAPORT:HF-3] Three overlays, in the fork's colours:
         //   teal   - the face under the cursor, so a click's target is visible before you commit;
         //   green  - the face you picked;
-        //   orange - the solid the current Height/Offset would make.
+        //   orange - the solid the current Distance/Offset would make.
         // The candidate is skipped when the cursor is already on the picked facet: the teal would sit
         // exactly under the green and only muddy it.
         if (m_hover.valid && ! (m_pick.valid && m_pick.mv == m_hover.mv && m_pick.facet == m_hover.facet)) {
@@ -567,7 +578,8 @@ void GLGizmoExtrude::rebuild_preview()
     }
 }
 
-void GLGizmoExtrude::add_named_fill(const std::string &name, const indexed_triangle_set &its, const std::string &action)
+void GLGizmoExtrude::add_named_fill(const std::string &name, const indexed_triangle_set &its, const std::string &action,
+                                    bool negative)
 {
     ModelObject *mo = model_object();
     const int    oi = object_idx_of(m_parent.get_selection(), mo);
@@ -577,7 +589,10 @@ void GLGizmoExtrude::add_named_fill(const std::string &name, const indexed_trian
     Plater *plater = wxGetApp().plater();
     plater->take_snapshot(action);
     indexed_triangle_set copy = its;
-    ModelVolume         *v    = mo->add_volume(TriangleMesh(std::move(copy)), ModelVolumeType::MODEL_PART, false);
+    // A negative distance adds a CUT, the same NEGATIVE_VOLUME the other fork gizmos use; it is named
+    // like any other extrude, so is_fill_volume() still claims it (applied count, red preview, removal).
+    ModelVolume *v = mo->add_volume(TriangleMesh(std::move(copy)),
+                                    negative ? ModelVolumeType::NEGATIVE_VOLUME : ModelVolumeType::MODEL_PART, false);
     v->name = name;
     if (ObjectList *ol = wxGetApp().obj_list()) {
         ol->add_volumes_to_object_in_list(oi);
@@ -609,10 +624,10 @@ void GLGizmoExtrude::set_mode(Mode m)
     m_parent.set_as_dirty();
 }
 
-void GLGizmoExtrude::set_extrude_height(double h)
+void GLGizmoExtrude::set_extrude_distance(double d)
 {
-    m_extrude_height = std::clamp(h, EXTRUDE_HEIGHT_MIN, EXTRUDE_HEIGHT_MAX);
-    m_preview_dirty  = true;
+    m_extrude_distance = std::clamp(d, EXTRUDE_DISTANCE_MIN, EXTRUDE_DISTANCE_MAX);
+    m_preview_dirty    = true;
     m_parent.set_as_dirty();
 }
 
@@ -645,7 +660,7 @@ bool GLGizmoExtrude::gizmo_hover_at(const Vec2d &screen_pos)
     return m_hover.valid;
 }
 
-// [ORCAPORT:HF-3] Clicking a face PICKS it. Nothing is added until create_from_pick(), so Height and
+// [ORCAPORT:HF-3] Clicking a face PICKS it. Nothing is added until create_from_pick(), so Distance and
 // Offset can be dialled in against a live preview first - the release note's workflow.
 bool GLGizmoExtrude::pick_at(const Vec2d &screen_pos)
 {
@@ -684,7 +699,11 @@ bool GLGizmoExtrude::create_from_pick()
     const indexed_triangle_set its = picked_prism();
     if (its.indices.empty())
         return false;
-    add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Extrude face"));
+    // The sign picks the volume type: a positive distance adds a solid, a negative one a cut. Both
+    // directions always produces a solid that straddles the face.
+    const bool cut = ! m_extrude_both && m_extrude_distance < 0.;
+    add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its,
+                   cut ? _u8L("Cut into face") : _u8L("Extrude face"), cut);
     // The pick is kept, so the same face can be extruded again with different values; the button and
     // right-click/Esc are the only ways in and out.
     m_preview_dirty = true;
@@ -924,7 +943,7 @@ bool GLGizmoExtrude::on_mouse(const wxMouseEvent &mouse_event)
         gizmo_hover_at(m_parent.get_local_mouse_position());
         return gizmo_remove_hovered();
     }
-    // [ORCAPORT:HF-3] Extrude face: a click PICKS the face, it does not extrude. Height/Offset are
+    // [ORCAPORT:HF-3] Extrude face: a click PICKS the face, it does not extrude. Distance/Offset are
     // dialled in against the preview and the panel's Extrude button commits. Right-click drops the
     // pick instead of removing a fill.
     if (m_mode == Mode::ExtrudeFace) {
@@ -1027,11 +1046,11 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
 
         ImGui::Separator();
 
-        float h = float(m_extrude_height);
-        if (gizmo_row_slider("##eh", _u8L("Height").c_str(), &h, float(EXTRUDE_HEIGHT_MIN), float(EXTRUDE_HEIGHT_MAX),
+        float h = float(m_extrude_distance);
+        if (gizmo_row_slider("##eh", _u8L("Distance").c_str(), &h, float(EXTRUDE_DISTANCE_MIN), float(EXTRUDE_DISTANCE_MAX),
                              "%.2f", label_w,
-                             _u8L("How thick the new solid is, measured out of the face. With Both directions on, half goes out and half into the model.").c_str()))
-            set_extrude_height(h);
+                             _u8L("How far the new geometry reaches along the face normal, in mm: positive grows a solid out of the face, negative cuts a pocket into it. With Both directions on the sign is ignored and half goes each way.").c_str()))
+            set_extrude_distance(h);
 
         float off = float(m_extrude_offset);
         if (gizmo_row_slider("##eo", _u8L("Offset").c_str(), &off, float(EXTRUDE_OFFSET_MIN), float(EXTRUDE_OFFSET_MAX),
@@ -1041,12 +1060,12 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
 
         bool both = m_extrude_both;
         if (gizmo_row_switch("##eb", _u8L("Both directions").c_str(), &both,
-                             _u8L("Splits the height: half grows out of the face, half goes into the model, so the solid passes through the face without being moved.").c_str()))
+                             _u8L("Splits the distance: half grows out of the face, half goes into the model, so the solid passes through the face without being moved. The sign of the distance is ignored.").c_str()))
             set_extrude_both(both);
 
         // Nothing picked, a pick that cannot be extruded, or go.
         if (! m_pick.valid) {
-            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the height and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
+            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the distance and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
         } else if (! m_pick_why.empty()) {
             gizmo_hint(m_pick_why.c_str(), GizmoCol::Warn);
         }

@@ -64,8 +64,8 @@ public:
     void   clear_pick();
     bool   pick_valid() const { return m_pick.valid; }
     bool   create_from_pick();
-    double get_extrude_height() const { return m_extrude_height; }
-    void   set_extrude_height(double h);
+    double get_extrude_distance() const { return m_extrude_distance; }
+    void   set_extrude_distance(double d);
     double get_extrude_offset() const { return m_extrude_offset; }
     void   set_extrude_offset(double off);
     bool   get_extrude_holes() const { return m_extrude_holes; }
@@ -173,15 +173,18 @@ private:
     // Volume index of an applied plug that already covers `hit_world`, or -1.
     int          find_covering_fill(const Vec3d& hit_world) const;
     void         rebuild_preview();
-    void         add_named_fill(const std::string& name, const indexed_triangle_set& its, const std::string& action);
+    // `negative` adds the volume as a cut (a negative distance) instead of a solid.
+    void         add_named_fill(const std::string& name, const indexed_triangle_set& its, const std::string& action,
+                                bool negative = false);
     int          next_feature_id() const;
 
     double m_radius{ 2.5 }; // brush reach in world mm, converted to mesh units per volume
     std::map<std::string, wxString> m_desc;
 
-    // [ORCAPORT:HF-3] Mode and the extrude-face parameters. Height and offset are in mm.
+    // [ORCAPORT:HF-3] Mode and the extrude-face parameters. Distance and offset are in mm; the
+    // distance is SIGNED - positive grows out of the face, negative cuts into the model.
     Mode   m_mode{ Mode::ExtrudeFace };
-    double m_extrude_height{ 5.0 };
+    double m_extrude_distance{ 5.0 };
     double m_extrude_offset{ 0.0 };
     bool   m_extrude_holes{ false }; // extrude only the holes of the face, each one filled
     bool   m_extrude_both{ false };  // half out of the face, half into the model
