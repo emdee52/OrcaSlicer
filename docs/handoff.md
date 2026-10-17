@@ -1373,14 +1373,36 @@ widgets are consolidated.
 (`void(ImDrawList *, const ImVec2 &, float, ImU32)`), so the chrome is shared and each gizmo keeps its
 own iconography — no `std::function`.
 
-**The one margin rule.** Where a glyph is a pattern in a plate, the pattern box is
-`0.21..1-0.21` of the glyph box for **every** variant: the plate's own rect is `0.12..0.88`, so each
-pattern keeps the same wall to the border and no variant reads as crammed against it. Perforations
-learned this the hard way — Grid's bars and the Honeycomb clip each had their own margin and looked
-wrong next to Lines, which was the reference. The Honeycomb lattice is generated (pointy-top, pitch
-`1.732·r` × `1.5·r`, alternate rows offset half a pitch) and clipped with `ImDrawList::PushClipRect`,
-so the border cells are genuinely cut and the cell count follows the size; cell radius is the lattice
-radius minus a wall, which is what keeps the cells reading as cells rather than one blob.
+**The plate-and-pattern language.** Both icon rows that exist so far (Perforations' four patterns,
+Holes' three operations) are a square plate with something cut into it, and the plate plus its margin
+are shared: `gizmo_glyph_plate()` and `kGizmoGlyphInset` / `kGizmoGlyphStroke` in `GizmoStyle.hpp`.
+
+**The one margin rule.** The pattern box is `kGizmoGlyphInset..1-kGizmoGlyphInset` (0.21–0.79) of the
+glyph box for **every** variant; the plate's own rect is `0.12..0.88`, so each pattern keeps the same
+wall to the border and no variant reads as crammed against it. Perforations learned this the hard way —
+Grid's bars and the Honeycomb clip each had their own margin and looked wrong next to Lines, which was
+the reference. The one deliberate exception is the mouth of a hole, which has to reach the face.
+
+**Two size traps, both of which have already bitten:**
+
+- **Clamp any gap or stroke to a minimum pixel width.** A gap that is a fraction of the glyph
+  (`0.019·s` for the honeycomb cell wall) is 0.4 px on a 28 px button, and ImGui does not antialias two
+  adjacent filled polygons against each other — the gap simply vanishes and the comb stops reading as
+  cells. `draw_glyph` in Support Zones protects its strokes the same way: `max(1.2, s·0.075)`. This is
+  why the honeycomb looked different at 28 px from how it looked at 40 px even though not a single
+  coordinate had changed.
+- **Check the glyph at the real size, not in the mockup.** The mockups are SVG, which antialiases; the
+  panels are drawn with `ImDrawList`, which does not. A mockup can therefore show a gap that will not
+  exist on screen. `ui_screenshot` exists for exactly this: capture the panel as the app draws it.
+- **This ImGui (1.83) has no `AddConcavePolyFilled`.** `AddConvexPolyFilled` fan-triangulates, so a
+  concave outline comes out as its own inverse — the Holes chamfer glyph's bucket-shaped hole drew as a
+  solid block with a notch until it was split into three convex pieces (a rect plus two flare
+  triangles) overlapped by half a pixel, since two adjacent fills of one colour otherwise leave the
+  background visible between them.
+
+**Where each drawing lives.** Anything drawn is *code*, in the gizmo that owns the iconography
+(`pp_*` in `GLGizmoPerforation.cpp`, `me_*` in `GLGizmoHoles.cpp`), never a resource, so it scales with
+the DPI without asking the resource packer for anything and a wrong glyph is fixed where it is used.
 
 ### The recipe, as HF-3 does it
 

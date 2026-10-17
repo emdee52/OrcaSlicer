@@ -32,36 +32,17 @@ const ColorRGBA GHOST_COLOR(0.90f, 0.35f, 0.20f, 0.50f);
 
 const char *const PERFORATION_NAME = "Perforation";
 
-// [ORCAPORT:PP-1] The four pattern icons. A flat square plate with the pattern cut through it, drawn
-// straight into the draw list like the Support Zones glyphs, so it scales with the DPI without a
-// resource.
-//
-// 🔑 ONE MARGIN FOR ALL FOUR: the pattern box runs PP_INSET..1-PP_INSET of the glyph box, and every
-// glyph - the slots of Lines, the bars of Grid, the outer tangent of Circles and the clip rect of the
-// Honeycomb lattice - starts and ends on that same line. Lines was the reference (its slots already
-// sat there); Grid and Honeycomb used to reach further out, which made them read as crammed against
-// the plate's border next to the other two.
-constexpr float PP_INSET        = 0.21f;   // pattern box, of the glyph box
-constexpr float PP_PLATE_IN     = 0.12f;   // plate rect, and its corner rounding
-constexpr float PP_PLATE_OUT    = 0.88f;
-constexpr float PP_PLATE_R      = 0.06f;
-constexpr float PP_PLATE_STROKE = 0.0525f;
-constexpr float PP_PI_F         = 3.14159265358979323846f;
-
-// The material: a translucent plate with a stroked border. Same in all four glyphs.
-void pp_plate(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
-{
-    const ImVec2 a(p.x + PP_PLATE_IN * s, p.y + PP_PLATE_IN * s);
-    const ImVec2 b(p.x + PP_PLATE_OUT * s, p.y + PP_PLATE_OUT * s);
-    dl->AddRectFilled(a, b, (col & ~IM_COL32_A_MASK) | (66u << IM_COL32_A_SHIFT), PP_PLATE_R * s);
-    dl->AddRect(a, b, col, PP_PLATE_R * s, 0, PP_PLATE_STROKE * s);
-}
+// [ORCAPORT:PP-1] The four pattern glyphs. A flat square plate with the pattern cut through it,
+// drawn straight into the draw list like the Support Zones glyphs, so it scales with the DPI without
+// a resource. The plate and the shared margin live in GizmoStyle.hpp - the Holes operation glyphs
+// are built on the same two.
+constexpr float PP_PI_F = 3.14159265358979323846f;
 
 // Lines - three parallel slots.
 void pp_lines(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 {
-    pp_plate(dl, p, s, col);
-    const float x0 = p.x + PP_INSET * s, x1 = p.x + (1.f - PP_INSET) * s;
+    gizmo_glyph_plate(dl, p, s, col);
+    const float x0 = p.x + kGizmoGlyphInset * s, x1 = p.x + (1.f - kGizmoGlyphInset) * s;
     const float h = 0.095f * s, r = 0.0475f * s;
     for (int i = 0; i < 3; ++i) {
         const float y = p.y + (0.2625f + 0.19f * float(i)) * s;
@@ -72,8 +53,8 @@ void pp_lines(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 // Grid - two families of slots crossing, i.e. the intersections are the holes.
 void pp_grid(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 {
-    pp_plate(dl, p, s, col);
-    const float a = PP_INSET * s, b = (1.f - PP_INSET) * s, t = 0.09f * s;
+    gizmo_glyph_plate(dl, p, s, col);
+    const float a = kGizmoGlyphInset * s, b = (1.f - kGizmoGlyphInset) * s, t = 0.09f * s;
     const float u1 = 0.34f * s, u2 = 0.57f * s;
     dl->AddRectFilled(ImVec2(p.x + a, p.y + u1), ImVec2(p.x + b, p.y + u1 + t), col);
     dl->AddRectFilled(ImVec2(p.x + a, p.y + u2), ImVec2(p.x + b, p.y + u2 + t), col);
@@ -84,7 +65,7 @@ void pp_grid(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 // Circles - four round holes.
 void pp_circles(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 {
-    pp_plate(dl, p, s, col);
+    gizmo_glyph_plate(dl, p, s, col);
     const float r = 0.1225f * s;
     for (int j = 0; j < 2; ++j)
         for (int i = 0; i < 2; ++i)
@@ -92,16 +73,22 @@ void pp_circles(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
                                        p.y + (0.3325f + 0.335f * float(j)) * s), r, col, 18);
 }
 
-// Honeycomb - a generated closed-packed lattice, CLIPPED to the same pattern box as the other three so
-// the cells at the border are cut there instead of running into the plate. The cell radius is the
-// lattice radius minus a wall, which is what keeps the cells reading as cells instead of one blob.
+// Honeycomb - a generated close-packed lattice, CLIPPED to the shared pattern box so the cells at the
+// border are cut there instead of running into the plate.
 void pp_honeycomb(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 {
-    pp_plate(dl, p, s, col);
-    const float r_lat = 0.155f * s, r_cell = 0.136f * s;
+    gizmo_glyph_plate(dl, p, s, col);
+    const float r_lat = 0.155f * s;
+    // 🔑 The wall between cells is clamped to a minimum PIXEL width. As a fraction of the glyph it is
+    // 0.019*s, which is 0.4 px on a 28 px button - and ImGui does not antialias two adjacent filled
+    // polygons against each other, so that gap vanished and the comb stopped reading as cells at all:
+    // it became a lattice of hairlines sitting on the plate. draw_glyph protects its strokes the same
+    // way (max(1.2, s*0.075)). The floor is why this glyph looks the same at 28 px as it does at 40.
+    const float wall   = std::max(1.1f, 0.019f * s);
+    const float r_cell = std::max(r_lat - wall, 0.5f);
     const float xs = 1.732f * r_lat, ys = 1.5f * r_lat, off = 0.866f * r_lat;
-    const ImVec2 clip0(p.x + PP_INSET * s, p.y + PP_INSET * s);
-    const ImVec2 clip1(p.x + (1.f - PP_INSET) * s, p.y + (1.f - PP_INSET) * s);
+    const ImVec2 clip0(p.x + kGizmoGlyphInset * s, p.y + kGizmoGlyphInset * s);
+    const ImVec2 clip1(p.x + (1.f - kGizmoGlyphInset) * s, p.y + (1.f - kGizmoGlyphInset) * s);
     dl->PushClipRect(clip0, clip1, true);
     for (int j = -3; j <= 4; ++j) {
         const float cy = p.y + 0.5f * s + ys * float(j);

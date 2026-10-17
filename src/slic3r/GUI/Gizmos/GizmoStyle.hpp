@@ -425,6 +425,27 @@ inline int gizmo_row_segment(const char *id, const char *caption, const char *co
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [ORCAPORT:PP-1] The plate-and-pattern glyph language: a square plate with something cut into it,
+// drawn in code so it scales with the DPI without a resource.
+//
+// 🔑 ONE MARGIN FOR EVERY VARIANT. The pattern box runs kGizmoGlyphInset..1-kGizmoGlyphInset of the
+// glyph box, and the plate's own rect is 0.12..0.88, so each pattern keeps the same wall to the
+// border and no variant reads as crammed against it. Perforations learned this the hard way: Grid's
+// bars and the Honeycomb clip each had their own margin and looked wrong next to Lines, which was
+// the reference. The mouth of a hole is the one deliberate exception - it has to reach the face.
+// ─────────────────────────────────────────────────────────────────────────────
+constexpr float kGizmoGlyphInset  = 0.21f;   // pattern box, of the glyph box
+constexpr float kGizmoGlyphStroke = 0.0525f; // plate outline, of the glyph box
+
+inline void gizmo_glyph_plate(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    const ImVec2 a(p.x + 0.12f * s, p.y + 0.12f * s);
+    const ImVec2 b(p.x + 0.88f * s, p.y + 0.88f * s);
+    dl->AddRectFilled(a, b, (col & ~IM_COL32_A_MASK) | (66u << IM_COL32_A_SHIFT), 0.06f * s);
+    dl->AddRect(a, b, col, 0.06f * s, 0, kGizmoGlyphStroke * s);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // [ORCAPORT:PP-1] The icon button: the shape the Perforations pattern row introduced.
 //
 // Size and glyph fill are THE standard for this kind of button - a square icon toggle whose whole

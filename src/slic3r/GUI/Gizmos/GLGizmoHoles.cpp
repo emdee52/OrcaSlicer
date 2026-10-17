@@ -34,6 +34,57 @@ namespace GUI {
 
 namespace {
 
+// [ORCAPORT:ME-2] The three operation glyphs. The same square plate as the pattern icons, with the
+// operation's feature cut into it, and everything inside the shared pattern box - except the mouth of
+// the hole, which has to reach the face to mean anything.
+//
+// Teardrop and Bore/Pocket are the shapes of the hole; Chamfer/Fillet is what the MOUTH looks like, so
+// it is drawn in SECTION: the hole is the gap between two walls and the dressing is the profile where
+// it breaks the surface. An outer corner (CAD's edge chamfer) or a flat band around the rim both read
+// as "edge chamfer", which is the wrong operation - this one dresses a hole's rim.
+void me_teardrop(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    // A hole with a pointed roof: the cone is what makes it printable without support.
+    const ImVec2 tri[3] = {ImVec2(p.x + 0.50f * s, p.y + 0.21f * s),
+                           ImVec2(p.x + 0.652f * s, p.y + 0.565f * s),
+                           ImVec2(p.x + 0.348f * s, p.y + 0.565f * s)};
+    dl->AddConvexPolyFilled(tri, 3, col);
+    dl->AddCircleFilled(ImVec2(p.x + 0.50f * s, p.y + 0.63f * s), 0.165f * s, col, 22);
+}
+
+void me_bore(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    // A stepped bore: the shaft, then the counterbore ring standing off it.
+    dl->AddCircleFilled(ImVec2(p.x + 0.50f * s, p.y + 0.50f * s), 0.13f * s, col, 22);
+    dl->AddCircle(ImVec2(p.x + 0.50f * s, p.y + 0.50f * s), (0.5f - kGizmoGlyphInset) * s, col, 26,
+                  std::max(1.2f, 0.075f * s));
+}
+
+// A chamfered mouth, in section: the hole opens on the top face with a 45 deg flare and stops at the
+// middle, so the plate keeps its silhouette. This is the profile the panel's Chamfer sub-button
+// produces on a real hole.
+void me_chamfer(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    // 🔑 Three convex pieces, not one polygon. A bucket-shaped hole is CONCAVE, and this ImGui (1.83)
+    // has no AddConcavePolyFilled - it arrived later - so AddConvexPolyFilled triangulates it as a fan
+    // and draws the inverse: a solid block with a notch instead of a hole with a flared mouth. The
+    // pieces overlap by half a pixel, because two adjacent fills of the same colour otherwise leave
+    // the background visible in the gap between them (the same trap as the honeycomb cell wall).
+    const float ov     = 0.5f; // overlap, in pixels
+    const float wl     = p.x + 0.39f * s, wr = p.x + 0.61f * s;
+    const float top    = p.y + 0.12f * s; // the top face
+    const float dressY = p.y + 0.25f * s; // where the 45 deg flare meets the wall
+    const float bot    = p.y + 0.54f * s; // the closed bottom
+    dl->AddRectFilled(ImVec2(wl, top), ImVec2(wr, bot), col);
+    const ImVec2 flare_l[3] = {ImVec2(p.x + 0.26f * s, top), ImVec2(wl + ov, top), ImVec2(wl + ov, dressY)};
+    const ImVec2 flare_r[3] = {ImVec2(p.x + 0.74f * s, top), ImVec2(wr - ov, top), ImVec2(wr - ov, dressY)};
+    dl->AddConvexPolyFilled(flare_l, 3, col);
+    dl->AddConvexPolyFilled(flare_r, 3, col);
+}
+
 constexpr const char *TEARDROP_NAME = "Teardrop";
 constexpr const char *POCKET_NAME   = "HolePocket";
 constexpr const char *FACE_POCKET_NAME = "FacePocket";
@@ -1664,17 +1715,22 @@ void GLGizmoHoles::render_panel_body()
         label_w = std::max(label_w, ImGui::CalcTextSize(m_desc.at(key).utf8_str().data()).x);
     label_w += ImGui::GetStyle().ItemSpacing.x * 0.5f;
 
-    // Operation: Teardrop | Bore/Pocket | Chamfer/Fillet. A small exclusive choice, so segmented
-    // (section 28), and drawn without a caption like the Extrude panel's own mode row - the three
-    // labels plus the widest parameter caption would not both fit the label column.
+    // Operation: Teardrop | Bore/Pocket | Chamfer/Fillet, as icon buttons with the name on hover -
+    // the same convention as the Perforations pattern row. Drawn without a caption, like the Extrude
+    // panel's own mode row: the three icons would not also fit a caption and its label column.
     {
-        const std::string o0 = m_desc.at("op_teardrop").utf8_str().data();
-        const std::string o1 = m_desc.at("op_bore").utf8_str().data();
-        const std::string o2 = m_desc.at("op_chamfer_fillet").utf8_str().data();
-        const char       *labels[] = {o0.c_str(), o1.c_str(), o2.c_str()};
-        const int         sel      = gizmo_segment("##operation", labels, 3, int(m_operation));
-        if (sel >= 0)
-            set_operation(HoleOperation(sel));
+        void (*const drawers[3])(ImDrawList *, const ImVec2 &, float, ImU32) =
+            {me_teardrop, me_bore, me_chamfer};
+        // The names are the ones the buttons already used, so they are translated and cost nothing new.
+        const std::string names[3] = {m_desc.at("op_teardrop").utf8_str().data(),
+                                      m_desc.at("op_bore").utf8_str().data(),
+                                      m_desc.at("op_chamfer_fillet").utf8_str().data()};
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0)
+                ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
+            if (gizmo_icon_toggle(names[i].c_str(), int(m_operation) == i, names[i].c_str(), drawers[i]))
+                set_operation(HoleOperation(i));
+        }
     }
 
     // Place a new pocket on any flat face, instead of only reworking detected holes. This only
