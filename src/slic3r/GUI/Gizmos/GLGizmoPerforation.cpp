@@ -73,29 +73,33 @@ void pp_circles(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
                                        p.y + (0.3325f + 0.335f * float(j)) * s), r, col, 18);
 }
 
-// Honeycomb - a generated close-packed lattice, CLIPPED to the shared pattern box so the cells at the
-// border are cut there instead of running into the plate.
+// Honeycomb - a 2/3/2 cluster of cells, CLIPPED to the shared pattern box so the outer cells are cut
+// at the border.
+//
+// 🔑 Not an infinite clipped lattice. A lattice looks symmetric on paper but the row stagger puts the
+// two edge cuts at different distances from the centre, and the eye reads the whole comb as sitting
+// off-centre in the plate. A 2/3/2 cluster is mirror-symmetric about both axes by construction, so it
+// cannot be off-centre whatever the size, and it still fills the box and gets cut at its edge.
 void pp_honeycomb(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
 {
     gizmo_glyph_plate(dl, p, s, col);
-    const float r_lat = 0.155f * s;
-    // 🔑 The wall between cells is clamped to a minimum PIXEL width. As a fraction of the glyph it is
-    // 0.019*s, which is 0.4 px on a 28 px button - and ImGui does not antialias two adjacent filled
-    // polygons against each other, so that gap vanished and the comb stopped reading as cells at all:
-    // it became a lattice of hairlines sitting on the plate. draw_glyph protects its strokes the same
-    // way (max(1.2, s*0.075)). The floor is why this glyph looks the same at 28 px as it does at 40.
-    const float wall   = std::max(1.1f, 0.019f * s);
-    const float r_cell = std::max(r_lat - wall, 0.5f);
-    const float xs = 1.732f * r_lat, ys = 1.5f * r_lat, off = 0.866f * r_lat;
+    // A 1.1 px wall is the minimum that survives: two adjacent filled polygons in ImGui do not
+    // antialias against each other, so a fraction-of-a-pixel gap simply disappears and the comb stops
+    // reading as cells. draw_glyph protects its strokes the same way (max(1.2, s*0.075)).
+    const float r      = 0.135f * s;                 // lattice radius; cell pitch = 1.732 r
+    const float wall   = std::max(1.1f, 0.019f * s); // the gap between cells, in PIXELS
+    const float r_cell = r - wall / 1.732f;          // shrinking r shrinks the across-flats width by 1.732
+    const float pitch  = 1.732f * r;                 // centre to centre, same row
+    const float rowh   = 1.5f * r;                   // centre to centre, adjacent rows
+    const ImVec2 c(p.x + 0.5f * s, p.y + 0.5f * s);
     const ImVec2 clip0(p.x + kGizmoGlyphInset * s, p.y + kGizmoGlyphInset * s);
     const ImVec2 clip1(p.x + (1.f - kGizmoGlyphInset) * s, p.y + (1.f - kGizmoGlyphInset) * s);
     dl->PushClipRect(clip0, clip1, true);
-    for (int j = -3; j <= 4; ++j) {
-        const float cy = p.y + 0.5f * s + ys * float(j);
-        for (int i = -3; i <= 3; ++i) {
-            const float cx = p.x + 0.5f * s + xs * float(i) + (j % 2 != 0 ? off : 0.f);
-            if (cx + r_cell < clip0.x || cx - r_cell > clip1.x || cy + r_cell < clip0.y || cy - r_cell > clip1.y)
-                continue;
+    for (int j = -1; j <= 1; ++j) {
+        const float cy = c.y + rowh * float(j);
+        const int   n  = (j == 0) ? 3 : 2; // 3 cells in the middle row, 2 above and below
+        for (int i = 0; i < n; ++i) {
+            const float cx = c.x + pitch * (float(i) - 0.5f * float(n - 1));
             ImVec2 pts[6];
             for (int k = 0; k < 6; ++k) {
                 const float a = PP_PI_F / 180.f * (60.f * float(k) - 90.f);
