@@ -106,6 +106,9 @@ private:
     void               rebuild_preview();
     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
     int                next_feature_id() const;
+    // [ORCAPORT:EF-1] The panel body, in its own function so the style push/pop in
+    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
+    void               render_panel_body();
     // Source key of an edge / loop, and the applied feature volume that carries it (-1 if none).
     static std::string tag_for_edge(const HoverEdge& edge);
     std::string        tag_for_loop(const std::vector<LoopFrame>& loop) const;

@@ -4,10 +4,11 @@
 // it, which is the only honest reason to share anything. Project owner's framing: "Orca's style is
 // Orca's, but these gizmos are ours" — so this is the one place that decides what ours looks like.
 //
-// Users today: GLGizmoHeightAdaptiveEffects, GLGizmoPrecisionALH. They are near-twins by
-// construction (the HAE editor was cloned from the ALH one: same per-object session, same
-// click-to-add / drag / right-click-to-delete, same curve drawn over a Z axis), so them looking
-// like two unrelated tools was an accident of history, not a decision.
+// It was born for the fork's two curve editors (GLGizmoHeightAdaptiveEffects and
+// GLGizmoPrecisionALH), which the VL-* features would bring in and which are NOT ported here. Its
+// users in this tree are the fork's own gizmos: GLGizmoSupportZones (which still carries private
+// copies of the widget layer below - consolidating those is a deliberate follow-up) and
+// GLGizmoExtrude, the reference implementation of the panel style.
 //
 // ⚠️ This header is PURELY cosmetic. Nothing here may ever gate behaviour, and no colour may
 // acquire a meaning that is not already carried by the code that draws it.
@@ -259,16 +260,26 @@ inline bool gizmo_row_slider(const char *id, const char *caption, float *v, floa
     bool changed = false;
     ImGui::PushID(id);
     ImGui::AlignTextToFramePadding();
+    // 🔑 The label column is measured from the ROW's start, not from the window's left edge.
+    // ImGui::SameLine() takes a window-relative offset while the caption starts inside the window
+    // padding, so passing label_w straight through put the widget WindowPadding.x too far left and
+    // the widget's own background covered the caption's tail - which is how EVERY panel's widest
+    // caption ended up clipped ("Hole width" -> "Hole wid", "Boundary" -> "Boundar"), the widest one
+    // being exactly the one that loses the race.
+    const float col = ImGui::GetCursorPosX() + label_w;
     ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
     ImGui::TextUnformatted(caption);
     ImGui::PopStyleColor();
     if (tip != nullptr && ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", tip);
-    ImGui::SameLine(label_w);
-    // The slider takes whatever is left after the field.
+    ImGui::SameLine(col);
+    // The slider takes whatever is left after the field, and prints NO value of its own: the typed
+    // field beside it already shows the number, and an empty format is how ImGui is told to draw
+    // none. Printing it twice (the slider's inline text and the field) was the reference's own
+    // redundancy, not a decision - the standard says "a slider with a typed field beside it".
     const float field_w = ImGui::CalcTextSize("0000.00").x + ImGui::GetStyle().FramePadding.x * 2.f;
     ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - field_w - ImGui::GetStyle().ItemSpacing.x, 1.f));
-    if (ImGui::SliderFloat("##v", v, mn, mx, fmt))
+    if (ImGui::SliderFloat("##v", v, mn, mx, ""))
         changed = true;
     ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
     ImGui::SetNextItemWidth(field_w);
@@ -332,11 +343,137 @@ inline int gizmo_segment(const char *id, const char *const *labels, int n, int s
     return clicked;
 }
 
+// A typed field on a row, with the caption in the label column and NO step buttons. This is for a
+// value that has no useful range - a free offset, a diameter, a depth - where a slider would only
+// invent bounds the geometry does not have. For anything the code already clamps, use
+// gizmo_row_slider instead, which shows the range.
+inline bool gizmo_row_input(const char *id, const char *caption, float *v, const char *fmt,
+                            float label_w, const char *tip = nullptr)
+{
+    ImGui::PushID(id);
+    ImGui::AlignTextToFramePadding();
+    const float col = ImGui::GetCursorPosX() + label_w; // row-relative: see gizmo_row_slider
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::TextUnformatted(caption);
+    ImGui::PopStyleColor();
+    if (tip != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tip);
+    ImGui::SameLine(col);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("0000.00").x + ImGui::GetStyle().FramePadding.x * 2.f);
+    const bool changed = ImGui::InputFloat("##v", v, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopID();
+    return changed;
+}
+
+// The same row for a whole number (a loop count, a hole number). Enter-driven, same as the float one.
+inline bool gizmo_row_input_int(const char *id, const char *caption, int *v, float label_w,
+                                const char *tip = nullptr)
+{
+    ImGui::PushID(id);
+    ImGui::AlignTextToFramePadding();
+    const float col = ImGui::GetCursorPosX() + label_w; // row-relative: see gizmo_row_slider
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::TextUnformatted(caption);
+    ImGui::PopStyleColor();
+    if (tip != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tip);
+    ImGui::SameLine(col);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("0000").x + ImGui::GetStyle().FramePadding.x * 2.f);
+    const bool changed = ImGui::InputInt("##v", v, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopID();
+    return changed;
+}
+
+// The panel's primary action: right-aligned, in the accent colour, on a line of its OWN. That last
+// part is the whole reason this exists - SameLine() attaches to the PREVIOUS line, so the HF-3
+// panel's Extrude button was printed across the second line of its own wrapped hint ("...then set
+// the [Extrude] the offset and press Extrude"), which is unreadable and hides the words.
+//
+// NewLine() only advances when the current line already holds something, so this is correct both
+// after a wrapped hint (cursor already at a fresh line, nothing added) and after a SameLine'd row
+// like gizmo_row_switch (cursor on that row, one line added).
+inline bool gizmo_primary_button(const char *label)
+{
+    ImGui::NewLine();
+    const float bw = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 3.f;
+    ImGui::SetCursorPosX(std::max(ImGui::GetWindowContentRegionMax().x - bw, ImGui::GetCursorPosX()));
+    ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, gizmo_col(GizmoCol::AccentBright));
+    const bool hit = ImGui::Button(label);
+    ImGui::PopStyleColor(2);
+    return hit;
+}
+
+// The same label column, then a segmented choice on the row. A panel uses this when the choice has a
+// caption and belongs in the table, instead of standing alone like a tool mode (gizmo_segment, which
+// is what the Extrude panel's own mode row uses).
+inline int gizmo_row_segment(const char *id, const char *caption, const char *const *labels, int n,
+                             int sel, float label_w, const char *tip = nullptr)
+{
+    ImGui::PushID(id);
+    ImGui::AlignTextToFramePadding();
+    const float col = ImGui::GetCursorPosX() + label_w; // row-relative: see gizmo_row_slider
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::TextUnformatted(caption);
+    ImGui::PopStyleColor();
+    if (tip != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tip);
+    ImGui::SameLine(col);
+    const int clicked = gizmo_segment("##seg", labels, n, sel);
+    ImGui::PopID();
+    return clicked;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [ORCAPORT:PP-1] The icon button: the shape the Perforations pattern row introduced.
+//
+// Size and glyph fill are THE standard for this kind of button - a square icon toggle whose whole
+// meaning is its drawing, with the name on hover. Support Zones draws its own copy today (its
+// glyph_toggle) and moves onto this one when its widgets are consolidated, which is the point of
+// keeping the two numbers here rather than at the call site.
+//
+// `size` is 28 px at the reference font, scaled the same way gizmo_panel_width() is, so a high-DPI
+// screen gets a 28 px-proportioned button rather than a literal 28 that would look tiny.
+// ─────────────────────────────────────────────────────────────────────────────
+constexpr float kGizmoIconGlyph = 0.78f; // the drawing's share of the button; the chrome is a frame
+
+inline float gizmo_icon_size()
+{
+    return 28.f * (ImGui::GetFontSize() / 13.5f);
+}
+
+// `draw` paints the glyph inside the box [p, p + s] in the colour it is handed, so every gizmo keeps
+// its own iconography and this stays pure chrome. Returns true when it was clicked.
+inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip,
+                              void (*draw)(ImDrawList *, const ImVec2 &, float, ImU32))
+{
+    const float size = gizmo_icon_size();
+    const bool  hit  = ImGui::InvisibleButton(id, ImVec2(size, size));
+    ImDrawList *dl   = ImGui::GetWindowDrawList();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    const bool   hv = ImGui::IsItemHovered();
+    const float  r  = size * 0.15f;
+    dl->AddRectFilled(a, b, active ? gizmo_fade(GizmoCol::Accent, hv ? 1.0f : 0.85f)
+                                   : gizmo_col_u32(hv ? GizmoCol::SurfaceHi : GizmoCol::Surface), r);
+    if (active)
+        dl->AddRect(a, b, gizmo_col_u32(GizmoCol::AccentBright), r, 0, 1.2f);
+    const float gs = size * kGizmoIconGlyph;
+    draw(dl, ImVec2(a.x + (size - gs) * 0.5f, a.y + (size - gs) * 0.5f), gs,
+         active ? gizmo_col_u32(GizmoCol::Ink) : gizmo_fade(GizmoCol::TextDim, hv ? 1.0f : 0.85f));
+    if (hv && tip != nullptr)
+        ImGui::SetTooltip("%s", tip);
+    return hit;
+}
+
 // A hint at the bottom of a panel: dim, indented slightly so it reads as prose and not as a row, and
 // WRAPPED to the panel width. This is the thing that keeps a panel narrow.
-inline void gizmo_hint(const char *text)
+//
+// The colour is a parameter because the hint is also how a panel says "something is off", and the
+// push below used to override any colour pushed by the caller - which is exactly how HF-3's amber
+// warning ended up dim. Pass GizmoCol::Warn for a warning; never anything but TextDim or Warn.
+inline void gizmo_hint(const char *text, GizmoCol col = GizmoCol::TextDim)
 {
-    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(col));
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     ImGui::TextWrapped("%s", text);
     ImGui::PopTextWrapPos();

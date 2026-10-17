@@ -227,8 +227,12 @@ bool GLGizmoBase::render_combo(const std::string &label, const std::vector<std::
 {
     ImGuiWrapper::push_combo_style(m_parent.get_scale());
     ImGui::AlignTextToFramePadding();
+    // [ORCAPORT:PP-1] Row-relative column: ImGui::SameLine() is a window-relative offset while the
+    // label is drawn inside the window padding, so label_width straight through put the combo
+    // WindowPadding.x too far left and its background covered the label's tail.
+    const float col = ImGui::GetCursorPosX() + label_width;
     m_imgui->text(label);
-    ImGui::SameLine(label_width);
+    ImGui::SameLine(col);
     ImGui::PushItemWidth(item_width);
 
     size_t selection_out = selection_idx;
@@ -371,7 +375,12 @@ bool GLGizmoBase::GizmoImguiBegin(const std::string &name, int flags)
 
 void GLGizmoBase::GizmoImguiEnd()
 {
-    last_input_window_width = ImGui::GetWindowWidth();
+    // [ORCAPORT:UI-2] Remember the panel's rect as well as its width: last_input_window_width drives
+    // the overflow flip, the rest is what ui_screenshot crops to.
+    last_input_window_x      = ImGui::GetWindowPos().x;
+    last_input_window_y      = ImGui::GetWindowPos().y;
+    last_input_window_width  = ImGui::GetWindowWidth();
+    last_input_window_height = ImGui::GetWindowHeight();
     m_imgui->end();
 }
 

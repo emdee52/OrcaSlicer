@@ -235,8 +235,25 @@ public:
     virtual bool is_in_editing_mode() const { return false; }
     virtual bool is_selection_rectangle_dragging() const { return false; }
 
+    // [ORCAPORT:UI-2] Where this panel was on the canvas in the last frame, in ImGui pixels (which
+    // Orca sets to the canvas's physical size, so they are real device pixels with the origin at the
+    // canvas's top-left). The gizmo panels are ImGui drawn into the GL canvas and the server cannot
+    // read the framebuffer between frames, so this is the only record of where a panel is - it is
+    // what lets ui_screenshot crop the panel out of a window capture.
+    struct PanelRect
+    {
+        float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    };
+    PanelRect last_input_window_rect() const
+    {
+        return {last_input_window_x, last_input_window_y, last_input_window_width, last_input_window_height};
+    }
+
 protected:
-    float last_input_window_width = 0;
+    float last_input_window_width  = 0;
+    float last_input_window_x      = 0;
+    float last_input_window_y      = 0;
+    float last_input_window_height = 0;
     virtual bool on_init() = 0;
     virtual void on_load(cereal::BinaryInputArchive& ar) {}
     virtual void on_save(cereal::BinaryOutputArchive& ar) const {}

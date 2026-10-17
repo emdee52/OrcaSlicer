@@ -1329,15 +1329,19 @@ panel reads as one surface. Light and dark are both defined and `gizmo_col()` pi
 
 ### What still has to migrate
 
+Migrating on branch **`port/gizmo-style`** (one commit per ID, not yet merged or built): Perforations,
+Hole walls, Edge chamfer / fillet, Align & Stack and Holes. Support Zones is **out of scope** there -
+it is already on the palette, its private widget copies are the consolidation follow-up below.
+
 | Gizmo | ID | State |
 |---|---|---|
 | **Extrude** (bare `Extrude` / `Cavity fill`) | HF-3 | **reference** - built on the shared widgets |
+| Perforations | PP-1 | migrated; pattern row is 4 icon buttons (see the icon button standard) |
+| Hole walls (Bridging / Strengthen) | PF-2b / RF-1 | migrated (one commit: both modes are one function) |
+| Edge chamfer / fillet | EF-1 | migrated |
+| Align & Stack | AS-2 | migrated; its `SetWindowSize`-after-`Begin` width never stuck and is now set before `Begin` |
+| Holes | ME-2 | migrated; category image buttons and the catalogue dropdown kept as they were |
 | Support Zones | SU-5 / SU-6 | on the palette, but carries **its own private copies** of the widgets in an anonymous namespace in `GLGizmoSupportZones.cpp` |
-| Hole walls (Bridging / Strengthen) | PF-2b / RF-1 | stock style |
-| Holes | ME-1 / ME-2 | stock style |
-| Edge chamfer / fillet | EF-1 | stock style |
-| Align & Stack | AS-2 | stock style |
-| Perforations | PP-1 | stock style |
 
 Two follow-ups when that work happens:
 
@@ -1349,6 +1353,34 @@ Two follow-ups when that work happens:
    `GLGizmoHeightAdaptiveEffects` and `GLGizmoPrecisionALH` as its users; those are the *fork's*
    gizmos (the `VL-*` features we never ported). Its real users here are Support Zones and Extrude.
    Fix the comment while migrating.
+
+### The icon button standard (PP-1)
+
+An icon toggle whose whole meaning is its drawing, with the name on hover. It came out of the
+Perforations pattern row and is **the** standard for this kind of button — Support Zones still draws
+its own copy (`gizmo_glyph_toggle` in `GLGizmoSupportZones.cpp`) and moves onto this one when its
+widgets are consolidated.
+
+| | |
+|---|---|
+| button | `gizmo_icon_size()` = **28 px** at the reference font, scaled like `gizmo_panel_width()` so it grows with the font/DPI |
+| glyph | **0.78** of the button (`kGizmoIconGlyph`) — the chrome is a frame, not the thing the artwork sits in |
+| corner | `size * 0.15` |
+| off / hover | `Surface` / `SurfaceHi`, glyph `TextDim` at 0.85 |
+| on | `Accent` fill at 0.85 (1.0 hovered) + a `AccentBright` hairline, glyph `Ink` |
+
+`gizmo_icon_toggle(id, active, tip, draw)` takes a **function pointer** to the glyph drawer
+(`void(ImDrawList *, const ImVec2 &, float, ImU32)`), so the chrome is shared and each gizmo keeps its
+own iconography — no `std::function`.
+
+**The one margin rule.** Where a glyph is a pattern in a plate, the pattern box is
+`0.21..1-0.21` of the glyph box for **every** variant: the plate's own rect is `0.12..0.88`, so each
+pattern keeps the same wall to the border and no variant reads as crammed against it. Perforations
+learned this the hard way — Grid's bars and the Honeycomb clip each had their own margin and looked
+wrong next to Lines, which was the reference. The Honeycomb lattice is generated (pointy-top, pitch
+`1.732·r` × `1.5·r`, alternate rows offset half a pitch) and clipped with `ImDrawList::PushClipRect`,
+so the border cells are genuinely cut and the cell count follows the size; cell radius is the lattice
+radius minus a wall, which is what keeps the cells reading as cells rather than one blob.
 
 ### The recipe, as HF-3 does it
 

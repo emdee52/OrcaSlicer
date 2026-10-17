@@ -23,11 +23,23 @@
 #include "libslic3r/HoleStandards.hpp"
 #include "libslic3r/Point.hpp"
 
+#include <imgui/imgui.h>
+
 #include <wx/utils.h>
+#include <wx/dcscreen.h>
+#include <wx/dcmemory.h>
+#include <wx/glcanvas.h>
+#include <wx/image.h>
+#include <wx/mstream.h>
+#include <wx/wfstream.h>
+#include <wx/base64.h>
+#include <wx/datetime.h>
+#include <wx/stdpaths.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 
 namespace Slic3r { namespace GUI {
 
@@ -143,8 +155,7 @@ GLGizmoHoles *active_holes_gizmo(bool open_if_needed)
 }
 
 nlohmann::json holes_gizmo_state(GLGizmoHoles &g)
-{
-    const int      n   = g.hole_count();
+{    const int      n   = g.hole_count();
     nlohmann::json arr = nlohmann::json::array();
     for (int i = 0; i < n; ++i) {
         const DetectedHole h = g.hole(i);
@@ -393,6 +404,131 @@ nlohmann::json cut_gizmo_state(GLGizmoCut3D &g, GLCanvas3D *canvas)
         {"fill_offset", g.gizmo_fill_offset()},
         {"object_id", object_id},
     };
+}
+
+// [ORCAPORT:UI-2] The gizmos a name can refer to, for ui_screenshot. The keys follow the EType names
+// lowercased, with this fork's own tools also accepted under the name their panel shows.
+GLGizmosManager::EType gizmo_type_from_name(const std::string &name)
+{
+    using E = GLGizmosManager::EType;
+    static const std::map<std::string, E> kNames = {
+        {"move", E::Move}, {"rotate", E::Rotate}, {"scale", E::Scale}, {"flatten", E::Flatten},
+        {"cut", E::Cut}, {"mesh_boolean", E::MeshBoolean}, {"fdm_supports", E::FdmSupports},
+        {"seam", E::Seam}, {"fuzzy_skin", E::FuzzySkin}, {"mm_segmentation", E::MmSegmentation},
+        {"texture_displacement", E::TextureDisplacement}, {"emboss", E::Emboss}, {"svg", E::Svg},
+        {"measure", E::Measure}, {"assembly", E::Assembly}, {"simplify", E::Simplify},
+        {"brim_ears", E::BrimEars},
+        // this fork's own
+        {"align_stack", E::AlignStack}, {"support_zones", E::SupportZones},
+        {"counterbore_bridge", E::CounterboreBridge}, {"hole_walls", E::CounterboreBridge},
+        {"holes", E::Holes}, {"edge_dress", E::EdgeDress}, {"edge_chamfer", E::EdgeDress},
+        {"extrude", E::Extrude}, {"cavity_fill", E::Extrude}, {"perforation", E::Perforation},
+    };
+    const auto it = kNames.find(name);
+    return it == kNames.end() ? E::Undefined : it->second;
+}
+
+// Selects the object a gizmo needs before it can be opened, the same way the driving tools do: the
+// fork's tools are only activatable with a single full instance selected.
+void select_object_for_gizmo(int object_id)
+{
+    Plater *plater = wxGetApp().plater();
+    if (plater == nullptr)
+        return;
+    GLCanvas3D *canvas = plater->get_view3D_canvas3D();
+    if (canvas == nullptr)
+        return;
+    Selection &sel = canvas->get_selection();
+    int        oid = object_id;
+    if (oid < 0)
+        oid = sel.get_object_idx();
+    if (oid < 0)
+        oid = 0;
+    if (oid >= 0 && oid < int(plater->model().objects.size())) {
+        sel.clear();
+        sel.add_object(unsigned(oid), true);
+    }
+}
+
+// The window screenshot, as a PNG in memory. A wxScreenDC blit of the window's screen rect is the
+// only way to get BOTH halves of the UI in one image: the wxWidgets chrome and the gizmo panels,
+// which are ImGui drawn into the GL canvas and so are invisible to any 3D-view or framebuffer read.
+//
+// 🚨 Requires the window to be on screen and unoccluded - a blit copies whatever is on the desktop
+// there. Pass raise=true (the default) to bring the app forward first.
+bool capture_top_window_png(std::vector<unsigned char> &out, int &w, int &h, std::string &err)
+{
+    wxWindow *win = wxGetApp().GetTopWindow();
+    if (win == nullptr) {
+        err = "No top-level window";
+        return false;
+    }
+    const wxRect rect = win->GetScreenRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+        err = "The window has no size (minimised?)";
+        return false;
+    }
+
+    wxScreenDC screen;
+    wxBitmap   bmp(rect.width, rect.height, 24);
+    {
+        wxMemoryDC mem(bmp);
+        if (! mem.Blit(0, 0, rect.width, rect.height, &screen, rect.x, rect.y)) {
+            err = "Screen blit failed";
+            return false;
+        }
+    }
+    const wxImage img = bmp.ConvertToImage();
+    w = img.GetWidth();
+    h = img.GetHeight();
+
+    wxMemoryOutputStream stream;
+    if (! img.SaveFile(stream, wxBITMAP_TYPE_PNG)) {
+        err = "PNG encode failed";
+        return false;
+    }
+    wxStreamBuffer *buf = stream.GetOutputStreamBuffer();
+    out.assign(static_cast<unsigned char *>(buf->GetBufferStart()),
+               static_cast<unsigned char *>(buf->GetBufferStart()) + buf->GetBufferSize());
+    return true;
+}
+
+// [ORCAPORT:UI-2] The gizmo panel's rect in *screen* pixels. The panel's own rect is in ImGui pixels,
+// which Orca sets to the canvas's physical size (set_display_size(canvas_size)), so the panel's
+// offset within the canvas IS a physical pixel offset and only the canvas's screen origin has to be
+// added. Anything that is not the same on both sides is reported, so a wrong crop can be diagnosed
+// from the numbers instead of guessed at.
+bool gizmo_panel_screen_rect(GLCanvas3D *canvas, wxRect &out, std::string &err)
+{
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+    GLGizmoBase     *g   = mgr.get_current();
+    if (g == nullptr) {
+        err = "No gizmo is open";
+        return false;
+    }
+    const GLGizmoBase::PanelRect p = g->last_input_window_rect();
+    if (p.w <= 1.f || p.h <= 1.f) {
+        err = "The panel has not been laid out yet";
+        return false;
+    }
+    wxGLCanvas *gl = canvas->get_wxglcanvas();
+    if (gl == nullptr) {
+        err = "No GL canvas widget";
+        return false;
+    }
+    const wxPoint origin = gl->GetScreenPosition();
+    out = wxRect(int(std::lround(origin.x + p.x)), int(std::lround(origin.y + p.y)),
+                 int(std::lround(p.w)), int(std::lround(p.h)));
+
+    // The canvas must be the size ImGui was told about, or the offset above is in the wrong space.
+    const Size cnv = canvas->get_canvas_size();
+    const float disp_w = ImGui::GetIO().DisplaySize.x;
+    if (disp_w > 1.f && std::abs(disp_w - float(cnv.get_width())) > 1.5f) {
+        err = "ImGui display size does not match the canvas (" + std::to_string(int(disp_w)) + " vs " +
+              std::to_string(cnv.get_width()) + ")";
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -1233,6 +1369,178 @@ void OrcaMCPServer::register_gizmo_tools()
                 result["status"] = "ok";
                 result["open"] = true;
                 result["action"] = action;
+                return result;
+            });
+        }
+    });
+
+    // [ORCAPORT:UI-2] The screenshot tool. The gizmo panels are ImGui drawn into the GL canvas, so
+    // nothing else can see them - not the 3D-view renderers, not the window geometry. A UI bug (a
+    // panel that does not fit, a row that is clipped, an icon at the wrong size, an empty reserved
+    // block) is only visible in a picture of the window.
+    register_tool(
+        {"ui_screenshot",
+         "Screenshot a gizmo panel, or the whole window, as a PNG. The panels are ImGui drawn into "
+         "the GL canvas, so this is the ONLY way to see one. By default it opens the named gizmo, "
+         "crops to that panel and upscales it 2x, so the image is the panel and nothing else - what "
+         "you want for checking a row, a label column, an icon or a switch. Pass region='window' when "
+         "WHERE the panel sits is the question (anchoring, clipping, overlap). gizmo: 'perforation', "
+         "'holes', 'edge_dress', 'hole_walls', 'support_zones', 'align_stack', 'extrude', 'cut', "
+         "'seam', 'fuzzy_skin', 'move', ... or 'close' for none. Use save_to_file=true (the default) "
+         "and read the returned path. The window must be visible: raise=true (default) brings it to "
+         "the front first, since the capture is a screen blit.",
+         {{"type", "object"},
+          {"properties",
+           {{"gizmo",
+             {{"type", "string"},
+              {"description",
+               "Gizmo to open before capturing ('perforation', 'holes', 'edge_dress', 'hole_walls', "
+               "'support_zones', 'align_stack', 'extrude', 'cut', 'seam', 'fuzzy_skin', 'move', ...). "
+               "Omit to capture whatever is open; 'close' closes every gizmo first."}}},
+            {"region", {{"type", "string"}, {"description", "'gizmo' (default) crops to the open gizmo panel; 'window' returns the whole window."}}},
+            {"scale", {{"type", "integer"}, {"description", "Upscale factor, default 2. Use 1 for pixel-exact."}}},
+            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening a gizmo."}}},
+            {"raise", {{"type", "boolean"}, {"description", "Bring the window to the front first (default true)."}}},
+            {"save_to_file", {{"type", "boolean"}, {"description", "Save a PNG and return its path (default true)."}}},
+            {"file_path", {{"type", "string"}, {"description", "Where to write the PNG. Defaults to the temp dir with a timestamp."}}}}},
+          {"required", nlohmann::json::array()}},
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string gizmo      = params.value("gizmo", std::string());
+            const std::string file_path  = params.value("file_path", std::string());
+            const std::string region     = params.value("region", std::string("gizmo"));
+            const int         scale      = params.value("scale", 2);
+            const bool        raise      = params.value("raise", true);
+            const bool        to_file    = params.value("save_to_file", true);
+            const int         object_id  = params.contains("object_id") ? params["object_id"].get<int>() : -1;
+            return run_on_main_thread([=]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                std::string opened;
+                if (! gizmo.empty()) {
+                    if (gizmo == "none" || gizmo == "close") {
+                        canvas->reset_all_gizmos();
+                        opened = "close";
+                    } else {
+                        const GLGizmosManager::EType type = gizmo_type_from_name(gizmo);
+                        if (type == GLGizmosManager::EType::Undefined)
+                            return {{"status", "error"}, {"error", "Unknown gizmo '" + gizmo + "'"}};
+                        if (object_id >= 0)
+                            select_object_for_gizmo(object_id);
+                        canvas->get_gizmos_manager().open_gizmo(type);
+                        opened = gizmo;
+                    }
+                    canvas->set_as_dirty();
+                    canvas->request_extra_frame();
+                }
+
+                wxWindow *win = wxGetApp().GetTopWindow();
+                if (win == nullptr)
+                    return {{"status", "error"}, {"error", "No top-level window"}};
+
+                if (raise) {
+                    win->Raise();
+                    win->SetFocus();
+                }
+                // 🔑 Drive the canvas until the panel's rect SETTLES, not just once. Three reasons,
+                // each of which alone makes a single pass useless:
+                //   - the panel is laid out during the canvas's paint, and the canvas only paints from
+                //     the app's idle cycle, which cannot run while this call is inside the event
+                //     handler, so nothing may be laid out at all;
+                //   - ImGui needs one pass to give an auto-sized window its size - GLGizmoBase says so
+                //     and forces a second frame itself ("not rendered in the first frame"), so the
+                //     first pass reports a panel a single row tall;
+                //   - render() ends in SwapBuffers(), so the frame is also on screen for the blit.
+                canvas->set_as_dirty();
+                GLGizmoBase::PanelRect prev{};
+                for (int i = 0; i < 5; ++i) {
+                    canvas->render();
+                    GLGizmoBase *cur = canvas->get_gizmos_manager().get_current();
+                    const GLGizmoBase::PanelRect now = cur != nullptr ? cur->last_input_window_rect()
+                                                                       : GLGizmoBase::PanelRect{};
+                    if (now.h > 1.f && now.w == prev.w && now.h == prev.h)
+                        break; // stable across two frames: this is the laid-out panel
+                    prev = now;
+                }
+
+                std::vector<unsigned char> png;
+                std::string                err;
+                int                        w = 0, h = 0;
+                if (! capture_top_window_png(png, w, h, err))
+                    return {{"status", "error"}, {"error", err}};
+
+                nlohmann::json result = {
+                    {"status", "ok"},
+                    {"gizmo", opened},
+                    {"window_width", w},
+                    {"window_height", h},
+                };
+
+                wxImage img;
+                {
+                    wxMemoryInputStream in(png.data(), png.size());
+                    if (! img.LoadFile(in, wxBITMAP_TYPE_PNG))
+                        return {{"status", "error"}, {"error", "The capture could not be decoded"}};
+                }
+
+                // Crop to the panel. A picture of the whole app is mostly app: the point of this tool
+                // is to look at ONE panel with nothing else in the frame. `region=window` is there for
+                // the opposite case, when where the panel sits IS the question (a panel that opens off
+                // the canvas edge, or anchored under the wrong icon).
+                if (region != "window") {
+                    wxRect panel;
+                    if (! gizmo_panel_screen_rect(canvas, panel, err))
+                        return {{"status", "error"}, {"error", err}};
+                    const wxRect win_rect = win->GetScreenRect();
+                    panel.Offset(-win_rect.x, -win_rect.y); // window-relative: the capture's origin
+                    result["panel"] = {{"x", panel.x}, {"y", panel.y}, {"w", panel.width}, {"h", panel.height}};
+
+                    constexpr int MARGIN = 6; // keep the panel's rounding and its drop shadow
+                    wxRect crop(panel.x - MARGIN, panel.y - MARGIN,
+                                panel.width + 2 * MARGIN, panel.height + 2 * MARGIN);
+                    crop.Intersect(wxRect(0, 0, w, h));
+                    if (crop.width < 8 || crop.height < 8)
+                        return {{"status", "error"}, {"error", "The panel rect is off screen"},
+                                {"panel", result["panel"]}};
+                    img = img.GetSubImage(crop);
+                }
+
+                // Upscale: the panels are ~360 px wide and the point is reading the widgets.
+                if (scale > 1)
+                    img = img.Scale(img.GetWidth() * scale, img.GetHeight() * scale, wxIMAGE_QUALITY_NORMAL);
+
+                {
+                    wxMemoryOutputStream stream;
+                    if (! img.SaveFile(stream, wxBITMAP_TYPE_PNG))
+                        return {{"status", "error"}, {"error", "PNG encode failed"}};
+                    wxStreamBuffer *buf = stream.GetOutputStreamBuffer();
+                    png.assign(static_cast<unsigned char *>(buf->GetBufferStart()),
+                               static_cast<unsigned char *>(buf->GetBufferStart()) + buf->GetBufferSize());
+                }
+                result["width"]  = img.GetWidth();
+                result["height"] = img.GetHeight();
+                result["bytes"]  = int(png.size());
+
+                if (to_file) {
+                    std::string path = file_path;
+                    if (path.empty()) {
+                        const std::string stamp = wxDateTime::Now().Format("%Y%m%d-%H%M%S").ToStdString();
+                        const std::string what  = opened.empty() ? std::string("ui") : opened;
+                        path = (wxStandardPaths::Get().GetTempDir() + "/orca-panel-" + what.c_str() + "-" +
+                                stamp.c_str() + ".png")
+                                   .ToStdString();
+                    }
+                    wxFileOutputStream out(wxString::FromUTF8(path));
+                    if (! out.IsOk())
+                        return {{"status", "error"}, {"error", "Cannot write " + path}};
+                    out.Write(png.data(), png.size());
+                    result["path"] = path;
+                } else {
+                    result["image_base64"] = "data:image/png;base64," +
+                        std::string(wxBase64Encode(png.data(), png.size()).ToStdString());
+                }
                 return result;
             });
         }

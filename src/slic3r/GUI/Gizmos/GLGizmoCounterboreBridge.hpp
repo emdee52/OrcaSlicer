@@ -99,6 +99,12 @@ private:
     double       object_scale() const;
     int          effective_wall_loops() const;
 
+    // [ORCAPORT:PF-2b] The panel, split so the style push/pop in on_render_input_window() cannot be
+    // crossed by an early return (docs/handoff.md section 28).
+    void render_feature_selector();
+    void render_bridge_body();
+    void render_strengthen_body();
+
     indexed_triangle_set reinforce_mesh(const DetectedHole& hole) const;
     indexed_triangle_set make_pick_cylinder(const DetectedHole& hole, const Vec3d& up) const;
 

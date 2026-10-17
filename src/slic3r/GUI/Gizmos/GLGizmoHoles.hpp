@@ -125,6 +125,10 @@ protected:
     void on_unregister_raycasters_for_picking() override;
 
 private:
+    // [ORCAPORT:ME-2] The panel body, in its own function so the style push/pop in
+    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
+    void render_panel_body();
+
     struct HoleView
     {
         DetectedHole hole; // object coordinates (axis, center, radius, depth)
