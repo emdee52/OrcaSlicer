@@ -128,28 +128,26 @@ TEST_CASE("A sphere is not reported as a hole", "[HoleDetector]")
     CHECK(detect_holes(sphere.its).empty());
 }
 
-// [ORCAPORT:PP-5] HIDDEN, and knowingly failing: a teardrop is still not detected.
-//
-// Instrumented once, which is what the numbers below are (they are why the code fits the axis and the
-// circle on wall faces only):
-//   [PP5] pass1 wall=132 evals=0/0.538/1 axis=(0,0,1) cylinder=1     <- the whole side wall, one patch
-//   [PP5] seed pts=132 r=2.543 residual=0.902                        <- the roof pulls the fit out
-//   [PP5] reject residual ... tol=0.203 inliers=132/132              <- every face was an "inlier"
-// So the patch is the arc AND the roof (they meet tangentially), and with the whole wall in the fit the
-// residual gate is what rejected it. The band that selects wall faces is the fitted tolerance now (a
-// roof face's centroid sits ~0.35 r off the circle, well outside 0.08 r), and the axis fit keeps only the
-// faces perpendicular to a seed axis - yet this test still fails, so one of the remaining gates (or the
-// fixture's own winding) is still at fault. Next step: put the same instrumentation back and print the
-// inlier count, the refitted r/residual, the angular gap and the convexity average for THIS patch.
-// What is already verified: the reshape does not disturb a plain hole (every other case in the suite
-// passes, 288 of 289 assertions).
-TEST_CASE("A teardrop tunnel is detected as a hole", "[HoleDetector][NotWorking]")
+// [ORCAPORT:PP-5] The teardrop case, with the numbers that pinned the gate. The patch around a
+// teardrop tunnel is its whole side wall: arc and roof meet tangentially, so it is one smooth patch
+// (132 faces; the two caps are separate and the cylinder test drops them).
+//   [PP5] seed pts=132 r=2.543 residual=0.902      <- the roof pulls the first circle fit out
+//   [PP5] circle pts=130/132 r=2.500 residual=0.000 <- the band keeps only the vertices ON the circle
+//   [PP5] gap max=90.0 deg   convexity avg=-0.999
+// The band has to select VERTICES, not faces: the roof quad splits into two triangles and the one
+// sharing the arc's tangent vertex has its centroid on the circle (2.635 against r = 2.543) while it
+// carries the apex vertex at 3.5 r; a face-centroid band re-admitted that apex to the refit and the
+// maximum-distance residual then rejected the patch at 0.99 against the 0.20 limit. Selecting the
+// vertices on the circle excludes the apex, and the roof faces stay out of the convexity average by
+// their centroid.
+TEST_CASE("A teardrop tunnel is detected as a hole", "[HoleDetector]")
 {
     // What a teardrop bore leaves behind: a round wall for part of the perimeter and a sloped roof for
     // the rest. Built here as the tunnel surface alone and flipped, so its normals point at the axis -
-    // which is what the detector sees inside a cavity. The roof used to poison both the circle fit (its
-    // vertices sit outside the circle) and the convexity test (its normals face outward), so the tool
-    // could not see a teardrop it had just cut: no chamfer, no resize, no conversion to a round hole.
+    // which is what the detector sees inside a cavity. The roof is NOT the problem the shape suggests:
+    // it contains the axis, so its normals are perpendicular to it like the wall's, and the convexity
+    // average (measured -0.999) is fine. What the roof did was drag the circle fit: its apex vertices
+    // sit 1.0 r off the circle and made the residual gate reject the patch.
     indexed_triangle_set its = its_make_teardrop_prism(2.5, 10., 45., Vec3d::UnitZ(), Vec3d::Zero(),
                                                       Vec3d::UnitY(), 64);
     REQUIRE_FALSE(its.empty());
