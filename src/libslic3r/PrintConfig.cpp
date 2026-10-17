@@ -9237,6 +9237,73 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(100.0));
 
+    // [ORCAPORT:PQ-4] Single-line fill ("spine"), from the fork's neoarachne_spine* group. Only
+    // active when outer wall = Classic AND inner walls = Classic. Default OFF, unlike the fork:
+    // it is an experimental motion pattern and the fork also flips the inner-walls default to
+    // Classic, which we deliberately do not (that would change existing projects' output).
+    def = this->add("hybrid_single_line_fill", coBool);
+    def->label = L("Single-line fill");
+    def->category = L("Quality");
+    def->tooltip = L("With inner walls = Classic: whatever is left inside the walls is printed as ONE "
+        "line along its centre, with a width that follows the gap, whenever the whole gap fits in a "
+        "line no wider than the maximum below. Wider areas go to infill as usual. This replaces the "
+        "short cross-hatched infill strokes and gap-fill fragments in narrow pockets (small letters). "
+        "Disable to get plain Classic walls + Classic gap fill.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("hybrid_single_line_min_width_pct", coPercent);
+    def->label = L("Single-line min width");
+    def->category = L("Quality");
+    def->tooltip = L("Floor of the single-line fill, as a percentage of the inner wall line width. "
+        "Where the gap is narrower than this, the line is still printed at this width, so the tips "
+        "of a pocket get filled instead of being dropped.");
+    def->sidetext = L("% of line width");
+    def->min = 1;
+    def->max = 200;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(50));
+
+    def = this->add("hybrid_single_line_max_width_pct", coPercent);
+    def->label = L("Single-line max width");
+    def->category = L("Quality");
+    def->tooltip = L("Ceiling of the single-line fill, as a percentage of the inner wall line width. "
+        "A gap that fits entirely under this width becomes one line; if any part is wider, the area "
+        "goes to infill. The line is never split in two. Permissive on purpose: wide lines are still "
+        "slowed down to the filament's maximum volumetric speed.");
+    def->sidetext = L("% of line width");
+    def->min = 50;
+    def->max = 1000;
+    def->mode = comAdvanced;
+    // 300 rather than the 200 quoted for the same feature elsewhere: this slicer's wall spacing
+    // (0.357 at a 0.4 nozzle) leaves a wider gap, so the same pocket needs a higher ceiling to
+    // become a single line.
+    def->set_default_value(new ConfigOptionPercent(300));
+
+    def = this->add("hybrid_single_line_min_length", coFloat);
+    def->label = L("Single-line min length");
+    def->category = L("Quality");
+    def->tooltip = L("Single-line fill paths shorter than this are dropped.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->max = 10;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(0.1));
+
+    def = this->add("hybrid_single_line_sliver_pct", coPercent);
+    def->label = L("Single-line sliver below");
+    def->category = L("Quality");
+    def->tooltip = L("A gap that never gets this wide anywhere (percentage of the inner wall line "
+        "width) is not a pocket, it is a crack between two passes of the same wall, typically inside "
+        "the narrow tail of a letter. Such cracks are not filled, which removes the thin gap-fill "
+        "strokes. Independent of the single-line minimum width, which only sets how thin the tip of "
+        "a real pocket is printed. 0 = fill every crack.");
+    def->sidetext = L("% of line width");
+    def->min = 0;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionPercent(35));
+
     def = this->add("wall_transition_length", coPercent);
     def->label = L("Wall transition length");
     def->category = L("Quality");

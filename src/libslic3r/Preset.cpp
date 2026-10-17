@@ -1485,6 +1485,8 @@ static std::vector<std::string> s_Preset_print_options{
     "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill", "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct",
     "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct", "hybrid_keep_short_tails", "hybrid_pin_outer_width",
     "hybrid_bead_count_hysteresis_pct", "hybrid_transition_filter_dist_mm",
+"hybrid_single_line_fill", "hybrid_single_line_min_width_pct", "hybrid_single_line_max_width_pct",
+"hybrid_single_line_min_length", "hybrid_single_line_sliver_pct",
     "small_area_infill_flow_compensation",
     "small_area_infill_flow_compensation_model",
     "enable_wrapping_detection",

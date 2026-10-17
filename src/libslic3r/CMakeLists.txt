@@ -86,6 +86,8 @@ set(lisbslic3r_sources
     NeoArachne/NeoArachneInterior.hpp
     NeoArachne/NeoArachnePlan.cpp
     NeoArachne/NeoArachnePlan.hpp
+    NeoArachne/NeoArachneSpine.cpp
+    NeoArachne/NeoArachneSpine.hpp
     NeoArachne/NeoArachneRuntime.hpp
     ArcFitter.cpp
     ArcFitter.hpp

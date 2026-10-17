@@ -56,6 +56,18 @@ struct Config {
     // ── Future math knobs (placeholder — Fase 5) ────────────────────────────
     bool   gap_only_skeletal_mode         = true;   // Fase 5
 
+    // [ORCAPORT:PQ-4] Single-line fill (spine). Only used when outer_wall is Classic AND inner_walls
+    // is Classic: whatever is left inside the walls is printed as ONE line along the centre of the
+    // gap, with a width that follows the gap, instead of Classic's cross-hatched gap-fill. Default
+    // OFF - the fork defaults it on and also flips inner_walls to Classic, which we deliberately do
+    // not (that would change the default wall output of every NeoArachne project).
+    bool   single_line_fill            = false;
+    // % of the interior wall width (fork: of the line width). See NeoArachneSpine::SpineParams.
+    double single_line_min_width_pct   = 50.0;   // floor: a narrower gap still prints at this width
+    double single_line_max_width_pct   = 300.0;  // ceiling: never split in two
+    double single_line_min_length_mm   = 0.1;    // shorter lines are dropped
+    double single_line_sliver_pct      = 35.0;   // a gap that never reaches this is a crack: left empty
+
     // ── Debug channels (gated; cheap when off) ──────────────────────────────
     bool emit_svg_per_layer  = false;
     bool emit_gcode_comments = true;
