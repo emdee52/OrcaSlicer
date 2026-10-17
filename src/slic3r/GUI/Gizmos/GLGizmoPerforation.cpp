@@ -514,16 +514,20 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     // narrow width with wrapped hints, and the shared widget layer. The panel used to measure its
     // own width from its controls; measure it once here instead, so no string can move it.
     ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
-    gizmo_push_window_style();
+    // El orden importa: push_toolbar_style empuja un WindowBg OPACO (COL_WINDOW_BG(_DARK) tiene
+    // alfa 1.0) y el ultimo push es el que gana en el Begin. Va PRIMERO, y gizmo_push_window_style()
+    // despues, o el panel pierde la transparencia de PanelBg que es parte del estilo: los paneles que
+    // nunca empujaron el toolbar style (Align & Stack, Support Zones) si la tenian.
     ImGuiWrapper::push_toolbar_style(scale);
+    gizmo_push_window_style();
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
     gizmo_push_panel_style();
     render_panel_body();
     gizmo_pop_panel_style();
     GizmoImguiEnd();
-    ImGuiWrapper::pop_toolbar_style();
     gizmo_pop_window_style();
+    ImGuiWrapper::pop_toolbar_style();
 }
 
 void GLGizmoPerforation::render_panel_body()
