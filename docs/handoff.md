@@ -132,7 +132,7 @@ the branch too but was superseded by `656714103a`.
 - `src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.{hpp,cpp}` — "Edge chamfer / fillet" tool,
   `EType::EdgeDress`, shortcut `Ctrl+D` (icon `toolbar_edge_dress{,_dark}.svg` since UI-1; it used to
   borrow the CAD panel's `design_filletedge.svg`, which is 24x24, stroke-only and has no dark
-  variant). Chamfer / Fillet buttons, a
+  variant). Chamfer / Fillet icon toggles with the name on hover (section 29), a
   0.5-3.0 mm size slider with a typed field beside it, and a "Whole loop / rim" checkbox (off by
   default). Straight edges are picked by screen-space distance; loop mode dresses the boundary loop
   of the flat face under the cursor. Applied features are drawn red, are not dressed twice, and a
@@ -1475,3 +1475,38 @@ preview live, and a single **Extrude** button commits. Highlights are the fork's
 hover, green pick, orange preview) and the object is ghosted while a face is picked. See
 `porting/notes/HF-3.md`; the mockup the design was signed off against is
 `docs/superpowers/extrude-gizmo-mockup.html` (gitignored - planning output).
+
+
+## 29. EF-1b - the Edge chamfer / fillet mode row as icon toggles (branch `port/ef-mode-icons`)
+
+The Edge chamfer / fillet panel's `Chamfer | Fillet` segmented control is now **two icon toggles** in
+the icon-button standard of section 28 - the same shape as the Holes panel's operation row. Nothing else
+in the panel moved, and the two names the buttons already had (`m_desc["chamfer"]` / `m_desc["fillet"]`)
+went with them: they are now the button id and the hover tooltip, so no string was added, changed or
+lost and there is nothing new to translate.
+
+- **The glyphs are a part face with one corner dressed.** The plate is the one `gizmo_glyph_plate()`
+  draws (rect `0.12..0.88`, rounding `0.06·s`, stroke `kGizmoGlyphStroke`), and its top-right corner is
+  either cut at 45 degrees (chamfer) or rounded (fillet). `edge_dress_chamfer_glyph` /
+  `edge_dress_fillet_glyph` are thin wrappers over `edge_dress_corner_glyph(dl, p, s, col, fillet)`. The
+  outline is convex either way, so `AddConvexPolyFilled` + `AddPolyline` are enough - no concave fill
+  (section 28).
+- **🔑 Why the two differ by geometry and not by colour.** At rest an idle icon is repainted in a single
+  flat ink colour (section 25), so the corner cannot be tinted the way the toolbar icon tints its fillet
+  arc (`toolbar_edge_dress.svg` draws the arc in the accent). Shape is the only channel available.
+- **🔑 The dressing size is the whole legibility budget.** `EDGE_GLYPH_CORNER = 0.36` of the plate side.
+  An arc and the chord between the same two ends differ by `r·(1−cos 45°) ≈ 0.29·r`, which at the
+  reference 22 px glyph is ~1.7 px, about one and a half stroke widths - that bow is what makes the
+  curve read. Below ~25 % the two glyphs stop telling each other apart at 28 px. A solid-silhouette
+  version was legible sooner but would have been the only solid glyph in the panel family.
+- **Verification.** Build green (incremental, `-s --no-configure`). Panel captured with `ui_screenshot`
+  in both modes, at 1× and 3×, on a 20 mm cube: each glyph reads as intended both active and idle, and
+  next to its partner. The click that switches mode is a user click-test (there is no synthetic-click
+  tool); the widget is `gizmo_icon_toggle`, shared with the Holes and Perforations rows. **Dark theme
+  only** on screen - the light path is the same widget and the same `GizmoCol` lookups as every other
+  fork icon.
+- **Not done.** The Holes panel's `##rim_type` Chamfer/Fillet row (`GLGizmoHoles.cpp`) is still a
+  segmented control: it picks the profile of a *hole mouth*, not of a part edge, so it wants its own
+  glyph pair rather than these two.
+- **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Not merged - see
+  section 0 for why a branch only merges once the user has tested it in the app.
