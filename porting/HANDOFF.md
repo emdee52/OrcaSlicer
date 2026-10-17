@@ -24,24 +24,26 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`6b6425ba9e`** "Merge port/SU-5-widgets: Support Zones adopts
-  the shared panel widgets" - the last piece of the panel-style work (its four private widget copies
-  gone, its title bar gone), user-verified 2026-10-17, on top of **`a41a0c7bd8`** "Merge
-  port/gizmo-style: gizmo panel style migration (PP-1, EF-1, PF-2b, RF-1, AS-2, ME-2) + UI-2 screenshot
-  tool", itself on **`cab498fc6d`** "Merge feat/extrude-fill: HF-3 Extrude gizmo". Read
-  `docs/handoff.md` section 28, `porting/notes/PANEL_STYLE.md` and
-  `porting/notes/SU-5-widgets.md` for the standard, the traps it produced and the panels that could not
-  be captured. Before all that, the 2026-10-15 upstream sync (1352 commits, 44 conflicts) merged on top
-  of **`00f4969058`**; it is built (Release) and the suite passes 2407/2407, and
-  `porting/notes/UPSTREAM_SYNC_20261015.md` records what it changed, the four fallout fixes and what it
-  left open (the stale gettext catalogs, the manifest rows still missing for the later phases, and the
-  two behaviour deltas - the port's gizmos now open on bare K/J/X/G/Z because upstream owns every Ctrl
-  chord they used, and the mesh Holes tool's inch sizes follow upstream's ASME table). The largest merge
-  before that was **`e0d43bbb95`** "Merge port/PF-10-multisupport: multi-pass support collision
-  avoidance" (on top of `87a114c90f` Merge port/PF-10-auto-fix). PF-10-paint, PF-10-auto,
-  PF-10-multisupport and PF-10-paint-qol are merged into `port/integration` and pushed; the user
-  runtime-verified auto-painting (region scoring, build-plate-only tree fallback, min-area/facet split,
-  gizmo QOL) and multi-pass collision avoidance. PF-3/4/5/7/8 excluded.
+- Latest integration commit at handoff: **`5838d7eb6e`** "Merge port/gizmo-panel-width: one panel width
+  in font heights" - the panel style work finished end to end: the six migrated panels, Support Zones'
+  own widget consolidation, the panel's translucency, the one width in font heights, and the
+  `ui_screenshot` tool (UI-2) that made any of it verifiable. All user-verified 2026-10-17. Before it:
+  **`6b6425ba9e`** "Merge port/SU-5-widgets" (Support Zones adopts the shared widgets), on
+  **`a41a0c7bd8`** "Merge port/gizmo-style" (the migration itself), on **`cab498fc6d`**
+  "Merge feat/extrude-fill: HF-3 Extrude gizmo". Read `docs/handoff.md` section 28,
+  `porting/notes/PANEL_STYLE.md`, `porting/notes/SU-5-widgets.md` and `porting/notes/UI-2.md` for the
+  standard, the traps it produced and what could not be captured. Before all that, the 2026-10-15
+  upstream sync (1352 commits, 44 conflicts) merged on top of **`00f4969058`**; it is built (Release)
+  and the suite passes 2407/2407, and `porting/notes/UPSTREAM_SYNC_20261015.md` records what it changed,
+  the four fallout fixes and what it left open (the stale gettext catalogs, the manifest rows still
+  missing for the later phases, and the two behaviour deltas - the port's gizmos now open on bare
+  K/J/X/G/Z because upstream owns every Ctrl chord they used, and the mesh Holes tool's inch sizes
+  follow upstream's ASME table). The largest merge before that was **`e0d43bbb95`** "Merge
+  port/PF-10-multisupport: multi-pass support collision avoidance" (on top of `87a114c90f` Merge
+  port/PF-10-auto-fix). PF-10-paint, PF-10-auto, PF-10-multisupport and PF-10-paint-qol are merged into
+  `port/integration` and pushed; the user runtime-verified auto-painting (region scoring,
+  build-plate-only tree fallback, min-area/facet split, gizmo QOL) and multi-pass collision avoidance.
+  PF-3/4/5/7/8 excluded.
 - Two sources: `OrcaFS-NeotkoCM/` (Snapmaker/Neotko Orca) and `preFlight/` (PrusaSlicer fork).
   Both are outside `OrcaSlicer/`; only selected features are ported.
 
