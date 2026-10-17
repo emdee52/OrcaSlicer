@@ -1,0 +1,936 @@
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 6e84994fe5..9696091142 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -86,6 +86,8 @@ set(lisbslic3r_sources
+     NeoArachne/NeoArachneInterior.hpp
+     NeoArachne/NeoArachnePlan.cpp
+     NeoArachne/NeoArachnePlan.hpp
++    NeoArachne/NeoArachneSpine.cpp
++    NeoArachne/NeoArachneSpine.hpp
+     NeoArachne/NeoArachneRuntime.hpp
+     ArcFitter.cpp
+     ArcFitter.hpp
+diff --git a/src/libslic3r/NeoArachne/NeoArachneConfig.hpp b/src/libslic3r/NeoArachne/NeoArachneConfig.hpp
+index ee35eed4dd..99a22999f5 100644
+--- a/src/libslic3r/NeoArachne/NeoArachneConfig.hpp
++++ b/src/libslic3r/NeoArachne/NeoArachneConfig.hpp
+@@ -56,6 +56,18 @@ struct Config {
+     // ── Future math knobs (placeholder — Fase 5) ────────────────────────────
+     bool   gap_only_skeletal_mode         = true;   // Fase 5
+ 
++    // [ORCAPORT:PQ-4] Single-line fill (spine). Only used when outer_wall is Classic AND inner_walls
++    // is Classic: whatever is left inside the walls is printed as ONE line along the centre of the
++    // gap, with a width that follows the gap, instead of Classic's cross-hatched gap-fill. Default
++    // OFF - the fork defaults it on and also flips inner_walls to Classic, which we deliberately do
++    // not (that would change the default wall output of every NeoArachne project).
++    bool   single_line_fill            = false;
++    // % of the interior wall width (fork: of the line width). See NeoArachneSpine::SpineParams.
++    double single_line_min_width_pct   = 50.0;   // floor: a narrower gap still prints at this width
++    double single_line_max_width_pct   = 300.0;  // ceiling: never split in two
++    double single_line_min_length_mm   = 0.1;    // shorter lines are dropped
++    double single_line_sliver_pct      = 35.0;   // a gap that never reaches this is a crack: left empty
++
+     // ── Debug channels (gated; cheap when off) ──────────────────────────────
+     bool emit_svg_per_layer  = false;
+     bool emit_gcode_comments = true;
+diff --git a/src/libslic3r/NeoArachne/NeoArachnePlan.cpp b/src/libslic3r/NeoArachne/NeoArachnePlan.cpp
+index bfeba5de86..4324614b8a 100644
+--- a/src/libslic3r/NeoArachne/NeoArachnePlan.cpp
++++ b/src/libslic3r/NeoArachne/NeoArachnePlan.cpp
+@@ -3,12 +3,14 @@
+ // NEOARACHNE fase1+fase2+fase3.0
+ #include "NeoArachnePlan.hpp"
+ #include "NeoArachneInterior.hpp"
++#include "NeoArachneSpine.hpp"   // [ORCAPORT:PQ-4] single-line fill
+ #include "NeoArachneRuntime.hpp"
+ #include "NeoArachneDebug.hpp"
+ 
+ #include "../PerimeterGenerator.hpp"
+ #include "../PrintConfig.hpp"
+ #include "../Print.hpp"
++#include "../ShortestPath.hpp"   // [ORCAPORT:PQ-4] chain_and_reorder_extrusion_entities
+ #include "../SurfaceCollection.hpp"
+ #include "../ClipperUtils.hpp"
+ #include "../ExtrusionEntityCollection.hpp"
+@@ -79,6 +81,224 @@ static void set_no_spiral_lift_recursive(ExtrusionEntity *ee)
+ //   outer = Off                              → forced to Classic
+ //   outer = Arachne* + inner = Classic       → inner aligned to outer
+ 
++// [ORCAPORT:PQ-4] BEGIN - Classic walls + single-line fill ("spine")
++// Ported from the fork's `run_classic_spine` (NEOTKOCM_RELEASE_2_46.md; fork 67d2415aab).
++//
++// Reached only when the outer wall is Classic AND the inner walls are Classic. Instead of Classic's
++// cross-hatched gap fill, whatever is left inside the walls is printed as ONE line along the centre
++// of the gap whenever the whole gap fits under the ceiling; wider areas go to infill as usual. The
++// walls keep a constant width and are only emitted where they fit whole. Inside each island the
++// spine goes first or last according to the wall sequence, and every island is emitted as its own
++// bucket so the printer finishes one island before moving to the next.
++//
++// NOTE: unlike the fork, this path is NOT the default - `hybrid_single_line_fill` defaults to off.
++static void run_classic_spine(PerimeterGenerator& g, const Config& cfg, const PrintRegionConfig* original_cfg)
++{
++    log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "v3/classic-walls+spine");
++
++    // Real wall count for this layer (same rules as Classic / Hybrid v2).
++    int walls = original_cfg->wall_loops.value;
++    if (walls < 1) {   // no walls: nothing to decide, plain Classic
++        g.process_classic();
++        return;
++    }
++    if (g.layer_id == g.object_config->raft_layers && original_cfg->only_one_wall_first_layer)
++        walls = 1;
++    if (walls > 1 && original_cfg->only_one_wall_top && g.upper_slices == nullptr)
++        walls = 1;
++
++    // Local copy, as in Hybrid v2: other LayerRegions of the same PrintRegion may be slicing in
++    // parallel, so nothing shared may be written.
++    PrintRegionConfig modified_cfg = *original_cfg;
++    modified_cfg.wall_loops.value           = 1;      // Classic emits the outer wall only
++    std::fill(modified_cfg.gap_infill_speed.values.begin(), modified_cfg.gap_infill_speed.values.end(), 0.);
++    // (the spine replaces Classic's gap fill)
++    modified_cfg.alternate_extra_wall.value = false;  // the interior is decided by the rule below
++
++    ExPolygons original_slice;
++    original_slice.reserve(g.slices->surfaces.size());
++    for (const Surface& s : g.slices->surfaces)
++        original_slice.push_back(s.expolygon);
++
++    const size_t loops_before = g.loops->entities.size();
++    const size_t gap_before   = (g.gap_fill != nullptr) ? g.gap_fill->entities.size() : 0;
++    g.config = &modified_cfg;
++    g.process_classic();
++    g.config = original_cfg;
++    const size_t loops_after_outer = g.loops->entities.size();
++
++    // What the outer wall covers, measured by its spacing, so the first interior leaves no gap.
++    Polygons outer_cov;
++    for (size_t i = loops_before; i < loops_after_outer; ++i)
++        g.loops->entities[i]->polygons_covered_by_spacing(outer_cov, float(SCALED_EPSILON));
++
++    // Interior only: outside the outer wall's centre line the wall and detect_thin_wall rule.
++    const float  eps           = float(scaled<double>(0.005));   // numeric crumbs, not tips
++    const float  inside_offset = float(g.ext_perimeter_flow.scaled_spacing()) / 2.f;
++    ExPolygons todo = diff_ex(offset_ex(original_slice, -inside_offset), outer_cov, ApplySafetyOffset::Yes);
++    todo = opening_ex(todo, eps);
++
++    const double line_w = g.perimeter_flow.width();
++    SpineParams sp;
++    sp.floor_mm      = line_w * cfg.single_line_min_width_pct / 100.;
++    sp.ceiling_mm    = line_w * cfg.single_line_max_width_pct / 100.;
++    sp.min_length_mm = cfg.single_line_min_length_mm;
++    sp.sliver_mm     = line_w * cfg.single_line_sliver_pct / 100.;
++    const double ceiling_w = scaled<double>(std::max(sp.ceiling_mm, sp.floor_mm));
++    const float  spacing   = float(g.perimeter_flow.scaled_spacing());
++    // Necks a loop cannot reach stay a zone if they have body; the splinters at a loop's corners
++    // (thinner than half the floor) are dropped.
++    const float  neck_open = float(std::max(double(eps), scaled<double>(sp.floor_mm) / 4.));
++
++    ExPolygons              spine_regions, forced_spine, fill_left;
++    std::vector<ExPolygons> levels;   // centres of the interior loops; levels[0] = first interior
++    // Mini loops: a loop enclosing less than ~3 lines of diameter is not a wall but a blob with its
++    // own start and stop. Not emitted - its zone goes to the spine even past the ceiling (the width
++    // is clipped to the ceiling afterwards).
++    const double min_loop_len = PI * 3. * scaled<double>(line_w);
++    int loops_left = walls - 1;
++    while (!todo.empty()) {
++        ExPolygons next, centres;
++        for (ExPolygon& comp : todo) {
++            if (fits_in_one_line(comp, ceiling_w)) {
++                spine_regions.emplace_back(std::move(comp));
++                continue;
++            }
++            ExPolygons centre = offset_ex(ExPolygons{ comp }, -spacing / 2.f);
++            const size_t n_raw = centre.size();
++            centre.erase(std::remove_if(centre.begin(), centre.end(),
++                                        [&](const ExPolygon& c) { return c.contour.length() < min_loop_len; }),
++                         centre.end());
++            const bool only_tiny = n_raw > 0 && centre.empty();   // only mini loops would fit
++            if (loops_left <= 0 || centre.empty()) {
++                if (only_tiny) {
++                    forced_spine.emplace_back(std::move(comp));
++                } else {   // walls used up, or neither a loop nor the line fits (the user's ceiling)
++                    fill_left.emplace_back(std::move(comp));
++                }
++                continue;
++            }
++            ExPolygons inner = offset_ex(ExPolygons{ comp }, -spacing);
++            append(inner, opening_ex(diff_ex(ExPolygons{ comp }, offset_ex(centre, spacing / 2.f)), neck_open));
++            append(next, union_ex(inner));
++            append(centres, std::move(centre));
++        }
++        if (!centres.empty())
++            levels.emplace_back(std::move(centres));
++        --loops_left;
++        todo = std::move(next);
++    }
++
++    // Spine first (placed at the bottom next to its island's loops). Whatever produced no line goes
++    // back to infill.
++    SpineStats           st;
++    ExPolygons           rejected;
++    ExtrusionEntitiesPtr spine_ents;
++    run_spine(g, spine_regions, sp, &st, &rejected, &forced_spine, &spine_ents);
++    append(fill_left, std::move(rejected));
++
++    // Interior loops, constant width like Classic's, and the spine, in one bucket per island (as
++    // Interior::run does) so the printer finishes one island before jumping to the next.
++    //
++    // Order: the spine is the innermost. With InnerOuter (inside out) it goes first - spine, then
++    // interiors, then the outer wall - so the nozzle does not come back inside after the outer wall.
++    // With OuterInner it goes last.
++    const WallSequence ws = original_cfg->wall_sequence;
++    {
++        const ExPolygons islands = union_ex(original_slice);
++        std::vector<ExtrusionEntityCollection> per_island(islands.size() + 1);
++        auto island_of = [&](const Point& p) -> size_t {
++            for (size_t i = 0; i < islands.size(); ++i)
++                if (islands[i].contains(p))
++                    return i;
++            return islands.size();
++        };
++        // Spine split per island and chained by proximity (with each line's own direction).
++        std::vector<ExtrusionEntitiesPtr> spine_by_island(islands.size() + 1);
++        for (ExtrusionEntity* e : spine_ents)
++            spine_by_island[island_of(e->first_point())].push_back(e);
++        spine_ents.clear();
++        for (ExtrusionEntitiesPtr& v : spine_by_island)
++            if (v.size() > 1)
++                chain_and_reorder_extrusion_entities(v);
++        auto emit_spine = [&]() {
++            for (size_t i = 0; i < spine_by_island.size(); ++i)
++                if (!spine_by_island[i].empty())
++                    per_island[i].append(std::move(spine_by_island[i]));   // the bucket takes ownership
++        };
++        if (ws != WallSequence::OuterInner)
++            emit_spine();
++        const Flow& pf = g.perimeter_flow;
++        auto emit_level = [&](const ExPolygons& centres, int inset) {
++            for (const ExPolygon& c : centres) {
++                ExtrusionEntityCollection& dst = per_island[island_of(c.contour.first_point())];
++                auto add = [&](const Polygon& poly, bool hole) {
++                    ExtrusionPath path(erPerimeter, pf.mm3_per_mm(), pf.width(), pf.height());
++                    path.polyline  = Polyline3(poly.split_at_first_point());
++                    path.inset_idx = inset;
++                    ExtrusionLoop loop(std::move(path));
++                    loop.make_counter_clockwise();
++                    loop.set_loop_role(hole ? elrHole : elrDefault);
++                    loop.inset_idx = inset;
++                    dst.append(std::move(loop));
++                };
++                add(c.contour, false);
++                for (const Polygon& h : c.holes)
++                    add(h, true);
++            }
++        };
++        // Inside each island: outside in with OuterInner, inside out otherwise.
++        if (ws == WallSequence::OuterInner)
++            for (size_t i = 0; i < levels.size(); ++i)
++                emit_level(levels[i], int(i) + 1);
++        else
++            for (size_t i = levels.size(); i-- > 0;)
++                emit_level(levels[i], int(i) + 1);
++        if (ws == WallSequence::OuterInner)
++            emit_spine();
++        for (ExtrusionEntityCollection& bucket : per_island)
++            if (!bucket.empty()) {
++                bucket.no_sort = true;
++                g.loops->append(bucket);
++            }
++    }
++    // Outer/interior order, as in Hybrid v2: with InnerOuter the interiors come first.
++    // InnerOuterInner is approximated as InnerOuter.
++    {
++        const size_t inners_end = g.loops->entities.size();
++        if (ws != WallSequence::OuterInner && loops_before < loops_after_outer && loops_after_outer < inners_end)
++            std::rotate(g.loops->entities.begin() + loops_before,
++                        g.loops->entities.begin() + loops_after_outer,
++                        g.loops->entities.begin() + inners_end);
++    }
++
++    // Infill: only what stayed wide, with the same overlap against the walls that Classic uses.
++    {
++        const bool topbottom = (g.layer_id == 0 || g.upper_slices == nullptr);
++        const ConfigOptionPercent& ov_opt = topbottom ? original_cfg->top_bottom_infill_wall_overlap
++                                                      : original_cfg->infill_wall_overlap;
++        const coord_t base = coord_t(spacing / 2.f) + g.solid_infill_flow.scaled_spacing() / 2;
++        const double  ov   = scale_(ov_opt.get_abs_value(unscale<double>(base)));
++        const ExPolygons fill_area = offset_ex(fill_left, float(ov));
++        Surfaces clipped;
++        clipped.reserve(g.fill_surfaces->surfaces.size());
++        for (const Surface& s : g.fill_surfaces->surfaces)
++            for (ExPolygon& ex : intersection_ex(ExPolygons{ s.expolygon }, fill_area))
++                clipped.emplace_back(Surface(s, std::move(ex)));
++        g.fill_surfaces->surfaces = std::move(clipped);
++        if (g.fill_no_overlap != nullptr && !g.fill_no_overlap->empty())
++            *g.fill_no_overlap = intersection_ex(*g.fill_no_overlap, fill_left);
++    }
++
++    // As in Hybrid v2: nothing emitted in a NeoArachne region triggers SpiralLift.
++    for (size_t i = loops_before; i < g.loops->entities.size(); ++i)
++        set_no_spiral_lift_recursive(g.loops->entities[i]);
++    if (g.gap_fill != nullptr)
++        for (size_t i = gap_before; i < g.gap_fill->entities.size(); ++i)
++            set_no_spiral_lift_recursive(g.gap_fill->entities[i]);
++}
++// [ORCAPORT:PQ-4] END
++
+ void Plan::run(PerimeterGenerator& g)
+ {
+     // ── Build the per-region NeoArachne config from the live PrintRegionConfig ──
+@@ -104,6 +324,12 @@ void Plan::run(PerimeterGenerator& g)
+     cfg.bead_count_hysteresis_pct = original_cfg->hybrid_bead_count_hysteresis_pct.value;
+     // Fase 4 — SkeletalTrapezoidation transition smoothing.
+     cfg.transition_filter_dist_mm = original_cfg->hybrid_transition_filter_dist_mm.value;
++    // [ORCAPORT:PQ-4] Single-line fill ("spine"): only reachable when inner_walls == Classic.
++    cfg.single_line_fill          = original_cfg->hybrid_single_line_fill.value;
++    cfg.single_line_min_width_pct = original_cfg->hybrid_single_line_min_width_pct.value;
++    cfg.single_line_max_width_pct = original_cfg->hybrid_single_line_max_width_pct.value;
++    cfg.single_line_min_length_mm = original_cfg->hybrid_single_line_min_length.value;
++    cfg.single_line_sliver_pct    = original_cfg->hybrid_single_line_sliver_pct.value;
+     // pin_outer_width is gated upstream by hybrid_edge_active anyway (ConfigManipulation
+     // hides the control unless outer or inner wall source is ArachneHybrid).
+     // Merge global advanced toggles from Runtime singleton (Fase 6 will fill these).
+@@ -125,6 +351,12 @@ void Plan::run(PerimeterGenerator& g)
+     // handles its own medial-axis gap_fill; the hybrid_gap_fill selector
+     // is informational only here.
+     if (!outer_is_arachne_family && cfg.inner_walls == WallSource::Classic) {
++        // [ORCAPORT:PQ-4] With the single-line fill on, this combo becomes "Classic walls + spine".
++        // With it off (the default) this is the plain Classic path, byte-identical to before.
++        if (cfg.single_line_fill) {
++            run_classic_spine(g, cfg, original_cfg);
++            return;
++        }
+         log_dispatch(cfg, g.layer_id, /*region_id=*/-1, "phase2.5/sanity-classic");
+         g.process_classic();
+         return;
+diff --git a/src/libslic3r/NeoArachne/NeoArachneSpine.cpp b/src/libslic3r/NeoArachne/NeoArachneSpine.cpp
+new file mode 100644
+index 0000000000..9042510409
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneSpine.cpp
+@@ -0,0 +1,426 @@
++// [ORCAPORT FILE] NeoArachne - single-line fill (spine)
++// Source: NEOTKOCM_RELEASE_2_46.md; fork sha 67d2415aab
++// NEOTKO_NEOARACHNE_TAG v3-spine (s323)
++#include "NeoArachneSpine.hpp"
++
++#include "../PerimeterGenerator.hpp"
++#include "../PrintConfig.hpp"
++#include "../ClipperUtils.hpp"
++#include "../VariableWidth.hpp"
++#include "../ExtrusionEntityCollection.hpp"
++#include "../Geometry/MedialAxis.hpp"
++#include "../Line.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <map>
++#include <numeric>
++#include <utility>
++#include <vector>
++
++namespace Slic3r { namespace NeoArachne {
++
++bool fits_in_one_line(const ExPolygon& ex, double ceiling_scaled)
++{
++    return offset_ex(ExPolygons{ ex }, -float(ceiling_scaled / 2.)).empty();
++}
++
++// ── Limpieza del esqueleto (fase 2) ─────────────────────────────────────────
++// MedialAxis corta las líneas en cada cruce y deja, en cada punta afilada, ramitas cortas hacia
++// las esquinas. Sin limpiar, esas ramitas se prolongan hasta el borde y se montan sobre la línea
++// principal, y cada rama es un camino suelto.
++//
++// s323, lo aprendido con la lámina y la S:
++//   · Las ramas de un mismo cruce NO comparten el punto exacto (el Voronoi deja el cruce partido
++//     en vértices separados por micras) ⇒ los nodos se agrupan por PROXIMIDAD.
++//   · Un hueco que se pellizca hasta un punto queda en DOS zonas que se tocan ahí (el centro de
++//     la S) ⇒ el grafo se limpia con TODAS las zonas a la vez, no zona a zona.
++//   · Una ramita siempre es estrecha (va a una esquina), así que compararla con su propio ancho casi
++//     nunca la poda ⇒ se compara con el grosor del hueco en el nodo donde nace.
++
++// Línea del esqueleto + la zona a la que pertenece cada extremo (para prolongarlo hasta SU borde).
++struct SPl {
++    ThickPolyline pl;
++    size_t        zf = 0;   // zona del extremo inicial
++    size_t        zb = 0;   // zona del extremo final
++};
++
++struct EndRef { size_t pl; bool back; };
++
++static bool alive(const SPl& s) { return s.pl.points.size() >= 2; }
++static bool is_closed_pl(const ThickPolyline& pl) { return pl.points.front() == pl.points.back(); }
++
++static const Point& end_point(const ThickPolyline& pl, bool back) { return back ? pl.points.back() : pl.points.front(); }
++static double end_width(const ThickPolyline& pl, bool back) { return back ? pl.width.back() : pl.width.front(); }
++
++static double max_width(const ThickPolyline& pl)
++{
++    return pl.width.empty() ? 0. : *std::max_element(pl.width.begin(), pl.width.end());
++}
++
++static void reverse_spl(SPl& s)
++{
++    s.pl.reverse();
++    std::swap(s.zf, s.zb);
++}
++
++// Dirección con la que la línea SALE del nodo por el extremo indicado.
++static Vec2d leave_dir(const ThickPolyline& pl, bool back)
++{
++    const Point& n = back ? pl.points.back() : pl.points.front();
++    const Point& q = back ? pl.points[pl.points.size() - 2] : pl.points[1];
++    Vec2d d = (q - n).cast<double>();
++    const double l = d.norm();
++    return l > 0. ? Vec2d(d / l) : d;
++}
++
++// Pega `b` a continuación de `a` por su nodo común y deja `b` vacía. Si los extremos no coinciden
++// exactamente (cruce partido), el hueco se cubre con un tramo puente.
++static void join_at(SPl& a, bool a_back, SPl& b, bool b_back)
++{
++    if (!a_back) reverse_spl(a);   // `a` termina en el nodo
++    if (b_back)  reverse_spl(b);   // `b` empieza en el nodo
++    ThickPolyline& A = a.pl;
++    ThickPolyline& B = b.pl;
++    if (A.points.back() == B.points.front()) {
++        A.points.insert(A.points.end(), B.points.begin() + 1, B.points.end());
++        A.width.insert(A.width.end(), B.width.begin(), B.width.end());
++    } else {
++        const coordf_t wa = A.width.back();
++        const coordf_t wb = B.width.front();
++        A.points.insert(A.points.end(), B.points.begin(), B.points.end());
++        A.width.push_back(wa);
++        A.width.push_back(wb);
++        A.width.insert(A.width.end(), B.width.begin(), B.width.end());
++    }
++    A.endpoints.second = B.endpoints.second;
++    a.zb = b.zb;
++    B.points.clear();
++    B.width.clear();
++}
++
++// Nodos = grupos de extremos cercanos. `node_of[(pl, back)]` da el nodo de cada extremo.
++struct Graph {
++    std::vector<std::vector<EndRef>>          nodes;
++    std::map<std::pair<size_t, bool>, size_t> node_of;
++    size_t degree_of(size_t pl, bool back) const { return nodes[node_of.at({ pl, back })].size(); }
++    // Grosor del hueco en el nodo: el mayor ancho de los extremos que llegan a él.
++    double node_width(const std::vector<SPl>& pls, size_t node) const
++    {
++        double w = 0.;
++        for (const EndRef& e : nodes[node])
++            w = std::max(w, end_width(pls[e.pl].pl, e.back));
++        return w;
++    }
++};
++
++static Graph build_graph(const std::vector<SPl>& pls, double max_tol)
++{
++    std::vector<EndRef> ends;
++    for (size_t i = 0; i < pls.size(); ++i) {
++        if (!alive(pls[i]) || is_closed_pl(pls[i].pl))
++            continue;
++        ends.push_back({ i, false });
++        ends.push_back({ i, true });
++    }
++    std::vector<size_t> parent(ends.size());
++    std::iota(parent.begin(), parent.end(), size_t(0));
++    auto root = [&](size_t x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; };
++    for (size_t a = 0; a < ends.size(); ++a)
++        for (size_t b = a + 1; b < ends.size(); ++b) {
++            const ThickPolyline& pa = pls[ends[a].pl].pl;
++            const ThickPolyline& pb = pls[ends[b].pl].pl;
++            // Medio ancho de línea en ese punto (+ margen), sin pasar de medio techo.
++            const double tol = std::min(0.6 * std::max(end_width(pa, ends[a].back), end_width(pb, ends[b].back))
++                                            + 2. * SCALED_EPSILON, max_tol);
++            if ((end_point(pa, ends[a].back) - end_point(pb, ends[b].back)).cast<double>().squaredNorm() <= tol * tol)
++                parent[root(a)] = root(b);
++        }
++    Graph g;
++    std::map<size_t, size_t> root_to_node;
++    for (size_t i = 0; i < ends.size(); ++i) {
++        const size_t r = root(i);
++        auto it = root_to_node.find(r);
++        if (it == root_to_node.end()) {
++            it = root_to_node.emplace(r, g.nodes.size()).first;
++            g.nodes.emplace_back();
++        }
++        g.nodes[it->second].push_back(ends[i]);
++        g.node_of[{ ends[i].pl, ends[i].back }] = it->second;
++    }
++    return g;
++}
++
++static void kill(SPl& s) { s.pl.points.clear(); s.pl.width.clear(); }
++
++static void clean_graph(std::vector<SPl>& pls, double ceiling_w, SpineStats& s)
++{
++    const double max_tol = 0.5 * ceiling_w;
++    for (int guard = 0; guard < 100000; ++guard) {
++        const Graph gr = build_graph(pls, max_tol);
++
++        // (0) Conector del propio cruce: una línea cortita con los dos extremos en el mismo nodo.
++        bool changed = false;
++        for (size_t i = 0; i < pls.size() && !changed; ++i) {
++            if (!alive(pls[i]) || is_closed_pl(pls[i].pl))
++                continue;
++            if (gr.node_of.at({ i, false }) == gr.node_of.at({ i, true }) && pls[i].pl.length() <= 2. * max_tol) {
++                kill(pls[i]);
++                changed = true;
++            }
++        }
++        if (changed)
++            continue;
++
++        // (a) Poda: la ramita más corta que cuelga de un cruce con la otra punta libre y es más
++        //     corta que 1.5 × el grosor del hueco en ese cruce. De una en una, para no podar todas
++        //     las ramas de una Y pequeña.
++        size_t best_pl = std::numeric_limits<size_t>::max();
++        double best_ratio = 1.5;
++        for (size_t n = 0; n < gr.nodes.size(); ++n) {
++            const auto& ends = gr.nodes[n];
++            if (ends.size() < 3)
++                continue;
++            const double w = gr.node_width(pls, n);
++            if (w <= 0.)
++                continue;
++            for (const EndRef& e : ends) {
++                if (gr.degree_of(e.pl, !e.back) != 1)
++                    continue;
++                const double ratio = pls[e.pl].pl.length() / w;
++                if (ratio < best_ratio) { best_ratio = ratio; best_pl = e.pl; }
++            }
++        }
++        if (best_pl != std::numeric_limits<size_t>::max()) {
++            kill(pls[best_pl]);
++            ++s.spurs_pruned;
++            continue;
++        }
++
++        // (b) Nodo de paso (grado 2): las dos mitades son la misma línea.
++        for (const auto& ends : gr.nodes) {
++            if (ends.size() == 2 && ends[0].pl != ends[1].pl) {
++                join_at(pls[ends[0].pl], ends[0].back, pls[ends[1].pl], ends[1].back);
++                changed = true;
++                break;
++            }
++        }
++        if (changed)
++            continue;
++
++        // (c) Cruce: se encadenan las dos ramas más alineadas (las que siguen recto). Una Y de 3
++        //     ramas queda en 2 líneas, como en S3D.
++        for (const auto& ends : gr.nodes) {
++            if (ends.size() < 3)
++                continue;
++            double best = 2.;
++            size_t bi = 0, bj = 0;
++            for (size_t i = 0; i < ends.size(); ++i)
++                for (size_t j = i + 1; j < ends.size(); ++j) {
++                    if (ends[i].pl == ends[j].pl)
++                        continue;
++                    const double d = leave_dir(pls[ends[i].pl].pl, ends[i].back).dot(leave_dir(pls[ends[j].pl].pl, ends[j].back));
++                    if (d < best) { best = d; bi = i; bj = j; }
++                }
++            if (best < 2.) {
++                join_at(pls[ends[bi].pl], ends[bi].back, pls[ends[bj].pl], ends[bj].back);
++                ++s.junction_joins;
++                changed = true;
++                break;
++            }
++        }
++        if (!changed)
++            break;
++    }
++    pls.erase(std::remove_if(pls.begin(), pls.end(), [](const SPl& x) { return !alive(x); }), pls.end());
++
++    // Bucles cerrados más pequeños que su propio ancho: son un borrón, no una línea (la `a`, s323).
++    pls.erase(std::remove_if(pls.begin(), pls.end(), [&s](const SPl& x) {
++                  if (!is_closed_pl(x.pl) || x.pl.length() >= M_PI * max_width(x.pl))
++                      return false;
++                  ++s.tiny_loops_dropped;
++                  return true;
++              }), pls.end());
++
++    // Extremos libres según el grafo final (no según MedialAxis): una punta que se ha quedado sola
++    // tras podar sus ramitas también debe llegar al borde; una que toca a otra línea, no.
++    const Graph gr = build_graph(pls, max_tol);
++    for (size_t i = 0; i < pls.size(); ++i) {
++        ThickPolyline& pl = pls[i].pl;
++        if (is_closed_pl(pl)) {
++            pl.endpoints = { false, false };
++            continue;
++        }
++        pl.endpoints.first  = gr.degree_of(i, false) == 1;
++        pl.endpoints.second = gr.degree_of(i, true) == 1;
++    }
++}
++
++// Punto del borde de `ex` (contorno o agujero) al que llega el extremo `tip` siguiendo su
++// dirección (siendo `inner` el punto anterior de la línea). Es el mismo gesto que
++// ExPolygon::medial_axis, pero aquel sólo prueba el contorno y aquí el hueco puede ser un
++// anillo (el agujero de la `a`).
++static bool boundary_hit(const ExPolygon& ex, const Point& inner, const Point& tip, double reach, Point& hit)
++{
++    const Vec2d a   = inner.cast<double>();
++    const Vec2d b   = tip.cast<double>();
++    Vec2d       dir = b - a;
++    const double n  = dir.norm();
++    if (n < SCALED_EPSILON)
++        return false;
++    dir /= n;
++    const Line ray(tip, (b + dir * reach).cast<coord_t>());
++
++    double best  = std::numeric_limits<double>::max();
++    bool   found = false;
++    auto test = [&](const Polygon& poly) {
++        for (const Line& l : poly.lines()) {
++            Point ip;
++            if (line_alg::intersection(ray, l, &ip)) {
++                const double d = (ip - tip).cast<double>().squaredNorm();
++                if (d < best) { best = d; hit = ip; found = true; }
++            }
++        }
++    };
++    test(ex.contour);
++    for (const Polygon& h : ex.holes)
++        test(h);
++    return found && hit != tip;
++}
++
++ExPolygons run_spine(PerimeterGenerator& g, const ExPolygons& regions, const SpineParams& p, SpineStats* stats,
++                     ExPolygons* rejected, const ExPolygons* forced, ExtrusionEntitiesPtr* out)
++{
++    SpineStats  local;
++    SpineStats& s = stats ? *stats : local;
++    ExPolygons  consumed;
++
++    const double floor_w   = scaled<double>(std::max(p.floor_mm, 0.001));
++    const double ceiling_w = scaled<double>(std::max(p.ceiling_mm, p.floor_mm));
++    const double min_len   = scaled<double>(std::max(p.min_length_mm, 0.));
++    const double sliver_w  = scaled<double>(std::max(p.sliver_mm, 0.));
++    // El esqueleto se busca hasta anchos muy pequeños para que la línea llegue a la punta; el
++    // suelo se aplica después, al ancho de la línea, nunca como corte (regla 3).
++    const double detect_min = std::max(double(SCALED_EPSILON) * 4., 0.25 * floor_w);
++    const double detect_max = ceiling_w * 1.05;
++    const double simplify   = scaled<double>(std::max(g.print_config->resolution.value, 0.005));
++    const double mm2        = SCALING_FACTOR * SCALING_FACTOR;
++
++    // 1. Esqueleto de cada zona (simplificada; se guarda para prolongar las puntas hasta su borde).
++    ExPolygons       zones;
++    std::vector<SPl> pls;
++    std::vector<std::pair<const ExPolygon*, bool>> input;   // (zona, forzada)
++    for (const ExPolygon& c : regions)
++        input.push_back({ &c, false });
++    if (forced)
++        for (const ExPolygon& c : *forced)
++            input.push_back({ &c, true });
++    for (const auto& [comp_ptr, is_forced] : input) {
++        const ExPolygon& comp = *comp_ptr;
++        ++s.components;
++        const double a = comp.area();
++        if (a <= 0.)
++            continue;
++        if (!is_forced && !fits_in_one_line(comp, ceiling_w)) {
++            ++s.wide_components;
++            s.wide_area_mm2 += a * mm2;
++            if (rejected) rejected->push_back(comp);
++            continue;
++        }
++        ExPolygon ex = comp;
++        ex.douglas_peucker(simplify);
++        ThickPolylines tp;
++        // Una zona forzada puede pasar del techo: el esqueleto se busca entero (si no, MedialAxis
++        // descarta las aristas más anchas que su máximo y la línea sale cortada) y el ancho se
++        // recorta al techo después.
++        Geometry::MedialAxis ma(detect_min, is_forced ? ceiling_w * 4. : detect_max, ex);
++        ma.build(&tp);
++        tp.erase(std::remove_if(tp.begin(), tp.end(), [](const ThickPolyline& pl) { return pl.points.size() < 2; }), tp.end());
++        if (tp.empty()) {
++            // Sin espina útil (p. ej. un cuadradito: su esqueleto son esquinas que validate_edge
++            // descarta). A relleno en vez de quedarse vacío (ancla, s323).
++            if (rejected) rejected->push_back(comp);
++            continue;
++        }
++        if (sliver_w > 0.) {
++            double wmax = 0.;
++            for (const ThickPolyline& pl : tp)
++                wmax = std::max(wmax, max_width(pl));
++            if (wmax < sliver_w) {   // grieta: el hueco nunca llega al umbral
++                ++s.slivers_skipped;
++                continue;
++            }
++        }
++        const size_t z = zones.size();
++        zones.push_back(std::move(ex));
++        consumed.push_back(comp);
++        ++s.spine_components;
++        s.spine_area_mm2 += a * mm2;
++        for (ThickPolyline& pl : tp)
++            pls.push_back({ std::move(pl), z, z });
++    }
++
++    // 2. Limpieza con todas las zonas a la vez (un hueco pellizcado sigue siendo UNA línea).
++    clean_graph(pls, ceiling_w, s);
++
++    // 3. Puntas al borde, suelo/techo y largo mínimo. A diferencia de ExPolygon::medial_axis NO se
++    //    podan las ramas por el ancho máximo encontrado (mataría los huecos pequeños que S3D sí
++    //    imprime); sólo cuenta el largo mínimo.
++    ThickPolylines all;
++    for (SPl& sp : pls) {
++        ThickPolyline& pl = sp.pl;
++        // Grieta DENTRO de una zona buena (s323: el final del arco de arriba de la S, 1 mm a ancho
++        // de suelo, separado de la línea principal): la regla de la zona no la ve porque la zona
++        // sí llega al suelo gracias a la línea gorda. Se mira también línea a línea.
++        if (sliver_w > 0. && max_width(pl) < sliver_w) {
++            ++s.slivers_skipped;
++            continue;
++        }
++        // Puntas al borde con un tramo NUEVO que se afina hasta el suelo. s323: estirar el último
++        // tramo dejaba la prolongación al ancho del final de la línea (0.85 en el hueco de la S,
++        // 0.7–0.9 mm de largo) metiéndose donde el hueco ya se cierra = material encima del muro.
++        if (pl.endpoints.first) {
++            Point tip;
++            if (boundary_hit(zones[sp.zf], pl.points[1], pl.points.front(), ceiling_w, tip)) {
++                const coordf_t w0 = pl.width.front();
++                pl.points.insert(pl.points.begin(), tip);
++                pl.width.insert(pl.width.begin(), { coordf_t(floor_w), w0 });
++            }
++        }
++        if (pl.endpoints.second) {
++            Point tip;
++            if (boundary_hit(zones[sp.zb], pl.points[pl.points.size() - 2], pl.points.back(), ceiling_w, tip)) {
++                const coordf_t w1 = pl.width.back();
++                pl.points.push_back(tip);
++                pl.width.push_back(w1);
++                pl.width.push_back(coordf_t(floor_w));
++            }
++        }
++        for (coordf_t& w : pl.width)
++            w = std::clamp<coordf_t>(w, floor_w, ceiling_w);   // reglas 3 y 4
++        const double len = pl.length();
++        if (len < min_len) {
++            ++s.dropped_short;
++            continue;
++        }
++        s.spine_len_mm += unscale<double>(len);
++        all.emplace_back(std::move(pl));
++    }
++    s.polylines += all.size();
++
++    if (!all.empty()) {
++        // Mismo conversor que el gap-fill de Classic: el ancho de la ThickPolyline es el hueco y
++        // el volumen resultante es hueco × altura, igual que el W de S3D.
++        if (out != nullptr) {
++            variable_width(all, erGapFill, g.solid_infill_flow, *out);
++        } else if (g.gap_fill != nullptr) {
++            ExtrusionEntityCollection coll;
++            variable_width(all, erGapFill, g.solid_infill_flow, coll.entities);
++            g.gap_fill->append(std::move(coll.entities));
++        }
++    }
++    return consumed;
++}
++
++}} // namespace Slic3r::NeoArachne
+diff --git a/src/libslic3r/NeoArachne/NeoArachneSpine.hpp b/src/libslic3r/NeoArachne/NeoArachneSpine.hpp
+new file mode 100644
+index 0000000000..04e700d7e1
+--- /dev/null
++++ b/src/libslic3r/NeoArachne/NeoArachneSpine.hpp
+@@ -0,0 +1,67 @@
++// [ORCAPORT FILE] NeoArachne - single-line fill (spine)
++// Source: NEOTKOCM_RELEASE_2_46.md; fork sha 67d2415aab
++// NEOTKO_NEOARACHNE_TAG v3-spine (s323)
++// NeoArachne v3 — "tipo S3D": muros de ancho fijo + ESPINA.
++//
++// Reglas medidas en G-code de Simplify3D (lámina s3d_probe, s323):
++//   1. Los muros son siempre de ancho fijo y sólo van donde caben enteros.
++//   2. ANTES de cada muro: si lo que queda cabe ENTERO en una línea de ancho <= techo, no hay más
++//      muros ahí; se imprime UNA línea por el eje con ancho = hueco local.
++//   3. El ancho mínimo es un SUELO, no un corte: la punta de un hueco se imprime a ese ancho.
++//   4. El ancho máximo es un TECHO: la línea nunca se parte en dos.
++//   5. En los cruces las ramas se encadenan (Y de 3 ramas → 2 líneas).
++// Y una propia (s323, S y `a` de Neotko): una zona cuyo hueco NUNCA llega al suelo no es un hueco,
++// es una grieta entre dos pasadas del mismo muro → no se imprime (umbral propio: sliver_mm).
++// Ver memory/project_neoarachne_vs_s3d_paths.md.
++#ifndef slic3r_NeoArachneSpine_hpp_
++#define slic3r_NeoArachneSpine_hpp_
++
++#include <cstddef>
++#include "../ExPolygon.hpp"
++#include "../ExtrusionEntity.hpp"
++
++namespace Slic3r {
++class PerimeterGenerator;
++namespace NeoArachne {
++
++struct SpineParams {
++    double floor_mm      = 0.2;   // suelo: un hueco más estrecho se imprime a este ancho
++    double ceiling_mm    = 1.2;   // techo: si en algún punto el hueco es más ancho, no es espina
++    double min_length_mm = 0.1;   // líneas más cortas se descartan
++    // Grieta: zona o línea cuyo hueco nunca llega a este ancho → no se imprime (0 = off). Separado
++    // del suelo a propósito (s323): con el mínimo al 10 % las grietas volvían a salir.
++    double sliver_mm     = 0.14;
++};
++
++struct SpineStats {
++    size_t components         = 0;  // zonas recibidas
++    size_t spine_components   = 0;  // las que se han impreso como espina
++    size_t wide_components    = 0;  // no caben en una línea (no deberían llegar aquí en v3)
++    size_t slivers_skipped    = 0;  // grietas que no llegan al suelo, no impresas
++    size_t polylines          = 0;  // líneas de espina emitidas
++    size_t dropped_short      = 0;  // líneas descartadas por el largo mínimo
++    size_t tiny_loops_dropped = 0;  // bucles cerrados más pequeños que su propio ancho
++    size_t spurs_pruned       = 0;  // ramitas de punta podadas
++    size_t junction_joins     = 0;  // uniones hechas en cruces
++    double spine_len_mm       = 0.;
++    double spine_area_mm2     = 0.;
++    double wide_area_mm2      = 0.;
++};
++
++// Regla 2: true si en ningún punto de `ex` cabe un disco de diámetro `ceiling_scaled`.
++bool fits_in_one_line(const ExPolygon& ex, double ceiling_scaled);
++
++// Imprime como espina las zonas de `regions` que caben en una línea <= techo. Las rutas van a
++// g.gap_fill (erGapFill). Devuelve las zonas consumidas; las que no dan ninguna línea (o no caben)
++// se añaden a `rejected` para que el llamador las mande a relleno en vez de dejarlas vacías. Las
++// grietas saltadas por sliver_mm NO se devuelven (tampoco las llenaría el relleno).
++// `forced`: zonas que van a espina aunque no quepan bajo el techo (el ancho se recorta al techo);
++// s323: las colas donde sólo cabría un minibucle. `out`: si no es nulo, las rutas van ahí (el
++// llamador las coloca en el orden de los muros) en vez de a g.gap_fill.
++ExPolygons run_spine(PerimeterGenerator& g, const ExPolygons& regions, const SpineParams& p, SpineStats* stats,
++                     ExPolygons* rejected = nullptr, const ExPolygons* forced = nullptr,
++                     ExtrusionEntitiesPtr* out = nullptr);
++
++}} // namespace Slic3r::NeoArachne
++
++#endif
+diff --git a/src/libslic3r/Preset.cpp b/src/libslic3r/Preset.cpp
+index 53dc1cb489..af77de961e 100644
+--- a/src/libslic3r/Preset.cpp
++++ b/src/libslic3r/Preset.cpp
+@@ -1485,6 +1485,8 @@ static std::vector<std::string> s_Preset_print_options{
+     "hybrid_outer_wall", "hybrid_inner_walls", "hybrid_gap_fill", "hybrid_allowed_overlap_pct", "hybrid_min_bead_width_pct",
+     "hybrid_max_bead_width_pct", "hybrid_min_feature_size_pct", "hybrid_keep_short_tails", "hybrid_pin_outer_width",
+     "hybrid_bead_count_hysteresis_pct", "hybrid_transition_filter_dist_mm",
++"hybrid_single_line_fill", "hybrid_single_line_min_width_pct", "hybrid_single_line_max_width_pct",
++"hybrid_single_line_min_length", "hybrid_single_line_sliver_pct",
+     "small_area_infill_flow_compensation",
+     "small_area_infill_flow_compensation_model",
+     "enable_wrapping_detection",
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 9b16b12142..186e4bb42c 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -9237,6 +9237,73 @@ void PrintConfigDef::init_fff_params()
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionFloat(100.0));
+ 
++    // [ORCAPORT:PQ-4] Single-line fill ("spine"), from the fork's neoarachne_spine* group. Only
++    // active when outer wall = Classic AND inner walls = Classic. Default OFF, unlike the fork:
++    // it is an experimental motion pattern and the fork also flips the inner-walls default to
++    // Classic, which we deliberately do not (that would change existing projects' output).
++    def = this->add("hybrid_single_line_fill", coBool);
++    def->label = L("Single-line fill");
++    def->category = L("Quality");
++    def->tooltip = L("With inner walls = Classic: whatever is left inside the walls is printed as ONE "
++        "line along its centre, with a width that follows the gap, whenever the whole gap fits in a "
++        "line no wider than the maximum below. Wider areas go to infill as usual. This replaces the "
++        "short cross-hatched infill strokes and gap-fill fragments in narrow pockets (small letters). "
++        "Disable to get plain Classic walls + Classic gap fill.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(false));
++
++    def = this->add("hybrid_single_line_min_width_pct", coPercent);
++    def->label = L("Single-line min width");
++    def->category = L("Quality");
++    def->tooltip = L("Floor of the single-line fill, as a percentage of the inner wall line width. "
++        "Where the gap is narrower than this, the line is still printed at this width, so the tips "
++        "of a pocket get filled instead of being dropped.");
++    def->sidetext = L("% of line width");
++    def->min = 1;
++    def->max = 200;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(50));
++
++    def = this->add("hybrid_single_line_max_width_pct", coPercent);
++    def->label = L("Single-line max width");
++    def->category = L("Quality");
++    def->tooltip = L("Ceiling of the single-line fill, as a percentage of the inner wall line width. "
++        "A gap that fits entirely under this width becomes one line; if any part is wider, the area "
++        "goes to infill. The line is never split in two. Permissive on purpose: wide lines are still "
++        "slowed down to the filament's maximum volumetric speed.");
++    def->sidetext = L("% of line width");
++    def->min = 50;
++    def->max = 1000;
++    def->mode = comAdvanced;
++    // 300 rather than the 200 quoted for the same feature elsewhere: this slicer's wall spacing
++    // (0.357 at a 0.4 nozzle) leaves a wider gap, so the same pocket needs a higher ceiling to
++    // become a single line.
++    def->set_default_value(new ConfigOptionPercent(300));
++
++    def = this->add("hybrid_single_line_min_length", coFloat);
++    def->label = L("Single-line min length");
++    def->category = L("Quality");
++    def->tooltip = L("Single-line fill paths shorter than this are dropped.");
++    def->sidetext = L("mm");
++    def->min = 0;
++    def->max = 10;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionFloat(0.1));
++
++    def = this->add("hybrid_single_line_sliver_pct", coPercent);
++    def->label = L("Single-line sliver below");
++    def->category = L("Quality");
++    def->tooltip = L("A gap that never gets this wide anywhere (percentage of the inner wall line "
++        "width) is not a pocket, it is a crack between two passes of the same wall, typically inside "
++        "the narrow tail of a letter. Such cracks are not filled, which removes the thin gap-fill "
++        "strokes. Independent of the single-line minimum width, which only sets how thin the tip of "
++        "a real pocket is printed. 0 = fill every crack.");
++    def->sidetext = L("% of line width");
++    def->min = 0;
++    def->max = 100;
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionPercent(35));
++
+     def = this->add("wall_transition_length", coPercent);
+     def->label = L("Wall transition length");
+     def->category = L("Quality");
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index 2de2300a34..7ec4d7efe0 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -1751,6 +1751,11 @@ PRINT_CONFIG_CLASS_DEFINE(
+     ((ConfigOptionBool,    hybrid_pin_outer_width))
+     ((ConfigOptionPercent, hybrid_bead_count_hysteresis_pct))
+     ((ConfigOptionFloat,   hybrid_transition_filter_dist_mm))
++((ConfigOptionBool,    hybrid_single_line_fill))
++((ConfigOptionPercent, hybrid_single_line_min_width_pct))
++((ConfigOptionPercent, hybrid_single_line_max_width_pct))
++((ConfigOptionFloat,   hybrid_single_line_min_length))
++((ConfigOptionPercent, hybrid_single_line_sliver_pct))
+     )
+ 
+ PRINT_CONFIG_CLASS_DEFINE(
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index b7c64036eb..b32ae8cf96 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -2925,6 +2925,13 @@ void TabPrint::build()
+         optgroup->append_single_option_line("hybrid_pin_outer_width", "quality_settings_wall_generator");
+         optgroup->append_single_option_line("hybrid_bead_count_hysteresis_pct", "quality_settings_wall_generator");
+         optgroup->append_single_option_line("hybrid_transition_filter_dist_mm", "quality_settings_wall_generator");
++        // [ORCAPORT:PQ-4] Single-line fill ("spine"). Only meaningful with inner walls = Classic;
++        // option-driven visibility is handled by ConfigManipulation toggling hybrid_edge_active.
++        optgroup->append_single_option_line("hybrid_single_line_fill", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_single_line_min_width_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_single_line_max_width_pct", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_single_line_min_length", "quality_settings_wall_generator");
++        optgroup->append_single_option_line("hybrid_single_line_sliver_pct", "quality_settings_wall_generator");
+ 
+         optgroup = page->new_optgroup(L("Walls and surfaces"), L"param_wall_surface");
+         optgroup->append_single_option_line("wall_sequence", "quality_settings_wall_and_surfaces#walls-printing-order");
