@@ -107,7 +107,7 @@ public:
         CounterboreBridge, // [ORCAPORT:PF-2b]
         Holes, // [ORCAPORT:ME-2] holes tool (teardrop / bore-pocket)
         EdgeDress, // [ORCAPORT:EF-1] chamfer / fillet a straight mesh edge
-        HoleFill, // [ORCAPORT:HF-1] fill a depression (engraving / watermark) with a positive plug
+        Extrude, // [ORCAPORT:HF-3] turn a picked flat face into a solid, or fill a cavity
         Perforation, // [ORCAPORT:PP-1] stamp a perforation pattern into a planar face
         //SlaSupports,
         // BBS

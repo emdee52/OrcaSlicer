@@ -1,12 +1,25 @@
-#ifndef slic3r_GLGizmoHoleFill_hpp_
-#define slic3r_GLGizmoHoleFill_hpp_
+#ifndef slic3r_GLGizmoExtrude_hpp_
+#define slic3r_GLGizmoExtrude_hpp_
 
-// [ORCAPORT:HF-1] Cavity fill tool. Fills a depression cut into the mesh (an engraving, a watermark,
-// a pocket) by adding a positive MODEL_PART volume over it. Paint the recessed faces: every facet is
-// measured against the surface fitted to its own neighbourhood, so the plug is those facets projected
-// up to that local surface, sits flush, and follows a curved or coarsely facetted wall without any
-// reference to set. A facet that is level with its neighbourhood (a plain wall) is left alone. Works
-// on the mesh directly - no boolean and no CAD reconstruction. Full through-holes are deferred.
+// [ORCAPORT:HF-1] [ORCAPORT:HF-3] Extrude tool. Two jobs in one, chosen by the mode selector:
+//
+//   Extrude face - pick a flat face and turn it into a solid: the face is grown into a coplanar
+//   region, projected to a polygon outline, and closed into a prism of a given height, grown or
+//   shrunk by an offset. Optionally only the face's holes are extruded (each one filled), and
+//   optionally the prism is split half out of the face and half into the model.
+//
+//   Cavity fill - fill a depression cut into the mesh (an engraving, a watermark, a pocket) by
+//   adding a positive MODEL_PART volume over it. Paint the recessed faces: every facet is measured
+//   against the surface fitted to its own neighbourhood, so the plug is those facets projected up to
+//   that local surface, sits flush, and follows a curved or coarsely facetted wall without any
+//   reference to set. A facet level with its neighbourhood (a plain wall) is left alone.
+//
+// Both work on the mesh directly - no boolean and no CAD reconstruction. Both add an ordinary
+// positive MODEL_PART volume, so one undo removes the result.
+//
+// Renamed from GLGizmoHoleFill when the extrude mode was added. Volumes are written with the
+// "Extrude#" prefix; the legacy "HoleFill#" prefix is still recognised on read so fills made before
+// the rename stay editable.
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
@@ -27,17 +40,29 @@ class ModelVolume;
 
 namespace GUI {
 
-class GLGizmoHoleFill : public GLGizmoBase
+class GLGizmoExtrude : public GLGizmoBase
 {
 public:
-    GLGizmoHoleFill(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
+    GLGizmoExtrude(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
 
     void data_changed(bool is_serializing) override;
     bool render_follows_cursor() const override { return get_state() == On; }
 
     // --- control surface for the embedded MCP tool (see OrcaMCPGizmoTools.cpp) ---
+    // [ORCAPORT:HF-3] The tool has two modes; the MCP surface drives both.
+    enum class Mode { ExtrudeFace = 0, CavityFill = 1 };
+    Mode   get_mode() const { return m_mode; }
+    void   set_mode(Mode m);
     double get_radius() const { return m_radius; }
     void   set_radius(double radius);
+    double get_extrude_height() const { return m_extrude_height; }
+    void   set_extrude_height(double h);
+    double get_extrude_offset() const { return m_extrude_offset; }
+    void   set_extrude_offset(double off);
+    bool   get_extrude_holes() const { return m_extrude_holes; }
+    void   set_extrude_holes(bool on);
+    bool   get_extrude_both() const { return m_extrude_both; }
+    void   set_extrude_both(bool on);
     double object_scale() const;
     int    applied_count() const;
     bool   hover_valid() const { return m_hover.valid; }
@@ -84,16 +109,26 @@ private:
     // is nothing to fill.
     indexed_triangle_set fill_mesh(const Hover& hover) const;
     indexed_triangle_set fill_mesh(const std::vector<Hover>& seeds) const;
+    // [ORCAPORT:HF-3] The prism for the hovered face, in object space. Empty, with `why` filled in,
+    // when the face has no usable outline or the offset eats the shape.
+    indexed_triangle_set face_extrude_mesh(const Hover& hover, std::string* why = nullptr) const;
     void                 record_stroke_sample();
     void                 commit_stroke();
     // Volume index of an applied plug that already covers `hit_world`, or -1.
     int          find_covering_fill(const Vec3d& hit_world) const;
     void         rebuild_preview();
-    void         add_named_fill(const std::string& name, const indexed_triangle_set& its);
+    void         add_named_fill(const std::string& name, const indexed_triangle_set& its, const std::string& action);
     int          next_feature_id() const;
 
     double m_radius{ 2.5 }; // brush reach in world mm, converted to mesh units per volume
     std::map<std::string, wxString> m_desc;
+
+    // [ORCAPORT:HF-3] Mode and the extrude-face parameters. Height and offset are in mm.
+    Mode   m_mode{ Mode::ExtrudeFace };
+    double m_extrude_height{ 5.0 };
+    double m_extrude_offset{ 0.0 };
+    bool   m_extrude_holes{ false }; // extrude only the holes of the face, each one filled
+    bool   m_extrude_both{ false };  // half out of the face, half into the model
 
     Hover        m_hover;
     int          m_hover_applied{ -1 };
@@ -117,4 +152,4 @@ private:
 } // namespace GUI
 } // namespace Slic3r
 
-#endif // slic3r_GLGizmoHoleFill_hpp_
+#endif // slic3r_GLGizmoExtrude_hpp_

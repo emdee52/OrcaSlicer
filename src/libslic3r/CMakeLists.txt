@@ -517,6 +517,8 @@ set(lisbslic3r_sources
     SLA/SupportTreeMesher.hpp
     SlicesToTriangleMesh.cpp
     SlicesToTriangleMesh.hpp
+    SurfaceExtrude.cpp
+    SurfaceExtrude.hpp
     SlicingAdaptive.cpp
     SlicingAdaptive.hpp
     Slicing.cpp

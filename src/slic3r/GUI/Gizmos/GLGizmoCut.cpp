@@ -4436,7 +4436,9 @@ void GLGizmoCut3D::gizmo_fill_from_above()
     for (const ModelVolume *v : mo->volumes) {
         if (v == nullptr || !v->is_model_part())
             continue;
-        if (v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0 || v->name.rfind("HoleFill#", 0) == 0)
+        if (v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0
+            || v->name.rfind("Extrude#", 0) == 0
+            || v->name.rfind("HoleFill#", 0) == 0)   // legacy prefix, kept for old projects
             continue;
         TriangleMesh part = v->mesh();
         if (!v->get_matrix().isApprox(Transform3d::Identity()))

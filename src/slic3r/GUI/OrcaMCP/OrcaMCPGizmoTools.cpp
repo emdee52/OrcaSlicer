@@ -13,7 +13,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
-#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
 #include "slic3r/GUI/Selection.hpp"
 
@@ -304,7 +304,7 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
 }
 
 // [ORCAPORT:HF-1] Open and drive the Cavity fill tool.
-GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+GLGizmoExtrude *active_extrude_gizmo(bool open_if_needed)
 {
     Plater     *plater = wxGetApp().plater();
     GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
@@ -312,7 +312,7 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
         return nullptr;
     GLGizmosManager &mgr = canvas->get_gizmos_manager();
 
-    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HoleFill) {
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Extrude) {
         Selection &sel = canvas->get_selection();
         if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
             int oid = sel.get_object_idx();
@@ -323,14 +323,14 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
                 sel.add_object(unsigned(oid), true);
             }
         }
-        mgr.open_gizmo(GLGizmosManager::EType::HoleFill);
+        mgr.open_gizmo(GLGizmosManager::EType::Extrude);
         canvas->set_as_dirty();
         canvas->request_extra_frame();
     }
 
-    if (mgr.get_current_type() != GLGizmosManager::EType::HoleFill)
+    if (mgr.get_current_type() != GLGizmosManager::EType::Extrude)
         return nullptr;
-    return dynamic_cast<GLGizmoHoleFill *>(mgr.get_current());
+    return dynamic_cast<GLGizmoExtrude *>(mgr.get_current());
 }
 
 nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
@@ -346,7 +346,7 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
         {"object_scale", g.object_scale()}};
 }
 
-nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
+nlohmann::json extrude_gizmo_state(GLGizmoExtrude &g)
 {
     return nlohmann::json{
         {"radius", g.get_radius()},
@@ -1068,7 +1068,7 @@ void OrcaMCPServer::register_gizmo_tools()
         }
     });
     register_tool(
-        {"hole_fill_gizmo",
+        {"extrude_gizmo",
          "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
          "watermark, pocket) with a positive volume built from the recessed faces projected up to "
          "the surface fitted around them, so it sits flush on a curved wall without a boolean and "
@@ -1114,7 +1114,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     sel.add_object(unsigned(oid), true);
                 }
 
-                GLGizmoHoleFill *g = active_hole_fill_gizmo(action == "open");
+                GLGizmoExtrude *g = active_extrude_gizmo(action == "open");
                 if (g == nullptr)
                     return {{"status", "error"},
                             {"error", "Cavity fill gizmo is not active. Load a model and pass object_id or "
@@ -1149,7 +1149,10 @@ void OrcaMCPServer::register_gizmo_tools()
                         const ModelObject *mo = plater->model().objects[oi];
                         for (size_t i = 0; i < mo->volumes.size(); ++i) {
                             const ModelVolume *v = mo->volumes[i];
-                            if (v == nullptr || v->name.rfind("HoleFill#", 0) != 0 || v->mesh().its.vertices.empty())
+                            // Accept the current prefix and the legacy one, so fills created before
+                            // the tool was renamed to Extrude can still be listed and removed.
+                            if (v == nullptr || (v->name.rfind("Extrude#", 0) != 0 && v->name.rfind("HoleFill#", 0) != 0)
+                                || v->mesh().its.vertices.empty())
                                 continue;
                             Vec3f c = Vec3f::Zero();
                             for (const stl_vertex &p : v->mesh().its.vertices)
@@ -1159,7 +1162,7 @@ void OrcaMCPServer::register_gizmo_tools()
                             fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
                         }
                     }
-                    nlohmann::json result = hole_fill_gizmo_state(*g);
+                    nlohmann::json result = extrude_gizmo_state(*g);
                     result["status"] = "ok";
                     result["open"]   = true;
                     result["action"] = action;
@@ -1178,7 +1181,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     return {{"status", "error"}, {"error", "Unknown action: " + action}};
                 }
 
-                nlohmann::json result = hole_fill_gizmo_state(*g);
+                nlohmann::json result = extrude_gizmo_state(*g);
                 result["status"] = "ok";
                 result["open"] = true;
                 result["action"] = action;

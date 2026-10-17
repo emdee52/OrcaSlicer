@@ -21,7 +21,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp" // [ORCAPORT:PF-2b]
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"  // [ORCAPORT:ME-1]
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp" // [ORCAPORT:EF-1]
-#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp" // [ORCAPORT:HF-1]
+#include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp" // [ORCAPORT:HF-3]
 #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
 #include "slic3r/GUI/Gizmos/GLGizmoBrimEars.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoAlignStack.hpp" // [ORCAPORT:AS-2]
@@ -128,7 +128,7 @@ static bool is_orcaport_gizmo(GLGizmosManager::EType type)
     case GLGizmosManager::CounterboreBridge:
     case GLGizmosManager::Holes:
     case GLGizmosManager::EdgeDress:
-    case GLGizmosManager::HoleFill:
+    case GLGizmosManager::Extrude:
     case GLGizmosManager::Perforation:
         return true;
     default:
@@ -277,8 +277,8 @@ void GLGizmosManager::switch_gizmos_icon_filename()
         case (EType::EdgeDress): // [ORCAPORT:EF-1]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg"); // [ORCAPORT:UI-1]
             break;
-        case (EType::HoleFill): // [ORCAPORT:HF-1]
-            gizmo->set_icon_filename(m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg");
+        case (EType::Extrude): // [ORCAPORT:HF-3]
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg"); // [ORCAPORT:UI-1] icon file kept when the tool was renamed to Extrude
             break;
         case (EType::Perforation): // [ORCAPORT:PP-1]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg");
@@ -333,7 +333,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_hole_walls_dark.svg" : "toolbar_hole_walls.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
     m_gizmos.emplace_back(new GLGizmoHoles(m_parent, m_is_dark ? "toolbar_holes_dark.svg" : "toolbar_holes.svg", EType::Holes)); // [ORCAPORT:ME-1]
     m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
-    m_gizmos.emplace_back(new GLGizmoHoleFill(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::HoleFill)); // [ORCAPORT:HF-1]
+    m_gizmos.emplace_back(new GLGizmoExtrude(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::Extrude)); // [ORCAPORT:HF-3]
     m_gizmos.emplace_back(new GLGizmoPerforation(m_parent, m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg", EType::Perforation)); // [ORCAPORT:PP-1]
     //m_gizmos.emplace_back(new GLGizmoSlaSupports(m_parent, "sla_supports.svg", sprite_id++));
     //m_gizmos.emplace_back(new GLGizmoFaceDetector(m_parent, "face recognition.svg", sprite_id++));
