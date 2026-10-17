@@ -1781,77 +1781,73 @@ Six things the owner reported after living with PP-2/PP-3, and what each turned 
 
 ## 37. PP-5 - a teardrop hole is invisible to the Holes tool, and Mesh boolean stops working after a boolean
 
-Two bugs reported after PP-4. **Neither is fixed.** What is here is what has been measured, ruled out and
-left, so the next session does not repeat it. Read the recipe at the end of the section first: this tree
-has the unit tests OFF, and the failing case is tagged `[NotWorking]`, i.e. hidden - running the suite
-looks green.
+Two bugs reported after PP-4. **Both are fixed** on `port/PP-5-fixes`; built, the `libslic3r` suite
+is 103170/103170, and both were runtime-verified over MCP. The stale-index fix from the merge is
+kept - neither bug was that. The user still has to test the build before it is merged.
 
-### A teardrop tunnel is not detected at all (no chamfer, no resize, no conversion to a round hole)
+### A teardrop tunnel was not detected (no chamfer, no resize, no conversion to a round hole)
 
-*Starting hypothesis (from reading the code): the patch that grows around a teardrop tunnel is its whole
-side wall, arc and roof together, because they meet tangentially, and the roof was assumed to poison all
-four geometry gates - the axis fit, the circle residual, the angular coverage and the convexity average.*
-
-**What the instrumentation actually showed** (this supersedes the hypothesis, and the first item of it):
+**What the instrumentation showed** (temporary `std::printf` before each `continue` in
+`detect_holes`, one label per gate; run with the recipe below):
 
 ```
-[PP5] pass1 wall=132 evals=0/0.538/1 axis=(0,0,1) cylinder=1   <- the whole 132-triangle side wall, one patch, axis correct
-[PP5] seed pts=132 r=2.543 residual=0.902                      <- the roof pulls the circle fit out
-[PP5] reject residual ... tol=0.203 inliers=132/132            <- and every face passed the inlier band
+[PP5] seed pts=132 r=2.543 residual=0.902           <- the roof pulls the first circle fit out
+[PP5] refit inliers=130/132 r=2.516 residual=0.986  <- the apex is back in the refit; 0.986 > 0.201
 ```
 
-- The patch is the wall plus the roof, and the axis fit is **fine**: a roof plane *contains* the axis, so
-  its normal is perpendicular to the axis exactly like a wall's normal - the `|n·axis|` idea in the
-  hypothesis was wrong, do not spend time on it.
-- The **circle residual** is the gate that rejected the patch, and it rejected it because the face band
-  was too wide to notice the roof: the whole 132 faces counted as "on the circle".
-- **What is in now**: the axis fit runs twice (a seed PCA, then the PCA that is gated, over the faces
-  perpendicular to the seed axis); the circle fit, the angular coverage and the convexity average run on
-  the faces whose centroid sits on the fitted circle, with the circle refit on those; and the face band is
-  the fitted `radial_tolerance` (0.08 r) instead of a hand-picked 0.25 r (a roof face's centroid sits
-  ~0.35 r off the circle, so the tight band must drop it).
-- **Still not detected.** The tight band should have changed the inlier count and the residual, so either
-  it did not reach this patch or the next gate down rejects it. **Next step**: put the instrumentation
-  back (recipe below) and print, for this patch, the **inlier count**, the refitted `r`/residual, the
-  angular gap and the convexity average - the four numbers that decide it. Also worth checking the
-  fixture's winding: `its_make_teardrop_prism` is built as a solid, the case flips it so the normals point
-  at the axis (a cavity); if the convexity average comes back `+1` the flip is the wrong way.
-- The fixture is already written: `tests/libslic3r/test_holedetector.cpp`, case
-  **"A teardrop tunnel is detected as a hole"**, tagged `[NotWorking]` with these numbers above it.
-  Un-hide it (`[HoleDetector]` only) in the change that makes it pass.
-- **Verified while getting here**: the reshape does not disturb a plain hole - every other case in the
-  suite passes (288 of 289 assertions, 19 of 20 cases), including the cylinder wall, a rotated one, two
-  holes, a solid cylinder, a cube, a sphere, a plate and a counterbore.
+- The patch is the whole 132-face side wall (arc + roof, one smooth patch because they meet
+  tangentially; the two caps are separate patches the cylinder test drops). The axis fit is fine - a
+  roof plane contains the axis, so its normal is perpendicular to it like a wall's.
+- The gate was the **circle residual**, and the band meant to exclude the roof selected **faces by
+  centroid**. A teardrop roof quad is two triangles and the one sharing the arc's tangent vertex has
+  its centroid ON the circle (2.635 against the seed r = 2.543, inside the 0.08 r band) while it
+  still carries the apex vertex at 3.5 r. `inlier_pts` then took **all three vertices** of every
+  inlier face, so the apex re-entered the fit, and `fit_circle()` returns a maximum residual - one
+  apex vertex killed the patch. (The earlier note "a roof face's centroid sits ~0.35 r off" was
+  wrong for this triangulation: half the roof triangles have a centroid on the circle.)
+- **Fix**: band the **vertices** of the seed circle, refit on those and gate the residual on those;
+  the roof faces stay out of the convexity average by centroid and the angular coverage uses the
+  same vertices. Measured after: `circle pts=130/132 r=2.500 residual=0.000 tol=0.200`,
+  `gap max=90.0 deg`, `convexity avg=-0.999`.
+- The fixture's case (`tests/libslic3r/test_holedetector.cpp`, "A teardrop tunnel is detected as a
+  hole") is un-tagged now; it was `[NotWorking]` (hidden, so the suite looked green).
 
-### Mesh boolean does nothing once the object has had a boolean before
+### Mesh boolean did nothing once the object had already had a boolean
 
-- Reported, twice. First: a perforation subtraction works on a clean object and does nothing after an
-  earlier Mesh boolean. **Then, after the fix below: still broken** - "mesh boolean for perforations still
-  doesnt work for any booleans done after an stl had booleans applied to it".
-- **Ruled out**: the stale index. `generate_new_volume` used to delete the tool volume with the index
-  recorded when it was picked, *after* swapping the result into the source's slot and deleting the last
-  volume, so that index named a different volume (or the result). That is now done by pointer, and both
-  picks are dropped afterwards. The bug survives it, so the cause is elsewhere - do not re-do that work.
-- **Suspects, in the order I would check them**:
-  1. **The pick never happens, so the button is dead.** `enable_button = m_src.mv && m_tool.mv`, and the
-     volumes are picked by raycasting `m_c->raycaster()->raycasters()[mesh_id]` with `trafo_matrices`
-     built from `mo->volumes`. After a boolean the volume list changed: if the raycaster array is stale
-     (or shorter than the list) the click either picks nothing or picks the wrong volume. **One look
-     answers it**: with the second boolean's panel open and both volumes clicked, is the **Difference
-     button greyed out** (nothing picked) or **clickable but doing nothing**?
-  2. `can_mesh_boolean()` / the selection: the gizmo needs a multi-volume selection
-     (`get_volume_idxs().size() > 1`). A previous boolean ends by re-selecting the new volume
-     (`select_item` + `reorder_volumes_and_get_selection`), which may leave exactly one volume selected,
-     so the tool cannot even act.
-  3. The **ObjectList item index** in `delete_from_model_and_list(ItemType::itVolume, obj_idx, idx)` -
-     check whether `idx` is a model-volume index or an ObjectList item index before trusting it after a
-     reorder.
-- **Instrument it** (the fast path, rather than another guess): log in `generate_new_volume`, at entry and
-  after the swap, the two volume names, their pointers, the volume count and the result's triangle count;
-  then repeat the two-boolean sequence and read the tail with MCP `get_log_tail`. If the function is never
-  entered, it is suspect 1 or 2 - and the panel tells you which.
-- **Not runtime-verified**: the reproducer is a UI sequence, and no MCP tool drives the Mesh boolean
-  dialog, so this cannot be checked the way the other gizmos were.
+Reported with a perforation, an edge fillet and a place-hole-on-face cutter; the trigger was "an
+earlier boolean". Ruled out **by measurement**, not by reading:
+
+- **The stale index** - already fixed at the merge; the symptom survived it.
+- **The raycaster array** - `raycasters_count == volume_count` at every step of the repro.
+- **The activation gate** - `on_is_activable()` wants a full instance with more than one volume
+  selected. A perforation and an edge-dress commit both leave the whole object selected, so the
+  gizmo opens with the natural selection.
+- **The boolean on clean input** - a second Difference with two counters on a fresh box worked
+  (12 -> 900 -> 2140 triangles).
+
+**Root cause**: `extrude_perforation_pattern()` (`PerforationPattern.cpp`) built the cutter with
+**three fresh vertices per cap triangle** plus its own per wall strip - geometrically closed but
+topologically an open soup (measured 360 open edges, 90 patches on a honeycomb; a proper cutter is
+12 patches, 0 open edges). mcut is handed that as a *solid*: it fails or crashes, and a result made
+from one is not watertight either, so the **next** boolean fails. That is "does nothing once the
+object has already had a boolean" - and the crash is real: an `ACCESS_VIOLATION` inside mcut's
+`hmesh_t::source`, on a honeycomb-cutter result fed to a circles-cutter Difference. The edge-fillet
+and place-hole cutters are watertight, which is why every *second* operation failed whichever of the
+three the user tried: the first boolean's result was the broken input.
+
+**Fix**: `its_merge_vertices()` at the end of `extrude_perforation_pattern()`. The cap and wall
+vertices come from the same `Point` coordinates through the same scaling, so the weld is exact.
+After: cutter 0 open edges; honeycomb-then-circles runs clean (904 -> 7604 triangles, 0 open edges).
+New `[PerforationPattern]` case pins the closed solid for Lines/Grid/Honeycomb/Circles.
+
+### Reproducing it without a human (the tool that made this possible)
+
+The reproducer is a UI sequence, but the whole thing is now scriptable: MCP-3's
+`mesh_boolean_gizmo` opens the gizmo, picks a volume by index (no raycast) or at a screen point (the
+interactive ray; `probe_pick` finds a pixel that reaches a cutter), reports
+`raycasters_count`/`volume_count` and each volume's `open_edges`, and `run` does mode + both picks +
+apply in one call. Flow: box -> perforation cutter -> Difference -> second cutter -> Difference. The
+`open_edges` column is what pins "mcut cannot eat this".
 
 ### Running the failing case, and instrumenting it (this tree ships with the tests off)
 
@@ -1863,14 +1859,13 @@ build\tests\libslic3r\Release\libslic3r_tests.exe "A teardrop tunnel is detected
 cmake -B build -DBUILD_TESTS=OFF      # put the tree back the way the build script expects
 ```
 
-- `-s` prints the passing assertions too, which is what makes a hidden case's numbers visible.
-- The instrumentation that produced the block above: a temporary
-  `std::printf("[PP5] ...\n", ...)` immediately before each `continue` in `detect_holes`, one label per
-  gate, then the run above. ⚠️ One of those printfs is multi-line: when stripping them again, remove the
-  continuation lines too, or the file stops compiling (that cost a cycle).
-- Tag a case `[NotWorking]` while it is knowingly red, and say why in a comment above it - a hidden case
-  is invisible to `ctest`, which is why this section exists at all.
+- `-s` prints the passing assertions too.
+- The instrumentation that produced the numbers: a temporary `std::printf("[PP5] ...\n", ...)`
+  immediately before each `continue` in `detect_holes`, one label per gate (removed again; the
+  numbers live in the case's comment and in `porting/notes/PP-5.md`).
+- Tag a case `[NotWorking]` while it is knowingly red and say why - a hidden case is invisible to
+  `ctest`, which is why this section exists at all.
 
-- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Merged `--no-ff` as
-  `9cf2a9def0` - **with both bugs still open**, which is deliberate: the reshaping and the identity fix go
-  in, the two defects do not. They are the next session's job; `porting/HANDOFF.md` opens with them.
+- **Branch state**: `port/PP-5-fixes` off `port/integration` `8b0ffc1c83`; three product commits
+  (`ee9e313d1f` MCP-3, `8f69ee6840` teardrop, `a1aeb336af` boolean) plus a `port:` docs commit.
+  Not merged, not pushed until the user has tested the build (section 0).
