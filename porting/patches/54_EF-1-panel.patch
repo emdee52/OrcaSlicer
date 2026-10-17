@@ -1,0 +1,149 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+index 7f727b1549..ff0e3d8ad6 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+@@ -1,4 +1,5 @@
+ #include "GLGizmoEdgeDress.hpp"
++#include "GizmoStyle.hpp" // [ORCAPORT:EF-1] fork panel style (docs/handoff.md section 28)
+ 
+ #include "libslic3r/EdgeProfiles.hpp"
+ #include "libslic3r/CutUtils.hpp"
+@@ -1069,82 +1070,67 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
+ #else
+     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+ #endif
++    // [ORCAPORT:EF-1] Fork panel style (docs/handoff.md section 28): the shared palette, one fixed
++    // narrow width with wrapped hints, and the shared widget layer.
++    ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
++    gizmo_push_window_style();
+     ImGuiWrapper::push_toolbar_style(scale);
+     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
++    gizmo_push_panel_style();
++    render_panel_body();
++    gizmo_pop_panel_style();
++    GizmoImguiEnd();
++    ImGuiWrapper::pop_toolbar_style();
++    gizmo_pop_window_style();
++}
+ 
+-    const float sliders_width = m_imgui->scaled(6.0f);
+-    const float left_width    = m_imgui->calc_text_size(m_desc.at("size")).x + m_imgui->scaled(2.0f);
+-
+-    // Mode: chamfer or fillet.
+-    {
+-        const bool chamfer = m_mode == EdgeDressMode::Chamfer;
+-        if (chamfer) {
+-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+-        }
+-        const bool clicked = m_imgui->button(m_desc.at("chamfer"));
+-        if (chamfer)
+-            ImGui::PopStyleColor(3);
+-        if (clicked)
+-            set_mode(EdgeDressMode::Chamfer);
+-        ImGui::SameLine();
+-    }
++void GLGizmoEdgeDress::render_panel_body()
++{
++    // Chamfer | Fillet: a small exclusive choice, so segmented (section 28: never a dropdown, never
++    // radios). Drawn without a caption, like the Extrude panel's mode row.
+     {
+-        const bool fillet = m_mode == EdgeDressMode::Fillet;
+-        if (fillet) {
+-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+-        }
+-        const bool clicked = m_imgui->button(m_desc.at("fillet"));
+-        if (fillet)
+-            ImGui::PopStyleColor(3);
+-        if (clicked)
+-            set_mode(EdgeDressMode::Fillet);
++        const std::string c = m_desc.at("chamfer").utf8_str().data();
++        const std::string f = m_desc.at("fillet").utf8_str().data();
++        const char       *labels[] = {c.c_str(), f.c_str()};
++        const int         sel      = gizmo_segment("##mode", labels, 2, m_mode == EdgeDressMode::Fillet ? 1 : 0);
++        if (sel >= 0)
++            set_mode(sel == 0 ? EdgeDressMode::Chamfer : EdgeDressMode::Fillet);
+     }
+ 
+-    {
+-        bool loop = m_loop_mode;
+-        if (ImGui::Checkbox(m_desc.at("loop").utf8_str().data(), &loop))
+-            set_loop_mode(loop);
+-    }
++    // Only the size row has a caption, so the label column is measured on that one.
++    const float label_w = gizmo_label_w(m_desc.at("size").utf8_str().data());
+ 
+-    ImGui::AlignTextToFramePadding();
+-    m_imgui->text(m_desc.at("size"));
+-    ImGui::SameLine(left_width);
+-    ImGui::PushItemWidth(sliders_width);
++    bool loop = m_loop_mode;
++    if (gizmo_row_switch("##loop", m_desc.at("loop").utf8_str().data(), &loop,
++                         _u8L("Dresses every edge of a hole or boss rim as one closed feature, instead of each tessellation segment on its own.").c_str()))
++        set_loop_mode(loop);
++
++    // A slider with a typed field beside it, and NO [-][+] step buttons: the buttons cost about a
++    // third of the width and the field still takes a typed value, clamped to the same range.
+     float size = float(m_size);
+-    if (m_imgui->bbl_slider_float_style("##edge_size", &size, float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", 0.05f, true))
++    if (gizmo_row_slider("##edge_size", m_desc.at("size").utf8_str().data(), &size,
++                         float(EDGE_SIZE_MIN), float(EDGE_SIZE_MAX), "%.2f", label_w,
++                         _u8L("How far the chamfer or fillet cuts into the edge, in mm.").c_str()))
+         set_size(size);
+-    ImGui::PopItemWidth();
+-    // A field next to the slider, so an exact size can be typed instead of dragged. ImGui carves the
+-    // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
+-    // scaled(4.5) clipped the value.
+-    ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
+-    ImGui::PushItemWidth(m_imgui->scaled(5.5f));
+-    float typed = float(m_size);
+-    if (ImGui::InputFloat("##edge_size_in", &typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+-        set_size(typed);
+-    ImGui::PopItemWidth();
+ 
+     // Clicking an edge in the viewport already applies the chamfer/fillet (on_mouse), so there is no
+-    // separate apply button.
++    // separate apply button; this is the only action in the panel.
+     if (m_imgui->button(m_desc.at("clear")))
+         gizmo_clear_all();
+ 
++    ImGui::Separator();
++
+     if (hover_edge_valid() && m_hover_applied_volume >= 0)
+-        m_imgui->text(m_desc.at("already_done"));
++        gizmo_hint(m_desc.at("already_done").utf8_str().data());
+     else
+-        m_imgui->text(hover_edge_valid() ? m_desc.at("edge_hovered") : m_desc.at("no_edge"));
+-    m_imgui->text(m_desc.at("hover_hint"));
++        gizmo_hint(hover_edge_valid() ? m_desc.at("edge_hovered").utf8_str().data()
++                                      : m_desc.at("no_edge").utf8_str().data());
++    gizmo_hint(m_desc.at("hover_hint").utf8_str().data());
+     if (applied_count() > 0)
+-        m_imgui->text(m_desc.at("remove_hint"));
++        gizmo_hint(m_desc.at("remove_hint").utf8_str().data());
++
+     const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), applied_count());
+     m_imgui->text(applied);
+-
+-    GizmoImguiEnd();
+-    ImGuiWrapper::pop_toolbar_style();
+ }
+ 
+ void GLGizmoEdgeDress::on_register_raycasters_for_picking()
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp
+index 1332951eac..07b607fd66 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp
+@@ -106,6 +106,9 @@ private:
+     void               rebuild_preview();
+     void               add_named_negative(const std::string& name, const indexed_triangle_set& its);
+     int                next_feature_id() const;
++    // [ORCAPORT:EF-1] The panel body, in its own function so the style push/pop in
++    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
++    void               render_panel_body();
+     // Source key of an edge / loop, and the applied feature volume that carries it (-1 if none).
+     static std::string tag_for_edge(const HoverEdge& edge);
+     std::string        tag_for_loop(const std::vector<LoopFrame>& loop) const;

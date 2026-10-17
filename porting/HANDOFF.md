@@ -112,14 +112,32 @@ Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. 
 
 ## What to do next
 
-**NEXT TASK: migrate the custom gizmos to the panel style standard.** The owner's decision is that
-every gizmo this fork adds should look like ours and not like stock Orca. HF-3 (the Extrude gizmo,
-branch `feat/extrude-fill`) is the first built against the standard and is the reference to copy;
-the style rules, the widget list, the migration table and the two traps are in **`docs/handoff.md`
-section 28**. Still on the old style: Hole walls (PF-2b/RF-1), Holes (ME-1/ME-2), Edge chamfer /
-fillet (EF-1), Align & Stack (AS-2) and Perforations (PP-1). Support Zones is on the palette but
-carries private copies of the widgets that should be hoisted into `GizmoStyle.hpp` as its own change
-(do not fold that into an unrelated gizmo's migration - see section 28).
+**NEXT TASK: the Support Zones gizmo's own UI.** Its panel is on the fork palette but still carries
+**private copies** of the widgets the standard now provides, in an anonymous namespace in
+`GLGizmoSupportZones.cpp`:
+
+- `gizmo_row_slider` - and it has a *different signature* from the shared one (no `label_w`, no typed
+  field), so this is not a rename but a call-site change;
+- `gizmo_row_toggle` (a `Checkbox`, where the standard draws a switch);
+- `gizmo_label_col()` (a fixed caption list, capped at 46 % of the content) beside the shared
+  `gizmo_label_w()`;
+- `fit_text()`, `gizmo_u()` and `gizmo_glyph_toggle`/`gizmo_glyph_button`/`gizmo_section`/
+  `gizmo_stat_tile`/`draw_glyph` - Support-Zones-specific except for the toggle *chrome*, which is
+  `gizmo_icon_toggle` now. Make `gizmo_icon_toggle` a template so a caller can pass a capturing lambda
+  wrapping `draw_glyph`, then delete the private copy.
+
+Consolidating means adopting the standard's signature and adapting Support Zones' call sites, which is
+a **visible change to a user-verified gizmo** (its sliders gain a typed field, its checkbox rows become
+switches), so it wants the SU-5/SU-6 checklists, a build and `ui_screenshot` captures of each of its
+panels. One change, on its own branch, not folded into anything else.
+
+**Panel style migration is DONE and user-verified (2026-10-17).** Branch `port/gizmo-style` from
+`port/integration` `cab498fc6d`: four commits, patches **53**-`58`, and the standard plus the traps it
+produced are in `docs/handoff.md` section 28 and `porting/notes/PANEL_STYLE.md`. Migrated: Perforations
+(PP-1), Edge chamfer / fillet (EF-1), Hole walls (PF-2b + RF-1), Align & Stack (AS-2) and Holes (ME-2).
+It also carries **UI-2**, the MCP `ui_screenshot` tool (`porting/notes/UI-2.md`) that made the whole
+thing verifiable at all - use it for any further panel work. Two panels could not be captured: Hole
+walls' strengthening mode (nothing in the MCP surface can click into it) and the Move gizmo.
 
 **Gizmo panel chrome is DONE on `port/gizmo-ui-panels` and awaits your test.** Branched from
 `port/integration` `9e5ce7fb2b`; nine single-ID commits (UI-1 panel anchor + overflow flip, PF-2b/RF-1

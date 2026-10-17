@@ -611,7 +611,8 @@ void OrcaMCPServer::register_builtin_tools()
                     }},
                     {"visualization", {
                         {"render_plate_view", "Render plate thumbnail from custom camera angles (use save_to_file=true for file paths instead of base64)"},
-                        {"get_preview_base64", "Convert preview to base64. Only for agents without filesystem access - Claude Code should use Read tool instead."}
+                        {"get_preview_base64", "Convert preview to base64. Only for agents without filesystem access - Claude Code should use Read tool instead."},
+                        {"ui_screenshot", "[ORCAPORT:UI-2] Screenshot the whole window as a PNG, optionally opening a gizmo first - the only way to see a gizmo panel, which is ImGui drawn into the GL canvas."}
                     }},
                     {"per_object_settings", {
                         {"get_object_config", "Get per-object setting overrides for a specific object"},

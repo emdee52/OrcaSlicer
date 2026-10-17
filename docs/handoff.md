@@ -1329,15 +1329,19 @@ panel reads as one surface. Light and dark are both defined and `gizmo_col()` pi
 
 ### What still has to migrate
 
+Migrating on branch **`port/gizmo-style`** (one commit per ID, not yet merged or built): Perforations,
+Hole walls, Edge chamfer / fillet, Align & Stack and Holes. Support Zones is **out of scope** there -
+it is already on the palette, its private widget copies are the consolidation follow-up below.
+
 | Gizmo | ID | State |
 |---|---|---|
 | **Extrude** (bare `Extrude` / `Cavity fill`) | HF-3 | **reference** - built on the shared widgets |
+| Perforations | PP-1 | migrated; pattern row is 4 icon buttons (see the icon button standard) |
+| Hole walls (Bridging / Strengthen) | PF-2b / RF-1 | migrated (one commit: both modes are one function) |
+| Edge chamfer / fillet | EF-1 | migrated |
+| Align & Stack | AS-2 | migrated; its `SetWindowSize`-after-`Begin` width never stuck and is now set before `Begin` |
+| Holes | ME-2 | migrated; category image buttons and the catalogue dropdown kept as they were |
 | Support Zones | SU-5 / SU-6 | on the palette, but carries **its own private copies** of the widgets in an anonymous namespace in `GLGizmoSupportZones.cpp` |
-| Hole walls (Bridging / Strengthen) | PF-2b / RF-1 | stock style |
-| Holes | ME-1 / ME-2 | stock style |
-| Edge chamfer / fillet | EF-1 | stock style |
-| Align & Stack | AS-2 | stock style |
-| Perforations | PP-1 | stock style |
 
 Two follow-ups when that work happens:
 
@@ -1349,6 +1353,56 @@ Two follow-ups when that work happens:
    `GLGizmoHeightAdaptiveEffects` and `GLGizmoPrecisionALH` as its users; those are the *fork's*
    gizmos (the `VL-*` features we never ported). Its real users here are Support Zones and Extrude.
    Fix the comment while migrating.
+
+### The icon button standard (PP-1)
+
+An icon toggle whose whole meaning is its drawing, with the name on hover. It came out of the
+Perforations pattern row and is **the** standard for this kind of button — Support Zones still draws
+its own copy (`gizmo_glyph_toggle` in `GLGizmoSupportZones.cpp`) and moves onto this one when its
+widgets are consolidated.
+
+| | |
+|---|---|
+| button | `gizmo_icon_size()` = **28 px** at the reference font, scaled like `gizmo_panel_width()` so it grows with the font/DPI |
+| glyph | **0.78** of the button (`kGizmoIconGlyph`) — the chrome is a frame, not the thing the artwork sits in |
+| corner | `size * 0.15` |
+| off / hover | `Surface` / `SurfaceHi`, glyph `TextDim` at 0.85 |
+| on | `Accent` fill at 0.85 (1.0 hovered) + a `AccentBright` hairline, glyph `Ink` |
+
+`gizmo_icon_toggle(id, active, tip, draw)` takes a **function pointer** to the glyph drawer
+(`void(ImDrawList *, const ImVec2 &, float, ImU32)`), so the chrome is shared and each gizmo keeps its
+own iconography — no `std::function`.
+
+**The plate-and-pattern language.** Both icon rows that exist so far (Perforations' four patterns,
+Holes' three operations) are a square plate with something cut into it, and the plate plus its margin
+are shared: `gizmo_glyph_plate()` and `kGizmoGlyphInset` / `kGizmoGlyphStroke` in `GizmoStyle.hpp`.
+
+**The one margin rule.** The pattern box is `kGizmoGlyphInset..1-kGizmoGlyphInset` (0.21–0.79) of the
+glyph box for **every** variant; the plate's own rect is `0.12..0.88`, so each pattern keeps the same
+wall to the border and no variant reads as crammed against it. Perforations learned this the hard way —
+Grid's bars and the Honeycomb clip each had their own margin and looked wrong next to Lines, which was
+the reference. The one deliberate exception is the mouth of a hole, which has to reach the face.
+
+**Two size traps, both of which have already bitten:**
+
+- **Clamp any gap or stroke to a minimum pixel width.** A gap that is a fraction of the glyph
+  (`0.019·s` for the honeycomb cell wall) is 0.4 px on a 28 px button, and ImGui does not antialias two
+  adjacent filled polygons against each other — the gap simply vanishes and the comb stops reading as
+  cells. `draw_glyph` in Support Zones protects its strokes the same way: `max(1.2, s·0.075)`. This is
+  why the honeycomb looked different at 28 px from how it looked at 40 px even though not a single
+  coordinate had changed.
+- **Check the glyph at the real size, not in the mockup.** The mockups are SVG, which antialiases; the
+  panels are drawn with `ImDrawList`, which does not. A mockup can therefore show a gap that will not
+  exist on screen. `ui_screenshot` exists for exactly this: capture the panel as the app draws it.
+- **This ImGui (1.83) has no `AddConcavePolyFilled`.** `AddConvexPolyFilled` fan-triangulates, so a
+  concave outline comes out as its own inverse — the Holes chamfer glyph's bucket-shaped hole drew as a
+  solid block with a notch until it was split into three convex pieces (a rect plus two flare
+  triangles) overlapped by half a pixel, since two adjacent fills of one colour otherwise leave the
+  background visible between them.
+
+**Where each drawing lives.** Anything drawn is *code*, in the gizmo that owns the iconography
+(`pp_*` in `GLGizmoPerforation.cpp`, `me_*` in `GLGizmoHoles.cpp`), never a resource, so it scales with
+the DPI without asking the resource packer for anything and a wrong glyph is fixed where it is used.
 
 ### The recipe, as HF-3 does it
 

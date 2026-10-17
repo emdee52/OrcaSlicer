@@ -1,6 +1,7 @@
 // [ORCAPORT:PF-2b] Paint-on counterbore bridge gizmo. Adapted from Orca's GLGizmoFuzzySkin
 // (same painter base) and preFlight's GLGizmoCounterboreBridge.
 #include "GLGizmoCounterboreBridge.hpp"
+#include "GizmoStyle.hpp" // [ORCAPORT:PF-2b] fork panel style (docs/handoff.md section 28)
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Print.hpp"
@@ -88,6 +89,16 @@ void GLGizmoCounterboreBridge::render_painter_gizmo()
     glsafe(::glDisable(GL_BLEND));
 }
 
+// [ORCAPORT:PF-2b] The widest caption this panel puts in the label column, measured on the strings
+// actually in use so the column stays exact in every language.
+static float cb_label_w(const std::map<std::string, wxString> &desc)
+{
+    float w = 0.f;
+    for (const char *key : {"feature", "mode", "cursor_size", "clipping_of_view", "strength", "extra_loops"})
+        w = std::max(w, ImGui::CalcTextSize(desc.at(key).utf8_str().data()).x);
+    return w + ImGui::GetStyle().ItemSpacing.x * 0.5f;
+}
+
 void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bottom_limit)
 {
     ModelObject *mo = m_c->selection_info()->model_object();
@@ -106,117 +117,87 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
 #endif
 
-    ImGuiWrapper::push_toolbar_style(m_parent.get_scale());
+    // [ORCAPORT:PF-2b] Fork panel style (docs/handoff.md section 28): the shared palette, one fixed
+    // narrow width with wrapped hints, and the shared widget layer.
+    ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
+    gizmo_push_window_style();
+    ImGuiWrapper::push_toolbar_style(scale);
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+    gizmo_push_panel_style();
 
-    const float sliders_width = m_imgui->scaled(7.0f);
-    // [ORCAPORT:RF-1] Fit the widest of the labels used by either mode, otherwise the strengthen
-    // labels run into their input fields.
-    float left_width = 0.f;
-    for (const char *key : { "mode", "cursor_size", "clipping_of_view", "strength", "extra_loops" })
-        left_width = std::max(left_width, m_imgui->calc_text_size(m_desc.at(key)).x);
-    left_width += m_imgui->scaled(1.5f);
-
-    // [ORCAPORT:PF-2b] A row of mutually exclusive buttons: the active one is filled teal, so the
-    // current choice is obvious without a trailing piece of text beside the buttons.
-    auto sel_button = [&](const wxString &label, bool on, auto cb) {
-        if (on) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
-        }
-        const bool clicked = m_imgui->button(label);
-        if (on)
-            ImGui::PopStyleColor(3);
-        if (clicked)
-            cb();
-    };
-
-    // [ORCAPORT:RF-1] Feature selector: bridge painting or hole strengthening, with the active one
-    // filled by the same helper the mode row uses.
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("feature"));
-    ImGui::SameLine(left_width);
-    sel_button(m_desc.at("feat_bridge"), !m_strengthen, [&] { set_strengthen_mode(false); });
-    ImGui::SameLine();
-    sel_button(m_desc.at("feat_strengthen"), m_strengthen, [&] { set_strengthen_mode(true); });
+    // The Feature selector belongs to both modes, so it is drawn once, outside the bodies.
+    render_feature_selector();
     ImGui::Separator();
+    if (m_strengthen)
+        render_strengthen_body();
+    else
+        render_bridge_body();
 
-    if (m_strengthen) {
-        // Wall thickness of the strengthening sleeve (mm).
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("strength"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
-        float thickness = float(m_reinforce_thickness);
-        if (ImGui::InputFloat("##strength", &thickness, 0.1f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-            set_reinforce_thickness(thickness);
-        ImGui::PopItemWidth();
+    // The way out of the tool, right-aligned like every other primary action in the fork's panels.
+    GLGizmoUtils::begin_right_aligned_buttons({_L("Done")});
+    if (m_imgui->button(_L("Done")))
+        m_parent.reset_all_gizmos();
 
-        // Extra wall loops inside the sleeve footprint.
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("extra_loops"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
-        int loops = m_reinforce_loops;
-        if (ImGui::InputInt("##extra_loops", &loops, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue))
-            set_reinforce_loops(loops);
-        ImGui::PopItemWidth();
+    gizmo_pop_panel_style();
+    GizmoImguiEnd();
+    ImGuiWrapper::pop_toolbar_style();
+    gizmo_pop_window_style();
+}
 
-        ImGui::Separator();
-        const int applied = int(std::count(m_reinforce.begin(), m_reinforce.end(), char(1)));
-        m_imgui->text(wxString::Format("%s: %d (%d strengthened)", _u8L("Detected holes"), int(m_holes.size()), applied));
-        m_imgui->disabled_begin(m_holes.empty());
-        if (m_imgui->button(m_desc.at("reinforce_all")))
-            gizmo_reinforce_all();
-        m_imgui->disabled_end();
-        ImGui::SameLine();
-        m_imgui->disabled_begin(applied == 0);
-        if (m_imgui->button(m_desc.at("clear_holes")))
-            gizmo_clear_reinforce();
-        m_imgui->disabled_end();
-        ImGui::Separator();
-    } else {
+// [ORCAPORT:PF-2b] Feature: Bridging | Strengthen hole, as a segmented choice in the label column, so
+// the current mode is readable without reading the controls below it.
+void GLGizmoCounterboreBridge::render_feature_selector()
+{
+    const std::string bridge  = m_desc.at("feat_bridge").utf8_str().data();
+    const std::string streng  = m_desc.at("feat_strengthen").utf8_str().data();
+    const char       *labels[] = {bridge.c_str(), streng.c_str()};
+    const int         sel = gizmo_row_segment("##feature", m_desc.at("feature").utf8_str().data(), labels, 2,
+                                              m_strengthen ? 1 : 0, cb_label_w(m_desc));
+    if (sel >= 0)
+        set_strengthen_mode(sel == 1);
+}
+
+// [ORCAPORT:PF-2b] Bridging: choose how the painted counterbore regions are bridged, then paint them.
+void GLGizmoCounterboreBridge::render_bridge_body()
+{
+    ModelObject *mo      = model_object();
+    const float  label_w = cb_label_w(m_desc);
 
     // Bridge type: smart stepped vs partial. The filled button carries the choice, so no trailing
-    // "(smart: stepped ramp)" text is needed - that row was the widest item in the panel and set its
-    // width.
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("mode"));
-    ImGui::SameLine(left_width);
-    sel_button(m_desc.at("smart"), !m_partial, [&] { m_partial = false; });
-    ImGui::SameLine();
-    sel_button(m_desc.at("partial"), m_partial, [&] { m_partial = true; });
-
-    ImGui::Separator();
-
-    // Brush size.
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("cursor_size"));
-    ImGui::SameLine(left_width);
-    ImGui::PushItemWidth(sliders_width);
-    m_imgui->bbl_slider_float_style("##cursor_radius", &m_cursor_radius, CursorRadiusMin, CursorRadiusMax,
-                                    "%.2f", 1.0f, true);
-
-    ImGui::Separator();
-
-    // Section view.
-    if (m_c->object_clipper()->get_position() == 0.f) {
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("clipping_of_view"));
-    } else if (m_imgui->button(m_desc.at("reset_direction"))) {
-        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
+    // "(smart: stepped ramp)" text is needed - that row was the widest item in the panel once.
+    {
+        const std::string smart   = m_desc.at("smart").utf8_str().data();
+        const std::string partial = m_desc.at("partial").utf8_str().data();
+        const char       *labels[] = {smart.c_str(), partial.c_str()};
+        const int         sel = gizmo_row_segment("##mode", m_desc.at("mode").utf8_str().data(), labels, 2,
+                                                  m_partial ? 1 : 0, label_w,
+                                                  _u8L("Smart steps the bridge up over several layers; Partial bridges with a single layer, which suits small horizontal holes.").c_str());
+        if (sel >= 0)
+            m_partial = (sel == 1);
     }
-    auto clp_dist = float(m_c->object_clipper()->get_position());
-    ImGui::SameLine(left_width);
-    ImGui::PushItemWidth(sliders_width);
-    if (m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true))
-        m_parent.set_section_view_ratio(clp_dist);
 
     ImGui::Separator();
 
-    m_imgui->disabled_begin(mo->is_counterbore_bridge_painted() == false);
+    // Brush size: a slider with a typed field beside it, and no step buttons (section 28).
+    float radius = m_cursor_radius;
+    if (gizmo_row_slider("##cursor_radius", m_desc.at("cursor_size").utf8_str().data(), &radius,
+                         CursorRadiusMin, CursorRadiusMax, "%.2f", label_w, nullptr))
+        m_cursor_radius = radius;
+
+    ImGui::Separator();
+
+    // Section view: the same row, plus Reset direction once the cut has been moved off the face.
+    float clp_dist = float(m_c->object_clipper()->get_position());
+    if (gizmo_row_slider("##clp_dist", m_desc.at("clipping_of_view").utf8_str().data(), &clp_dist,
+                         0.f, 1.f, "%.2f", label_w, nullptr))
+        m_parent.set_section_view_ratio(clp_dist);
+    if (m_c->object_clipper()->get_position() > 0.f && m_imgui->button(m_desc.at("reset_direction")))
+        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
+
+    ImGui::Separator();
+
+    m_imgui->disabled_begin(mo == nullptr || ! mo->is_counterbore_bridge_painted());
     if (m_imgui->button(m_desc.at("erase_all"))) {
         Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Reset selection"), UndoRedo::SnapshotType::GizmoAction);
         int idx = -1;
@@ -230,16 +211,36 @@ void GLGizmoCounterboreBridge::on_render_input_window(float x, float y, float bo
         m_parent.set_as_dirty();
     }
     m_imgui->disabled_end();
+}
 
-    } // [ORCAPORT:RF-1] end bridge-only settings
+// [ORCAPORT:RF-1] Strengthen hole: a sleeve per detected hole, as a per-hole parameter modifier.
+void GLGizmoCounterboreBridge::render_strengthen_body()
+{
+    const float label_w = cb_label_w(m_desc);
 
+    // Wall thickness of the strengthening sleeve (mm), and the extra wall loops inside its
+    // footprint. Both are typed fields: there is no range the geometry refuses, so a slider would
+    // only invent one (section 28 keeps the step buttons off, which is what these rows are for).
+    float thickness = float(m_reinforce_thickness);
+    if (gizmo_row_input("##strength", m_desc.at("strength").utf8_str().data(), &thickness, "%.2f", label_w))
+        set_reinforce_thickness(thickness);
+
+    int loops = m_reinforce_loops;
+    if (gizmo_row_input_int("##extra_loops", m_desc.at("extra_loops").utf8_str().data(), &loops, label_w))
+        set_reinforce_loops(loops);
+
+    ImGui::Separator();
+    const int applied = int(std::count(m_reinforce.begin(), m_reinforce.end(), char(1)));
+    m_imgui->text(wxString::Format("%s: %d (%d strengthened)", _u8L("Detected holes"), int(m_holes.size()), applied));
+    m_imgui->disabled_begin(m_holes.empty());
+    if (m_imgui->button(m_desc.at("reinforce_all")))
+        gizmo_reinforce_all();
+    m_imgui->disabled_end();
     ImGui::SameLine();
-    GLGizmoUtils::begin_right_aligned_buttons({_L("Done")});
-    if (m_imgui->button(_L("Done")))
-        m_parent.reset_all_gizmos();
-
-    GizmoImguiEnd();
-    ImGuiWrapper::pop_toolbar_style();
+    m_imgui->disabled_begin(applied == 0);
+    if (m_imgui->button(m_desc.at("clear_holes")))
+        gizmo_clear_reinforce();
+    m_imgui->disabled_end();
 }
 
 void GLGizmoCounterboreBridge::update_model_object()

@@ -1,5 +1,6 @@
 #include "GLGizmoPerforation.hpp"
 #include "GLGizmoUtils.hpp"
+#include "GizmoStyle.hpp" // [ORCAPORT:PP-1] fork panel style (docs/handoff.md section 28)
 
 #include "libslic3r/AABBMesh.hpp"
 #include "libslic3r/CutUtils.hpp"
@@ -30,6 +31,85 @@ const ColorRGBA HIGHLIGHT_COLOR(0.10f, 0.80f, 0.74f, 0.40f);
 const ColorRGBA GHOST_COLOR(0.90f, 0.35f, 0.20f, 0.50f);
 
 const char *const PERFORATION_NAME = "Perforation";
+
+// [ORCAPORT:PP-1] The four pattern glyphs. A flat square plate with the pattern cut through it,
+// drawn straight into the draw list like the Support Zones glyphs, so it scales with the DPI without
+// a resource. The plate and the shared margin live in GizmoStyle.hpp - the Holes operation glyphs
+// are built on the same two.
+constexpr float PP_PI_F = 3.14159265358979323846f;
+
+// Lines - three parallel slots.
+void pp_lines(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    const float x0 = p.x + kGizmoGlyphInset * s, x1 = p.x + (1.f - kGizmoGlyphInset) * s;
+    const float h = 0.095f * s, r = 0.0475f * s;
+    for (int i = 0; i < 3; ++i) {
+        const float y = p.y + (0.2625f + 0.19f * float(i)) * s;
+        dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + h), col, r);
+    }
+}
+
+// Grid - two families of slots crossing, i.e. the intersections are the holes.
+void pp_grid(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    const float a = kGizmoGlyphInset * s, b = (1.f - kGizmoGlyphInset) * s, t = 0.09f * s;
+    const float u1 = 0.34f * s, u2 = 0.57f * s;
+    dl->AddRectFilled(ImVec2(p.x + a, p.y + u1), ImVec2(p.x + b, p.y + u1 + t), col);
+    dl->AddRectFilled(ImVec2(p.x + a, p.y + u2), ImVec2(p.x + b, p.y + u2 + t), col);
+    dl->AddRectFilled(ImVec2(p.x + u1, p.y + a), ImVec2(p.x + u1 + t, p.y + b), col);
+    dl->AddRectFilled(ImVec2(p.x + u2, p.y + a), ImVec2(p.x + u2 + t, p.y + b), col);
+}
+
+// Circles - four round holes.
+void pp_circles(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    const float r = 0.1225f * s;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i)
+            dl->AddCircleFilled(ImVec2(p.x + (0.3325f + 0.335f * float(i)) * s,
+                                       p.y + (0.3325f + 0.335f * float(j)) * s), r, col, 18);
+}
+
+// Honeycomb - a 2/3/2 cluster of COMPLETE cells, sized to sit inside the shared pattern box, with NO
+// clip rect at all.
+//
+// 🔑 Every earlier version clipped a comb to the box, and a clipped comb is at the mercy of where the
+// cut lands. The lattice's stagger put its two cuts at different distances from the centre, which read
+// as "the comb is off-centre" no matter how centred the maths was, and the cut edges are drawn through
+// ImGui's anti-aliased path, which does not behave identically at both ends - one cell of the middle
+// row came out half drawn. Seven whole cells in rows of 2, 3 and 2 are mirror-symmetric about both
+// axes by construction: they cannot be off-centre, they cannot be half-drawn, and there is nothing to
+// line up. The cluster is sized so it also clears the plate's border, which is what the cut used to
+// guarantee.
+void pp_honeycomb(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    gizmo_glyph_plate(dl, p, s, col);
+    // A 1.1 px wall is the minimum that survives: two adjacent filled polygons in ImGui do not
+    // antialias against each other, so a fraction-of-a-pixel gap simply disappears and the comb stops
+    // reading as cells. draw_glyph protects its strokes the same way (max(1.2, s*0.075)).
+    const float r      = 0.119f * s;                 // lattice radius; cell pitch = 1.732 r
+    const float wall   = std::max(1.1f, 0.019f * s); // the gap between cells, in PIXELS
+    const float r_cell = r - wall / 1.732f;          // shrinking r shrinks the across-flats width by 1.732
+    const float pitch  = 1.732f * r;                 // centre to centre, same row
+    const float rowh   = 1.5f * r;                   // centre to centre, adjacent rows
+    const ImVec2 c(p.x + 0.5f * s, p.y + 0.5f * s);
+    for (int j = -1; j <= 1; ++j) {
+        const float cy = c.y + rowh * float(j);
+        const int   n  = (j == 0) ? 3 : 2; // 3 cells in the middle row, 2 above and below
+        for (int i = 0; i < n; ++i) {
+            const float cx = c.x + pitch * (float(i) - 0.5f * float(n - 1));
+            ImVec2 pts[6];
+            for (int k = 0; k < 6; ++k) {
+                const float a = PP_PI_F / 180.f * (60.f * float(k) - 90.f);
+                pts[k] = ImVec2(cx + r_cell * std::cos(a), cy + r_cell * std::sin(a));
+            }
+            dl->AddConvexPolyFilled(pts, 6, col);
+        }
+    }
+}
 
 } // namespace
 
@@ -430,34 +510,24 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
 #else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
 #endif
+    // [ORCAPORT:PP-1] Fork panel style (docs/handoff.md section 28): the shared palette, one fixed
+    // narrow width with wrapped hints, and the shared widget layer. The panel used to measure its
+    // own width from its controls; measure it once here instead, so no string can move it.
+    ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
+    gizmo_push_window_style();
     ImGuiWrapper::push_toolbar_style(scale);
-
-    // Column widths, computed before Begin so the constraint below can use them. calc_text_size
-    // and GetStyle use the current font/style, not the window, so they are valid here.
-    const float slider_w = m_imgui->scaled(6.0f); // track only; the number input gets its own column
-    const float input_w  = m_imgui->scaled(3.2f);
-    // Widest label the panel can show, so no slider starts under its own text.
-    float label_w = 0.f;
-    for (const char *key : {"pattern", "spacing", "width", "boundary", "angle"})
-        label_w = std::max(label_w, m_imgui->calc_text_size(m_desc.at(key)).x);
-    label_w += m_imgui->scaled(1.5f);
-
-    // Pin the panel WIDTH to exactly the control row, letting the height auto-fit. With
-    // AlwaysAutoResize the width came from the widest item, so a warning sentence appearing
-    // mid-drag widened the window, slid the slider out from under a stationary cursor and ImGui
-    // read the offset as a new value. Derived from the controls (not a guessed constant) so the
-    // panel stays tight. A SetWindowSize after Begin does not survive the next Begin; only a
-    // constraint does. Same reasoning as the Support Zones panel.
-    const float win_w = label_w + slider_w + ImGui::GetStyle().ItemSpacing.x + input_w +
-                        ImGui::GetStyle().WindowPadding.x * 2.f;
-    ImGui::SetNextWindowSizeConstraints(ImVec2(win_w, 0.f), ImVec2(win_w, std::numeric_limits<float>::max()));
-
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+    gizmo_push_panel_style();
+    render_panel_body();
+    gizmo_pop_panel_style();
+    GizmoImguiEnd();
+    ImGuiWrapper::pop_toolbar_style();
+    gizmo_pop_window_style();
+}
 
-    // Everything below wraps at the pinned content width, so no string can widen the panel.
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-
+void GLGizmoPerforation::render_panel_body()
+{
     // Fixed, independent ranges. The UI never clamps one value against another: the geometry uses
     // exactly what is set, and the panel only warns when a wall gets too thin, so dragging or
     // typing a value always takes effect.
@@ -466,72 +536,80 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
     constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
     constexpr double ANGLE_MIN   = 0.0,  ANGLE_MAX   = PERFORATION_MAX_ANGLE_DEG;
 
-    // A slider followed by a typed number input, in separate columns. The slider commits every
-    // edited frame (so the handle tracks the drag), but the ghost mesh is only rebuilt once the
-    // drag ends; the typed input commits on Enter. Neither clamps the other.
-    m_editing = false;
-    const auto slider_input = [&](const char *id, const char *input_id, const wxString &label, double &value,
-                                  double lo, double hi, const char *fmt) {
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(label);
-        ImGui::SameLine(label_w);
-        ImGui::PushItemWidth(slider_w);
-        float f = float(value);
-        // Track every edited frame: the slider seeds itself from `value` each frame, so deferring
-        // the write-back made the handle snap home. Commit the value live, defer only the rebuild.
-        if (m_imgui->bbl_slider_float_style(id, &f, float(lo), float(hi), fmt, 1.0f, true))
-            value = f;
-        const ImGuiWrapper::LastSliderStatus &st = m_imgui->get_last_slider_status();
-        if (st.edited && !st.deactivated_after_edit)
-            m_editing = true; // still dragging: the ghost is not rebuilt until release
-        ImGui::PopItemWidth();
-        ImGui::SameLine();
-        ImGui::PushItemWidth(input_w);
-        float g = float(value);
-        if (ImGui::InputFloat(input_id, &g, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue))
-            value = g; // accept what was typed; the builder guards the geometry
-        ImGui::PopItemWidth();
-    };
-
-    ImGui::AlignTextToFramePadding();
-    m_imgui->text(m_desc.at("pattern"));
-    ImGui::SameLine(label_w);
-    ImGui::PushItemWidth(slider_w + input_w + ImGui::GetStyle().ItemSpacing.x);
-    int         kind  = int(m_params.kind);
-    const char *kinds[] = {"Lines", "Grid", "Honeycomb", "Circles"};
-    if (ImGui::Combo("##kind", &kind, kinds, int(sizeof(kinds) / sizeof(kinds[0]))))
-        m_params.kind = PerforationKind(kind);
-    ImGui::PopItemWidth();
-
-    slider_input("##spacing", "##spacing_in", m_desc.at("spacing"), m_params.spacing, SPACING_MIN, SPACING_MAX, "%.1f");
-    slider_input("##width", "##width_in", m_desc.at("width"), m_params.width, WIDTH_MIN, WIDTH_MAX, "%.1f");
-    slider_input("##boundary", "##boundary_in", m_desc.at("boundary"), m_params.margin, MARGIN_MIN, MARGIN_MAX, "%.1f");
-    if (m_params.kind == PerforationKind::Lines || m_params.kind == PerforationKind::Grid)
-        slider_input("##angle", "##angle_in", m_desc.at("angle"), m_params.angle_deg, ANGLE_MIN, ANGLE_MAX, "%.0f");
-
-    const std::string invert_label = m_desc.at("invert").ToStdString();
-    ImGui::Checkbox(invert_label.c_str(), &m_params.invert);
-
-    ImGui::Separator();
-    m_imgui->text(m_desc.at("click_hint"));
-    m_imgui->text(m_desc.at("depth_hint"));
-
-    // Advisory only: the geometry uses the width exactly as set. Drawn only when set - the reserved
-    // empty row pair left a blank block under the last hint, and the panel's pinned width already
-    // keeps a slider from moving when a notice appears.
-    const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
-    const bool show_horizontal = m_hover_horizontal;
-    if (show_reduced || show_horizontal) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.7f, 0.2f, 1.f));
-        if (show_reduced)
-            m_imgui->text(m_desc.at("reduced"));
-        if (show_horizontal)
-            m_imgui->text(m_desc.at("horizontal"));
-        ImGui::PopStyleColor();
+    // Pattern: the four choices as icons with the name on hover (section 28 records the icon button
+    // standard). Drawn without a caption, like the Extrude panel's own mode row.
+    {
+        void (*const drawers[4])(ImDrawList *, const ImVec2 &, float, ImU32) =
+            {pp_lines, pp_grid, pp_honeycomb, pp_circles};
+        // The names are the ones the old dropdown used, untranslated then and now: they are the
+        // tooltip, and turning them into msgids is a translation pass of its own.
+        const char *const names[4] = {"Lines", "Grid", "Honeycomb", "Circles"};
+        for (int i = 0; i < 4; ++i) {
+            if (i > 0)
+                ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
+            if (gizmo_icon_toggle(names[i], int(m_params.kind) == i, names[i], drawers[i]))
+                m_params.kind = PerforationKind(i);
+        }
     }
 
-    ImGui::PopTextWrapPos();
-    GizmoImguiEnd();
+    ImGui::Separator();
+
+    // The widest caption the rows below use, so the label column is exact (section 28). Max over the
+    // captions actually drawn in the column: measuring one of them is how "Hole width" ended up
+    // clipped to "Hole wi".
+    float label_w = 0.f;
+    for (const char *key : {"spacing", "width", "boundary", "angle"})
+        label_w = std::max(label_w, ImGui::CalcTextSize(m_desc.at(key).utf8_str().data()).x);
+    label_w += ImGui::GetStyle().ItemSpacing.x * 0.5f;
+
+    // A slider with a typed field beside it, and NO [-][+] step buttons: the buttons cost about a
+    // third of the width and the field still takes a typed value, clamped to the same range.
+    float spacing = float(m_params.spacing);
+    if (gizmo_row_slider("##spacing", m_desc.at("spacing").utf8_str().data(), &spacing,
+                         float(SPACING_MIN), float(SPACING_MAX), "%.1f", label_w, nullptr))
+        m_params.spacing = double(spacing);
+
+    float width = float(m_params.width);
+    if (gizmo_row_slider("##width", m_desc.at("width").utf8_str().data(), &width,
+                         float(WIDTH_MIN), float(WIDTH_MAX), "%.1f", label_w,
+                         _u8L("Hole width, in mm. Keep it smaller than the spacing or the walls between the holes disappear.").c_str()))
+        m_params.width = double(width);
+
+    float margin = float(m_params.margin);
+    if (gizmo_row_slider("##boundary", m_desc.at("boundary").utf8_str().data(), &margin,
+                         float(MARGIN_MIN), float(MARGIN_MAX), "%.1f", label_w,
+                         _u8L("How far the pattern keeps away from the edge of the picked face, in mm.").c_str()))
+        m_params.margin = double(margin);
+
+    if (m_params.kind == PerforationKind::Lines || m_params.kind == PerforationKind::Grid) {
+        float angle = float(m_params.angle_deg);
+        if (gizmo_row_slider("##angle", m_desc.at("angle").utf8_str().data(), &angle,
+                             float(ANGLE_MIN), float(ANGLE_MAX), "%.0f", label_w, nullptr))
+            m_params.angle_deg = double(angle);
+    }
+
+    bool invert = m_params.invert;
+    if (gizmo_row_switch("##invert", m_desc.at("invert").utf8_str().data(), &invert,
+                         _u8L("Cuts raised ridges instead of holes.").c_str()))
+        m_params.invert = invert;
+
+    ImGui::Separator();
+    gizmo_hint(m_desc.at("click_hint").utf8_str().data());
+    gizmo_hint(m_desc.at("depth_hint").utf8_str().data());
+
+    // Advisory only: the geometry uses the width exactly as set. Amber is reserved for "something
+    // is off" and nothing else in this panel uses it (section 28).
+    const bool show_reduced    = (m_params.spacing - m_params.width) < PERFORATION_MIN_WALL - 1e-6;
+    const bool show_horizontal = m_hover_horizontal;
+    if (show_reduced)
+        gizmo_hint(m_desc.at("reduced").utf8_str().data(), GizmoCol::Warn);
+    if (show_horizontal)
+        gizmo_hint(m_desc.at("horizontal").utf8_str().data(), GizmoCol::Warn);
+
+    // The ghost is not rebuilt while an item is being edited, so the preview cannot flicker and
+    // the walls-too-thin notice settles after the drag (the slider status this used to read went
+    // away with the stock slider; "some item in this panel is active" is the same condition).
+    m_editing = ImGui::IsAnyItemActive();
 }
 
 } // namespace GUI

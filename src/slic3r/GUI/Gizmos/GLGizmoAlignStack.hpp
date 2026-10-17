@@ -50,6 +50,10 @@ protected:
     void        on_set_state() override;
 
 private:
+    // [ORCAPORT:AS-2] The panel body, in its own function so the style push/pop in
+    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
+    void render_panel_body();
+
     // --- Order tracking (#1 anchor, #2 the object that moves) --------------
     // Object indices (into Model::objects) in user click order, capped to two
     // (kMaxOrdered): this gizmo only ever relates one object against another.

@@ -1044,20 +1044,12 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
         if (! m_pick.valid) {
             gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the height and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
         } else if (! m_pick_why.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::Warn));
-            gizmo_hint(m_pick_why.c_str());
-            ImGui::PopStyleColor();
+            gizmo_hint(m_pick_why.c_str(), GizmoCol::Warn);
         }
 
-        // The primary action, right-aligned and in the accent colour.
-        const wxString btn = _L("Extrude");
-        const float    bw  = m_imgui->calc_text_size(btn).x + ImGui::GetStyle().FramePadding.x * 3.f;
-        ImGui::SameLine(std::max(ImGui::GetWindowContentRegionMax().x - bw, ImGui::GetCursorPosX()));
-        ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, gizmo_col(GizmoCol::AccentBright));
-        if (m_imgui->button(btn))
+        // The primary action, right-aligned and in the accent colour, on its own line.
+        if (gizmo_primary_button(_L("Extrude").utf8_str().data()))
             create_from_pick();
-        ImGui::PopStyleColor(2);
     } else {
         float radius = float(m_radius);
         if (gizmo_row_slider("##fr", _u8L("Brush width").c_str(), &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX),

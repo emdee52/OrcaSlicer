@@ -56,6 +56,9 @@ private:
     void rebuild_merged_mesh();
     void clear_hover();
     void update_hover();
+    // [ORCAPORT:PP-1] The panel body, in its own function so the style push/pop in
+    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
+    void render_panel_body();
     ExPolygons face_domain(const ModelVolume* mv, size_t facet, const Vec3d& normal_obj, const Vec3d& origin_obj);
     bool build_pattern_at(const Vec3d& hit_obj, const ModelVolume* mv, size_t facet,
                           ExPolygons& pattern, indexed_triangle_set& prism);
