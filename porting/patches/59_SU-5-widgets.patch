@@ -1,0 +1,398 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+index 615fea257d..1ecf8d7399 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+@@ -4802,21 +4802,22 @@ ImU32 ink_on(ImU32 bg)
+ // contra el texto — lo que se vio en la captura. La cura no es subir los números a ojo: es que cada
+ // medida se exprese en ALTURAS DE FUENTE, así que el panel se estira solo cuando la fuente crece y
+ // no hay ninguna combinación de idioma y DPI que lo pueda apretar.
+-inline float gizmo_u() { return ImGui::GetFontSize(); }
+-
+-// La columna donde empiezan los deslizadores. Se mide sobre las etiquetas DE VERDAD, ya traducidas,
+-// para que la tabla siga cuadrando en alemán o en chino. Se recalcula por frame: son ocho
+-// CalcTextSize, que al lado de un flood-fill de la huella no se nota.
+-float gizmo_label_col()
++// 🔑 La unidad de fuente y la columna de etiquetas ya NO se definen aquí: viven en GizmoStyle.hpp
++// (gizmo_u, gizmo_label_w). Esta copia privada medía la columna con su propia constante (0.7 alturas
++// de fuente) mientras el resto del fork usaba otra, que es justo el motivo por el que este archivo
++// estaba en la lista de consolidación: dos implementaciones del mismo widget acaban divergiendo.
++//
++// La lista de etiquetas sigue siendo la de este panel (todas sus etiquetas son palabras cortas).
++// El tope del 46 % se queda: una traducción larguísima dejaría el deslizador sin sitio, y recortar la
++// etiqueta es mejor que un control de doce píxeles.
++float zone_label_w()
+ {
+-    const char *caps[] = { "overhangs", "map detail", "ghost", "grid marks", "across", "side",
+-                           "edge · patch", "edge · foot", "lean", "footprint" };
++    const char *caps[] = {"overhangs", "map detail", "ghost", "grid marks", "across", "side",
++                          "edge · patch", "edge · foot", "lean", "footprint"};
+     float w = 0.f;
+     for (const char *c : caps)
+-        w = std::max(w, ImGui::CalcTextSize(_u8L(c).c_str()).x);
+-    // El tope existe para que una traducción larguísima no deje el deslizador sin sitio: a partir
+-    // de ahí la etiqueta se recorta, que es mejor que un control de doce píxeles.
+-    return std::min(w + 0.7f * gizmo_u(), ImGui::GetContentRegionAvail().x * 0.46f);
++        w = std::max(w, gizmo_label_w(_u8L(c).c_str()));
++    return std::min(w, ImGui::GetContentRegionAvail().x * 0.46f);
+ }
+ 
+ // -----------------------------------------------------------------------------
+@@ -5090,21 +5091,17 @@ void gizmo_section(const char *label)
+ 
+ // Un interruptor con icono. Encendido = fondo de acento y el glifo en tinta; apagado = superficie y
+ // glifo apagado. Sin etiqueta: lo que hace lo cuenta el tooltip, que es donde cabe entero.
+-bool gizmo_glyph_toggle(const char *id, float size, bool active, Glyph g, const char *tip)
++//
++// 🔑 El cromo lo pone GizmoStyle.hpp (gizmo_icon_toggle_sized): era una copia privada del mismo botón
++// que el resto del fork dibuja con otro redondeo y otro color de hover. Lo que queda aquí es solo el
++// glifo, que sí es de este panel. El `size` es de quien llama porque la tira de vistas y las acciones
++// de una tarjeta se miden en alturas de fuente, no en el tamaño estándar.
++bool zone_glyph_toggle(const char *id, float size, bool active, Glyph g, const char *tip)
+ {
+-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+-    ImDrawList  *dl = ImGui::GetWindowDrawList();
+-    const ImVec2 a  = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+-    const bool   hv = ImGui::IsItemHovered();
+-    dl->AddRectFilled(a, b, active ? gizmo_fade(GizmoCol::Accent, hv ? 1.0f : 0.85f)
+-                                   : gizmo_col_u32(hv ? GizmoCol::SurfaceHi : GizmoCol::Surface), 5.f);
+-    if (active)
+-        dl->AddRect(a, b, gizmo_col_u32(GizmoCol::AccentBright), 5.f, 0, 1.2f);
+-    draw_glyph(dl, ImVec2(a.x + size * 0.16f, a.y + size * 0.16f), size * 0.68f, g,
+-               active ? gizmo_col_u32(GizmoCol::Ink) : gizmo_fade(GizmoCol::TextDim, hv ? 1.0f : 0.85f));
+-    if (hv && tip != nullptr)
+-        ImGui::SetTooltip("%s", tip);
+-    return pressed;
++    return gizmo_icon_toggle_sized(id, size, active, tip,
++                                   [g](ImDrawList *dl, const ImVec2 &p0, float s, ImU32 col) {
++                                       draw_glyph(dl, p0, s, g, col);
++                                   });
+ }
+ 
+ // Un botón de icono pequeño, para las acciones de una tarjeta. `danger` lo pinta de ámbar al pasar
+@@ -5149,63 +5146,21 @@ void gizmo_status_chip(const char *text, ImU32 col, bool solid)
+     ImGui::Dummy(ImVec2(w, h));
+ }
+ 
+-// Un deslizador con su etiqueta en una columna fija a la izquierda. La columna es lo que hace que
+-// seis deslizadores distintos se lean como una tabla y no como seis frases.
+-bool gizmo_row_slider(const char *id, const char *caption, float *v, float mn, float mx,
+-                    const char *fmt, const char *tip)
++// 🔑 Las filas de deslizador y de interruptor YA NO viven aquí: son gizmo_row_slider y
++// gizmo_row_switch de GizmoStyle.hpp. Eran la divergencia más visible de este panel - su copia no
++// llevaba campo tipográfico junto al deslizador (el resto del fork sí) y su interruptor era una
++// casilla con la etiqueta al lado en vez del interruptor dibujado.
++//
++// La firma compartida pide la columna de etiqueta, y en este panel hay UNA para todo el panel
++// (zone_label_w(), que ya la mide con gizmo_label_w). La pone este envoltorio en vez de repetirla en
++// los nueve sitios de llamada, que es donde se colaría una columna distinta sin que nadie lo note.
++bool zone_row_slider(const char *id, const char *caption, float *v, float mn, float mx,
++                     const char *fmt, const char *tip)
+ {
+-    const float col = gizmo_label_col();
+-    ImGui::PushID(id);
+-    ImGui::AlignTextToFramePadding();
+-    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+-    // 🚨 Recortada al ancho de la columna: sin esto una etiqueta larga se mete DEBAJO del
+-    // deslizador, que es exactamente lo que pasaba con "overhangs" y "map detail".
+-    ImGui::TextUnformatted(fit_text(caption, col - 0.4f * gizmo_u()).c_str());
+-    ImGui::PopStyleColor();
+-    if (ImGui::IsItemHovered())
+-        ImGui::SetTooltip("%s", tip != nullptr ? tip : caption);
+-    ImGui::SameLine(col);
+-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+-    const bool changed = ImGui::SliderFloat("##v", v, mn, mx, fmt);
+-    if (tip != nullptr && ImGui::IsItemHovered())
+-        ImGui::SetTooltip("%s", tip);
+-    ImGui::PopID();
+-    return changed;
++    return gizmo_row_slider(id, caption, v, mn, mx, fmt, zone_label_w(), tip);
+ }
+ 
+-// s299c — la misma fila, con un interruptor en vez de un deslizador. Misma columna de etiqueta que
+-// todo lo demás del panel, que es lo que mantiene la rejilla del rediseño.
+-bool gizmo_row_toggle(const char *id, const char *caption, bool *v, const char *tip)
+-{
+-    // 🚨 s299c — NO se recorta a la columna de etiqueta, y aquí está la diferencia con el
+-    // deslizador. Un deslizador necesita todo el ancho que queda, así que su etiqueta cede; una
+-    // casilla ocupa un cuadrado, así que hay sitio de sobra y recortar sólo servía para dejar
+-    // "only my zo…" en pantalla. Se recorta contra lo que queda de verdad, menos el hueco de la
+-    // casilla, y la casilla se coloca DESPUÉS del texto cuando éste se pasa de la columna.
+-    const float col = gizmo_label_col();
+-    const float box = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+-    const float room = std::max(col - 0.4f * gizmo_u(),
+-                                ImGui::GetContentRegionAvail().x - box - 0.4f * gizmo_u());
+-    ImGui::PushID(id);
+-    ImGui::AlignTextToFramePadding();
+-    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+-    const std::string label = fit_text(caption, room);
+-    ImGui::TextUnformatted(label.c_str());
+-    ImGui::PopStyleColor();
+-    if (ImGui::IsItemHovered())
+-        ImGui::SetTooltip("%s", tip != nullptr ? tip : caption);
+-    // Si la etiqueta cabe en la columna, la casilla se alinea con el resto del panel y la rejilla
+-    // se mantiene. Si no cabe, va detrás del texto en vez de encima de él.
+-    if (ImGui::GetItemRectSize().x + 0.4f * gizmo_u() < col)
+-        ImGui::SameLine(col);
+-    else
+-        ImGui::SameLine(0.f, 0.4f * gizmo_u());
+-    const bool changed = ImGui::Checkbox("##v", v);
+-    if (tip != nullptr && ImGui::IsItemHovered())
+-        ImGui::SetTooltip("%s", tip);
+-    ImGui::PopID();
+-    return changed;
+-}
++
+ 
+ // Una baldosa de dato: rótulo pequeño arriba, número grande abajo, y una barra opcional que dice
+ // cuánto del presupuesto se ha gastado. Tres de estas cuentan de un vistazo lo que antes eran
+@@ -5828,14 +5783,14 @@ void GLGizmoSupportZones::render_view_strip()
+ {
+     const float sz = 1.9f * gizmo_u();
+ 
+-    if (gizmo_glyph_toggle("##vovh", sz, m_show_overhangs, Glyph::Overhang,
++    if (zone_glyph_toggle("##vovh", sz, m_show_overhangs, Glyph::Overhang,
+                          _u8L("Highlight overhangs").c_str())) {
+         m_show_overhangs = ! m_show_overhangs;
+         m_overhang_model_dirty = true;
+         apply_overhang_highlight();
+     }
+     ImGui::SameLine(0.f, 6.f);
+-    if (gizmo_glyph_toggle("##vgap", sz, m_show_gaps, Glyph::GapMap,
++    if (zone_glyph_toggle("##vgap", sz, m_show_gaps, Glyph::GapMap,
+                          // 🚨 §8: esto AVISA, no decide. "might need support" es deliberado — quien
+                          // decide que hace falta soporte sigue siendo detect_overhangs() en el motor.
+                          (_u8L("Show what still needs holding") + "\n\n" +
+@@ -5849,7 +5804,7 @@ void GLGizmoSupportZones::render_view_strip()
+     // the part. Deliberately not a latched state - the button is always drawn off, because it is a
+     // one-shot action and not a mode (same as the fork).
+     ImGui::SameLine(0.f, 6.f);
+-    if (gizmo_glyph_toggle("##vbottom", sz, false, Glyph::Landing,
++    if (zone_glyph_toggle("##vbottom", sz, false, Glyph::Landing,
+                            _u8L("View from below. Puts the camera under the part, where the surfaces that need holding face you. Same as the Bottom view.").c_str()))
+         m_parent.select_view("bottom");
+     // [ORCAPORT:SU-18] END
+@@ -5874,7 +5829,7 @@ void GLGizmoSupportZones::render_view_strip()
+     }
+ 
+     if (m_show_overhangs) {
+-        if (gizmo_row_slider("##ovhdeg", _u8L("overhangs").c_str(), &m_overhang_threshold_deg, 0.f, 90.f, "%.0f deg",
++        if (zone_row_slider("##ovhdeg", _u8L("overhangs").c_str(), &m_overhang_threshold_deg, 0.f, 90.f, "%.0f deg",
+                            _u8L("Highlight overhangs").c_str())) {
+             m_overhang_model_dirty = true;
+             apply_overhang_highlight();
+@@ -5897,7 +5852,7 @@ void GLGizmoSupportZones::render_view_strip()
+         // El detalle del mapa es una preferencia de MIRAR, no un ajuste de impresión, y por eso no
+         // está atado a support_base_pattern_spacing: si lo estuviera habría que cambiar cómo se
+         // imprime el soporte para poder ver mejor.
+-        if (gizmo_row_slider("##gapstep", _u8L("map detail").c_str(), &m_gap_step_mm, 0.3f, 4.f, "%.1f mm",
++        if (zone_row_slider("##gapstep", _u8L("map detail").c_str(), &m_gap_step_mm, 0.3f, 4.f, "%.1f mm",
+                            _u8L("Red marks surface that leans past the threshold and sits inside no zone: it might need support and nothing is holding it. Green is already caught by a zone.").c_str()))
+             m_parent.set_support_zone_gaps(true, overhang_normal_z_cut(), m_gap_step_mm);
+     }
+@@ -5912,7 +5867,7 @@ void GLGizmoSupportZones::render_view_strip()
+     // un botón que no hace nada es peor que no tenerlo. Mismo criterio que GLGizmoFdmSupports.
+     if (m_c != nullptr && m_c->object_clipper() != nullptr) {
+         float clp = float(m_c->object_clipper()->get_position());
+-        if (gizmo_row_slider("##clp", _u8L("section").c_str(), &clp, 0.f, 1.f, "%.2f",
++        if (zone_row_slider("##clp", _u8L("section").c_str(), &clp, 0.f, 1.f, "%.2f",
+                            _u8L("Cut the part away to look inside. It is the same section view the support painter has, so the plane keeps whatever direction you gave it there.").c_str()))
+             m_parent.set_section_view_ratio(clp);
+         if (clp != 0.f) {
+@@ -5929,7 +5884,7 @@ void GLGizmoSupportZones::render_view_strip()
+     // es justo lo que hace que quitar uno no se lleve el otro por delante.
+     if (m_show_gaps) {
+         float marker_alpha = m_parent.get_support_zone_marker_alpha();
+-        if (gizmo_row_slider("##markera", _u8L("grid marks").c_str(), &marker_alpha, 0.10f, 1.0f, "%.2f",
++        if (zone_row_slider("##markera", _u8L("grid marks").c_str(), &marker_alpha, 0.10f, 1.0f, "%.2f",
+                            _u8L("How strong the green grid and the red gap map are drawn. They are read through the part, so they do not depend on how ghosted the part is.").c_str())) {
+             m_parent.set_support_zone_marker_alpha(marker_alpha);
+             m_parent.set_as_dirty();
+@@ -6093,7 +6048,7 @@ void GLGizmoSupportZones::render_panel_body()
+     // de objetos y se puede quitar desde allí como cualquier otro.
+     if (current_object() != nullptr) {
+         bool only_mine = ! is_auto(effective_support_type());
+-        if (gizmo_row_toggle("##onlymine", _u8L("only my zones").c_str(), &only_mine,
++        if (gizmo_row_switch("##onlymine", _u8L("only my zones").c_str(), &only_mine,
+                            (_u8L("Only the zones you drew get support. The automatic overhang detection is turned off for this object.") + "\n\n" +
+                             _u8L("With it off, the slicer also supports everything else it thinks needs holding, and your zones are added on top.")).c_str()))
+             // s304 — el cuerpo vive en `apply_only_my_zones()`: el aviso del cajón ofrece el mismo
+@@ -6383,7 +6338,7 @@ void GLGizmoSupportZones::render_panel_body()
+         ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+         ImGui::TextUnformatted(_u8L("footprint").c_str());
+         ImGui::PopStyleColor();
+-        ImGui::SameLine(gizmo_label_col());
++        ImGui::SameLine(zone_label_w());
+         // 🔑 s299 — TRES, y el cuadrado deja de ser uno de ellos. Decisión del dueño: "círculo para
+         // point/click, área agrandar/achicar, y brocha libre".
+         //
+@@ -6431,7 +6386,7 @@ void GLGizmoSupportZones::render_panel_body()
+             char id[16];
+             std::snprintf(id, sizeof(id), "##shape%d", int(shapes[i]));
+             const std::string title = title_of(shapes[i]);
+-            if (gizmo_glyph_toggle(id, 1.6f * gizmo_u(), m_foot_shape == shapes[i], glyph_of(shapes[i]),
++            if (zone_glyph_toggle(id, 1.6f * gizmo_u(), m_foot_shape == shapes[i], glyph_of(shapes[i]),
+                                  shapes[i] == FootShape::Patch
+                                      ? title.c_str()
+                                      : (title + "\n\n" + (shapes[i] == FootShape::Brush ? brush_tip : cut_tip)).c_str())
+@@ -6447,7 +6402,7 @@ void GLGizmoSupportZones::render_panel_body()
+ 
+         // s299f — fuera o dentro. Va aquí, con la forma, porque decide DÓNDE cae lo que pintas y no
+         // qué se hace con ello después.
+-        if (gizmo_row_toggle("##paintin", _u8L("paint inside").c_str(), &m_paint_inside,
++        if (gizmo_row_switch("##paintin", _u8L("paint inside").c_str(), &m_paint_inside,
+                            (_u8L("Off: you paint the surface you can see, and only that one. It is what you want almost always.") + "\n\n" +
+                             _u8L("On: the pick goes through the wall, so you can grab a surface inside a hollow part. Use the section view to see what you are doing.")).c_str())) {
+             m_cand_mouse = Vec2d(-1e9, -1e9);   // la lista de candidatos se rehace con la regla nueva
+@@ -6464,7 +6419,7 @@ void GLGizmoSupportZones::render_panel_body()
+             // 🚨 s289 — hasta 200 mm y no 60. El tope de antes se quedaba corto en cuanto la pieza
+             // era mediana, y con «cubrir» la forma ya no depende del parche, así que crecer no
+             // rompe nada: sólo ocupa más área.
+-            if (gizmo_row_slider("##footsize", lbl.c_str(), &m_foot_size_mm, 1.f, 200.f, "%.1f mm",
++            if (zone_row_slider("##footsize", lbl.c_str(), &m_foot_size_mm, 1.f, 200.f, "%.1f mm",
+                                (m_foot_shape == FootShape::Brush ? brush_tip : cut_tip).c_str())) {
+                 m_preview_dirty = true;
+                 invalidate_patch();
+@@ -6478,7 +6433,7 @@ void GLGizmoSupportZones::render_panel_body()
+             ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+             ImGui::TextUnformatted(_u8L("area").c_str());
+             ImGui::PopStyleColor();
+-            ImGui::SameLine(gizmo_label_col());
++            ImGui::SameLine(zone_label_w());
+             const std::string mode_lbl[2] = { _u8L("cut"), _u8L("cover") };
+             const std::string mode_tip[2] = {
+                 _u8L("Cut: the shape is trimmed to the surface you picked, so it can never be bigger than the patch. The roof is the surface itself."),
+@@ -6511,7 +6466,7 @@ void GLGizmoSupportZones::render_panel_body()
+             ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+             ImGui::TextUnformatted(_u8L("marks").c_str());
+             ImGui::PopStyleColor();
+-            ImGui::SameLine(gizmo_label_col());
++            ImGui::SameLine(zone_label_w());
+             char msg[128];
+             if (m_stamps.empty())
+                 std::snprintf(msg, sizeof(msg), "%s", _u8L("drag on the surface").c_str());
+@@ -6544,7 +6499,7 @@ void GLGizmoSupportZones::render_panel_body()
+         // ⛔ Y no hay mando de ALTURA (decisión suya): la altura de un tocón no es algo que se juzgue
+         // mirándola, sólo tiene que dar unas capas de imán. Vive como constante en la cabecera.
+         if (block_tree_mode()) {
+-            if (gizmo_row_slider("##stumpsize", _u8L("stump").c_str(), &m_stump_size_mm, 1.f, 40.f, "%.1f mm",
++            if (zone_row_slider("##stumpsize", _u8L("stump").c_str(), &m_stump_size_mm, 1.f, 40.f, "%.1f mm",
+                                (_u8L("How wide each stump is where it stands.") + "\n\n" +
+                                 _u8L("The column narrows down to this on the last few layers, so a stump much smaller than the area you painted starves it. The log says so if it happens.")).c_str())) {
+                 m_preview_dirty         = true;
+@@ -6556,7 +6511,7 @@ void GLGizmoSupportZones::render_panel_body()
+             // The brush circle sweeps across walls too, so without this a stroke along an edge drags
+             // the box up the side of the part. The threshold is the live "Highlight overhangs" angle
+             // while it is being moved, and is frozen into the gesture when the zone is created.
+-            if (gizmo_row_toggle("##ovhonly", _u8L("overhang only").c_str(), &m_paint_overhang_only,
++            if (gizmo_row_switch("##ovhonly", _u8L("overhang only").c_str(), &m_paint_overhang_only,
+                                  _u8L("On: the brush only marks surface that leans past the overhang angle, so painting along an edge no longer drags the box up. The angle is the one of Highlight overhangs; turn that on and move overhangs to grab more or less, and what you painted is redone live. Off: it marks everything the brush touches.").c_str())) {
+                 repaint_from_stamps();
+                 invalidate_patch();
+@@ -6570,7 +6525,7 @@ void GLGizmoSupportZones::render_panel_body()
+             ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+             ImGui::TextUnformatted(_u8L("stumps").c_str());
+             ImGui::PopStyleColor();
+-            ImGui::SameLine(gizmo_label_col());
++            ImGui::SameLine(zone_label_w());
+             const size_t n_st = all_stumps().size();
+             char stmsg[128];
+             if (n_st == 0)
+@@ -6626,7 +6581,7 @@ void GLGizmoSupportZones::render_panel_body()
+         const float edge_hi =   std::max(0.1f, inset_max);
+         if (m_footprint_shrink_mm < edge_lo) m_footprint_shrink_mm = edge_lo;
+         if (m_footprint_base_mm   < edge_lo) m_footprint_base_mm   = edge_lo;
+-        if (gizmo_row_slider("##shrink", _u8L("head").c_str(), &m_footprint_shrink_mm,
++        if (zone_row_slider("##shrink", _u8L("head").c_str(), &m_footprint_shrink_mm,
+                            edge_lo, edge_hi, "%.1f mm", taper.c_str())) {
+             m_preview_dirty = true;
+             invalidate_patch();
+@@ -6636,7 +6591,7 @@ void GLGizmoSupportZones::render_panel_body()
+         // abajo de un pilar: es el TOCÓN, y tiene su propio mando arriba. Dejar este deslizador
+         // sería ofrecer un número que no cambia nada de lo que se ve, que es peor que no ofrecerlo.
+         if (! block_tree_mode() &&
+-            gizmo_row_slider("##shrinkbase", _u8L("foot").c_str(), &m_footprint_base_mm,
++            zone_row_slider("##shrinkbase", _u8L("foot").c_str(), &m_footprint_base_mm,
+                            edge_lo, edge_hi, "%.1f mm", taper.c_str())) {
+             m_preview_dirty = true;
+             invalidate_patch();
+@@ -6679,7 +6634,7 @@ void GLGizmoSupportZones::render_panel_body()
+                           : double(m_lean_angle_deg) > 50.
+                               ? _u8L("Above 50 deg: needs enough width and top gap.").c_str()
+                               : _u8L("Safe range.").c_str());
+-        if (gizmo_row_slider("##leanangle", _u8L("lean").c_str(), &m_lean_angle_deg,
++        if (zone_row_slider("##leanangle", _u8L("lean").c_str(), &m_lean_angle_deg,
+                            1.f, float(SupportZones::SUPPORT_ZONE_MAX_LEAN_DEG), "%.0f deg", tip)) {
+             m_preview_dirty = true;
+             m_reach_model_r = -1.;   // la franja depende del ángulo: se vuelve a construir
+diff --git a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+index 9695403823..297ba31468 100644
+--- a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
++++ b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+@@ -16,6 +16,7 @@
+ #define slic3r_GizmoStyle_hpp_
+ 
+ #include <algorithm>
++#include <utility>
+ 
+ #include <imgui/imgui.h>
+ 
+@@ -458,19 +459,29 @@ inline void gizmo_glyph_plate(ImDrawList *dl, const ImVec2 &p, float s, ImU32 co
+ // ─────────────────────────────────────────────────────────────────────────────
+ constexpr float kGizmoIconGlyph = 0.78f; // the drawing's share of the button; the chrome is a frame
+ 
++// The fork's one font unit and the reference size every panel is designed against. Panels are laid out
++// in font heights, never in pixels, so no font/DPI combination can squeeze them.
++constexpr float kGizmoRefFont = 13.5f;
++
++inline float gizmo_u() { return ImGui::GetFontSize(); }
++
+ inline float gizmo_icon_size()
+ {
+-    return 28.f * (ImGui::GetFontSize() / 13.5f);
++    return 28.f * (gizmo_u() / kGizmoRefFont);
+ }
+ 
+-// `draw` paints the glyph inside the box [p, p + s] in the colour it is handed, so every gizmo keeps
+-// its own iconography and this stays pure chrome. Returns true when it was clicked.
+-inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip,
+-                              void (*draw)(ImDrawList *, const ImVec2 &, float, ImU32))
++// The icon button chrome, at a caller-chosen size: Support Zones sizes its view strip and its card
++// actions in font heights, so the size has to be a parameter. `draw` paints the glyph inside the box
++// [p, p + s] in the colour it is handed, so every gizmo keeps its own iconography and this stays pure
++// chrome. A template, not a function pointer, so a caller may pass either a plain drawer or a lambda
++// that closes over its own icon enum (Support Zones' draw_glyph takes a Glyph). Returns true when
++// clicked.
++template <typename DrawFn>
++inline bool gizmo_icon_toggle_sized(const char *id, float size, bool active, const char *tip, DrawFn &&draw,
++                                    bool danger = false)
+ {
+-    const float size = gizmo_icon_size();
+-    const bool  hit  = ImGui::InvisibleButton(id, ImVec2(size, size));
+-    ImDrawList *dl   = ImGui::GetWindowDrawList();
++    const bool   hit = ImGui::InvisibleButton(id, ImVec2(size, size));
++    ImDrawList  *dl  = ImGui::GetWindowDrawList();
+     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+     const bool   hv = ImGui::IsItemHovered();
+     const float  r  = size * 0.15f;
+@@ -480,12 +491,20 @@ inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip,
+         dl->AddRect(a, b, gizmo_col_u32(GizmoCol::AccentBright), r, 0, 1.2f);
+     const float gs = size * kGizmoIconGlyph;
+     draw(dl, ImVec2(a.x + (size - gs) * 0.5f, a.y + (size - gs) * 0.5f), gs,
+-         active ? gizmo_col_u32(GizmoCol::Ink) : gizmo_fade(GizmoCol::TextDim, hv ? 1.0f : 0.85f));
++         active ? gizmo_col_u32(GizmoCol::Ink)
++                : gizmo_fade(danger ? GizmoCol::Warn : GizmoCol::TextDim, hv ? 1.0f : 0.85f));
+     if (hv && tip != nullptr)
+         ImGui::SetTooltip("%s", tip);
+     return hit;
+ }
+ 
++// A panel's own icon control, at the standard size.
++template <typename DrawFn>
++inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip, DrawFn &&draw)
++{
++    return gizmo_icon_toggle_sized(id, gizmo_icon_size(), active, tip, std::forward<DrawFn>(draw));
++}
++
+ // A hint at the bottom of a panel: dim, indented slightly so it reads as prose and not as a row, and
+ // WRAPPED to the panel width. This is the thing that keeps a panel narrow.
+ //

@@ -4709,8 +4709,11 @@ void GLGizmoSupportZones::on_render_input_window(float x, float y, float /*botto
     // el alto sigue siendo del contenido, que es lo único que se le quería pedir al auto-resize.
     ImGui::SetNextWindowSizeConstraints(ImVec2(win_w, 0.f),
                                         ImVec2(win_w, std::numeric_limits<float>::max()));
-    gizmo_push_window_style(); // 🚨 antes del Begin: WindowBg y el titulo se resuelven al abrir
-    GizmoImguiBegin(on_get_name(), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+    gizmo_push_window_style(); // 🚨 antes del Begin: WindowBg se resuelve al abrir
+    // Sin barra de título, como el resto de los paneles del fork: el icono de la barra de herramientas
+    // ya dice qué herramienta está abierta, y era el último que se podía arrastrar fuera de su icono.
+    GizmoImguiBegin(on_get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+                                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
 
     // 🚨 The push/pop pair must not be crossed by an early return, or the style leaks into every
     // other ImGui window. That is exactly why the body lives in its own function
