@@ -5798,6 +5798,16 @@ void GLGizmoSupportZones::render_view_strip()
         m_parent.set_support_zone_gaps(m_show_gaps && get_state() == On, overhang_normal_z_cut(), m_gap_step_mm);
     }
 
+    // [ORCAPORT:SU-18] BEGIN - view from below
+    // What needs holding faces the bed, so it is hidden from above: one click puts the camera under
+    // the part. Deliberately not a latched state - the button is always drawn off, because it is a
+    // one-shot action and not a mode (same as the fork).
+    ImGui::SameLine(0.f, 6.f);
+    if (gizmo_glyph_toggle("##vbottom", sz, false, Glyph::Landing,
+                           _u8L("View from below. Puts the camera under the part, where the surfaces that need holding face you. Same as the Bottom view.").c_str()))
+        m_parent.select_view("bottom");
+    // [ORCAPORT:SU-18] END
+
     // El estado de las zonas, en la misma fila: dos píldoras que dicen cuántas hay y cuántas no
     // cogen nada. Es lo primero que se quiere saber al abrir el gizmo.
     if (! m_zones.empty()) {
