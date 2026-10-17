@@ -75,6 +75,38 @@ TEST_CASE("An edge shape is over-extended by the margin", "[EdgeProfiles]")
     CHECK_THAT(double(its_volume(chamfer)), WithinRel(0.5 * 11., 0.01));
 }
 
+TEST_CASE("A side margin pushes an edge cutter out of both of its faces", "[EdgeProfiles]")
+{
+    constexpr double size = 1.;
+    constexpr double side = 0.1;
+    const indexed_triangle_set flush =
+        make_edge_chamfer(edge_p0, edge_p1, face_top, face_front, size, 0., 0.);
+    const indexed_triangle_set proud =
+        make_edge_chamfer(edge_p0, edge_p1, face_top, face_front, size, 0., side);
+
+    REQUIRE_FALSE(flush.empty());
+    REQUIRE_FALSE(proud.empty());
+    CHECK(its_num_open_edges(proud) == 0);
+
+    // Flush (the default): the cross section lies IN the two faces - the top face is z = 0 with the
+    // material below it, the front face is y = 0 with the material above it - so nothing pokes out.
+    // That coplanar pair is what a mesh boolean leaves a sliver on.
+    const BoundingBoxf3 flush_bb = bounding_box(flush);
+    CHECK_THAT(flush_bb.max.z(), WithinAbs(0., 1e-3));
+    CHECK_THAT(flush_bb.min.y(), WithinAbs(0., 1e-3));
+
+    // With a side margin the cutter stands `side` out of the top face (+z) and the front face (-y),
+    // which is what makes the boolean cut clean...
+    const BoundingBoxf3 proud_bb = bounding_box(proud);
+    CHECK_THAT(proud_bb.max.z(), WithinAbs(side, 1e-3));
+    CHECK_THAT(proud_bb.min.y(), WithinAbs(-side, 1e-3));
+
+    // ...while the cut itself is unchanged: the legs still reach `size` along each face, minus the
+    // hair the whole section was shifted by.
+    CHECK_THAT(proud_bb.max.y(), WithinAbs(size - side, 1e-3));
+    CHECK_THAT(proud_bb.min.z(), WithinAbs(-(size - side), 1e-3));
+}
+
 TEST_CASE("Edge dress rejects degenerate input", "[EdgeProfiles]")
 {
     CHECK(make_edge_chamfer(edge_p0, edge_p1, face_top, face_front, 0.).empty());

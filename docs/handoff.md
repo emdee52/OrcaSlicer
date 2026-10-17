@@ -1717,8 +1717,7 @@ The Perforations tool no longer stamps the pattern where you click. A left click
   `clear_pick` -> `pick_valid` false, both cuts still counted. Extrude's pick was re-checked in the same
   run: after its own `create` it is still valid and a second `create` makes a second solid (before this
   batch `data_changed()` dropped it).
-- **Two traps found on the way**, both worth keeping:
-  1. **An overlay drawn over the volume it IS loses the depth test.** An applied pattern's geometry is the
+- **Two traps found on the way**, both worth keeping:  1. **An overlay drawn over the volume it IS loses the depth test.** An applied pattern's geometry is the
      negative volume already in the scene, at exactly the same depth, so a strict `GL_LESS` rejected the
      overlay and the red was never visible (the first check showed the real volume's grey instead). The
      overlay pass now draws with `GL_LEQUAL` and restores `GL_LESS` afterwards. Extrude sidesteps this by
@@ -1727,5 +1726,55 @@ The Perforations tool no longer stamps the pattern where you click. A left click
   2. **Yellow over red reads as neither colour.** With the proposal and the applied pattern coincident, the
      region went muddy. The proposal now hides itself while it is exactly what was just cut
      (`m_show_proposal`) and comes back the moment a value or the pattern changes.
-- **Branch state**: on `port/gizmo-colors-perforation-pick`, branched from `port/integration`. Not merged
-  until the user has tested it (section 0).
+- **Branch state**: on `port/gizmo-colors-perforation-pick`, branched from `port/integration`. Merged
+  `--no-ff` as `4654027520` (user-tested 2026-10-17; the same day's follow-up fixes are section 36).
+
+
+## 36. PP-4 - overlay blending, cutters a boolean can eat, and right-click as the commit key (branch `port/gizmo-fixes`)
+
+Six things the owner reported after living with PP-2/PP-3, and what each turned out to be.
+
+- **A placed teardrop read as solid red, not a wash.** Measured, not guessed: a pixel inside an applied
+  placed feature came back `(246,73,73)`, which is the scheme's 0.55 red **composited twice** over the
+  part's face (a single pass is `(234,115,115)`). Two independent causes:
+  1. **Two shells in one volume.** `bore_negative_mesh` built the round clearance bore and then
+     `its_merge`d a teardrop prism into it - its own comment calls the teardrop "a superset of the round
+     bore". One volume therefore held two overlapping closed shells, and the overlay blended both. The
+     teardrop IS the shaft's cross-section now (`its_make_teardrop_prism` replaces the round bore instead
+     of joining it; a vertical hole still gets the round one, since the prism comes back empty). The same
+     doubled shell is what made **Mesh boolean fail on a teardrop** while a plain bore at least cut: two
+     intersecting shells are exactly the input an mcut subtraction cannot resolve, and
+     `GLGizmoMeshBoolean::generate_new_volume` replaces the source volume with whatever comes back.
+     ⚠️ The *head* teardrop is still merged into the stepped bore (a local case, documented in the code):
+     doing it properly needs a stepped section builder, not a merge.
+  2. **A closed volume drawn without back-face culling**, which blends its far wall too. The overlay
+     passes of Holes, Extrude, Edge dress, Hole walls and Perforations now keep culling ON. Measured on
+     an Extrude boss (a single-shell volume): the green now reads as one 0.55 pass instead of two.
+  Open: a *plain* vertical bore still measured the doubled value after both fixes, so a third blend
+  source remains unpinned on that path. The next diagnostic is to sample the same pixel with the applied
+  overlay disabled and with the volume hidden in turn.
+- **A placed through-hole left a sliver of wall after Mesh boolean.** The cutter's far end already
+  overshot by `max(0.5, 0.25·d)`, but its entry cap was exactly IN the picked face - a coplanar pair for
+  the boolean. The cutter now starts `max(0.2, 0.1·d)` *outside* the surface, with `depth` still measured
+  from the face, so the visible cut is unchanged and the superset is harmless for a negative volume.
+- **Edge chamfer / fillet left a sliver, and cut past the end of the edge.** Both confirmed in the code:
+  `chamfer_profile` starts at the edge corner with its legs lying exactly in the two faces (the same
+  coplanar pair), and `mesh_for_edge` passed `margin = 0.5·size`, which `extrude_profile` applies as an
+  extension past **both ends of the edge** - the cut ran past the pick as if there were solid there.
+  There are two margins now: `side = max(0.05, 0.05·size)` pushes the whole cross-section out of both
+  faces (invisible: the cut is still bounded by the faces) and `end = max(0.02, 0.02·size)` keeps only
+  enough overlap for neighbouring features at a corner. `make_edge_fillet`/`make_edge_chamfer` and the
+  loop sweep take a `side_margin`, with a new `[EdgeProfiles]` case pinning that the flush prism pokes
+  out of neither face and the margined one pokes out of both by exactly `side`.
+- **Right-click is now the commit key.** Holes and Hole walls: right-click presses **Done** (and inside
+  place-on-face mode it cancels that mode first, so the key never traps the user). Extrude: right-click
+  confirms the picked face, the same as its Extrude button. Perforations: right-click confirms, the same
+  as Perforate. **Esc** is what drops a pick in those two now, and the hints say so.
+- **Consistency**: the Cut tool's active snap marker was hardcoded opaque green while Holes' follows the
+  scheme; both are the proposal colour now.
+- **Test status**: the new `[EdgeProfiles]` case is written but **not run** - this build tree has the test
+  targets off (`libslic3r_tests` is not in `build/`), so running it needs a `build_win.bat -ds
+  --run-tests` tree or a reconfigure. The arithmetic it asserts was checked against the sampler's
+  coordinates by hand.
+- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Not merged until the user has
+  tested it (section 0).

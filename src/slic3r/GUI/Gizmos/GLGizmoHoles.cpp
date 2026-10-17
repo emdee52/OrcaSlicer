@@ -457,6 +457,19 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
             else if (m_head == BoreHead::Countersink && s->csink_d > d)
                 its = its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir_w, entry_w);
         }
+        // [ORCAPORT:PP-4] A screw teardrop is a SUPERSET of the round bore (a round tunnel with a sloped
+        // roof), so it IS the shaft's cross-section - it must not be merged INTO a round bore as well.
+        // Merging the two left one volume holding two overlapping closed shells: the gizmo blended both
+        // of them (an applied teardrop read as solid red instead of a wash) and the pair is
+        // self-intersecting input for Mesh boolean, which is why a teardrop subtraction failed where a
+        // plain bore's worked. A vertical hole has no up direction, so the prism comes back empty and
+        // the shaft stays round.
+        if (m_category == HoleCategory::Screw && m_screw_teardrop && its.indices.empty()) {
+            indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir_w, entry_w,
+                                                                 Vec3d::UnitZ());
+            if (! shaft.indices.empty())
+                its = std::move(shaft);
+        }
         if (its.indices.empty()) {
             double bore_depth = depth;
             if (m_category == HoleCategory::Magnet)
@@ -464,22 +477,18 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
             its = its_make_bore(d, bore_depth, dir_w, entry_w);
         }
 
-        // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
-        // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore,
-        // so merging it leaves the shaft round below and teardropped above. A counterbore head stays
-        // round unless the user asks for it too; a vertical hole has no up direction and gets
-        // nothing.
-        if (m_screw_teardrop) {
-            indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
-            if (!shaft.indices.empty())
-                its_merge(its, shaft);
-
+        // A counterbore head stays round unless the user asks for it too.
+        if (m_category == HoleCategory::Screw && m_screw_teardrop) {
             const bool cbore_head = s != nullptr &&
                                     ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
                                      (m_head == BoreHead::ButtonHead && s->button_d > d));
             if (m_screw_teardrop_head && cbore_head) {
                 const double head_d = m_head == BoreHead::SocketHead ? s->socket_d : s->button_d;
                 const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) + sink;
+                // ⚠️ The head's teardrop is still MERGED into the stepped bore rather than replacing the
+                // head's own section, so a head teardrop keeps one extra overlapping shell over the head
+                // (PP-4 fixes the shaft, which is the common case). Doing the head properly needs a
+                // stepped section builder, not a merge.
                 indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
                 if (!head.indices.empty())
                     its_merge(its, head);
@@ -824,7 +833,11 @@ void GLGizmoHoles::on_render()
     glsafe(::glDepthMask(GL_TRUE));
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
     glsafe(::glDisable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE));
+    // 🔑 Culling stays ON for this pass. These previews are CLOSED volumes drawn with blending and no
+    // depth test, so with back faces drawn too each surface was blended twice and the applied red read
+    // as (246,73,73) - a single 0.55 pass over the same face measures (234,115,115). Only the walls
+    // facing the camera should count.
+    glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
 
     const Camera   &camera = wxGetApp().plater()->get_camera();
@@ -945,11 +958,18 @@ DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outwar
         if (d > 0.)
             depth = d;
     }
+    // [ORCAPORT:PP-4] The cutter starts a hair OUTSIDE the surface instead of exactly in it, and `depth`
+    // is measured from the face. With its entry cap coplanar with the picked face, a mesh boolean has a
+    // coplanar pair to leave a sliver on - the "the hole is through, but there is still a skin on one
+    // side" that shows up in an exported mesh while the slicer silently discards it. The overshoot is
+    // invisible: a negative volume is intersected with the part at slice time either way.
+    const double entry    = std::max(0.2, 0.1 * d_obj);
+    const Vec3d  entry_pt = hit_world - dir * entry;
 
     DetectedHole h;
     h.axis    = dir;
-    h.center  = hit_world + dir * (0.5 * depth);
-    h.depth   = depth;
+    h.center  = entry_pt + dir * (0.5 * (depth + entry));
+    h.depth   = depth + entry;
     h.radius  = 0.5 * d_obj;
     h.through = m_through;
     return h;
@@ -1174,7 +1194,7 @@ void GLGizmoHoles::set_active_snap_marker(const FaceSnapPoint &p)
     indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
     its_translate(sphere, p.pos.cast<float>());
     m_snap_marker_active.init_from(sphere);
-    m_snap_marker_active.set_color(HOVER_COLOR);
+    m_snap_marker_active.set_color(gizmo_proposed_colour());
 }
 
 // Draws the marker spheres of the session face while Alt is held. Depth test is off so the surface
@@ -1654,14 +1674,20 @@ void GLGizmoHoles::gizmo_refresh()
 
 bool GLGizmoHoles::on_mouse(const wxMouseEvent &mouse_event)
 {
+    // [ORCAPORT:PP-4] Right-click is the Done key: it closes the tool, exactly like the panel's Done
+    // button. While placing on a face it keeps cancelling the mode instead, so one key never traps the
+    // user in a mode they cannot leave.
+    if (mouse_event.RightDown()) {
+        if (m_place_face_mode) {
+            exit_place_face_mode();
+            m_parent.set_as_dirty();
+        } else
+            m_parent.reset_all_gizmos();
+        return true;
+    }
     if (m_place_face_mode) {
         if (mouse_event.LeftDown()) {
             place_face_at(m_parent.get_local_mouse_position());
-            return true;
-        }
-        if (mouse_event.RightDown()) {
-            exit_place_face_mode();
-            m_parent.set_as_dirty();
             return true;
         }
         return false;

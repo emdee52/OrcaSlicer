@@ -3163,7 +3163,7 @@ void GLGizmoCut3D::set_active_snap_marker(const FaceSnapPoint& p)
     indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
     its_translate(sphere, p.pos.cast<float>());
     m_snap_marker_active.init_from(sphere);
-    m_snap_marker_active.set_color(ColorRGBA(0.0f, 1.0f, 0.0f, 1.0f));
+    m_snap_marker_active.set_color(gizmo_proposed_colour()); // the same active-marker colour as Holes (PP-4)
 }
 
 // Drawn while Alt is held; depth test is off so the surface and the lifted patch cannot hide them.

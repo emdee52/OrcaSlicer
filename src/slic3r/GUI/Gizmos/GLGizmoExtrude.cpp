@@ -996,7 +996,9 @@ void GLGizmoExtrude::on_render()
     glsafe(::glDepthMask(GL_TRUE));
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
     glsafe(::glDisable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE));
+    // Culling stays ON: these are closed volumes, and drawing their back walls too blends every
+    // surface twice (the applied red measured 0.80 instead of 0.55).
+    glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
 
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
@@ -1022,18 +1024,21 @@ bool GLGizmoExtrude::on_mouse(const wxMouseEvent &mouse_event)
     if (get_state() != On)
         return false;
     if (mouse_event.RightDown()) {
-        // [ORCAPORT:HF-3] Extrude face: right-click drops the pick. Cavity fill: it removes the plug
-        // the cursor is on, like the hole gizmo removes a hole.
+        // [ORCAPORT:PP-4] Extrude face: right-click CONFIRMS the picked face, the same as the panel's
+        // Extrude button (Esc is what drops the pick now). Cavity fill keeps removing the plug under the
+        // cursor, like the hole gizmo removes a hole.
         if (m_mode == Mode::ExtrudeFace) {
-            clear_pick();
+            if (! m_pick.valid)
+                return false; // nothing to confirm: let the canvas have the click
+            create_from_pick();
+            m_parent.request_extra_frame();
             return true;
         }
         gizmo_hover_at(m_parent.get_local_mouse_position());
         return gizmo_remove_hovered();
     }
     // [ORCAPORT:HF-3] Extrude face: a click PICKS the face, it does not extrude. Distance/Offset are
-    // dialled in against the preview and the panel's Extrude button commits. Right-click drops the
-    // pick instead of removing a fill.
+    // dialled in against the preview and the panel's Extrude button (or right-click) commits.
     if (m_mode == Mode::ExtrudeFace) {
         if (! mouse_event.LeftUp())
             return false;
@@ -1160,7 +1165,7 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
 
         // Nothing picked, a pick that cannot be extruded, or go.
         if (! m_pick.valid) {
-            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the distance and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
+            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the distance and the offset and press Extrude (or right-click). Esc drops the pick.").c_str());
         } else if (! m_pick_why.empty()) {
             gizmo_hint(m_pick_why.c_str(), GizmoCol::Warn);
         }
