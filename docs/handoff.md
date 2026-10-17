@@ -1329,9 +1329,8 @@ panel reads as one surface. Light and dark are both defined and `gizmo_col()` pi
 
 ### What still has to migrate
 
-Migrating on branch **`port/gizmo-style`** (one commit per ID, not yet merged or built): Perforations,
-Hole walls, Edge chamfer / fillet, Align & Stack and Holes. Support Zones is **out of scope** there -
-it is already on the palette, its private widget copies are the consolidation follow-up below.
+**Done.** Branch **`port/gizmo-style`** (merged as `a41a0c7bd8`) migrated Perforations, Hole walls,
+Edge chamfer / fillet, Align & Stack and Holes; Support Zones followed on **`port/SU-5-widgets`**.
 
 | Gizmo | ID | State |
 |---|---|---|
@@ -1341,18 +1340,21 @@ it is already on the palette, its private widget copies are the consolidation fo
 | Edge chamfer / fillet | EF-1 | migrated |
 | Align & Stack | AS-2 | migrated; its `SetWindowSize`-after-`Begin` width never stuck and is now set before `Begin` |
 | Holes | ME-2 | migrated; category image buttons and the catalogue dropdown kept as they were |
-| Support Zones | SU-5 / SU-6 | on the palette, but carries **its own private copies** of the widgets in an anonymous namespace in `GLGizmoSupportZones.cpp` |
+| Support Zones | SU-5 / SU-6 | migrated; its four private widget copies are gone (see below) |
 
-Two follow-ups when that work happens:
+Both original follow-ups are done:
 
-1. **Consolidate the Support Zones widgets** into `GizmoStyle.hpp` and delete its private copies, so
-   there is one implementation. Left alone here deliberately: moving code out from under a
-   user-verified gizmo inside a UI task is how a verified feature gets broken. Do it as its own
-   change, with a build and the SU-5/SU-6 checklists.
-2. **`GizmoStyle.hpp`'s header comment is stale for this tree.** It names
-   `GLGizmoHeightAdaptiveEffects` and `GLGizmoPrecisionALH` as its users; those are the *fork's*
-   gizmos (the `VL-*` features we never ported). Its real users here are Support Zones and Extrude.
-   Fix the comment while migrating.
+1. **Support Zones' widgets are consolidated** (`port/SU-5-widgets`). Deleted and replaced by the shared
+   implementations: `gizmo_row_slider` (which had a *different signature* - no column, no typed field,
+   so its nine call sites go through a thin `zone_row_slider` that supplies the panel's one column),
+   `gizmo_row_toggle` (a `Checkbox` -> `gizmo_row_switch`), `gizmo_glyph_toggle` (chrome ->
+   `gizmo_icon_toggle_sized`) and `gizmo_label_col()` (-> `zone_label_w()` over the shared
+   `gizmo_label_w`). `gizmo_u()` moved into `GizmoStyle.hpp` as the fork's one font unit, and
+   `gizmo_icon_toggle` became a template so a caller can pass a capturing lambda. What stays local is
+   what is genuinely this panel's: `draw_glyph`, `fit_text`, the zone cards, `gizmo_section`,
+   `gizmo_stat_tile`, `gizmo_status_chip`, `gizmo_warn_row`, and `gizmo_glyph_button` (a button with a
+   danger tint, not a toggle - no second user yet).
+2. **`GizmoStyle.hpp`'s header comment** now names its real users in this tree.
 
 ### The icon button standard (PP-1)
 
