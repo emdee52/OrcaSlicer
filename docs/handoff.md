@@ -1511,3 +1511,37 @@ lost and there is nothing new to translate.
 - **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Merged `--no-ff` as
   `db7e763343` (user-verified in the app 2026-10-17: both glyphs read as intended, the mode switches and
   the tool still dresses an edge).
+
+
+## 32. HF-6 - the Extrude mode row as icon toggles (branch `port/extrude-mode-icons`)
+
+The Extrude panel's `Extrude face | Cavity fill` segmented control is now two icon toggles in the
+icon-button standard of section 28, with the name on hover. The two names the buttons already carried
+(`_u8L("Extrude face")` / `_u8L("Cavity fill")`) are now the button ids and the tooltips, so no string was
+added or lost. This is the third row of its kind: Holes' operations (ME-2), Edge chamfer / fillet's modes
+(EF-1b) and this one.
+
+- **The glyphs.** The same part face twice, with the feature either standing out of it or recessed into
+  it: a solid **boss** for Extrude face, a **plug flush in a slot** for Cavity fill. Both share one
+  footprint (`EXTRUDE_GLYPH_FEATURE` = 0.40 of the plate side) and one depth (`EXTRUDE_GLYPH_DEPTH` = 0.24
+  of the glyph box), mirrored about the face's top edge, so the pair reads as one thing done in two
+  directions.
+- **🔑 The face's top edge is at 0.30, not at the shared plate's 0.12.** The glyph box leaves only 12
+  units of headroom above the shared rect - 2.2 px at the real 28 px button - which is too thin for a boss
+  to read as standing *out*. Lowering the face buys the boss a 24-unit rise, and the face still reads as a
+  square (a slightly wide one).
+- **🔑 The recess is a slot outline plus a plug, not a notch in the silhouette.** A notch makes the
+  plate's outline concave, and this ImGui (1.83) has no concave fill: the plate would have to be tiled
+  from convex pieces, and two adjacent 26% fills either show a hairline of the panel between them or
+  double up into a darker seam (the me_chamfer note in GLGizmoHoles.cpp). The mockup the design was signed
+  off against dipped the plate's outline at the recess; the shipped version keeps the approved composition
+  (squat face, boss out / plug flush, one footprint, one depth) and the plate's fill, and shows the recess
+  with the slot's own stroke. Going outline-only for this pair would allow the dip, if the owner prefers
+  that look over matching the other panels' filled plates.
+- **Verification.** Build green; both glyphs captured at 3x in both states through `ui_screenshot` - the
+  boss reads as standing on the face, the plug as closed flush in its slot, and each reads beside its
+  partner. The click that switches mode is a user click-test (no synthetic-click tool); the widget is
+  `gizmo_icon_toggle`, shared with the Holes, Perforations and Edge chamfer / fillet rows. Dark theme only
+  on screen.
+- **Branch state**: on `port/extrude-mode-icons`, branched from `port/integration`. Not merged until the
+  user has tested it (section 0).
