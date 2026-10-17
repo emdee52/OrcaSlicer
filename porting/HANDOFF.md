@@ -24,7 +24,9 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`db7e763343`** "Merge port/ef-mode-icons: the Edge chamfer /
+- Latest integration commit at handoff: **`0afb593498`** "Merge port/extrude-mode-icons: the Extrude
+  mode row as two icon toggles" - the four changes of 2026-10-17 (EF-1b, HF-4, HF-5, HF-6, sections
+  29-32 of `docs/handoff.md`). Before them, **`db7e763343`** "Merge port/ef-mode-icons: the Edge chamfer /
   fillet mode row as icon toggles" (docs `bd6b965b70`), on top of **`5838d7eb6e`** "Merge
   port/gizmo-panel-width: one panel width
   in font heights" - the panel style work finished end to end: the six migrated panels, Support Zones'
@@ -129,22 +131,23 @@ is ImGui drawn into the GL canvas and nothing else can look at it.
 
 What is actually left, in priority order:
 
-0. **Three branches await your test** - all built and MCP-verified, none merged, and the local branch
-   `test/extrude-panel-preview` is exactly the three of them merged (that is the build the app was last
-   run from; it is a preview, not a merge into `port/integration`):
+0. **Today's four changes are all merged and pushed** (2026-10-17, user-tested in a preview build that
+   carried all four, all in `docs/handoff.md` sections 29-32):
+   - `port/ef-mode-icons` (EF-1b) - the Edge chamfer / fillet `Chamfer | Fillet` row is two icon toggles
+     (a face with one corner 45-degree cut / one corner radius). Merged `db7e763343`.
    - `port/extrude-distance` (HF-4) - the Extrude face **Height is now a signed Distance**: positive
      grows a solid out of the face, negative adds the same prism as a `NEGATIVE_VOLUME`, so it cuts a
-     pocket. Bounds -50..200 mm. `docs/handoff.md` section 30.
-   - `port/extrude-mode-icons` (HF-6) - the Extrude panel's `Extrude face | Cavity fill` segmented
-     control is two icon toggles (a solid boss on a face / a plug closed flush in a slot), the name on
-     hover. Section 32.
-   - `port/panel-flip-margin` (HF-5) - a fork panel now hangs to the left of its icon once it comes
-     within one icon cell of the canvas's right edge (`gizmo_panel_near_right_edge`,
-     `kGizmoPanelEdgeMargin`). Measured: the Holes panel sat 19 px from the edge and did not flip;
-     Hole walls (71 px) still does not, so one icon moves Holes only. Section 31.
-   Merged already this session: `port/ef-mode-icons` (EF-1b, the Edge chamfer / fillet mode row as icon
-   toggles, section 29). **Bookkeeping still owed at merge time**: `manifest.tsv` notes for EF-1b / HF-4 /
-   HF-5 / HF-6 and their patches.
+     pocket. Bounds -50..200 mm. Merged `51be36ff37`.
+   - `port/panel-flip-margin` (HF-5) - a fork panel hangs to the left of its icon once it comes within one
+     icon cell of the canvas's right edge (`gizmo_panel_near_right_edge`, `kGizmoPanelEdgeMargin`).
+     Measured: the Holes panel sat 19 px from the edge and did not flip; Hole walls (71 px) still does
+     not, so one icon moves Holes only. Merged `ea6751d660`.
+   - `port/extrude-mode-icons` (HF-6) - the Extrude panel's `Extrude face | Cavity fill` segmented control
+     is two icon toggles (a solid boss on a face / a plug closed flush in a slot), name on hover. Merged
+     `0afb593498`.
+   The local `test/extrude-panel-preview` branch was the four merged for one test build and is deleted.
+   Bookkeeping for all four is in (`manifest.tsv` rows/notes and patches `64`-`67`), and the patches
+   reverse-check against this tree.
 1. **Support Zones' non-empty states** are the one part of the panel-style work that is styled but
    unverified - the footprint shape row, the coverage-mode row and the editing cards only exist once a
    zone is painted, which needs a zone drawn in the app. The checklists are in `notes/SU-5.md` and

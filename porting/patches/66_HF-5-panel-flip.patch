@@ -1,0 +1,86 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+index 4554305d54..bd88c2abf7 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+@@ -1119,7 +1119,8 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
+     // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+ #if BBS_TOOLBAR_ON_TOP
+     float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+-    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
++    if (gizmo_panel_near_right_edge(x, last_input_window_width, m_parent.get_canvas_size().get_width(),
++                                    m_parent.get_gizmos_manager().get_scaled_icons_size()))
+         GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+     else
+         GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+index fc11c070c3..ed7067942a 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+@@ -977,7 +977,8 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
+     // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+ #if BBS_TOOLBAR_ON_TOP
+     float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+-    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
++    if (gizmo_panel_near_right_edge(x, last_input_window_width, m_parent.get_canvas_size().get_width(),
++                                    m_parent.get_gizmos_manager().get_scaled_icons_size()))
+         GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+     else
+         GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index ba6dabd02d..9d2a6da307 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -1690,7 +1690,8 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+     // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+ #if BBS_TOOLBAR_ON_TOP
+     float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+-    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
++    if (gizmo_panel_near_right_edge(x, last_input_window_width, m_parent.get_canvas_size().get_width(),
++                                    m_parent.get_gizmos_manager().get_scaled_icons_size()))
+         GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+     else
+         GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+index 045115aa84..c79a21c70a 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+@@ -503,7 +503,8 @@ void GLGizmoPerforation::on_render_input_window(float x, float y, float bottom_l
+     // icon. Width 0 skips the clamp, which only makes sense for a left edge.
+ #if BBS_TOOLBAR_ON_TOP
+     float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
+-    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
++    if (gizmo_panel_near_right_edge(x, last_input_window_width, m_parent.get_canvas_size().get_width(),
++                                    m_parent.get_gizmos_manager().get_scaled_icons_size()))
+         GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
+     else
+         GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+diff --git a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+index 84596b22b5..53a6b0ac95 100644
+--- a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
++++ b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+@@ -533,6 +533,25 @@ inline float gizmo_panel_width()
+     return std::max(380.f, 22.f * gizmo_u());
+ }
+ 
++// ─────────────────────────────────────────────────────────────────────────────
++// [ORCAPORT:HF-5] Where a fork panel hangs.
++//
++// A fork panel is anchored left, under its own icon. Once it would come within one icon of the canvas's
++// right edge, it is anchored at the icon's RIGHT edge instead and hangs to the left, so its right edge
++// stays under its icon and it never has to be slid along the canvas edge.
++//
++// 🔑 The margin is the point of the helper. Testing only `x + width > canvas_width` flips the panel the
++// moment it would genuinely overrun, which means it first spends a band of widths hugging the edge - the
++// state that reads as broken. One icon cell is the unit: it scales with the toolbar, so the band is the
++// same visual distance at any DPI. Raise it here and every panel that calls this moves together.
++// ─────────────────────────────────────────────────────────────────────────────
++constexpr float kGizmoPanelEdgeMargin = 1.0f; // icons
++
++inline bool gizmo_panel_near_right_edge(float panel_x, float panel_width, float canvas_width, float icon_width)
++{
++    return panel_width > 0.f && panel_x + panel_width + kGizmoPanelEdgeMargin * icon_width > canvas_width;
++}
++
+ }} // namespace Slic3r::GUI
+ 
+ #endif
