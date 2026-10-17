@@ -24,9 +24,12 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`4654027520`** "Merge port/gizmo-colors-perforation-pick: the
-  shared overlay scheme and the Perforations pick/adjust/cut rework" - the seven changes of 2026-10-17
-  (EF-1b, HF-4, HF-5, HF-6, HF-7, PP-3, PP-2; sections 29-35 of `docs/handoff.md`). Before them,
+- Latest integration commit at handoff: **`9cf2a9def0`** "Merge port/gizmo-fixes: overlay blending,
+  boolean-friendly cutters, right-click to commit, and the PP-5 detector/boolean work" - it carries the
+  nine changes of 2026-10-17 (EF-1b, HF-4..HF-7, PP-2..PP-5; sections 29-37 of `docs/handoff.md`), **two
+  of which are open bugs rather than finished work** (section 37, and item 0 below). Before them,
+  **`4654027520`** "Merge port/gizmo-colors-perforation-pick: the
+  shared overlay scheme and the Perforations pick/adjust/cut rework", on
   **`db7e763343`** "Merge port/ef-mode-icons: the Edge chamfer /
   fillet mode row as icon toggles" (docs `bd6b965b70`), on top of **`5838d7eb6e`** "Merge
   port/gizmo-panel-width: one panel width
@@ -132,10 +135,10 @@ is ImGui drawn into the GL canvas and nothing else can look at it.
 
 What is actually left, in priority order:
 
-0. **OPEN BUGS - branch `port/gizmo-fixes` (pushed, NOT merged).** Both were reported after PP-4 and
-   **neither is fixed**; `docs/handoff.md` **section 37** has the measurements, what is ruled out, and the
-   recipe for running the failing case (this tree has the unit tests OFF, and the failing case is tagged
-   `[NotWorking]`, i.e. hidden - running the suite looks green):
+0. **OPEN BUGS, NOW IN `port/integration`** (merged `9cf2a9def0` with the fixes that did not fix them;
+   `docs/handoff.md` **section 37** has the measurements, what is ruled out, and the recipe for running
+   the failing case - this tree has the unit tests OFF, and the failing case is tagged `[NotWorking]`,
+   i.e. hidden, so running the suite looks green):
    - **a teardrop tunnel is not detected by the Holes tool**, so it cannot be chamfered, resized or turned
      into a round hole. The detector has been reshaped to fit and gate on the wall faces only (verified
      clean against every other case: 288 of 289 assertions), but the teardrop is still not found. The

@@ -1,0 +1,429 @@
+diff --git a/src/libslic3r/EdgeProfiles.cpp b/src/libslic3r/EdgeProfiles.cpp
+index 6f7457b0c7..d7acf26a37 100644
+--- a/src/libslic3r/EdgeProfiles.cpp
++++ b/src/libslic3r/EdgeProfiles.cpp
+@@ -108,16 +108,17 @@ indexed_triangle_set extrude_profile(const std::vector<Vec2d> &profile, const Ve
+ }
+ 
+ indexed_triangle_set make_edge_chamfer(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
+-                                       const Vec3d &n_b, double size, double margin)
++                                       const Vec3d &n_b, double size, double margin, double side_margin)
+ {
+-    return make_edge_fillet(p0, p1, n_a, n_b, size, margin, 0);
++    return make_edge_fillet(p0, p1, n_a, n_b, size, margin, 0, side_margin);
+ }
+ 
+ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
+-                                      const Vec3d &n_b, double size, double margin, int segments)
++                                      const Vec3d &n_b, double size, double margin, int segments,
++                                      double side_margin)
+ {
+     indexed_triangle_set its;
+-    if (size <= 0. || margin < 0.)
++    if (size <= 0. || margin < 0. || side_margin < 0.)
+         return its;
+     const Vec3d  e = p1 - p0;
+     const double len = e.norm();
+@@ -129,8 +130,13 @@ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Ve
+         return its;
+     if (!face_inward_dir(w, n_b.normalized(), n_a.normalized(), v))
+         return its;
+-    const std::vector<Vec2d> profile =
++    std::vector<Vec2d> profile =
+         segments > 0 ? fillet_profile(size, segments) : chamfer_profile(size);
++    // [ORCAPORT:PP-4] Push the cross section out of both faces (see the header): the legs are coplanar
++    // with the part's faces at 0, which is what a mesh boolean leaves a sliver on.
++    if (side_margin > 0.)
++        for (Vec2d &q : profile)
++            q -= Vec2d(side_margin, side_margin);
+     return extrude_profile(profile, p0, u, v, w, -margin, len + margin);
+ }
+ 
+@@ -438,15 +444,23 @@ indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::v
+     return its;
+ }
+ 
+-indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size)
++indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size, double side_margin)
+ {
+-    return sweep_loop(loop, chamfer_profile(size));
++    std::vector<Vec2d> profile = chamfer_profile(size);
++    if (side_margin > 0.)
++        for (Vec2d &q : profile)
++            q -= Vec2d(side_margin, side_margin);
++    return sweep_loop(loop, profile);
+ }
+ 
+-indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
+-                                      int segments)
++indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size, int segments,
++                                      double side_margin)
+ {
+-    return sweep_loop(loop, fillet_profile(size, segments));
++    std::vector<Vec2d> profile = fillet_profile(size, segments);
++    if (side_margin > 0.)
++        for (Vec2d &q : profile)
++            q -= Vec2d(side_margin, side_margin);
++    return sweep_loop(loop, profile);
+ }
+ 
+ } // namespace Slic3r
+diff --git a/src/libslic3r/EdgeProfiles.hpp b/src/libslic3r/EdgeProfiles.hpp
+index c8d47ade2f..87441c58bf 100644
+--- a/src/libslic3r/EdgeProfiles.hpp
++++ b/src/libslic3r/EdgeProfiles.hpp
+@@ -32,11 +32,17 @@ indexed_triangle_set extrude_profile(const std::vector<Vec2d> &profile, const Ve
+ // normals `n_a` and `n_b`. `size` is the chamfer leg / fillet radius, measured along each face.
+ // The solid is over-extended by `margin` past both edge ends so neighbouring negatives at corners
+ // overlap and subtract cleanly. Returns an empty mesh for a degenerate edge or non-positive size.
++//
++// [ORCAPORT:PP-4] `side_margin` pushes the whole cross section OUTWARD, out of both faces. At 0 the
++// two legs of the profile lie exactly IN the part's faces, which is a coplanar face for a mesh boolean
++// and leaves the sliver that shows up in an exported mesh; a small positive value makes the cutter stand
++// a hair proud of the surface without changing the visible cut at all.
+ indexed_triangle_set make_edge_chamfer(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
+-                                       const Vec3d &n_b, double size, double margin = 0.);
++                                       const Vec3d &n_b, double size, double margin = 0.,
++                                       double side_margin = 0.);
+ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
+                                       const Vec3d &n_b, double size, double margin = 0.,
+-                                      int segments = EDGE_FILLET_SEGMENTS);
++                                      int segments = EDGE_FILLET_SEGMENTS, double side_margin = 0.);
+ 
+ // One straight run of a closed feature loop, from `p` to `q`, with `u` lying in the bordered face
+ // (pointing away from the crease) and `v` in the neighbouring face. Runs are merged along a flat
+@@ -74,10 +80,11 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(
+ indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile);
+ 
+ // Chamfer / fillet ring around a closed loop; `size` is the chamfer leg / fillet radius, as for
+-// a straight edge. Returns an empty mesh for a degenerate loop or non-positive size.
+-indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size);
++// a straight edge. `side_margin` is the same outward push as on a straight edge (PP-4).
++indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size,
++                                       double side_margin = 0.);
+ indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
+-                                      int segments = EDGE_FILLET_SEGMENTS);
++                                      int segments = EDGE_FILLET_SEGMENTS, double side_margin = 0.);
+ 
+ } // namespace Slic3r
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+index a50e3d033c..ff0d2b5030 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+@@ -742,6 +742,11 @@ void GLGizmoCounterboreBridge::gizmo_refresh()
+ bool GLGizmoCounterboreBridge::on_mouse(const wxMouseEvent &mouse_event)
+ {
+     if (m_strengthen) {
++        // [ORCAPORT:PP-4] Right-click is the Done key, like the panel's Done button.
++        if (mouse_event.RightDown()) {
++            m_parent.reset_all_gizmos();
++            return true;
++        }
+         const bool on_hole = m_hover_id >= 0 && m_hover_id < int(m_holes.size());
+         if (mouse_event.LeftDown() && on_hole) {
+             gizmo_toggle_hole(m_hover_id);
+@@ -824,7 +829,9 @@ void GLGizmoCounterboreBridge::on_render()
+     glsafe(::glDepthMask(GL_TRUE));
+     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
+     glsafe(::glDisable(GL_DEPTH_TEST));
+-    glsafe(::glDisable(GL_CULL_FACE));
++    // Culling stays ON: the counterbore/ring previews are closed volumes, and drawing their back walls
++    // too blends every surface twice (an applied ring then reads as solid paint).
++    glsafe(::glEnable(GL_CULL_FACE));
+     glsafe(::glEnable(GL_BLEND));
+ 
+     m_preview_avail.model.render(shader);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+index afaca5ccba..c1b4cef987 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+@@ -3163,7 +3163,7 @@ void GLGizmoCut3D::set_active_snap_marker(const FaceSnapPoint& p)
+     indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
+     its_translate(sphere, p.pos.cast<float>());
+     m_snap_marker_active.init_from(sphere);
+-    m_snap_marker_active.set_color(ColorRGBA(0.0f, 1.0f, 0.0f, 1.0f));
++    m_snap_marker_active.set_color(gizmo_proposed_colour()); // the same active-marker colour as Holes (PP-4)
+ }
+ 
+ // Drawn while Alt is held; depth test is off so the surface and the lifted patch cannot hide them.
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+index 14703766e1..e01e8398c7 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+@@ -587,9 +587,12 @@ indexed_triangle_set GLGizmoEdgeDress::mesh_for_loop(const std::vector<LoopFrame
+         return indexed_triangle_set();
+ 
+     const double size = std::max(0.01, m_size / object_scale());
++    // The same outward push as a straight edge (PP-4): a loop has no ends, but its profile still lies
++    // in the two faces.
++    const double side = std::max(0.05, 0.05 * size);
+     if (m_mode == EdgeDressMode::Fillet)
+-        return make_loop_fillet(loop, size);
+-    return make_loop_chamfer(loop, size);
++        return make_loop_fillet(loop, size, EDGE_FILLET_SEGMENTS, side);
++    return make_loop_chamfer(loop, size, side);
+ }
+ 
+ const std::vector<std::vector<LoopFrame>> &GLGizmoEdgeDress::loops_for_facet(const ModelVolume *mv, int facet) const
+@@ -609,11 +612,19 @@ indexed_triangle_set GLGizmoEdgeDress::mesh_for_edge(const HoverEdge &edge) cons
+     if (!edge.valid)
+         return indexed_triangle_set();
+ 
+-    const double size   = std::max(0.01, m_size / object_scale());
+-    const double margin = 0.5 * size;
++    const double size = std::max(0.01, m_size / object_scale());
++    // [ORCAPORT:PP-4] TWO different margins, and the difference matters:
++    //   `side` pushes the cross section out of both faces, so the cutter stands a hair proud of the
++    //     surface and a mesh boolean has no coplanar face to leave a sliver on. It changes nothing
++    //     visible - the cut is still bounded by the faces.
++    //   `end` extends past both ends of the edge, which is only there so neighbouring negatives at a
++    //     corner overlap. It used to be 0.5 * size, which ran the cut visibly past the end of the
++    //     picked edge as if there were solid there, so it is a hair now.
++    const double side = std::max(0.05, 0.05 * size);
++    const double end  = std::max(0.02, 0.02 * size);
+     if (m_mode == EdgeDressMode::Fillet)
+-        return make_edge_fillet(edge.p0, edge.p1, edge.n_a, edge.n_b, size, margin);
+-    return make_edge_chamfer(edge.p0, edge.p1, edge.n_a, edge.n_b, size, margin);
++        return make_edge_fillet(edge.p0, edge.p1, edge.n_a, edge.n_b, size, end, EDGE_FILLET_SEGMENTS, side);
++    return make_edge_chamfer(edge.p0, edge.p1, edge.n_a, edge.n_b, size, end, side);
+ }
+ 
+ // Enumerate the manifold edges of the first model part in object space, deduplicated and in mesh
+@@ -1074,7 +1085,9 @@ void GLGizmoEdgeDress::on_render()
+     glsafe(::glDepthMask(GL_TRUE));
+     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
+     glsafe(::glDisable(GL_DEPTH_TEST));
+-    glsafe(::glDisable(GL_CULL_FACE));
++    // Culling stays ON: the prisms are closed volumes, and drawing their back walls too blends every
++    // surface twice (an applied feature then reads as solid paint instead of a wash).
++    glsafe(::glEnable(GL_CULL_FACE));
+     glsafe(::glEnable(GL_BLEND));
+ 
+     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+index e3971437d7..d280dfe6ad 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+@@ -996,7 +996,9 @@ void GLGizmoExtrude::on_render()
+     glsafe(::glDepthMask(GL_TRUE));
+     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
+     glsafe(::glDisable(GL_DEPTH_TEST));
+-    glsafe(::glDisable(GL_CULL_FACE));
++    // Culling stays ON: these are closed volumes, and drawing their back walls too blends every
++    // surface twice (the applied red measured 0.80 instead of 0.55).
++    glsafe(::glEnable(GL_CULL_FACE));
+     glsafe(::glEnable(GL_BLEND));
+ 
+     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
+@@ -1022,18 +1024,21 @@ bool GLGizmoExtrude::on_mouse(const wxMouseEvent &mouse_event)
+     if (get_state() != On)
+         return false;
+     if (mouse_event.RightDown()) {
+-        // [ORCAPORT:HF-3] Extrude face: right-click drops the pick. Cavity fill: it removes the plug
+-        // the cursor is on, like the hole gizmo removes a hole.
++        // [ORCAPORT:PP-4] Extrude face: right-click CONFIRMS the picked face, the same as the panel's
++        // Extrude button (Esc is what drops the pick now). Cavity fill keeps removing the plug under the
++        // cursor, like the hole gizmo removes a hole.
+         if (m_mode == Mode::ExtrudeFace) {
+-            clear_pick();
++            if (! m_pick.valid)
++                return false; // nothing to confirm: let the canvas have the click
++            create_from_pick();
++            m_parent.request_extra_frame();
+             return true;
+         }
+         gizmo_hover_at(m_parent.get_local_mouse_position());
+         return gizmo_remove_hovered();
+     }
+     // [ORCAPORT:HF-3] Extrude face: a click PICKS the face, it does not extrude. Distance/Offset are
+-    // dialled in against the preview and the panel's Extrude button commits. Right-click drops the
+-    // pick instead of removing a fill.
++    // dialled in against the preview and the panel's Extrude button (or right-click) commits.
+     if (m_mode == Mode::ExtrudeFace) {
+         if (! mouse_event.LeftUp())
+             return false;
+@@ -1160,7 +1165,7 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
+ 
+         // Nothing picked, a pick that cannot be extruded, or go.
+         if (! m_pick.valid) {
+-            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the distance and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
++            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the distance and the offset and press Extrude (or right-click). Esc drops the pick.").c_str());
+         } else if (! m_pick_why.empty()) {
+             gizmo_hint(m_pick_why.c_str(), GizmoCol::Warn);
+         }
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index 98b9433d2d..8e00085114 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -457,6 +457,19 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
+             else if (m_head == BoreHead::Countersink && s->csink_d > d)
+                 its = its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir_w, entry_w);
+         }
++        // [ORCAPORT:PP-4] A screw teardrop is a SUPERSET of the round bore (a round tunnel with a sloped
++        // roof), so it IS the shaft's cross-section - it must not be merged INTO a round bore as well.
++        // Merging the two left one volume holding two overlapping closed shells: the gizmo blended both
++        // of them (an applied teardrop read as solid red instead of a wash) and the pair is
++        // self-intersecting input for Mesh boolean, which is why a teardrop subtraction failed where a
++        // plain bore's worked. A vertical hole has no up direction, so the prism comes back empty and
++        // the shaft stays round.
++        if (m_category == HoleCategory::Screw && m_screw_teardrop && its.indices.empty()) {
++            indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir_w, entry_w,
++                                                                 Vec3d::UnitZ());
++            if (! shaft.indices.empty())
++                its = std::move(shaft);
++        }
+         if (its.indices.empty()) {
+             double bore_depth = depth;
+             if (m_category == HoleCategory::Magnet)
+@@ -464,22 +477,18 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
+             its = its_make_bore(d, bore_depth, dir_w, entry_w);
+         }
+ 
+-        // Screw teardrop: widen the clearance bore's cross-section to a teardrop so the top of a
+-        // horizontal hole is a sloped roof, not a flat overhang. It is a superset of the round bore,
+-        // so merging it leaves the shaft round below and teardropped above. A counterbore head stays
+-        // round unless the user asks for it too; a vertical hole has no up direction and gets
+-        // nothing.
+-        if (m_screw_teardrop) {
+-            indexed_triangle_set shaft = its_make_teardrop_prism(0.5 * d, depth, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
+-            if (!shaft.indices.empty())
+-                its_merge(its, shaft);
+-
++        // A counterbore head stays round unless the user asks for it too.
++        if (m_category == HoleCategory::Screw && m_screw_teardrop) {
+             const bool cbore_head = s != nullptr &&
+                                     ((m_head == BoreHead::SocketHead && s->socket_d > d) ||
+                                      (m_head == BoreHead::ButtonHead && s->button_d > d));
+             if (m_screw_teardrop_head && cbore_head) {
+                 const double head_d = m_head == BoreHead::SocketHead ? s->socket_d : s->button_d;
+                 const double head_k = (m_head == BoreHead::SocketHead ? s->socket_k : s->button_k) + sink;
++                // ⚠️ The head's teardrop is still MERGED into the stepped bore rather than replacing the
++                // head's own section, so a head teardrop keeps one extra overlapping shell over the head
++                // (PP-4 fixes the shaft, which is the common case). Doing the head properly needs a
++                // stepped section builder, not a merge.
+                 indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
+                 if (!head.indices.empty())
+                     its_merge(its, head);
+@@ -824,7 +833,11 @@ void GLGizmoHoles::on_render()
+     glsafe(::glDepthMask(GL_TRUE));
+     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
+     glsafe(::glDisable(GL_DEPTH_TEST));
+-    glsafe(::glDisable(GL_CULL_FACE));
++    // 🔑 Culling stays ON for this pass. These previews are CLOSED volumes drawn with blending and no
++    // depth test, so with back faces drawn too each surface was blended twice and the applied red read
++    // as (246,73,73) - a single 0.55 pass over the same face measures (234,115,115). Only the walls
++    // facing the camera should count.
++    glsafe(::glEnable(GL_CULL_FACE));
+     glsafe(::glEnable(GL_BLEND));
+ 
+     const Camera   &camera = wxGetApp().plater()->get_camera();
+@@ -945,11 +958,18 @@ DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outwar
+         if (d > 0.)
+             depth = d;
+     }
++    // [ORCAPORT:PP-4] The cutter starts a hair OUTSIDE the surface instead of exactly in it, and `depth`
++    // is measured from the face. With its entry cap coplanar with the picked face, a mesh boolean has a
++    // coplanar pair to leave a sliver on - the "the hole is through, but there is still a skin on one
++    // side" that shows up in an exported mesh while the slicer silently discards it. The overshoot is
++    // invisible: a negative volume is intersected with the part at slice time either way.
++    const double entry    = std::max(0.2, 0.1 * d_obj);
++    const Vec3d  entry_pt = hit_world - dir * entry;
+ 
+     DetectedHole h;
+     h.axis    = dir;
+-    h.center  = hit_world + dir * (0.5 * depth);
+-    h.depth   = depth;
++    h.center  = entry_pt + dir * (0.5 * (depth + entry));
++    h.depth   = depth + entry;
+     h.radius  = 0.5 * d_obj;
+     h.through = m_through;
+     return h;
+@@ -1174,7 +1194,7 @@ void GLGizmoHoles::set_active_snap_marker(const FaceSnapPoint &p)
+     indexed_triangle_set sphere = its_make_sphere(m_snap_radius * 1.4, PI / 12.0);
+     its_translate(sphere, p.pos.cast<float>());
+     m_snap_marker_active.init_from(sphere);
+-    m_snap_marker_active.set_color(HOVER_COLOR);
++    m_snap_marker_active.set_color(gizmo_proposed_colour());
+ }
+ 
+ // Draws the marker spheres of the session face while Alt is held. Depth test is off so the surface
+@@ -1654,16 +1674,22 @@ void GLGizmoHoles::gizmo_refresh()
+ 
+ bool GLGizmoHoles::on_mouse(const wxMouseEvent &mouse_event)
+ {
++    // [ORCAPORT:PP-4] Right-click is the Done key: it closes the tool, exactly like the panel's Done
++    // button. While placing on a face it keeps cancelling the mode instead, so one key never traps the
++    // user in a mode they cannot leave.
++    if (mouse_event.RightDown()) {
++        if (m_place_face_mode) {
++            exit_place_face_mode();
++            m_parent.set_as_dirty();
++        } else
++            m_parent.reset_all_gizmos();
++        return true;
++    }
+     if (m_place_face_mode) {
+         if (mouse_event.LeftDown()) {
+             place_face_at(m_parent.get_local_mouse_position());
+             return true;
+         }
+-        if (mouse_event.RightDown()) {
+-            exit_place_face_mode();
+-            m_parent.set_as_dirty();
+-            return true;
+-        }
+         return false;
+     }
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+index 40cec723b8..050542a2ad 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
+@@ -143,8 +143,8 @@ bool GLGizmoPerforation::on_init()
+     m_desc["angle"]      = _L("Angle");
+     m_desc["invert"]     = _L("Invert (grooves)");
+     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
+-    m_desc["click_hint"] = _L("Click a flat face to pick it, adjust the pattern, then press Perforate.");
+-    m_desc["drop_hint"]  = _L("Right-click or Esc drops the pick.");
++    m_desc["click_hint"] = _L("Click a flat face to pick it, adjust the pattern, then press Perforate (or right-click).");
++    m_desc["drop_hint"]  = _L("Esc drops the pick.");
+     m_desc["perforate"]  = _L("Perforate");
+     m_desc["applied"]    = _L("Perforated");
+     m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
+@@ -598,17 +598,20 @@ void GLGizmoPerforation::add_pattern_volume(const indexed_triangle_set &prism)
+ 
+ bool GLGizmoPerforation::on_mouse(const wxMouseEvent &mouse_event)
+ {
+-    // [ORCAPORT:PP-2] A click PICKS the face; nothing is cut until the panel's Perforate button.
+-    // Right-click drops the pick, the same way Extrude does. A click that misses the object is not
+-    // swallowed, so it still reaches the canvas.
++    // [ORCAPORT:PP-4] Right-click CONFIRMS: it cuts the picked pattern, the same as the panel's
++    // Perforate button. Esc is what drops the pick. A right-click with nothing picked is left to the
++    // canvas.
+     if (mouse_event.RightDown()) {
+         if (! m_pick.valid)
+             return false;
+-        clear_pick();
++        create_from_pick();
++        m_parent.request_extra_frame();
+         return true;
+     }
+     if (! mouse_event.LeftDown())
+         return false;
++    // A click PICKS the face; nothing is cut until Perforate or a right-click. Swallow the click only
++    // when it landed on a face, so a click on empty space still falls through to the canvas.
+     pick_at(m_parent.get_local_mouse_position());
+     return m_pick.valid;
+ }
+@@ -643,7 +646,9 @@ void GLGizmoPerforation::on_render()
+     // a strict test would reject the overlay and the red would never be seen. LEQUAL lets the overlay
+     // win against its own volume while geometry genuinely in front still occludes it.
+     glsafe(::glDepthFunc(GL_LEQUAL));
+-    glsafe(::glDisable(GL_CULL_FACE));
++    // Culling stays ON: the patterns are closed prisms and the patches come from the volume's own
++    // (outward-wound) triangles, so only the surfaces facing the camera should blend.
++    glsafe(::glEnable(GL_CULL_FACE));
+     glsafe(::glEnable(GL_BLEND));
+     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+ 

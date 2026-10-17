@@ -1775,8 +1775,8 @@ Six things the owner reported after living with PP-2/PP-3, and what each turned 
 - **Test status**: the `[EdgeProfiles]` side-margin case **passes**, and so do all 19 pre-existing
   `[HoleDetector]`/`[EdgeProfiles]` cases with the PP-5 detector change in place (288 of 289 assertions).
   The new teardrop case **fails and is marked `[NotWorking]`**, deliberately: see section 37.
-- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Not merged until the user has
-  tested it (section 0).
+- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Merged `--no-ff` as
+  `9cf2a9def0` (user-confirmed in the app: right-click works, both sliver reports are gone).
 
 
 ## 37. PP-5 - a teardrop hole is invisible to the Holes tool, and Mesh boolean stops working after a boolean
@@ -1871,4 +1871,6 @@ cmake -B build -DBUILD_TESTS=OFF      # put the tree back the way the build scri
 - Tag a case `[NotWorking]` while it is knowingly red, and say why in a comment above it - a hidden case
   is invisible to `ctest`, which is why this section exists at all.
 
-- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Not merged.
+- **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Merged `--no-ff` as
+  `9cf2a9def0` - **with both bugs still open**, which is deliberate: the reshaping and the identity fix go
+  in, the two defects do not. They are the next session's job; `porting/HANDOFF.md` opens with them.
