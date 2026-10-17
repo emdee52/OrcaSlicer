@@ -151,27 +151,58 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
 
         // The cylinder axis is the direction in which the wall normals vary least: the
         // normals of a cylinder lie on a great circle in the plane perpendicular to the axis.
-        Eigen::Vector3d mean_n = Eigen::Vector3d::Zero();
-        for (int f : patch) {
-            const Vec3f &n = normals[f];
-            mean_n += Eigen::Vector3d(n(0), n(1), n(2));
-        }
-        mean_n /= double(patch.size());
+        //
+        // [ORCAPORT:PP-5] Two passes, because a teardrop's patch is not a pure wall: its roof's normals
+        // are not on that great circle, and they both tilt the fitted axis and inflate the out-of-plane
+        // eigenvalue that the cylinder test below looks at. A teardrop therefore never got past this
+        // point, which is why the tool could not see one it had just cut. Pass one gives a seed axis;
+        // the faces whose normal is (near) perpendicular to it are the wall; pass two fits the axis -
+        // and applies the gates - on those alone.
+        std::vector<int> wall = patch;
+        Vec3d            axis;
+        bool             cylinder = false;
+        for (int pass = 0; pass < 2; ++pass) {
+            Eigen::Vector3d mean_n = Eigen::Vector3d::Zero();
+            for (int f : wall) {
+                const Vec3f &n = normals[f];
+                mean_n += Eigen::Vector3d(n(0), n(1), n(2));
+            }
+            mean_n /= double(wall.size());
 
-        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-        for (int f : patch) {
-            const Vec3f    &n = normals[f];
-            Eigen::Vector3d d(n(0) - mean_n(0), n(1) - mean_n(1), n(2) - mean_n(2));
-            cov.noalias() += d * d.transpose();
+            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+            for (int f : wall) {
+                const Vec3f    &n = normals[f];
+                Eigen::Vector3d d(n(0) - mean_n(0), n(1) - mean_n(1), n(2) - mean_n(2));
+                cov.noalias() += d * d.transpose();
+            }
+            const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+            const Eigen::Vector3d evals = eig.eigenvalues();
+            axis = Vec3d(eig.eigenvectors()(0, 0), eig.eigenvectors()(1, 0), eig.eigenvectors()(2, 0));
+
+            if (pass == 0) {
+                // A wall normal is perpendicular to the axis; a roof normal has a real component along
+                // it. 0.5 (60 degrees off perpendicular) separates them with room to spare, and the
+                // gates in the second pass validate whatever it keeps.
+                std::vector<int> kept;
+                kept.reserve(wall.size());
+                for (const int f : wall) {
+                    const Vec3f &n = normals[f];
+                    if (std::abs(double(n(0)) * axis(0) + double(n(1)) * axis(1) + double(n(2)) * axis(2)) <= 0.5)
+                        kept.push_back(f);
+                }
+                if (int(kept.size()) >= params.min_facets && kept.size() < wall.size()) {
+                    wall = std::move(kept);
+                    continue; // refit the axis, and gate, on the wall alone
+                }
+            } else {
+                // eigenvalues() is ascending. A cylinder needs curvature (largest two eigenvalues
+                // non-zero and comparable) and planarity of the normal distribution (smallest much
+                // smaller). This rejects flat patches (no curvature) and spheres (isotropic normals).
+                cylinder = evals(2) >= 1e-12 && evals(1) >= 0.25 * evals(2) && evals(0) <= 0.25 * evals(1);
+            }
         }
-        const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
-        // eigenvalues() is ascending. A cylinder needs curvature (largest two eigenvalues
-        // non-zero and comparable) and planarity of the normal distribution (smallest much
-        // smaller). This rejects flat patches (no curvature) and spheres (isotropic normals).
-        const Eigen::Vector3d evals = eig.eigenvalues();
-        if (evals(2) < 1e-12 || evals(1) < 0.25 * evals(2) || evals(0) > 0.25 * evals(1))
+        if (! cylinder)
             continue;
-        const Vec3d   axis(eig.eigenvectors()(0, 0), eig.eigenvectors()(1, 0), eig.eigenvectors()(2, 0));
         const AxisFrame frame = make_frame(axis);
 
         // Project the wall vertices onto the plane perpendicular to the axis and fit a circle.
@@ -180,7 +211,7 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
         std::vector<Vec2d> pts;
         double             t_min = std::numeric_limits<double>::max();
         double             t_max = -std::numeric_limits<double>::max();
-        for (int f : patch) {
+        for (int f : wall) {
             for (int k = 0; k < 3; ++k) {
                 const int v = its.indices[f][k];
                 if (vertex_stamp[v] == stamp)
@@ -201,16 +232,58 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             continue;
         if (r < params.min_radius || r > params.max_radius)
             continue;
+
+        // [ORCAPORT:PP-5] One refinement left: the axis wall set can still hold a face or two whose
+        // vertices sit off the circle (the arc meets the roof tangentially, so a shared segment can
+        // belong to either side). A face is an inlier when its centroid sits on the fitted circle, and
+        // the fit is then redone on those. For a round hole every face qualifies and nothing changes.
+        std::vector<int> inliers;
+        inliers.reserve(wall.size());
+        for (const int f : wall) {
+            const auto  &tri = its.indices[f];
+            const Vec3d  c = (its.vertices[tri[0]].cast<double>() + its.vertices[tri[1]].cast<double>() +
+                              its.vertices[tri[2]].cast<double>()) / 3.;
+            const double u = c(0) * frame.e1(0) + c(1) * frame.e1(1) + c(2) * frame.e1(2) - cu;
+            const double v = c(0) * frame.e2(0) + c(1) * frame.e2(1) + c(2) * frame.e2(2) - cv;
+            // A first pass only has to separate wall from roof: the seed fit is biased by the roof, so
+            // the band is generous here and the tight `radial_tolerance` is applied to the refit below.
+            if (std::abs(std::hypot(u, v) - r) <= 0.25 * r)
+                inliers.push_back(f);
+        }
+        if (inliers.empty())
+            continue;
+
+        std::vector<Vec2d> inlier_pts;
+        inlier_pts.reserve(inliers.size() * 3);
+        for (const int f : inliers)
+            for (int k = 0; k < 3; ++k) {
+                const Vec3f &p = its.vertices[its.indices[f][k]];
+                inlier_pts.emplace_back(p(0) * frame.e1(0) + p(1) * frame.e1(1) + p(2) * frame.e1(2),
+                                        p(0) * frame.e2(0) + p(1) * frame.e2(1) + p(2) * frame.e2(2));
+            }
+
+        if (inliers.size() < wall.size()) {
+            double cu2 = 0., cv2 = 0., r2 = 0., residual2 = 0.;
+            if (!fit_circle(inlier_pts, cu2, cv2, r2, residual2))
+                continue;
+            cu       = cu2;
+            cv       = cv2;
+            r        = r2;
+            residual = residual2;
+            if (r < params.min_radius || r > params.max_radius)
+                continue;
+        }
         if (residual > params.radial_tolerance * r)
             continue;
         const double depth = t_max - t_min;
         if (depth < 1e-6)
             continue;
 
-        // The wall must wrap around the axis: find the largest empty angular sector.
+        // The wall must wrap around the axis: find the largest empty angular sector. Measured on the
+        // wall faces, so a roof cannot make the coverage look complete where there is no wall.
         std::vector<double> angles;
-        angles.reserve(pts.size());
-        for (const Vec2d &p : pts)
+        angles.reserve(inlier_pts.size());
+        for (const Vec2d &p : inlier_pts)
             angles.push_back(std::atan2(p(1) - cv, p(0) - cu));
         std::sort(angles.begin(), angles.end());
         double max_gap = 0.;
@@ -225,8 +298,9 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
         // A hole is a cavity: the solid lies outside the wall, so the outward face normals point
         // TOWARD the axis. On a convex surface (a solid cylinder, or the outside of a boss) they
         // point AWAY from it. The circle fit alone cannot tell the two apart, so reject the latter.
+        // Wall faces only, for the same reason as the fit above.
         double radial_dot = 0.;
-        for (int f : patch) {
+        for (const int f : inliers) {
             const Vec3f &n = normals[f];
             const auto  &tri = its.indices[f];
             const Vec3d  c = (its.vertices[tri[0]].cast<double>() + its.vertices[tri[1]].cast<double>() +
@@ -239,7 +313,7 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             const Vec3d radial = (frame.e1 * u + frame.e2 * v) / d;
             radial_dot += n(0) * radial(0) + n(1) * radial(1) + n(2) * radial(2);
         }
-        if (radial_dot / double(patch.size()) > 0.5)
+        if (radial_dot / double(inliers.size()) > 0.5)
             continue;
 
         const double t_mid = 0.5 * (t_min + t_max);

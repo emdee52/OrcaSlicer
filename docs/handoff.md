@@ -1772,9 +1772,59 @@ Six things the owner reported after living with PP-2/PP-3, and what each turned 
   as Perforate. **Esc** is what drops a pick in those two now, and the hints say so.
 - **Consistency**: the Cut tool's active snap marker was hardcoded opaque green while Holes' follows the
   scheme; both are the proposal colour now.
-- **Test status**: the new `[EdgeProfiles]` case is written but **not run** - this build tree has the test
-  targets off (`libslic3r_tests` is not in `build/`), so running it needs a `build_win.bat -ds
-  --run-tests` tree or a reconfigure. The arithmetic it asserts was checked against the sampler's
-  coordinates by hand.
+- **Test status**: the `[EdgeProfiles]` side-margin case **passes**, and so do all 19 pre-existing
+  `[HoleDetector]`/`[EdgeProfiles]` cases with the PP-5 detector change in place (288 of 289 assertions).
+  The new teardrop case **fails and is marked `[NotWorking]`**, deliberately: see section 38.
 - **Branch state**: on `port/gizmo-fixes`, branched from `port/integration`. Not merged until the user has
   tested it (section 0).
+
+
+## 38. PP-5 - a teardrop hole is invisible to the Holes tool, and the Mesh-boolean follow-up
+
+Two bugs reported after PP-4. **Neither is fixed yet**; what is here is the mechanism work, so the next
+session does not repeat it.
+
+### A teardrop tunnel is not detected at all (no chamfer, no resize, no conversion to a round hole)
+
+- The patch that grows around a teardrop tunnel contains its **roof** as well as its round wall (the arc
+  and the roof meet tangentially, so they are one smooth patch). The roof then poisons every geometric
+  gate the detector has:
+  1. **the axis fit** - a PCA over the patch normals: the roof's normals do not lie on the wall's great
+     circle, so they tilt the fitted axis *and* inflate the out-of-plane eigenvalue that
+     `evals(0) <= 0.25 * evals(1)` rejects;
+  2. the **circle residual** (`residual > radial_tolerance * r`), because the roof's vertices sit outside
+     the circle;
+  3. the **angular coverage** and
+  4. the **convexity average** (`radial_dot / patch.size() > 0.5`), because the roof's normals face
+     outward.
+- **What is in now**: the axis fit runs twice - a seed PCA over the patch, then, on the faces whose normal
+  is (near) perpendicular to that seed axis (|n·axis| <= 0.5 is wall, a roof is not), the PCA that is
+  actually gated; and the circle fit, the coverage and the convexity average run on the faces whose
+  centroid sits on the fitted circle, with the circle refit on those. A round hole qualifies every face,
+  so nothing about it changes - which the suite confirms (288 of 289 assertions, all 19 pre-existing
+  cases).
+- **What is left**: with all four addressed the teardrop is *still* not detected, so a further gate drops
+  the patch. The next step is to instrument `detect_holes` to log which `continue` fires for a patch that
+  contains a teardrop wall (the fixture to use is already in `tests/libslic3r/test_holedetector.cpp`, a
+  `its_make_teardrop_prism` tunnel flipped so its normals point at the axis, tagged `[NotWorking]` until
+  it passes).
+
+### Mesh boolean of a perforation does nothing once another negative has been booleaned in
+
+- Reported: on a clean object a perforation subtraction works and the exported mesh has the perforation;
+  after an earlier Mesh boolean (an edge fillet, a place-on-face hole) a perforation subtraction does
+  nothing at all.
+- **Not diagnosed.** What the code shows, for whoever picks it up:
+  - `GLGizmoMeshBoolean` picks its two volumes by raycasting the mesh under the cursor on open and stores
+    **indices** (`m_src.volume_idx`, `m_tool.volume_idx`) plus each volume's matrix;
+  - `generate_new_volume` then adds the result, swaps it into `m_src.volume_idx`, deletes the last volume
+    and finally deletes `m_tool.volume_idx` **as it was before the swap** - so every index past the
+    deleted slot has shifted by the time that last line runs;
+  - the empty-result path is already safe (a warning, no deletion), so the failure is not "mcut returned
+    nothing" - it is that the wrong pair, or a wrong index, reaches it.
+- The discriminating datum is one the user can see in a second and I cannot: after the failed run, is the
+  perforation volume still in the ObjectList, and is there a new "… - difference" volume? If the
+  perforation is gone with no new volume, the deletion is the bug; if both are gone, the source (the
+  earlier result) was consumed instead. Instrumenting `generate_new_volume` with the two names, the two
+  indices and the result's triangle count, then repeating the two-boolean sequence, settles it.
+- **Branch state**: same branch, `port/gizmo-fixes`. Not merged.
