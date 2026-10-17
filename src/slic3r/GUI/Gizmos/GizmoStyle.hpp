@@ -20,6 +20,7 @@
 
 #include <imgui/imgui.h>
 
+#include "libslic3r/Color.hpp" // ColorRGBA: the 3D overlay scheme at the bottom of this header
 #include "slic3r/GUI/GUI_App.hpp"
 
 namespace Slic3r { namespace GUI {
@@ -551,6 +552,29 @@ inline bool gizmo_panel_near_right_edge(float panel_x, float panel_width, float 
 {
     return panel_width > 0.f && panel_x + panel_width + kGizmoPanelEdgeMargin * icon_width > canvas_width;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [ORCAPORT:PP-2] THE 3D OVERLAY SCHEME. One meaning per colour, in every fork gizmo that draws a
+// preview or an already-committed volume on the part:
+//
+//   surface   teal    the surface the cursor is POINTING AT (not clicked)
+//   picked    green   what you CLICKED - the thing the panel's action will act on
+//   proposed  yellow  the geometry the current panel values would add or cut, before you commit
+//   cut       red     committed material REMOVED (every NEGATIVE_VOLUME this fork's gizmos add)
+//   added     green   committed material ADDED (a positive volume or a parameter modifier)
+//
+// 🔑 All of them are TRANSLUCENT (0.55). At 0.80 an overlay over the part read as solid paint and hid
+// what was underneath it; the point of these overlays is to show WHERE, not to hide the part.
+//
+// 🔑 "Pointing at" and "picked" must never read the same: a hovered surface is teal, and only a click
+// turns a surface green. Candidate/available hints (the ones you have neither hovered nor picked) stay
+// blue, and the WHITE/other gizmo-specific colours of the upstream tools are not part of this scheme.
+// ─────────────────────────────────────────────────────────────────────────────
+inline ColorRGBA gizmo_surface_colour()  { return ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f); }
+inline ColorRGBA gizmo_picked_colour()   { return ColorRGBA(0.16f, 0.85f, 0.30f, 0.55f); }
+inline ColorRGBA gizmo_proposed_colour() { return ColorRGBA(1.00f, 0.55f, 0.00f, 0.55f); }
+inline ColorRGBA gizmo_cut_colour()      { return ColorRGBA(1.00f, 0.15f, 0.15f, 0.55f); }
+inline ColorRGBA gizmo_added_colour()    { return ColorRGBA(0.16f, 0.85f, 0.30f, 0.55f); }
 
 }} // namespace Slic3r::GUI
 

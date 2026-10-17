@@ -707,7 +707,7 @@ void GLGizmoAlignStack::render_face_highlights()
         if (m_mate_hover_facet != m_mate_hover_model_facet) {
             if (m_mate_hover_facet >= 0)
                 build_mesh_face_model(m_src_mesh, m_src_normals, m_src_neighbors, m_mate_hover_model,
-                                      m_mate_hover_facet, ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+                                      m_mate_hover_facet, gizmo_surface_colour());
             else
                 m_mate_hover_model.reset();
             m_mate_hover_model_facet = m_mate_hover_facet;

@@ -103,9 +103,13 @@ constexpr double HORIZONTAL_COS = 0.5;
 constexpr double FACE_LEAVE_GRACE_SEC = 0.35;
 constexpr float        ANGLE_MIN = 45.f;
 constexpr float        ANGLE_MAX = 60.f;
+// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp): the feature under the
+// cursor is what you would apply, so it is yellow like every other fork gizmo's proposal; a committed
+// feature is a NEGATIVE volume here, so it is the scheme's cut red. Candidates stay blue.
+// `ALL_COLOR` is the candidate set (blue), `HOVER_COLOR` the feature under the cursor (yellow).
 const ColorRGBA        ALL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};      // candidate
-const ColorRGBA        APPLIED_COLOR{1.00f, 0.15f, 0.15f, 0.80f};   // applied
-const ColorRGBA        HOVER_COLOR{0.10f, 1.00f, 0.20f, 0.90f};     // hover
+const ColorRGBA        APPLIED_COLOR = gizmo_cut_colour();         // applied: always a cut here
+const ColorRGBA        HOVER_COLOR   = gizmo_proposed_colour();    // under the cursor: would apply
 
 void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
 {
@@ -1082,7 +1086,7 @@ void GLGizmoHoles::build_face_highlight(const ModelVolume *mv, size_t facet)
     if (patch.indices.empty())
         return;
     m_face_highlight.init_from(patch);
-    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+    m_face_highlight.set_color(gizmo_surface_colour());
 }
 
 void GLGizmoHoles::render_face_highlight()

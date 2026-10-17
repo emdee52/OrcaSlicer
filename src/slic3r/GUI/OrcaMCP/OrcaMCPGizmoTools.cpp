@@ -764,19 +764,23 @@ void OrcaMCPServer::register_gizmo_tools()
         }
     });
 
-    // [ORCAPORT:PP-1]
+    // [ORCAPORT:PP-1] [ORCAPORT:PP-2]
     register_tool({
         "perforation_gizmo",
         "Control the Perforations tool: stamp a 2D pattern (lines/grid/honeycomb/circles) "
         "into a picked planar face and add it as one negative volume, cut through the local wall. "
-        "Actions: 'open' (activate; selects the object if needed), 'status' (current parameters), "
-        "'set_params' (any of pattern, angle, spacing, width, boundary, invert), "
-        "'hover_face' (report the facet and coplanar-region size under screen_x/screen_y), "
-        "'apply' (perforate the face under screen_x/screen_y, or the viewport centre), 'close'.",
+        "The flow is pick -> adjust -> cut: 'pick_at' selects the face (nothing is cut yet), the "
+        "parameters reshape a live preview on it, and 'create' commits the pattern. "
+        "Actions: 'open' (activate; selects the object if needed), 'status' (current parameters, "
+        "pick_valid and applied_count), 'set_params' (any of pattern, angle, spacing, width, boundary, "
+        "invert), 'hover_face' (report the facet and coplanar-region size under screen_x/screen_y), "
+        "'pick_at' (pick the face under screen_x/screen_y, or the viewport centre), 'create' (cut the "
+        "current pattern into the picked face), 'clear_pick', 'apply' (pick + create in one call, the "
+        "old auto-apply behaviour), 'close'.",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | apply | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
                 {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
@@ -784,8 +788,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
                 {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},
                 {"invert", {{"type", "boolean"}, {"description", "Subtract the material between holes (grooves)."}}},
-                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / apply. Defaults to the viewport centre."}}},
-                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / apply."}}}
+                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / pick_at / apply. Defaults to the viewport centre."}}},
+                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / pick_at / apply."}}}
             }},
             {"required", {"action"}}
         },
@@ -857,11 +861,26 @@ void OrcaMCPServer::register_gizmo_tools()
                     return nlohmann::json{
                         {"status", "ok"}, {"open", true}, {"action", act},
                         {"pattern", k}, {"angle", q.angle_deg}, {"spacing", q.spacing},
-                        {"width", q.width}, {"boundary", q.margin}, {"invert", q.invert}};
+                        {"width", q.width}, {"boundary", q.margin}, {"invert", q.invert},
+                        // [ORCAPORT:PP-2] The pick is part of the state now: nothing is cut until
+                        // 'create', so a script has to be able to see whether a face is picked.
+                        {"pick_valid", g->gizmo_pick_valid()}, {"applied_count", g->gizmo_applied_count()}};
                 };
 
                 if (action == "set_params" || action == "status" || action == "open")
                     return report(action);
+
+                if (action == "clear_pick") {
+                    g->gizmo_clear_pick();
+                    return report(action);
+                }
+                if (action == "create") {
+                    if (!g->gizmo_create())
+                        return {{"status", "error"},
+                                {"error", g->gizmo_pick_valid() ? "The current values make an empty pattern on the picked face"
+                                                                : "No face is picked: pass action=pick_at first"}};
+                    return report(action);
+                }
 
                 Vec2d screen;
                 if (params.contains("screen_x") && params.contains("screen_y"))
@@ -878,6 +897,11 @@ void OrcaMCPServer::register_gizmo_tools()
                         return {{"status", "error"}, {"error", "No face under the screen point"}};
                     return {{"status", "ok"}, {"open", true}, {"action", action}, {"facet", facet},
                             {"region_facets", region}, {"normal", vec3_json(normal)}};
+                }
+                if (action == "pick_at") {
+                    if (!g->gizmo_pick_at(screen))
+                        return {{"status", "error"}, {"error", "No perforable face under the screen point"}};
+                    return report(action);
                 }
                 if (action == "apply") {
                     if (!g->gizmo_apply_at(screen))

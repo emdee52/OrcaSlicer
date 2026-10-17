@@ -1640,3 +1640,92 @@ orange prism uses): **green** for a solid that adds material, **red** for a cut 
 - **Branch state**: on `port/extrude-applied-colors`, branched from `port/integration`. Merged `--no-ff`
   as `b3658fd246` (user-tested 2026-10-17; the same batch then carried the shared colour scheme in
   section 34).
+
+
+## 34. PP-3 - one 3D overlay colour scheme for every fork gizmo (branch `port/gizmo-colors-perforation-pick`)
+
+Every fork gizmo that draws a preview or a committed volume on the part now uses one meaning per colour,
+defined once at the bottom of `GizmoStyle.hpp` (`gizmo_surface_colour()` and friends):
+
+| role | colour | sites |
+|---|---|---|
+| the surface the cursor is POINTING AT | teal .55 | Holes place-on-face, Perforations, Cut pick-face, Cut shaped cut, Move pivot, Align & Stack mate hover, Extrude hover |
+| what you CLICKED - the action's target | green .55 | Extrude pick, Perforations pick |
+| the geometry the panel values WOULD make | yellow .55 | Holes hovered feature + place-on-face ghost + active snap marker, Edge dress hovered edge, Hole walls hovered counterbore, Perforations proposal, Extrude prism preview |
+| committed material REMOVED | red .55 | Holes applied, Edge dress applied, Perforations applied, Extrude cut |
+| committed material ADDED | green .55 | Extrude solid, Hole walls strengthen rings |
+
+- **🔑 Every role is TRANSLUCENT (0.55).** The applied reds were 0.80 and the hover greens 0.90, which read
+  as solid paint on the part. An overlay is there to say WHERE, not to hide the part.
+- **🔑 "Pointing at" and "picked" must never read the same**: a hovered surface is teal and only a click
+  turns a surface green (the owner's rule, 2026-10-17). Candidate/available hints stay blue.
+- **Hole walls is the one gizmo whose "applied" overlay is ADDED material** - in Strengthen mode it holds
+  the reinforcement rings, a `PARAMETER_MODIFIER` - so it takes the scheme's green, and it was the only
+  place where an applied red was not a cut.
+- **Deliberately left alone**, each for a reason that would otherwise collapse two colours into one:
+  Extrude's *picked face* stays green (its yellow is the prism preview on that same face), Align & Stack's
+  mate pair stays green/orange (source vs target), the snap markers stay categorical (one of five hint
+  colours is green, but they are hints, not selections), and Support Zones' `kTargetCol` green stays
+  (it means "taken", a paint state).
+- The teal was unified to one alpha (0.55) at the same time - Perforations was the one site at 0.40 - so
+  the fork has one hovered-surface value rather than five copies of the same RGB.
+- **Verification**: build green. The four new Perforations overlays exercise the picked/proposed/cut
+  values end to end over MCP (captures in section 35): green picked face, olive where the yellow proposal
+  stacks over it, red over the applied cut. The **hover** colours sit under the real cursor, which no MCP
+  tool can move, so those three - Holes' hovered feature, Edge dress' hovered edge, Hole walls' hovered
+  counterbore - are the user's click test. The colour *assignment* is a one-line grep per file.
+- **Branch state**: on `port/gizmo-colors-perforation-pick`, branched from `port/integration`. Not merged
+  until the user has tested it (section 0).
+
+
+## 35. PP-2 - Perforations becomes pick -> adjust -> cut (same branch)
+
+The Perforations tool no longer stamps the pattern where you click. A left click **picks** the face
+(nothing is cut), the panel's values reshape a **live preview** on that face, and the panel's
+**Perforate** button commits the cut - the same shape as Extrude, as the owner asked.
+
+- **The pick.** `Pick {mv, facet, hit_obj, horizontal}` is cached by `pick_at()`: the pattern is anchored
+  where the user clicked and only the values move it, so the anchor is remembered instead of being
+  recomputed from the cursor every frame (which is exactly what the old hover ghost did - the ghost
+  followed the cursor and the click cut where it happened to be). Right-click or Esc drops it.
+  `data_changed()` keeps it across a volume-list change, because that is usually this tool's own cut, and
+  drops it only when the volume it pointed at is gone.
+- **Four overlays**, in the scheme of section 34: the surface under the cursor (teal), the picked face
+  (green), the pattern the values would cut (yellow), every committed perforation (red). The hover
+  highlight is suppressed while the cursor sits on the picked face, and the tool's own negatives are
+  picked *through*, so clicking an already-cut area still picks the face behind it.
+- **The applied overlay is new.** Committed perforations are read back from their volumes and drawn red,
+  so an already-perforated area is visible in the tool for the first time (before, only the real negative
+  volume in the scene showed it).
+- **Rebuild policy.** The proposal is one mesh per hole, so it is rebuilt only when it can have changed: a
+  new pick, a value change, or the release of the slider that set it (the existing `m_editing` "not while
+  dragging" rule). Rebuilding it per frame is what made the old hover ghost flicker while a slider moved.
+- **MCP.** `pick_at`, `create`, `clear_pick`; `status` reports `pick_valid` and `applied_count`; `apply`
+  stays pick + create in one call, so a PP-1 script behaves exactly as it did.
+- **Strings.** `click_hint` was reworded and `drop_hint` / `perforate` / `applied` are new msgids. The
+  button says **Perforate**, not "Cut", because Cut is a different tool in the same toolbar - and the
+  button is the one that says what it does. The fork's catalogs are stale, so the gettext pass still has
+  to pick these up.
+- **Also in this batch**: an Extrude pick now survives its own create (it is dropped only when the volume
+  it pointed at goes away). Its own comment had promised that, but `data_changed()` invalidated the pick
+  the moment a volume was added, so pressing Extrude twice did not work; now it does.
+- **Verification**: build green. On a 20 mm cube scaled 4x, all over MCP: `pick_at` -> `pick_valid` true and
+  `applied_count` 0 (a pick cuts nothing); `set_params {grid, spacing 9, width 5, boundary 5}` -> the green
+  picked face with the yellow proposal over it (olive where the two stack), green showing in the hole gaps
+  and in the 5 mm boundary inset; `create` -> `applied_count` 1 and the region reads **red** with the green
+  face in the holes, the proposal having hidden itself; `create` again -> 2 (one pick, two cuts);
+  `clear_pick` -> `pick_valid` false, both cuts still counted. Extrude's pick was re-checked in the same
+  run: after its own `create` it is still valid and a second `create` makes a second solid (before this
+  batch `data_changed()` dropped it).
+- **Two traps found on the way**, both worth keeping:
+  1. **An overlay drawn over the volume it IS loses the depth test.** An applied pattern's geometry is the
+     negative volume already in the scene, at exactly the same depth, so a strict `GL_LESS` rejected the
+     overlay and the red was never visible (the first check showed the real volume's grey instead). The
+     overlay pass now draws with `GL_LEQUAL` and restores `GL_LESS` afterwards. Extrude sidesteps this by
+     drawing its whole overlay pass with depth testing OFF, but that would show a whole-face pattern through
+     the part, which is why this one keeps the test on.
+  2. **Yellow over red reads as neither colour.** With the proposal and the applied pattern coincident, the
+     region went muddy. The proposal now hides itself while it is exactly what was just cut
+     (`m_show_proposal`) and comes back the moment a value or the pattern changes.
+- **Branch state**: on `port/gizmo-colors-perforation-pick`, branched from `port/integration`. Not merged
+  until the user has tested it (section 0).

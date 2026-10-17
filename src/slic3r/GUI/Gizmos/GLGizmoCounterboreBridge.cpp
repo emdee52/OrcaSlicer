@@ -307,9 +307,13 @@ constexpr const char *REINFORCE_NAME = "HoleReinforce";
 constexpr double HORIZONTAL_COS = 0.5;
 
 // Hole highlight colours, mirroring the holes gizmo.
-const ColorRGBA AVAIL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};
-const ColorRGBA APPLIED_COLOR{1.00f, 0.15f, 0.15f, 0.80f};
-const ColorRGBA HOVER_COLOR{0.10f, 1.00f, 0.20f, 0.90f};
+// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp). The AVAL colour is the set of
+// counterbores you have neither hovered nor picked, so it stays blue; the hovered one is the counterbore
+// you would act on (yellow), and the "applied" overlay here holds the STRENGTHEN rings - a
+// PARAMETER_MODIFIER, i.e. material ADDED, not removed - so it takes the scheme's green, not its red.
+const ColorRGBA AVAIL_COLOR = ColorRGBA(0.25f, 0.70f, 1.00f, 0.40f);
+const ColorRGBA APPLIED_COLOR = gizmo_added_colour();
+const ColorRGBA HOVER_COLOR   = gizmo_proposed_colour();
 
 void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
 {
