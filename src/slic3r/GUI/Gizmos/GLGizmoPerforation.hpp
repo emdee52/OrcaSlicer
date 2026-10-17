@@ -103,8 +103,10 @@ private:
     GLModel              m_pattern_proposed;   // the pattern the current values would cut (yellow)
     GLModel              m_patterns_applied;   // every committed perforation (red)
     Pick                 m_pick;
-    // The proposed pattern is rebuilt only when it can have changed: a new pick, a value change, or
-    // the release of the slider that set it. One mesh per hole is not something to build every frame.
+    // The proposed pattern is rebuilt whenever this is set: a new pick, or a value change. [ORCAPORT:PP-6]
+    // A slider sets it on every frame it changes, so the preview follows a drag live. One mesh per hole
+    // is not free, so a tiny spacing on a large face rebuilds slowly - the builder's own MAX_FEATURES cap
+    // bounds it. A frame-time guard is the upgrade path if that ever bites.
     bool                 m_pick_dirty{ true };
     // False while the proposal IS what was just cut: the red applied overlay already marks that area,
     // and yellow over red reads as neither colour. Any value change (or a new pick) brings it back.
@@ -117,9 +119,6 @@ private:
     FaceRegionCache      m_face_cache;
     indexed_triangle_set m_merged_its;
     bool                 m_merged_dirty{ true };
-    // True while a slider is being dragged: the proposed pattern is not rebuilt until release, so the
-    // preview cannot flicker and the params-driven notice settles after the drag.
-    bool                 m_editing{ false };
     int                  m_old_volume_count{ -1 };
     const ModelObject*   m_old_model_object{ nullptr };
     std::map<std::string, wxString> m_desc;

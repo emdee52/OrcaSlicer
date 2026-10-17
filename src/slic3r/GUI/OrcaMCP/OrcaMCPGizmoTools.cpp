@@ -922,7 +922,7 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
-                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
+                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees: 0-90 for lines, 0-45 for grid. Honeycomb and circles are isotropic and ignore it."}}},
                 {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
                 {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
                 {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},

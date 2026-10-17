@@ -626,10 +626,12 @@ void GLGizmoPerforation::on_render()
     }
     update_hover();
 
-    // The proposed pattern is rebuilt only when it can have changed: a new pick, a value change, or the
-    // release of the slider that set it. It is one mesh per hole, so building it every frame is what
-    // made the old hover ghost flicker while a slider was dragged.
-    if (! m_editing && m_pick_dirty) {
+    // [ORCAPORT:PP-6] The proposal follows the values LIVE, the drag included: a slider marks it dirty on
+    // every frame whose value changed. It used to wait for the release of the item that set it, which is
+    // why the highlight only caught up when the mouse was let go. The flicker that rule was written for
+    // came from the old cursor-following hover ghost, gone since PP-2, and Extrude already rebuilds its
+    // preview this way.
+    if (m_pick_dirty) {
         rebuild_proposed_pattern();
         m_pick_dirty = false;
     }
@@ -730,7 +732,11 @@ void GLGizmoPerforation::render_panel_body()
     constexpr double SPACING_MIN = 1.0,  SPACING_MAX = 25.0;
     constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
     constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
-    constexpr double ANGLE_MIN   = 0.0,  ANGLE_MAX   = PERFORATION_MAX_ANGLE_DEG;
+    constexpr double ANGLE_MIN   = 0.0;
+    // [ORCAPORT:PP-6] A single family (Lines) gets the full quarter, horizontal -> vertical; Grid keeps
+    // 0..45 because its own 90-degree cross already covers the rest (see PerforationPattern.hpp).
+    const double     ANGLE_MAX   = m_params.kind == PerforationKind::Lines ? PERFORATION_MAX_ANGLE_LINES_DEG
+                                                                          : PERFORATION_MAX_ANGLE_DEG;
 
     // Pattern: the four choices as icons with the name on hover (section 28 records the icon button
     // standard). Drawn without a caption, like the Extrude panel's own mode row.
@@ -828,14 +834,10 @@ void GLGizmoPerforation::render_panel_body()
     if (show_horizontal)
         gizmo_hint(m_desc.at("horizontal").utf8_str().data(), GizmoCol::Warn);
 
-    // The proposed pattern is not rebuilt while an item is being edited, so the preview cannot flicker
-    // and the walls-too-thin notice settles after the drag (the slider status this used to read went
-    // away with the stock slider; "some item in this panel is active" is the same condition). Releasing
-    // the item is what makes the proposal catch up.
-    const bool editing = ImGui::IsAnyItemActive();
-    if (m_editing && ! editing)
-        m_pick_dirty = true;
-    m_editing = editing;
+    // [ORCAPORT:PP-6] Every row above marks the proposal dirty on the frame the value changes, and
+    // on_render() rebuilds it on the next one, so the yellow pattern tracks the sliders live. Nothing is
+    // deferred to the release of the item any more, and the walls-too-thin notice below reads the
+    // parameters directly, so it was always live.
 
     // A changed value (or pattern) is no longer what the last Cut applied, so the proposal comes back.
     if (m_params.kind != before.kind || m_params.invert != before.invert || m_params.spacing != before.spacing ||

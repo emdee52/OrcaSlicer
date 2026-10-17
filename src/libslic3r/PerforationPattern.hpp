@@ -19,7 +19,7 @@ enum class PerforationKind : int {
 
 struct PerforationParams {
     PerforationKind kind{PerforationKind::Honeycomb};
-    double angle_deg{0.0};  // in-plane rotation, 0..45 deg
+    double angle_deg{0.0};  // in-plane rotation; the usable range depends on `kind`, see below
     double spacing{6.0};    // hole / slot centre-to-centre distance, mm
     double width{2.0};      // hole / slot width, mm
     double margin{2.0};     // boundary inset from the face outline, mm
@@ -32,9 +32,16 @@ struct PerforationParams {
 // is the geometry, merged or not.
 inline constexpr double PERFORATION_MIN_WALL = 1.0;
 
-// Upper bound of the in-plane angle. A single line family plus its 90-degree cross covers
-// every orientation within 0..45; beyond that only repeats the same set mirrored.
+// Upper bound of the in-plane angle for a pattern made of TWO families (Grid). A family crossed with
+// its own 90-degree cross is the same pair at `angle` and at `90 - angle` (mirrored), so 0..45 already
+// covers every distinct pair; beyond that only repeats the same set mirrored.
 inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
+
+// [ORCAPORT:PP-6] Upper bound for a pattern made of ONE family (Lines). The pair argument above does
+// not apply to it: a single family at 100 deg is not the family at 80 deg, it is that family mirrored,
+// and on an asymmetric face that is different geometry. 0..90 is what turns the family from horizontal
+// to vertical; 90..180 would be the mirrored half, so the range stops at the vertical.
+inline constexpr double PERFORATION_MAX_ANGLE_LINES_DEG = 90.0;
 
 // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is

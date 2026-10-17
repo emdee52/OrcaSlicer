@@ -53,6 +53,28 @@ TEST_CASE("A valid width keeps the holes discrete", "[PerforationPattern]")
     REQUIRE(grid.front().holes.size() > 1);
 }
 
+TEST_CASE("Lines turn through the full quarter, 0 to 90 degrees", "[PerforationPattern]")
+{
+    // A single family (Lines) is the one pattern the 0..45 bound did not fit: 45 degrees is only its
+    // diagonal, so vertical lines were unreachable. 90 must be the same family turned a quarter round -
+    // the slots run down the face instead of across it. [ORCAPORT:PP-6]
+    const ExPolygons face = rectangle_domain();
+
+    const ExPolygons flat = make_perforation_pattern(face, {PerforationKind::Lines, 0., 10., 3., 0., false});
+    const ExPolygons up   = make_perforation_pattern(face, {PerforationKind::Lines, 90., 10., 3., 0., false});
+
+    REQUIRE(flat.size() > 1);
+    REQUIRE(up.size() > 1);
+    for (const ExPolygon &p : flat) {
+        const BoundingBox b = get_extents(p);
+        REQUIRE(b.size().x() > b.size().y());
+    }
+    for (const ExPolygon &p : up) {
+        const BoundingBox b = get_extents(p);
+        REQUIRE(b.size().y() > b.size().x());
+    }
+}
+
 TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")
 {
     // No silent shrink: width is not corrected. Two parallel slots at spacing 6 with width 6
