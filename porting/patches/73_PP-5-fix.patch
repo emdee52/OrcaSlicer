@@ -1,0 +1,118 @@
+diff --git a/src/libslic3r/HoleDetector.cpp b/src/libslic3r/HoleDetector.cpp
+index 0221eb896a..127ebf4253 100644
+--- a/src/libslic3r/HoleDetector.cpp
++++ b/src/libslic3r/HoleDetector.cpp
+@@ -233,10 +233,35 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
+         if (r < params.min_radius || r > params.max_radius)
+         continue;
+ 
+-        // [ORCAPORT:PP-5] One refinement left: the axis wall set can still hold a face or two whose
+-        // vertices sit off the circle (the arc meets the roof tangentially, so a shared segment can
+-        // belong to either side). A face is an inlier when its centroid sits on the fitted circle, and
+-        // the fit is then redone on those. For a round hole every face qualifies and nothing changes.
++        // [ORCAPORT:PP-5] The band has to be applied to the wall's VERTICES, not to its faces. A
++        // teardrop's roof quad is two triangles; the one that shares the arc's tangent vertex has its
++        // centroid ON the circle (measured 2.635 against the seed r = 2.543, inside the 0.08 r band)
++        // while it still carries the apex vertex at 3.5 r. Selecting faces by centroid therefore put the
++        // apex back into the refit, and fit_circle() returns a MAXIMUM residual, so the whole patch was
++        // rejected at 0.99 against a 0.20 limit. The vertices on the circle are exactly the arc's (the
++        // roof's apex is off it); the roof triangles are kept out of the convexity average by centroid.
++        std::vector<Vec2d> circle_pts;
++        circle_pts.reserve(pts.size());
++        for (const Vec2d &p : pts)
++            if (std::abs(std::hypot(p(0) - cu, p(1) - cv) - r) <= params.radial_tolerance * r)
++                circle_pts.push_back(p);
++        if (circle_pts.size() < 5)
++            continue;
++        {
++            double cu2 = 0., cv2 = 0., r2 = 0., residual2 = 0.;
++            if (!fit_circle(circle_pts, cu2, cv2, r2, residual2))
++                continue;
++            cu       = cu2;
++            cv       = cv2;
++            r        = r2;
++            residual = residual2;
++        }
++        if (r < params.min_radius || r > params.max_radius)
++            continue;
++        if (residual > params.radial_tolerance * r)
++            continue;
++
++        // Faces whose centroid sits on the refitted circle: the wall proper, for the convexity average.
+         std::vector<int> inliers;
+         inliers.reserve(wall.size());
+         for (const int f : wall) {
+@@ -245,49 +270,20 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
+                               its.vertices[tri[2]].cast<double>()) / 3.;
+             const double u = c(0) * frame.e1(0) + c(1) * frame.e1(1) + c(2) * frame.e1(2) - cu;
+             const double v = c(0) * frame.e2(0) + c(1) * frame.e2(1) + c(2) * frame.e2(2) - cv;
+-            // 🔑 The band has to be the TIGHT one. A teardrop's roof faces are slanted planes that
+-            // CONTAIN the axis, so their normals are perpendicular to it like a wall's - the axis test
+-            // cannot separate them - and their centroids sit at roughly 1.2 r, which a 0.25 r band would
+-            // happily keep (measured: 132 of 132 faces kept, then the residual gate rejected the patch at
+-            // 0.90 against a 0.20 limit). At the fitted tolerance the arc's faces are in and the roof's
+-            // are out, and the refit below lands on r.
+             if (std::abs(std::hypot(u, v) - r) <= params.radial_tolerance * r)
+                 inliers.push_back(f);
+         }
+         if (inliers.empty())
+-        continue;
+-
+-        std::vector<Vec2d> inlier_pts;
+-        inlier_pts.reserve(inliers.size() * 3);
+-        for (const int f : inliers)
+-            for (int k = 0; k < 3; ++k) {
+-                const Vec3f &p = its.vertices[its.indices[f][k]];
+-                inlier_pts.emplace_back(p(0) * frame.e1(0) + p(1) * frame.e1(1) + p(2) * frame.e1(2),
+-                                        p(0) * frame.e2(0) + p(1) * frame.e2(1) + p(2) * frame.e2(2));
+-            }
+-
+-        if (inliers.size() < wall.size()) {
+-            double cu2 = 0., cv2 = 0., r2 = 0., residual2 = 0.;
+-            if (!fit_circle(inlier_pts, cu2, cv2, r2, residual2))
+-            continue;
+-            cu       = cu2;
+-            cv       = cv2;
+-            r        = r2;
+-            residual = residual2;
+-            if (r < params.min_radius || r > params.max_radius)
+-            continue;
+-        }
+-        if (residual > params.radial_tolerance * r)
+             continue;
+         const double depth = t_max - t_min;
+         if (depth < 1e-6)
+         continue;
+ 
+-        // The wall must wrap around the axis: find the largest empty angular sector. Measured on the
+-        // wall faces, so a roof cannot make the coverage look complete where there is no wall.
++        // The wall must wrap around the axis: find the largest empty angular sector, on the vertices the
++        // circle fit used, so a roof cannot make the coverage look complete where there is no wall.
+         std::vector<double> angles;
+-        angles.reserve(inlier_pts.size());
+-        for (const Vec2d &p : inlier_pts)
++        angles.reserve(circle_pts.size());
++        for (const Vec2d &p : circle_pts)
+             angles.push_back(std::atan2(p(1) - cv, p(0) - cu));
+         std::sort(angles.begin(), angles.end());
+         double max_gap = 0.;
+diff --git a/src/libslic3r/PerforationPattern.cpp b/src/libslic3r/PerforationPattern.cpp
+index 3ceed182c8..acb04d2852 100644
+--- a/src/libslic3r/PerforationPattern.cpp
++++ b/src/libslic3r/PerforationPattern.cpp
+@@ -233,6 +233,15 @@ indexed_triangle_set extrude_perforation_pattern(const ExPolygons &polys, const
+         for (const Polygon &h : p.holes)
+             add_walls(h);
+     }
++
++    // [ORCAPORT:PP-5] Weld the soup the builder above produces. Every cap triangle pushes three fresh
++    // vertices and each wall strip its own, so the prism is geometrically closed but topologically
++    // open (measured: 360 open edges on a honeycomb). mcut is given this as a solid; a mesh that is not
++    // manifold makes it fail or crash, and a result it produced from one poisons the NEXT boolean -
++    // which is exactly "Mesh boolean does nothing once the object has already had a boolean". The cap
++    // and wall vertices come from the same Point coordinates through the same scaling, so the weld is
++    // exact. its_merge_vertices() also shrinks the array, which suits a negative volume.
++    its_merge_vertices(its);
+     return its;
+ }
+ 

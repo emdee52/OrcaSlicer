@@ -135,22 +135,20 @@ is ImGui drawn into the GL canvas and nothing else can look at it.
 
 What is actually left, in priority order:
 
-0. **OPEN BUGS, NOW IN `port/integration`** (merged `9cf2a9def0` with the fixes that did not fix them;
-   `docs/handoff.md` **section 37** has the measurements, what is ruled out, and the recipe for running
-   the failing case - this tree has the unit tests OFF, and the failing case is tagged `[NotWorking]`,
-   i.e. hidden, so running the suite looks green):
-   - **a teardrop tunnel is not detected by the Holes tool**, so it cannot be chamfered, resized or turned
-     into a round hole. The detector has been reshaped to fit and gate on the wall faces only (verified
-     clean against every other case: 288 of 289 assertions), but the teardrop is still not found. The
-     failing case is **already written** in `tests/libslic3r/test_holedetector.cpp` ("A teardrop tunnel is
-     detected as a hole"); re-add the printf instrumentation in `detect_holes`, print the inlier count,
-     the refitted `r`/residual, the angular gap and the convexity average for that patch, and fix the gate
-     that drops it.
-   - **Mesh boolean does nothing once the object has had a boolean before** (reported with a perforation;
-     the trigger is the earlier boolean). A stale-index bug was fixed by pointer identity and the symptom
-     survived it, so the cause is elsewhere - check first whether the second operation's **Difference
-     button is greyed out** (the pick never happened: a stale raycaster array, or a single-volume
-     selection) or **clickable but doing nothing**.
+0. **PP-5's two bugs are FIXED on `port/PP-5-fixes`** (off `port/integration` `8b0ffc1c83`; three
+   product commits plus a `port:` docs commit; built, the `libslic3r` suite is 103170/103170, both
+   runtime-verified over MCP). **Awaiting your test; not merged.** `docs/handoff.md` section 37 has
+   the narrative and `porting/notes/PP-5.md` the per-bug detail:
+   - **the teardrop tunnel is detected**: the gate was the circle residual, and the band meant to
+     exclude the roof selected faces by centroid, which re-admitted the roof's apex into the refit
+     (residual 0.986 against a 0.201 limit). It now bands on the circle's vertices (residual 0.000,
+     gap 90 deg, convexity -0.999) and the case is un-hidden.
+   - **Mesh boolean after a boolean works**: not the stale index, not the raycaster array, not the
+     activation gate. `extrude_perforation_pattern()` built the cutter as an open vertex soup (360
+     open edges on a honeycomb), so mcut failed or crashed and the next boolean could not eat its
+     result. The prism is welded now. The new MCP tool **MCP-3** (`mesh_boolean_gizmo`) is what made
+     the reproducer scriptable - use it for any further Mesh boolean work; detail in
+     `porting/notes/MCP-3.md`.
 1. **Today's seven changes are all merged and pushed** (2026-10-17, user-tested in preview builds that
    carried them, all in `docs/handoff.md` sections 29-35):
    - `port/ef-mode-icons` (EF-1b) - the Edge chamfer / fillet `Chamfer | Fillet` row is two icon toggles

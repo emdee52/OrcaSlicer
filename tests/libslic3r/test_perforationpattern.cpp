@@ -146,3 +146,31 @@ TEST_CASE("An extruded pattern prism has the volume of its cross-section times i
     REQUIRE(!prism.indices.empty());
     REQUIRE_THAT(its_volume(prism), WithinRel(area_mm2(pattern) * height, 0.02));
 }
+
+TEST_CASE("An extruded pattern prism is a closed solid", "[PerforationPattern]")
+{
+    // Mesh boolean hands the prism to mcut, which needs closed manifold solids. The builder used to
+    // push three fresh vertices per cap triangle and its own per wall strip - a geometrically closed
+    // but topologically open soup (measured: 360 open edges on a honeycomb), which mcut cannot resolve
+    // reliably: it fails or crashes, and a result it made from one poisons the NEXT boolean. Every
+    // pattern must weld into a solid with no open edges and a positive signed volume.
+    const ExPolygons domain = rectangle_domain();
+
+    const PerforationParams cases[] = {
+        {PerforationKind::Lines, 0., 6., 2., 2., false},
+        {PerforationKind::Grid, 0., 8., 2., 2., false},
+        {PerforationKind::Honeycomb, 0., 8., 4., 2., false},
+        {PerforationKind::Circles, 0., 7., 4., 3., false},
+    };
+    for (const PerforationParams &p : cases) {
+        const ExPolygons pattern = make_perforation_pattern(domain, p);
+        REQUIRE(!pattern.empty());
+
+        const indexed_triangle_set prism = extrude_perforation_pattern(
+            pattern, Vec3d::Zero(), Vec3d::UnitX(), Vec3d::UnitY(), Vec3d::UnitZ(), -1., 6.);
+
+        REQUIRE(!prism.indices.empty());
+        CHECK(its_num_open_edges(prism) == 0);
+        CHECK(its_volume(prism) > 0.);
+    }
+}

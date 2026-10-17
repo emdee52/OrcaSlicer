@@ -55,40 +55,12 @@ GLGizmoMeshBoolean::~GLGizmoMeshBoolean()
 bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down) 
 {
     if (action == SLAGizmoEventType::LeftDown) {
-        const ModelObject* mo = m_c->selection_info()->model_object();
+        const ModelObject* mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
         if (mo == nullptr)
             return true;
-        const ModelInstance* mi = mo->instances[m_parent.get_selection().get_instance_idx()];
-        std::vector<Transform3d> trafo_matrices;
-        for (const ModelVolume* mv : mo->volumes) {
-            trafo_matrices.emplace_back(mi->get_transformation().get_matrix() * mv->get_matrix());
-        }
 
-        const Camera& camera = wxGetApp().plater()->get_camera();
-        Vec3f  normal = Vec3f::Zero();
-        Vec3f  hit = Vec3f::Zero();
-        size_t facet = 0;
-        Vec3f  closest_hit = Vec3f::Zero();
-        Vec3f  closest_normal = Vec3f::Zero();
-        double closest_hit_squared_distance = std::numeric_limits<double>::max();
-        int    closest_hit_mesh_id = -1;
-
-        // Cast a ray on all meshes, pick the closest hit and save it for the respective mesh
-        for (int mesh_id = 0; mesh_id < int(trafo_matrices.size()); ++mesh_id) {
-            if (m_c->raycaster()->raycasters()[mesh_id] ->unproject_on_mesh(mouse_position, trafo_matrices[mesh_id], camera, hit, normal,
-                m_c->object_clipper()->get_clipping_plane(), &facet)) {
-                // Is this hit the closest to the camera so far?
-                double hit_squared_distance = (camera.get_position() - trafo_matrices[mesh_id] * hit.cast<double>()).squaredNorm();
-                if (hit_squared_distance < closest_hit_squared_distance) {
-                    closest_hit_squared_distance = hit_squared_distance;
-                    closest_hit_mesh_id = mesh_id;
-                    closest_hit = hit;
-                    closest_normal = normal;
-                }
-            }
-        }
-
-        if (closest_hit == Vec3f::Zero() && closest_normal == Vec3f::Zero())
+        const int closest_hit_mesh_id = raycast_volume(mouse_position);
+        if (closest_hit_mesh_id < 0 || closest_hit_mesh_id >= int(mo->volumes.size()))
             return true;
 
         if (get_selecting_state() == MeshBooleanSelectingState::SelectTool) {
@@ -106,6 +78,54 @@ bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
         }
     }
     return true;
+}
+
+// [ORCAPORT:MCP-3] The closest volume under a screen point, by the same raycast gizmo_event() uses.
+// The loop is bounded by the shorter of mo->volumes and the raycaster array: a pick after the volume
+// list changed must never read past either. get_raycaster_count() is what makes a disagreement
+// between the two visible instead of a silent miss.
+int GLGizmoMeshBoolean::raycast_volume(const Vec2d &mouse_position) const
+{
+    const ModelObject *mo = (m_c != nullptr && m_c->selection_info() != nullptr)
+                                ? m_c->selection_info()->model_object()
+                                : nullptr;
+    if (mo == nullptr || m_c->raycaster() == nullptr)
+        return -1;
+
+    const int inst_idx = m_parent.get_selection().get_instance_idx();
+    if (inst_idx < 0 || inst_idx >= int(mo->instances.size()))
+        return -1;
+    const ModelInstance *mi = mo->instances[inst_idx];
+
+    const std::vector<const MeshRaycaster *> raycasters = m_c->raycaster()->raycasters();
+    const int                                n          = int(std::min(mo->volumes.size(), raycasters.size()));
+
+    const Camera         &camera = wxGetApp().plater()->get_camera();
+    const auto           *clipper = m_c->object_clipper();
+    const ClippingPlane  *clipping_plane = clipper != nullptr ? clipper->get_clipping_plane() : nullptr;
+
+    Vec3f  normal = Vec3f::Zero(), hit = Vec3f::Zero();
+    size_t facet = 0;
+    double closest_hit_squared_distance = std::numeric_limits<double>::max();
+    int    closest_hit_mesh_id          = -1;
+    for (int mesh_id = 0; mesh_id < n; ++mesh_id) {
+        const Transform3d trafo = mi->get_transformation().get_matrix() * mo->volumes[mesh_id]->get_matrix();
+        if (raycasters[mesh_id]->unproject_on_mesh(mouse_position, trafo, camera, hit, normal, clipping_plane, &facet)) {
+            const double hit_squared_distance = (camera.get_position() - trafo * hit.cast<double>()).squaredNorm();
+            if (hit_squared_distance < closest_hit_squared_distance) {
+                closest_hit_squared_distance = hit_squared_distance;
+                closest_hit_mesh_id          = mesh_id;
+            }
+        }
+    }
+    return closest_hit_mesh_id;
+}
+
+int GLGizmoMeshBoolean::get_raycaster_count() const
+{
+    if (m_c == nullptr || m_c->raycaster() == nullptr)
+        return -1;
+    return int(m_c->raycaster()->raycasters().size());
 }
 
 bool GLGizmoMeshBoolean::on_mouse(const wxMouseEvent &mouse_event)
@@ -379,63 +399,18 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
     bool enable_button = m_src.mv && m_tool.mv;
     if (m_operation_mode == MeshBooleanOperation::Union)
     {
-        if (operate_button(_L("Union") + "##btn", enable_button)) {
-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
-            temp_src_mesh.transform(m_src.trafo);
-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
-            temp_tool_mesh.transform(m_tool.trafo);
-            std::vector<TriangleMesh> temp_mesh_resuls;
-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "UNION");
-            if (temp_mesh_resuls.size() != 0) {
-                // For union, we want to keep paint from both meshes
-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting(), m_tool.save_painting()};
-                generate_new_volume(true, *temp_mesh_resuls.begin(), saved_paintings);
-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
-            }
-            else {
-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
-            }
-        }
+        if (operate_button(_L("Union") + "##btn", enable_button))
+            perform_operation();
     }
     else if (m_operation_mode == MeshBooleanOperation::Difference) {
         m_imgui->bbl_checkbox(_L("Delete input"), m_diff_delete_input);
-        if (operate_button(_L("Difference") + "##btn", enable_button)) {
-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
-            temp_src_mesh.transform(m_src.trafo);
-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
-            temp_tool_mesh.transform(m_tool.trafo);
-            std::vector<TriangleMesh> temp_mesh_resuls;
-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "A_NOT_B");
-            if (temp_mesh_resuls.size() != 0) {
-                // For diff, we only need paint from src
-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting()};
-                generate_new_volume(m_diff_delete_input, *temp_mesh_resuls.begin(), saved_paintings);
-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
-            }
-            else {
-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
-            }
-        }
+        if (operate_button(_L("Difference") + "##btn", enable_button))
+            perform_operation();
     }
     else if (m_operation_mode == MeshBooleanOperation::Intersection){
         m_imgui->bbl_checkbox(_L("Delete input"), m_inter_delete_input);
-        if (operate_button(_L("Intersection") + "##btn", enable_button)) {
-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
-            temp_src_mesh.transform(m_src.trafo);
-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
-            temp_tool_mesh.transform(m_tool.trafo);
-            std::vector<TriangleMesh> temp_mesh_resuls;
-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "INTERSECTION");
-            if (temp_mesh_resuls.size() != 0) {
-                // For intersection, we want to keep paint from both meshes
-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting(), m_tool.save_painting()};
-                generate_new_volume(m_inter_delete_input, *temp_mesh_resuls.begin(), saved_paintings);
-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
-            }
-            else {
-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
-            }
-        }
+        if (operate_button(_L("Intersection") + "##btn", enable_button))
+            perform_operation();
     }
 
     float win_w = ImGui::GetWindowWidth();
@@ -465,6 +440,79 @@ void GLGizmoMeshBoolean::on_load(cereal::BinaryInputArchive &ar)
 void GLGizmoMeshBoolean::on_save(cereal::BinaryOutputArchive &ar) const
 {
     ar(m_enable, m_operation_mode, m_selecting_state, m_diff_delete_input, m_inter_delete_input, m_src, m_tool);
+}
+
+// [ORCAPORT:MCP-3] The boolean operation itself, extracted from the button handlers so the MCP tool
+// runs the exact same code. Returns false when nothing was produced; the interactive path shows the
+// "Unable to perform boolean operation" warning in that case.
+bool GLGizmoMeshBoolean::perform_operation()
+{
+    if (m_src.mv == nullptr || m_tool.mv == nullptr)
+        return false;
+
+    const char *boolean_opts =
+        m_operation_mode == MeshBooleanOperation::Union        ? "UNION" :
+        m_operation_mode == MeshBooleanOperation::Difference   ? "A_NOT_B" :
+        m_operation_mode == MeshBooleanOperation::Intersection ? "INTERSECTION" : nullptr;
+    if (boolean_opts == nullptr)
+        return false;
+
+    TriangleMesh temp_src_mesh = m_src.mv->mesh();
+    temp_src_mesh.transform(m_src.trafo);
+    TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
+    temp_tool_mesh.transform(m_tool.trafo);
+    std::vector<TriangleMesh> temp_mesh_resuls;
+    Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, boolean_opts);
+    if (temp_mesh_resuls.empty()) {
+        wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
+        return false;
+    }
+
+    // Union and intersection keep paint from both meshes; difference only from the source.
+    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting()};
+    if (m_operation_mode != MeshBooleanOperation::Difference)
+        saved_paintings.push_back(m_tool.save_painting());
+
+    const bool delete_input = m_operation_mode == MeshBooleanOperation::Union        ? true :
+                              m_operation_mode == MeshBooleanOperation::Difference   ? m_diff_delete_input :
+                                                                                       m_inter_delete_input;
+    generate_new_volume(delete_input, *temp_mesh_resuls.begin(), saved_paintings);
+    wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
+    return true;
+}
+
+// [ORCAPORT:MCP-3] Pick at a screen point through the interactive path: gizmo_event() does the same
+// raycast a real click on the canvas does, and this returns whether the requested slot got a volume.
+bool GLGizmoMeshBoolean::pick_at(const Vec2d &mouse_position, bool as_tool)
+{
+    m_selecting_state = as_tool ? MeshBooleanSelectingState::SelectTool : MeshBooleanSelectingState::SelectSource;
+    gizmo_event(SLAGizmoEventType::LeftDown, mouse_position, false, false, false);
+    return as_tool ? m_tool.mv != nullptr : m_src.mv != nullptr;
+}
+
+// [ORCAPORT:MCP-3] Pick a volume by its index in mo->volumes, with no raycast. This is the only way
+// to pick a cutter the camera cannot see (one buried inside the part); it also isolates "the pick is
+// wrong" from "the boolean is wrong" when a real click misses.
+bool GLGizmoMeshBoolean::pick_volume_index(int volume_idx, bool as_tool)
+{
+    const ModelObject *mo = (m_c != nullptr && m_c->selection_info() != nullptr)
+                                ? m_c->selection_info()->model_object()
+                                : nullptr;
+    if (mo == nullptr || volume_idx < 0 || volume_idx >= int(mo->volumes.size()))
+        return false;
+    ModelVolume *mv = mo->volumes[volume_idx];
+    if (as_tool) {
+        m_tool.trafo      = mv->get_matrix();
+        m_tool.volume_idx = volume_idx;
+        set_tool_volume(mv);
+        m_selecting_state = MeshBooleanSelectingState::SelectTool;
+    } else {
+        m_src.trafo      = mv->get_matrix();
+        m_src.volume_idx = volume_idx;
+        set_src_volume(mv);
+        m_selecting_state = MeshBooleanSelectingState::SelectSource;
+    }
+    return true;
 }
 
 void GLGizmoMeshBoolean::generate_new_volume(const bool delete_input, TriangleMesh& mesh_result, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings) {

@@ -52,6 +52,27 @@ public:
     void set_enable(bool enable) { m_enable = enable; }
     bool get_enable() { return m_enable; }
     MeshBooleanSelectingState get_selecting_state() { return m_selecting_state; }
+
+    // [ORCAPORT:MCP-3] Machine-drivable surface for the mesh_boolean_gizmo MCP tool. The picks run the
+    // same raycast an interactive click does in gizmo_event(); pick_volume_index() sets a volume
+    // directly, which is the only way to pick one that no camera ray reaches (a cutter buried inside
+    // the part). perform_operation() is the same code the Difference/Union/Intersection buttons run.
+    bool pick_at(const Vec2d &mouse_position, bool as_tool);
+    bool pick_volume_index(int volume_idx, bool as_tool);
+    bool perform_operation();
+    // The closest volume under a screen point, by the same raycast gizmo_event() uses. Bounded by
+    // both arrays, and the count of raycasters is exposed: the raycasters and mo->volumes disagreeing
+    // after a volume-list change is the suspected cause of a pick that misses (docs/handoff.md 37).
+    int raycast_volume(const Vec2d &mouse_position) const;
+    int get_raycaster_count() const;
+    void set_operation(MeshBooleanOperation op) { m_operation_mode = op; }
+    MeshBooleanOperation get_operation() const { return m_operation_mode; }
+    void set_delete_input(bool v) { m_diff_delete_input = v; m_inter_delete_input = v; }
+    bool get_delete_input() const { return m_diff_delete_input; }
+    const ModelVolume *get_src_volume() const { return m_src.mv; }
+    const ModelVolume *get_tool_volume() const { return m_tool.mv; }
+    int get_src_index() const { return m_src.volume_idx; }
+    int get_tool_index() const { return m_tool.volume_idx; }
     void set_src_volume(ModelVolume* mv) { 
         m_src.mv = mv;
         if (m_src.mv == m_tool.mv)

@@ -1,0 +1,655 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.cpp b/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.cpp
+index 54ca31a762..25afdce5b1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.cpp
+@@ -55,40 +55,12 @@ GLGizmoMeshBoolean::~GLGizmoMeshBoolean()
+ bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mouse_position, bool shift_down, bool alt_down, bool control_down) 
+ {
+     if (action == SLAGizmoEventType::LeftDown) {
+-        const ModelObject* mo = m_c->selection_info()->model_object();
++        const ModelObject* mo = m_c->selection_info() ? m_c->selection_info()->model_object() : nullptr;
+         if (mo == nullptr)
+             return true;
+-        const ModelInstance* mi = mo->instances[m_parent.get_selection().get_instance_idx()];
+-        std::vector<Transform3d> trafo_matrices;
+-        for (const ModelVolume* mv : mo->volumes) {
+-            trafo_matrices.emplace_back(mi->get_transformation().get_matrix() * mv->get_matrix());
+-        }
+-
+-        const Camera& camera = wxGetApp().plater()->get_camera();
+-        Vec3f  normal = Vec3f::Zero();
+-        Vec3f  hit = Vec3f::Zero();
+-        size_t facet = 0;
+-        Vec3f  closest_hit = Vec3f::Zero();
+-        Vec3f  closest_normal = Vec3f::Zero();
+-        double closest_hit_squared_distance = std::numeric_limits<double>::max();
+-        int    closest_hit_mesh_id = -1;
+-
+-        // Cast a ray on all meshes, pick the closest hit and save it for the respective mesh
+-        for (int mesh_id = 0; mesh_id < int(trafo_matrices.size()); ++mesh_id) {
+-            if (m_c->raycaster()->raycasters()[mesh_id] ->unproject_on_mesh(mouse_position, trafo_matrices[mesh_id], camera, hit, normal,
+-                m_c->object_clipper()->get_clipping_plane(), &facet)) {
+-                // Is this hit the closest to the camera so far?
+-                double hit_squared_distance = (camera.get_position() - trafo_matrices[mesh_id] * hit.cast<double>()).squaredNorm();
+-                if (hit_squared_distance < closest_hit_squared_distance) {
+-                    closest_hit_squared_distance = hit_squared_distance;
+-                    closest_hit_mesh_id = mesh_id;
+-                    closest_hit = hit;
+-                    closest_normal = normal;
+-                }
+-            }
+-        }
+ 
+-        if (closest_hit == Vec3f::Zero() && closest_normal == Vec3f::Zero())
++        const int closest_hit_mesh_id = raycast_volume(mouse_position);
++        if (closest_hit_mesh_id < 0 || closest_hit_mesh_id >= int(mo->volumes.size()))
+             return true;
+ 
+         if (get_selecting_state() == MeshBooleanSelectingState::SelectTool) {
+@@ -108,6 +80,54 @@ bool GLGizmoMeshBoolean::gizmo_event(SLAGizmoEventType action, const Vec2d& mous
+     return true;
+ }
+ 
++// [ORCAPORT:MCP-3] The closest volume under a screen point, by the same raycast gizmo_event() uses.
++// The loop is bounded by the shorter of mo->volumes and the raycaster array: a pick after the volume
++// list changed must never read past either. get_raycaster_count() is what makes a disagreement
++// between the two visible instead of a silent miss.
++int GLGizmoMeshBoolean::raycast_volume(const Vec2d &mouse_position) const
++{
++    const ModelObject *mo = (m_c != nullptr && m_c->selection_info() != nullptr)
++                                ? m_c->selection_info()->model_object()
++                                : nullptr;
++    if (mo == nullptr || m_c->raycaster() == nullptr)
++        return -1;
++
++    const int inst_idx = m_parent.get_selection().get_instance_idx();
++    if (inst_idx < 0 || inst_idx >= int(mo->instances.size()))
++        return -1;
++    const ModelInstance *mi = mo->instances[inst_idx];
++
++    const std::vector<const MeshRaycaster *> raycasters = m_c->raycaster()->raycasters();
++    const int                                n          = int(std::min(mo->volumes.size(), raycasters.size()));
++
++    const Camera         &camera = wxGetApp().plater()->get_camera();
++    const auto           *clipper = m_c->object_clipper();
++    const ClippingPlane  *clipping_plane = clipper != nullptr ? clipper->get_clipping_plane() : nullptr;
++
++    Vec3f  normal = Vec3f::Zero(), hit = Vec3f::Zero();
++    size_t facet = 0;
++    double closest_hit_squared_distance = std::numeric_limits<double>::max();
++    int    closest_hit_mesh_id          = -1;
++    for (int mesh_id = 0; mesh_id < n; ++mesh_id) {
++        const Transform3d trafo = mi->get_transformation().get_matrix() * mo->volumes[mesh_id]->get_matrix();
++        if (raycasters[mesh_id]->unproject_on_mesh(mouse_position, trafo, camera, hit, normal, clipping_plane, &facet)) {
++            const double hit_squared_distance = (camera.get_position() - trafo * hit.cast<double>()).squaredNorm();
++            if (hit_squared_distance < closest_hit_squared_distance) {
++                closest_hit_squared_distance = hit_squared_distance;
++                closest_hit_mesh_id          = mesh_id;
++            }
++        }
++    }
++    return closest_hit_mesh_id;
++}
++
++int GLGizmoMeshBoolean::get_raycaster_count() const
++{
++    if (m_c == nullptr || m_c->raycaster() == nullptr)
++        return -1;
++    return int(m_c->raycaster()->raycasters().size());
++}
++
+ bool GLGizmoMeshBoolean::on_mouse(const wxMouseEvent &mouse_event)
+ {
+     // wxCoord == int --> wx/types.h
+@@ -379,63 +399,18 @@ void GLGizmoMeshBoolean::on_render_input_window(float x, float y, float bottom_l
+     bool enable_button = m_src.mv && m_tool.mv;
+     if (m_operation_mode == MeshBooleanOperation::Union)
+     {
+-        if (operate_button(_L("Union") + "##btn", enable_button)) {
+-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
+-            temp_src_mesh.transform(m_src.trafo);
+-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
+-            temp_tool_mesh.transform(m_tool.trafo);
+-            std::vector<TriangleMesh> temp_mesh_resuls;
+-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "UNION");
+-            if (temp_mesh_resuls.size() != 0) {
+-                // For union, we want to keep paint from both meshes
+-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting(), m_tool.save_painting()};
+-                generate_new_volume(true, *temp_mesh_resuls.begin(), saved_paintings);
+-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
+-            }
+-            else {
+-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
+-            }
+-        }
++        if (operate_button(_L("Union") + "##btn", enable_button))
++            perform_operation();
+     }
+     else if (m_operation_mode == MeshBooleanOperation::Difference) {
+         m_imgui->bbl_checkbox(_L("Delete input"), m_diff_delete_input);
+-        if (operate_button(_L("Difference") + "##btn", enable_button)) {
+-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
+-            temp_src_mesh.transform(m_src.trafo);
+-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
+-            temp_tool_mesh.transform(m_tool.trafo);
+-            std::vector<TriangleMesh> temp_mesh_resuls;
+-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "A_NOT_B");
+-            if (temp_mesh_resuls.size() != 0) {
+-                // For diff, we only need paint from src
+-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting()};
+-                generate_new_volume(m_diff_delete_input, *temp_mesh_resuls.begin(), saved_paintings);
+-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
+-            }
+-            else {
+-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
+-            }
+-        }
++        if (operate_button(_L("Difference") + "##btn", enable_button))
++            perform_operation();
+     }
+     else if (m_operation_mode == MeshBooleanOperation::Intersection){
+         m_imgui->bbl_checkbox(_L("Delete input"), m_inter_delete_input);
+-        if (operate_button(_L("Intersection") + "##btn", enable_button)) {
+-            TriangleMesh temp_src_mesh = m_src.mv->mesh();
+-            temp_src_mesh.transform(m_src.trafo);
+-            TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
+-            temp_tool_mesh.transform(m_tool.trafo);
+-            std::vector<TriangleMesh> temp_mesh_resuls;
+-            Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, "INTERSECTION");
+-            if (temp_mesh_resuls.size() != 0) {
+-                // For intersection, we want to keep paint from both meshes
+-                std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting(), m_tool.save_painting()};
+-                generate_new_volume(m_inter_delete_input, *temp_mesh_resuls.begin(), saved_paintings);
+-                wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
+-            }
+-            else {
+-                wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
+-            }
+-        }
++        if (operate_button(_L("Intersection") + "##btn", enable_button))
++            perform_operation();
+     }
+ 
+     float win_w = ImGui::GetWindowWidth();
+@@ -467,6 +442,79 @@ void GLGizmoMeshBoolean::on_save(cereal::BinaryOutputArchive &ar) const
+     ar(m_enable, m_operation_mode, m_selecting_state, m_diff_delete_input, m_inter_delete_input, m_src, m_tool);
+ }
+ 
++// [ORCAPORT:MCP-3] The boolean operation itself, extracted from the button handlers so the MCP tool
++// runs the exact same code. Returns false when nothing was produced; the interactive path shows the
++// "Unable to perform boolean operation" warning in that case.
++bool GLGizmoMeshBoolean::perform_operation()
++{
++    if (m_src.mv == nullptr || m_tool.mv == nullptr)
++        return false;
++
++    const char *boolean_opts =
++        m_operation_mode == MeshBooleanOperation::Union        ? "UNION" :
++        m_operation_mode == MeshBooleanOperation::Difference   ? "A_NOT_B" :
++        m_operation_mode == MeshBooleanOperation::Intersection ? "INTERSECTION" : nullptr;
++    if (boolean_opts == nullptr)
++        return false;
++
++    TriangleMesh temp_src_mesh = m_src.mv->mesh();
++    temp_src_mesh.transform(m_src.trafo);
++    TriangleMesh temp_tool_mesh = m_tool.mv->mesh();
++    temp_tool_mesh.transform(m_tool.trafo);
++    std::vector<TriangleMesh> temp_mesh_resuls;
++    Slic3r::MeshBoolean::mcut::make_boolean(temp_src_mesh, temp_tool_mesh, temp_mesh_resuls, boolean_opts);
++    if (temp_mesh_resuls.empty()) {
++        wxGetApp().notification_manager()->push_plater_warning_notification(warning_text);
++        return false;
++    }
++
++    // Union and intersection keep paint from both meshes; difference only from the source.
++    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings{m_src.save_painting()};
++    if (m_operation_mode != MeshBooleanOperation::Difference)
++        saved_paintings.push_back(m_tool.save_painting());
++
++    const bool delete_input = m_operation_mode == MeshBooleanOperation::Union        ? true :
++                              m_operation_mode == MeshBooleanOperation::Difference   ? m_diff_delete_input :
++                                                                                       m_inter_delete_input;
++    generate_new_volume(delete_input, *temp_mesh_resuls.begin(), saved_paintings);
++    wxGetApp().notification_manager()->close_plater_warning_notification(warning_text);
++    return true;
++}
++
++// [ORCAPORT:MCP-3] Pick at a screen point through the interactive path: gizmo_event() does the same
++// raycast a real click on the canvas does, and this returns whether the requested slot got a volume.
++bool GLGizmoMeshBoolean::pick_at(const Vec2d &mouse_position, bool as_tool)
++{
++    m_selecting_state = as_tool ? MeshBooleanSelectingState::SelectTool : MeshBooleanSelectingState::SelectSource;
++    gizmo_event(SLAGizmoEventType::LeftDown, mouse_position, false, false, false);
++    return as_tool ? m_tool.mv != nullptr : m_src.mv != nullptr;
++}
++
++// [ORCAPORT:MCP-3] Pick a volume by its index in mo->volumes, with no raycast. This is the only way
++// to pick a cutter the camera cannot see (one buried inside the part); it also isolates "the pick is
++// wrong" from "the boolean is wrong" when a real click misses.
++bool GLGizmoMeshBoolean::pick_volume_index(int volume_idx, bool as_tool)
++{
++    const ModelObject *mo = (m_c != nullptr && m_c->selection_info() != nullptr)
++                                ? m_c->selection_info()->model_object()
++                                : nullptr;
++    if (mo == nullptr || volume_idx < 0 || volume_idx >= int(mo->volumes.size()))
++        return false;
++    ModelVolume *mv = mo->volumes[volume_idx];
++    if (as_tool) {
++        m_tool.trafo      = mv->get_matrix();
++        m_tool.volume_idx = volume_idx;
++        set_tool_volume(mv);
++        m_selecting_state = MeshBooleanSelectingState::SelectTool;
++    } else {
++        m_src.trafo      = mv->get_matrix();
++        m_src.volume_idx = volume_idx;
++        set_src_volume(mv);
++        m_selecting_state = MeshBooleanSelectingState::SelectSource;
++    }
++    return true;
++}
++
+ void GLGizmoMeshBoolean::generate_new_volume(const bool delete_input, TriangleMesh& mesh_result, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings) {
+ 
+     wxGetApp().plater()->take_snapshot("Mesh Boolean");
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp b/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp
+index 458728cd05..61d0af2b41 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp
+@@ -52,6 +52,27 @@ public:
+     void set_enable(bool enable) { m_enable = enable; }
+     bool get_enable() { return m_enable; }
+     MeshBooleanSelectingState get_selecting_state() { return m_selecting_state; }
++
++    // [ORCAPORT:MCP-3] Machine-drivable surface for the mesh_boolean_gizmo MCP tool. The picks run the
++    // same raycast an interactive click does in gizmo_event(); pick_volume_index() sets a volume
++    // directly, which is the only way to pick one that no camera ray reaches (a cutter buried inside
++    // the part). perform_operation() is the same code the Difference/Union/Intersection buttons run.
++    bool pick_at(const Vec2d &mouse_position, bool as_tool);
++    bool pick_volume_index(int volume_idx, bool as_tool);
++    bool perform_operation();
++    // The closest volume under a screen point, by the same raycast gizmo_event() uses. Bounded by
++    // both arrays, and the count of raycasters is exposed: the raycasters and mo->volumes disagreeing
++    // after a volume-list change is the suspected cause of a pick that misses (docs/handoff.md 37).
++    int raycast_volume(const Vec2d &mouse_position) const;
++    int get_raycaster_count() const;
++    void set_operation(MeshBooleanOperation op) { m_operation_mode = op; }
++    MeshBooleanOperation get_operation() const { return m_operation_mode; }
++    void set_delete_input(bool v) { m_diff_delete_input = v; m_inter_delete_input = v; }
++    bool get_delete_input() const { return m_diff_delete_input; }
++    const ModelVolume *get_src_volume() const { return m_src.mv; }
++    const ModelVolume *get_tool_volume() const { return m_tool.mv; }
++    int get_src_index() const { return m_src.volume_idx; }
++    int get_tool_index() const { return m_tool.volume_idx; }
+     void set_src_volume(ModelVolume* mv) { 
+         m_src.mv = mv;
+         if (m_src.mv == m_tool.mv)
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+index 3129315dcc..673e7209b7 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+@@ -15,6 +15,10 @@
+ #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
++#include "slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp" // [ORCAPORT:MCP-3]
++#include "slic3r/GUI/Gizmos/GLGizmosCommon.hpp"     // world_to_screen, for pick_at / screen reporting
++#include "slic3r/GUI/GUI_ObjectList.hpp"            // can_mesh_boolean, the toolbar's own gate
++#include "slic3r/GUI/Camera.hpp"
+ #include "slic3r/GUI/Selection.hpp"
+ 
+ #include "libslic3r/Model.hpp"
+@@ -571,6 +575,141 @@ void raise_top_window(wxWindow *win)
+ 
+ } // namespace
+ 
++// [ORCAPORT:MCP-3] Mesh boolean. This is the one gizmo the fork's other MCP tools could not drive, so
++// the two bugs in docs/handoff.md section 37 could not be reproduced without a human clicking. The
++// tool exposes the picks, the operation and the apply, and reports enough state to tell the two
++// failure modes apart: the gizmo refusing to open (on_is_activable), a pick that lands on the wrong
++// volume (the raycaster), and an operation that runs but produces nothing.
++nlohmann::json vec2_json(const Vec2d &v) { return nlohmann::json::array({v(0), v(1)}); }
++
++GLGizmoMeshBoolean *active_mesh_boolean_gizmo(bool open_if_needed, bool select_object, bool *did_open = nullptr)
++{
++    if (did_open != nullptr)
++        *did_open = false;
++    Plater     *plater = wxGetApp().plater();
++    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
++    if (canvas == nullptr)
++        return nullptr;
++    GLGizmosManager &mgr = canvas->get_gizmos_manager();
++
++    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::MeshBoolean) {
++        Selection &sel = canvas->get_selection();
++        // on_is_activable() wants a full instance with more than one volume selected. Force that only
++        // when asked: opening with select_object=false is how a script finds out whether the natural
++        // selection (a single volume, which a previous boolean leaves behind) still opens the panel.
++        if (select_object && (!sel.is_single_full_instance() || sel.get_volume_idxs().size() < 2)) {
++            int oid = sel.get_object_idx();
++            if (oid < 0)
++                oid = 0;
++            if (oid >= 0 && oid < int(plater->model().objects.size())) {
++                sel.clear();
++                sel.add_object(unsigned(oid), true);
++            }
++        }
++        const bool opened = mgr.open_gizmo(GLGizmosManager::EType::MeshBoolean);
++        if (did_open != nullptr)
++            *did_open = opened;
++        canvas->set_as_dirty();
++        canvas->request_extra_frame();
++    }
++
++    if (mgr.get_current_type() != GLGizmosManager::EType::MeshBoolean)
++        return nullptr;
++    return dynamic_cast<GLGizmoMeshBoolean *>(mgr.get_current());
++}
++
++const char *mesh_boolean_volume_type(const ModelVolume &v)
++{
++    return v.is_model_part()        ? "part"
++         : v.is_negative_volume()   ? "negative"
++         : v.is_modifier()          ? "modifier"
++         : v.is_support_blocker()   ? "blocker"
++         : v.is_support_enforcer()  ? "enforcer"
++                                    : "other";
++}
++
++// The selection/volume facts a diagnosis needs, without touching the gizmo: how the selection gates
++// opening, and each volume's index, name, type, triangle count and screen point. Shared by the state
++// report and the "cannot open" error, so a failed open still says why.
++nlohmann::json mesh_boolean_selection_json(GLCanvas3D *canvas)
++{
++    nlohmann::json out    = nlohmann::json::object();
++    Plater        *plater = wxGetApp().plater();
++    if (plater == nullptr || canvas == nullptr)
++        return out;
++
++    const Selection &sel = canvas->get_selection();
++    out["selection_full_instance"] = sel.is_single_full_instance();
++    out["selection_volume_count"]  = int(sel.get_volume_idxs().size());
++    if (wxGetApp().obj_list() != nullptr)
++        out["can_mesh_boolean"] = wxGetApp().obj_list()->can_mesh_boolean();
++
++    nlohmann::json volumes      = nlohmann::json::array();
++    int            volume_count = -1;
++    const int      oi           = sel.get_object_idx();
++    if (oi >= 0 && oi < int(plater->model().objects.size())) {
++        const ModelObject   *mo = plater->model().objects[oi];
++        volume_count            = int(mo->volumes.size());
++        const int            ii = sel.get_instance_idx();
++        const ModelInstance *mi = (ii >= 0 && ii < int(mo->instances.size())) ? mo->instances[ii] : nullptr;
++        const Camera        &camera = plater->get_camera();
++        for (int i = 0; i < int(mo->volumes.size()); ++i) {
++            const ModelVolume *v     = mo->volumes[i];
++            nlohmann::json     entry = {
++                {"index", i},
++                {"name", v->name},
++                {"type", mesh_boolean_volume_type(*v)},
++                {"triangles", int(v->mesh().its.indices.size())},
++                // Unmerged results are the other half of "the second boolean does nothing": do_boolean()
++                // splits the source with its_split(), which needs shared vertex indices.
++                {"vertices", int(v->mesh().its.vertices.size())},
++                {"patches", int(its_number_of_patches(v->mesh().its))},
++                // 0 = watertight. mcut needs closed solids; an open result makes the NEXT boolean
++                // fail or crash, which is what "a boolean after a boolean" looks like.
++                {"open_edges", int(its_num_open_edges(v->mesh().its))},
++            };
++            if (mi != nullptr) {
++                const Transform3d world  = mi->get_transformation().get_matrix() * v->get_matrix();
++                const Vec3d       center = world * v->mesh().bounding_box().center();
++                entry["center"] = vec3_json(center);
++                entry["screen"] = vec2_json(world_to_screen(camera, center));
++            }
++            volumes.push_back(std::move(entry));
++        }
++    }
++    out["volume_count"] = volume_count;
++    out["volumes"]      = std::move(volumes);
++    return out;
++}
++
++// The panel's own state plus the selection/volume facts. `raycasters_count` next to `volume_count` is
++// the check the handoff asks for: they have to match, or a pick reads the wrong mesh or past the end.
++nlohmann::json mesh_boolean_gizmo_state(GLGizmoMeshBoolean &g, GLCanvas3D *canvas)
++{
++    const char *op = g.get_operation() == MeshBooleanOperation::Union        ? "union"
++                   : g.get_operation() == MeshBooleanOperation::Difference   ? "difference"
++                   : g.get_operation() == MeshBooleanOperation::Intersection ? "intersection"
++                                                                            : "undef";
++
++    nlohmann::json result = {
++        {"operation", op},
++        {"delete_input", g.get_delete_input()},
++        {"src", g.get_src_volume() != nullptr ? g.get_src_volume()->name : std::string()},
++        {"src_index", g.get_src_index()},
++        {"src_picked", g.get_src_volume() != nullptr},
++        {"tool", g.get_tool_volume() != nullptr ? g.get_tool_volume()->name : std::string()},
++        {"tool_index", g.get_tool_index()},
++        {"tool_picked", g.get_tool_volume() != nullptr},
++        // What the Difference/Union/Intersection button's enable test reads.
++        {"button_enabled", g.get_src_volume() != nullptr && g.get_tool_volume() != nullptr},
++        {"raycasters_count", g.get_raycaster_count()},
++    };
++    const nlohmann::json sel = mesh_boolean_selection_json(canvas);
++    for (const auto &[k, v] : sel.items())
++        result[k] = v;
++    return result;
++}
++
+ void OrcaMCPServer::register_gizmo_tools()
+ {
+     register_tool({
+@@ -1617,6 +1756,212 @@ void OrcaMCPServer::register_gizmo_tools()
+             });
+         }
+     });
++
++    // [ORCAPORT:MCP-3] The Mesh boolean gizmo, drivable from a script. Added so the two open bugs in
++    // docs/handoff.md section 37 can be reproduced without a human: it reports the panel's state, the
++    // selection facts that gate opening, and each volume's index/name/type/triangles/screen point, and
++    // it can pick by index (no raycast) or at a screen point (the interactive path) and apply.
++    register_tool(
++        {"mesh_boolean_gizmo",
++         "Drive the Mesh boolean gizmo: open it, set the operation and 'Delete input', pick the source "
++         "and the tool volume, and apply. This is the only gizmo no other MCP tool could drive, so it "
++         "reports everything a diagnosis needs: the panel state, whether the gizmo can open (the "
++         "selection gate), and each volume's index, name, type, triangle count and screen point. A pick "
++         "is either by volume_index (no raycast - the only way to reach a cutter buried inside the part) "
++         "or at screen_x/screen_y (the same ray the interactive click casts), and it reports which volume "
++         "the ray actually reached, so a wrong pick is visible. 'probe_pick' reports which volume a ray "
++         "reaches without changing a pick. Actions: 'open' (select_object=false opens with the current "
++         "selection to test the gate), 'status', 'set_operation' "
++         "(union|difference|intersection), 'set_delete_input' (bool), 'pick_source', 'pick_tool', "
++         "'probe_pick', 'run' (set the mode, pick both volumes by index and apply, in one callback), "
++         "'apply', 'close'.",
++         {{"type", "object"},
++          {"properties",
++           {{"action",
++             {{"type", "string"},
++              {"description",
++               "open | status | set_operation | set_delete_input | pick_source | pick_tool | probe_pick | run | apply | close"}}},
++            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
++            {"operation", {{"type", "string"}, {"description", "union | difference | intersection, for action=set_operation or run."}}},
++            {"delete_input", {{"type", "boolean"}, {"description", "Delete the tool volume after the operation, for action=set_delete_input or run."}}},
++            {"source_index", {{"type", "integer"}, {"description", "For action=run: the source volume's index in 'volumes'."}}},
++            {"tool_index", {{"type", "integer"}, {"description", "For action=run: the tool volume's index in 'volumes'."}}},
++            {"select_object",
++             {{"type", "boolean"},
++              {"description", "For action=open: select the whole object first so the gizmo can activate (default true). "
++                              "false keeps the current selection, which reports whether the natural one still opens the panel."}}},
++            {"volume_index", {{"type", "integer"}, {"description", "For pick_source / pick_tool: pick this volume directly, no raycast."}}},
++            {"screen_x", {{"type", "number"}, {"description", "For pick_source / pick_tool: cast a ray here instead (canvas pixels)."}}},
++            {"screen_y", {{"type", "number"}, {"description", "For pick_source / pick_tool: cast a ray here instead (canvas pixels)."}}}}},
++          {"required", {"action"}}},
++        [](const nlohmann::json &params) -> nlohmann::json {
++            const std::string action = params.value("action", std::string("status"));
++            return run_on_main_thread([action, params]() -> nlohmann::json {
++                Plater     *plater = wxGetApp().plater();
++                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
++                if (canvas == nullptr)
++                    return {{"status", "error"}, {"error", "No 3D canvas"}};
++
++                if (action == "close") {
++                    canvas->reset_all_gizmos();
++                    canvas->set_as_dirty();
++                    return {{"status", "ok"}, {"open", false}, {"action", action}};
++                }
++
++                if (params.contains("object_id")) {
++                    const int oid = params["object_id"].get<int>();
++                    if (oid < 0 || oid >= int(plater->model().objects.size()))
++                        return {{"status", "error"}, {"error", "Invalid object_id"}};
++                    Selection &sel = canvas->get_selection();
++                    sel.clear();
++                    sel.add_object(unsigned(oid), true);
++                }
++
++                bool                opened        = false;
++                const bool          select_object = params.value("select_object", true);
++                GLGizmoMeshBoolean *g             = active_mesh_boolean_gizmo(action == "open", select_object, &opened);
++                if (g == nullptr) {
++                    // Report why: the gate is on_is_activable() = a full instance with more than one
++                    // volume selected, so a selection a feature left behind can refuse the open.
++                    nlohmann::json err = {{"status", "error"},
++                                          {"open", false},
++                                          {"opened_now", opened},
++                                          {"error", "Mesh boolean gizmo is not active. It activates on a full instance with more "
++                                                    "than one volume selected; pass object_id or open with select_object=true."}};
++                    const nlohmann::json sel = mesh_boolean_selection_json(canvas);
++                    for (const auto &[k, v] : sel.items())
++                        err[k] = v;
++                    return err;
++                }
++
++                auto need = [&](const char *key) { return params.contains(key); };
++
++                if (action == "set_operation") {
++                    if (!need("operation"))
++                        return {{"status", "error"}, {"error", "Missing operation (union|difference|intersection)"}};
++                    const std::string o = params["operation"].get<std::string>();
++                    if (o == "union")
++                        g->set_operation(MeshBooleanOperation::Union);
++                    else if (o == "difference")
++                        g->set_operation(MeshBooleanOperation::Difference);
++                    else if (o == "intersection")
++                        g->set_operation(MeshBooleanOperation::Intersection);
++                    else
++                        return {{"status", "error"}, {"error", "Unknown operation: " + o}};
++                } else if (action == "set_delete_input") {
++                    if (!need("delete_input"))
++                        return {{"status", "error"}, {"error", "Missing delete_input (true|false)"}};
++                    g->set_delete_input(params["delete_input"].get<bool>());
++                } else if (action == "pick_source" || action == "pick_tool") {
++                    const bool as_tool = action == "pick_tool";
++                    if (need("volume_index")) {
++                        const int vi = params["volume_index"].get<int>();
++                        if (!g->pick_volume_index(vi, as_tool))
++                            return {{"status", "error"}, {"error", "No such volume index: " + std::to_string(vi)}};
++                    } else if (need("screen_x") && need("screen_y")) {
++                        const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
++                        if (!g->pick_at(pos, as_tool))
++                            return {{"status", "error"}, {"error", "No volume under that screen point"}};
++                    } else {
++                        return {{"status", "error"},
++                                {"error", "pick_source / pick_tool need volume_index, or screen_x and screen_y"}};
++                    }
++                } else if (action == "probe_pick") {
++                    if (!need("screen_x") || !need("screen_y"))
++                        return {{"status", "error"}, {"error", "probe_pick needs screen_x and screen_y"}};
++                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
++                    // Read-only: which volume the ray actually reaches, without changing a pick. Scan
++                    // with it to find the pixel where a cutter is in front of the part.
++                    const int      vi     = g->raycast_volume(pos);
++                    nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
++                    result["status"]      = "ok";
++                    result["open"]        = true;
++                    result["action"]      = action;
++                    result["probe_index"] = vi;
++                    return result;
++                } else if (action == "run") {
++                    // One callback does the whole operation: set the mode, pick both volumes by index
++                    // and apply. A script firing open/pick/apply as separate calls can have them
++                    // interleave on the main thread; this cannot.
++                    if (!need("source_index") || !need("tool_index"))
++                        return {{"status", "error"}, {"error", "run needs source_index and tool_index"}};
++                    if (params.contains("operation")) {
++                        const std::string o = params["operation"].get<std::string>();
++                        if (o == "union")
++                            g->set_operation(MeshBooleanOperation::Union);
++                        else if (o == "difference")
++                            g->set_operation(MeshBooleanOperation::Difference);
++                        else if (o == "intersection")
++                            g->set_operation(MeshBooleanOperation::Intersection);
++                        else
++                            return {{"status", "error"}, {"error", "Unknown operation: " + o}};
++                    }
++                    if (params.contains("delete_input"))
++                        g->set_delete_input(params["delete_input"].get<bool>());
++                    if (!g->pick_volume_index(params["source_index"].get<int>(), false))
++                        return {{"status", "error"}, {"error", "Bad source_index"}};
++                    if (!g->pick_volume_index(params["tool_index"].get<int>(), true))
++                        return {{"status", "error"}, {"error", "Bad tool_index"}};
++
++                    const Selection   &sel = canvas->get_selection();
++                    const int          oi  = sel.get_object_idx();
++                    const ModelObject *mo  = (oi >= 0 && oi < int(plater->model().objects.size()))
++                                                 ? plater->model().objects[oi]
++                                                 : nullptr;
++                    const int  before_volumes = mo != nullptr ? int(mo->volumes.size()) : -1;
++                    const bool applied        = g->perform_operation();
++
++                    nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
++                    result["status"]         = "ok";
++                    result["open"]           = true;
++                    result["action"]         = action;
++                    result["applied"]        = applied;
++                    result["before_volumes"] = before_volumes;
++                    result["after_volumes"]  = mo != nullptr ? int(mo->volumes.size()) : -1;
++                    if (!applied)
++                        result["warning"] = "make_boolean produced no result (MCUT errors are in the app log)";
++                    return result;
++                } else if (action == "apply") {
++                    if (g->get_src_volume() == nullptr || g->get_tool_volume() == nullptr)
++                        return {{"status", "error"}, {"error", "Pick a source and a tool volume first"}};
++
++                    const Selection   &sel = canvas->get_selection();
++                    const int          oi  = sel.get_object_idx();
++                    const ModelObject *mo  = (oi >= 0 && oi < int(plater->model().objects.size()))
++                                                 ? plater->model().objects[oi]
++                                                 : nullptr;
++                    const int before_volumes = mo != nullptr ? int(mo->volumes.size()) : -1;
++                    const int src_triangles  = int(g->get_src_volume()->mesh().its.indices.size());
++
++                    const bool applied = g->perform_operation();
++
++                    nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
++                    result["status"]              = "ok";
++                    result["open"]                = true;
++                    result["action"]              = action;
++                    result["applied"]             = applied;
++                    result["before_volumes"]      = before_volumes;
++                    result["after_volumes"]       = mo != nullptr ? int(mo->volumes.size()) : -1;
++                    result["src_triangles_before"] = src_triangles;
++                    if (!applied)
++                        result["warning"] = "make_boolean produced no result (MCUT errors are in the app log)";
++                    return result;
++                } else if (action != "status" && action != "open") {
++                    return {{"status", "error"}, {"error", "Unknown action: " + action}};
++                }
++
++                nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
++                result["status"] = "ok";
++                result["open"]   = true;
++                result["action"] = action;
++                if (action == "open") {
++                    result["opened_now"]    = opened;
++                    result["select_object"] = select_object;
++                }
++                return result;
++            });
++        }
++    });
+ }
+ 
+ }} // namespace Slic3r::GUI
