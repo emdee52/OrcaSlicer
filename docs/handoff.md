@@ -1508,5 +1508,6 @@ lost and there is nothing new to translate.
 - **Not done.** The Holes panel's `##rim_type` Chamfer/Fillet row (`GLGizmoHoles.cpp`) is still a
   segmented control: it picks the profile of a *hole mouth*, not of a part edge, so it wants its own
   glyph pair rather than these two.
-- **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Not merged - see
-  section 0 for why a branch only merges once the user has tested it in the app.
+- **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Merged `--no-ff` as
+  `db7e763343` (user-verified in the app 2026-10-17: both glyphs read as intended, the mode switches and
+  the tool still dresses an edge).
