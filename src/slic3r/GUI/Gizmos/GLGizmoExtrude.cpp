@@ -40,8 +40,12 @@ constexpr const char *LEGACY_EXTRUDE_NAME = "HoleFill";
 const ColorRGBA HOVER_COLOR { 0.10f, 0.80f, 0.74f, 0.55f };  // teal
 const ColorRGBA PICK_COLOR  { 0.16f, 0.85f, 0.30f, 0.60f };  // green
 const ColorRGBA PRISM_COLOR { 1.00f, 0.55f, 0.00f, 0.55f };  // orange
-// Applied fills, the same red the hole gizmo uses for applied holes.
-const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
+// Applied volumes, coloured by what they DO to the part and drawn at the preview's translucency: 0.80
+// read as a solid block of colour, so it is 0.55 now, the same alpha the orange prism preview uses.
+// The green is the pick's own green - one ramp, and both mean "material this tool is acting on" - and
+// it is exactly the colour the preview would have shown for a positive distance.
+const ColorRGBA ADDED_COLOR  { 0.16f, 0.85f, 0.30f, 0.55f };
+const ColorRGBA REMOVED_COLOR{ 1.00f, 0.15f, 0.15f, 0.55f };
 
 // How far the object is pushed towards the panel background while a face is picked. The fork ghosts
 // it fairly hard; a light ghost is enough to let the green read without hiding the part's shape.
@@ -580,7 +584,8 @@ void GLGizmoExtrude::rebuild_preview()
     m_preview_hover.reset();
     m_preview_pick.reset();
     m_preview_prism.reset();
-    m_preview_applied.reset();
+    m_preview_applied_add.reset();
+    m_preview_applied_cut.reset();
 
     if (m_mode == Mode::ExtrudeFace) {
         // [ORCAPORT:HF-3] Three overlays, in the fork's colours:
@@ -631,8 +636,10 @@ void GLGizmoExtrude::rebuild_preview()
         }
     }
 
-    // Every applied plug, in the same red the hole gizmo marks applied holes with.
-    indexed_triangle_set applied;
+    // Every volume this tool has committed, split by the sign of the distance that made it: a solid
+    // (green) adds material, a cut (red) removes it. The volume TYPE is that sign - create_from_pick()
+    // chose it - so nothing here has to parse a name.
+    indexed_triangle_set added, cut;
     if (const ModelObject *mo = model_object(); mo != nullptr) {
         for (const ModelVolume *v : mo->volumes) {
             if (!is_fill_volume(v))
@@ -642,12 +649,17 @@ void GLGizmoExtrude::rebuild_preview()
             if (!m.isApprox(Transform3d::Identity()))
                 for (stl_vertex &p : part.vertices)
                     p = (m * p.cast<double>()).cast<float>();
-            its_merge(applied, part);
+            indexed_triangle_set &dst = v->type() == ModelVolumeType::NEGATIVE_VOLUME ? cut : added;
+            its_merge(dst, part);
         }
     }
-    if (!applied.indices.empty()) {
-        m_preview_applied.model.init_from(applied);
-        m_preview_applied.model.set_color(APPLIED_COLOR);
+    if (!added.indices.empty()) {
+        m_preview_applied_add.model.init_from(added);
+        m_preview_applied_add.model.set_color(ADDED_COLOR);
+    }
+    if (!cut.indices.empty()) {
+        m_preview_applied_cut.model.init_from(cut);
+        m_preview_applied_cut.model.set_color(REMOVED_COLOR);
     }
 }
 
@@ -990,11 +1002,12 @@ void GLGizmoExtrude::on_render()
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
     // Paint order matters: depth test is off here, so later draws win. Hover underneath, then the
     // picked face, then the solid sitting on it (its inset leaves the green margin showing), then
-    // every fill already committed.
+    // every volume already committed - green where it added material, red where it cut.
     m_preview_hover.model.render(shader);
     m_preview_pick.model.render(shader);
     m_preview_prism.model.render(shader);
-    m_preview_applied.model.render(shader);
+    m_preview_applied_add.model.render(shader);
+    m_preview_applied_cut.model.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));

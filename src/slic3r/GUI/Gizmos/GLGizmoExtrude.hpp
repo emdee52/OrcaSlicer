@@ -197,7 +197,10 @@ private:
     PickingModel m_preview_hover;    // [ORCAPORT:HF-3] the face under the cursor (teal)
     PickingModel m_preview_pick;     // the picked face (green)
     PickingModel m_preview_prism;    // the extrusion for the pick + parameters (orange)
-    PickingModel m_preview_applied;  // the fills already committed (red)
+    // The volumes already committed, split by the sign of the distance that made them: `m_preview_applied_add`
+    // draws the solids (green) and `m_preview_applied_cut` the cuts (red).
+    PickingModel m_preview_applied_add;
+    PickingModel m_preview_applied_cut;
     bool         m_preview_dirty{ true };
 
     const ModelObject* m_old_object{ nullptr };
