@@ -35,6 +35,21 @@ So the only route is a screen capture of the window, cropped to the panel.
 `region=window` skips the crop - for when *where* the panel sits is the question (anchoring, clipping,
 overlap). `save_to_file=true` (default) writes a PNG and returns its path.
 
+## A trap that is worse than failing: the capture can be of the wrong window
+
+The blit copies the screen over the window's rect, so if OrcaSlicer is not in front the image is
+whatever *is* - a screenshot of OrcaSlicer came back showing the code editor, and the panel-background
+numbers taken from it looked plausible enough to nearly be reported. `wxWindow::Raise()` is not enough
+from the MCP worker: it only flashes the taskbar unless the caller is already the foreground process.
+`raise_top_window()` attaches to the foreground thread's input queue, then restores, brings to top,
+focuses and foregrounds the window, which is the documented way to do it from a background process
+(patch `61_UI-2-raise.patch`). Verified by minimising the app from a shell and letting the tool restore
+it by itself.
+
+**Look at the image before measuring it.** Every number this tool produced that mattered was read off a
+capture that had been looked at first; the one time that step was skipped, the measurement was of
+someone else's window.
+
 ## What it found
 
 - the label column was measured from the window's left edge while `SameLine()` wants a window-relative

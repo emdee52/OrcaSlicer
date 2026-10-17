@@ -1387,6 +1387,15 @@ the reference. The one deliberate exception is the mouth of a hole, which has to
 
 **Two size traps, both of which have already bitten:**
 
+- **`ImGuiWrapper::push_toolbar_style()` must come BEFORE `gizmo_push_window_style()`.** It pushes an
+  **opaque** `ImGuiCol_WindowBg` (`COL_WINDOW_BG_DARK` is `(45,45,49)` at alpha 1.0), and the last push
+  wins when `Begin` resolves the window colour. Called after ours it silently removes the panel's
+  alpha, so those panels looked solid while Align & Stack and Support Zones - which never call it -
+  kept `PanelBg`'s transparency. Measured on the panel background: the five opaque panels read
+  `(45,45,49)`, the two correct ones `(38,38,39)` (= `PanelBg` at 0.8 over the canvas). Patch
+  `60_panel-alpha.patch`. Same class of bug as the label column: two widgets setting one value, and the
+  order decides which wins.
+
 - **Clamp any gap or stroke to a minimum pixel width.** A gap that is a fraction of the glyph
   (`0.019·s` for the honeycomb cell wall) is 0.4 px on a 28 px button, and ImGui does not antialias two
   adjacent filled polygons against each other — the gap simply vanishes and the comb stops reading as

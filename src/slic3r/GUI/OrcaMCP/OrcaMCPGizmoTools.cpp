@@ -25,6 +25,10 @@
 
 #include <imgui/imgui.h>
 
+#ifdef __WXMSW__
+    #include <windows.h>
+#endif
+
 #include <wx/utils.h>
 #include <wx/dcscreen.h>
 #include <wx/dcmemory.h>
@@ -529,6 +533,39 @@ bool gizmo_panel_screen_rect(GLCanvas3D *canvas, wxRect &out, std::string &err)
         return false;
     }
     return true;
+}
+
+// [ORCAPORT:UI-2] Bring the window to the front, so the screen blit has anything of ours in it.
+//
+// 🔑 wxWindow::Raise() only flashes the taskbar when the caller is not already the foreground process,
+// and this tool runs from the MCP HTTP worker. The capture then blits whatever IS in front: a
+// screenshot of OrcaSlicer came back showing the code editor, which is worse than failing because the
+// numbers taken from it look plausible. Attaching to the foreground thread's input queue first is the
+// documented way to make SetForegroundWindow work from a background process.
+void raise_top_window(wxWindow *win)
+{
+    if (win == nullptr)
+        return;
+#ifdef __WXMSW__
+    HWND hwnd = reinterpret_cast<HWND>(win->GetHandle());
+    if (hwnd != nullptr) {
+        HWND        fg        = ::GetForegroundWindow();
+        const DWORD fg_thread = fg != nullptr ? ::GetWindowThreadProcessId(fg, nullptr) : 0;
+        const DWORD my_thread = ::GetCurrentThreadId();
+        const bool  attach    = fg_thread != 0 && fg_thread != my_thread;
+        if (attach)
+            ::AttachThreadInput(fg_thread, my_thread, TRUE);
+        ::ShowWindow(hwnd, SW_RESTORE);
+        ::BringWindowToTop(hwnd);
+        ::SetForegroundWindow(hwnd);
+        ::SetFocus(hwnd);
+        if (attach)
+            ::AttachThreadInput(fg_thread, my_thread, FALSE);
+    }
+#else
+    win->Raise();
+#endif
+    win->SetFocus();
 }
 
 } // namespace
@@ -1440,10 +1477,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 if (win == nullptr)
                     return {{"status", "error"}, {"error", "No top-level window"}};
 
-                if (raise) {
-                    win->Raise();
-                    win->SetFocus();
-                }
+                if (raise)
+                    raise_top_window(win);
                 // 🔑 Drive the canvas until the panel's rect SETTLES, not just once. Three reasons,
                 // each of which alone makes a single pass useless:
                 //   - the panel is laid out during the canvas's paint, and the canvas only paints from
