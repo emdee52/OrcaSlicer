@@ -24,10 +24,12 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`9cf2a9def0`** "Merge port/gizmo-fixes: overlay blending,
-  boolean-friendly cutters, right-click to commit, and the PP-5 detector/boolean work" - it carries the
-  nine changes of 2026-10-17 (EF-1b, HF-4..HF-7, PP-2..PP-5; sections 29-37 of `docs/handoff.md`), **two
-  of which are open bugs rather than finished work** (section 37, and item 0 below). Before them,
+- Latest integration commit at handoff: **`21aa42f159`** "Merge port/PP-5-fixes: the teardrop detector
+  banded on vertices and the perforation prism welded" - it closes the two open bugs of the 2026-10-17
+  batch (EF-1b, HF-4..HF-7, PP-2..PP-5; sections 29-37 of `docs/handoff.md`), all user-tested, and adds
+  MCP-3 (`mesh_boolean_gizmo`; see `porting/notes/MCP-3.md`). Before it: **`8b0ffc1c83`** "port: record
+  the port/gizmo-fixes merge", on **`9cf2a9def0`** "Merge port/gizmo-fixes: overlay blending,
+  boolean-friendly cutters, right-click to commit, and the PP-5 detector/boolean work". Before them,
   **`4654027520`** "Merge port/gizmo-colors-perforation-pick: the
   shared overlay scheme and the Perforations pick/adjust/cut rework", on
   **`db7e763343`** "Merge port/ef-mode-icons: the Edge chamfer /
@@ -135,10 +137,10 @@ is ImGui drawn into the GL canvas and nothing else can look at it.
 
 What is actually left, in priority order:
 
-0. **PP-5's two bugs are FIXED on `port/PP-5-fixes`** (off `port/integration` `8b0ffc1c83`; three
-   product commits plus a `port:` docs commit; built, the `libslic3r` suite is 103170/103170, both
-   runtime-verified over MCP). **Awaiting your test; not merged.** `docs/handoff.md` section 37 has
-   the narrative and `porting/notes/PP-5.md` the per-bug detail:
+0. **PP-5's two bugs are DONE and merged** as `21aa42f159` (user-tested 2026-10-17; `libslic3r`
+   suite 103170/103170). `docs/handoff.md` section 37 has the narrative and `porting/notes/PP-5.md`
+   the per-bug detail; MCP-3, the gizmo tool that made the reproducer scriptable, is in
+   `porting/notes/MCP-3.md`:
    - **the teardrop tunnel is detected**: the gate was the circle residual, and the band meant to
      exclude the roof selected faces by centroid, which re-admitted the roof's apex into the refit
      (residual 0.986 against a 0.201 limit). It now bands on the circle's vertices (residual 0.000,

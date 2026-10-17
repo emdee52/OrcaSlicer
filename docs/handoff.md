@@ -1866,6 +1866,6 @@ cmake -B build -DBUILD_TESTS=OFF      # put the tree back the way the build scri
 - Tag a case `[NotWorking]` while it is knowingly red and say why - a hidden case is invisible to
   `ctest`, which is why this section exists at all.
 
-- **Branch state**: `port/PP-5-fixes` off `port/integration` `8b0ffc1c83`; three product commits
-  (`ee9e313d1f` MCP-3, `8f69ee6840` teardrop, `a1aeb336af` boolean) plus a `port:` docs commit.
-  Not merged, not pushed until the user has tested the build (section 0).
+- **Merged** into `port/integration` as `21aa42f159` (user-tested 2026-10-17). Three product
+  commits (`ee9e313d1f` MCP-3, `8f69ee6840` teardrop, `a1aeb336af` boolean) plus the `port:` docs
+  commit; `port/PP-5-fixes` is pushed. Section 37 is closed.
