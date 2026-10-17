@@ -368,7 +368,7 @@ nlohmann::json extrude_gizmo_state(GLGizmoExtrude &g)
         {"radius", g.get_radius()},
         {"hover_valid", g.hover_valid()},
         {"pick_valid", g.pick_valid()},
-        {"height", g.get_extrude_height()},
+        {"distance", g.get_extrude_distance()},
         {"offset", g.get_extrude_offset()},
         {"holes", g.get_extrude_holes()},
         {"both", g.get_extrude_both()},
@@ -1253,14 +1253,15 @@ void OrcaMCPServer::register_gizmo_tools()
          "(default) turns a picked flat face into a solid; cavity_fill plugs a depression (engraving, "
          "watermark, pocket) with a positive volume built from the recessed faces projected up to the "
          "surface fitted around them. Actions: "
-         "'open', 'status', 'set_mode' (extrude_face | cavity_fill), 'set_extrude' (height / offset / "
+         "'open', 'status', 'set_mode' (extrude_face | cavity_fill), 'set_extrude' (distance / offset / "
          "holes / both), 'pick_at' (screen_x/screen_y - click a face to SELECT it), 'clear_pick', "
-         "'create' (commit the picked face as a solid), 'set_radius' (cavity brush width, mm), "
+         "'create' (commit the picked face as a solid, or as a cut when the distance is negative), "
+         "'set_radius' (cavity brush width, mm), "
          "'hover_at' (screen_x/screen_y), 'apply_at' (screen_x/screen_y - pick then create, one call), "
          "'apply' (same, for the face already under the cursor), "
          "'list_fills' (volume index + object-space centre of each volume added), 'remove_fill' "
          "(index), 'clear_all', 'refresh', 'close'. In extrude_face mode nothing is added until "
-         "'create': pick first, then dial the height and offset against the preview.",
+         "'create': pick first, then dial the distance and offset against the preview.",
          {{"type", "object"},
           {"properties",
            {{"action",
@@ -1269,7 +1270,12 @@ void OrcaMCPServer::register_gizmo_tools()
                "open | status | set_mode | set_extrude | pick_at | clear_pick | create | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
             {"mode", {{"type", "string"}, {"description", "extrude_face | cavity_fill, for action=set_mode."}}},
-            {"height", {{"type", "number"}, {"description", "Extrusion height in mm, for action=set_extrude."}}},
+            {"distance",
+             {{"type", "number"},
+              {"description",
+               "Signed distance in mm along the face normal, for action=set_extrude: positive extrudes a solid out "
+               "of the face, negative cuts a pocket into it. `height` is accepted as the old name."}}},
+            {"height", {{"type", "number"}, {"description", "Deprecated alias for distance, for action=set_extrude."}}},
             {"offset", {{"type", "number"}, {"description", "Outline offset in mm (negative shrinks), for action=set_extrude."}}},
             {"holes", {{"type", "boolean"}, {"description", "Extrude only the face's holes, for action=set_extrude."}}},
             {"both", {{"type", "boolean"}, {"description", "Half out of the face, half into the model, for action=set_extrude."}}},
@@ -1325,9 +1331,12 @@ void OrcaMCPServer::register_gizmo_tools()
                     else
                         return {{"status", "error"}, {"error", "Unknown mode: " + m}};
                 } else if (action == "set_extrude") {
-                    // [ORCAPORT:HF-3] The extrude-face parameters.
-                    if (need("height"))
-                        g->set_extrude_height(params["height"].get<double>());
+                    // [ORCAPORT:HF-3] The extrude-face parameters. `height` is the old name of
+                    // `distance` and is still accepted, so older MCP scripts keep working.
+                    if (need("distance"))
+                        g->set_extrude_distance(params["distance"].get<double>());
+                    else if (need("height"))
+                        g->set_extrude_distance(params["height"].get<double>());
                     if (need("offset"))
                         g->set_extrude_offset(params["offset"].get<double>());
                     if (need("holes"))
