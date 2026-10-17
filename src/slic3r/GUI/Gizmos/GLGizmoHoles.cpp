@@ -74,17 +74,20 @@ void me_chamfer(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
     // pieces overlap by half a pixel, because two adjacent fills of the same colour otherwise leave
     // the background visible in the gap between them (the same trap as the honeycomb cell wall).
     const float ov     = 0.5f; // overlap, in pixels
-    const float wl     = p.x + 0.39f * s, wr = p.x + 0.61f * s;
+    // A long 45 deg leg (0.19 of the glyph, half the plate's height) so the chamfer is unmistakable,
+    // and the mouth lands exactly on the shared pattern box: the outer edges of the flare are the same
+    // 0.21 margin every other glyph keeps.
+    const float wl     = p.x + 0.40f * s, wr = p.x + 0.60f * s;
     const float top    = p.y + 0.12f * s; // the top face
-    const float dressY = p.y + 0.25f * s; // where the 45 deg flare meets the wall
-    const float bot    = p.y + 0.54f * s; // the closed bottom
+    const float dressY = p.y + 0.31f * s; // where the 45 deg flare meets the wall
+    const float bot    = p.y + 0.58f * s; // the closed bottom
     // 🔑 Both flares must be in the SAME winding. ImGui's anti-aliased convex fill assumes clockwise
     // order, and a counter-clockwise triangle is filled with its AA fringe on the wrong side, so the
     // two legs of the mouth come out different widths - the hole looked asymmetric. Mirroring a
     // triangle by negating x reverses its winding, which is exactly how the right leg was built.
     dl->AddRectFilled(ImVec2(wl, top), ImVec2(wr, bot), col);
-    const ImVec2 flare_l[3] = {ImVec2(p.x + 0.26f * s, top), ImVec2(wl + ov, top), ImVec2(wl + ov, dressY)};
-    const ImVec2 flare_r[3] = {ImVec2(p.x + 0.74f * s, top), ImVec2(wr - ov, dressY), ImVec2(wr - ov, top)};
+    const ImVec2 flare_l[3] = {ImVec2(p.x + 0.21f * s, top), ImVec2(wl + ov, top), ImVec2(wl + ov, dressY)};
+    const ImVec2 flare_r[3] = {ImVec2(p.x + 0.79f * s, top), ImVec2(wr - ov, dressY), ImVec2(wr - ov, top)};
     dl->AddConvexPolyFilled(flare_l, 3, col);
     dl->AddConvexPolyFilled(flare_r, 3, col);
 }
