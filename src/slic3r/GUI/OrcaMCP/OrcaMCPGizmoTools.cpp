@@ -1259,7 +1259,8 @@ void OrcaMCPServer::register_gizmo_tools()
          "'set_radius' (cavity brush width, mm), "
          "'hover_at' (screen_x/screen_y), 'apply_at' (screen_x/screen_y - pick then create, one call), "
          "'apply' (same, for the face already under the cursor), "
-         "'list_fills' (volume index + object-space centre of each volume added), 'remove_fill' "
+         "'list_fills' (volume index + object-space centre of each volume added, and whether it is a "
+         "negative / cut volume), 'remove_fill' "
          "(index), 'clear_all', 'refresh', 'close'. In extrude_face mode nothing is added until "
          "'create': pick first, then dial the distance and offset against the preview.",
          {{"type", "object"},
@@ -1390,7 +1391,9 @@ void OrcaMCPServer::register_gizmo_tools()
                                 c += p;
                             c /= float(v->mesh().its.vertices.size());
                             const Vec3d center = v->get_matrix() * c.cast<double>();
-                            fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
+                            fills.push_back({{"index", int(i)},
+                                             {"center", {center.x(), center.y(), center.z()}},
+                                             {"negative", v->type() == ModelVolumeType::NEGATIVE_VOLUME}});
                         }
                     }
                     nlohmann::json result = extrude_gizmo_state(*g);

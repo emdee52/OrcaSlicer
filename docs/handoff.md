@@ -1546,8 +1546,8 @@ directions and cavity fill are untouched, and the shape of the prism at a given 
 - **Not done, pre-existing.** Parameters are baked when the face is committed (clear and re-apply to
   change one), and a negative distance together with the *Holes* target cuts the holes' own filled
   outline - empty space, so it removes nothing.
-- **Branch state**: on `port/extrude-distance`, branched from `port/integration`. Not merged until the
-  user has tested it (section 0).
+- **Branch state**: on `port/extrude-distance`, branched from `port/integration`. Merged `--no-ff` as
+  `51be36ff37` (user-tested 2026-10-17 in a preview build that carried it with HF-5 and HF-6).
 
 
 ## 31. HF-5 - a panel flips to the left anchor sooner (branch `port/panel-flip-margin`)
@@ -1574,8 +1574,8 @@ icon cell of the canvas's right edge the panel is anchored at the icon's right e
 - **Verification**: build green, panel rects before and after as above (only the dark theme was needed;
   nothing here is theme dependent). The user's own check is a *resize*: the band of widths at which Holes
   hangs left is now one icon wider than it was.
-- **Branch state**: on `port/panel-flip-margin`, branched from `port/integration`. Not merged until the
-  user has tested it (section 0).
+- **Branch state**: on `port/panel-flip-margin`, branched from `port/integration`. Merged `--no-ff` as
+  `ea6751d660` (user-tested 2026-10-17 in a preview build that carried it with HF-4 and HF-6).
 
 
 ## 32. HF-6 - the Extrude mode row as icon toggles (branch `port/extrude-mode-icons`)
@@ -1608,5 +1608,34 @@ added or lost. This is the third row of its kind: Holes' operations (ME-2), Edge
   partner. The click that switches mode is a user click-test (no synthetic-click tool); the widget is
   `gizmo_icon_toggle`, shared with the Holes, Perforations and Edge chamfer / fillet rows. Dark theme only
   on screen.
-- **Branch state**: on `port/extrude-mode-icons`, branched from `port/integration`. Not merged until the
-  user has tested it (section 0).
+- **Branch state**: on `port/extrude-mode-icons`, branched from `port/integration`. Merged `--no-ff` as
+  `0afb593498` (user-tested 2026-10-17 in a preview build that carried it with HF-4 and HF-5).
+
+
+## 33. HF-7 - the applied Extrude volumes are coloured by what they do (branch `port/extrude-applied-colors`)
+
+A committed volume was drawn as one overlay in the hole gizmo's applied red at alpha 0.80, which reads as
+a solid block of paint and says nothing about what the volume does. It is now **two** overlays, split by
+the sign of the distance that made the volume, at the preview's own translucency (0.55 - the alpha the
+orange prism uses): **green** for a solid that adds material, **red** for a cut that removes it.
+
+- **The split is the volume TYPE, not a name parse.** `create_from_pick()` already chooses `MODEL_PART`
+  vs `NEGATIVE_VOLUME` from the sign (HF-4), so `rebuild_preview()` sorts on
+  `v->type() == ModelVolumeType::NEGATIVE_VOLUME` into `m_preview_applied_add` / `m_preview_applied_cut`,
+  and `on_render()` draws both.
+- **The green is the pick's own green** (`PICK_COLOR`'s RGB): one ramp, and the two share a meaning -
+  "material this tool is acting on". It is also what the preview would have shown for a positive
+  distance, so the applied colour does not jump when the volume is committed.
+- **Cavity fill lands in green as well**: it commits a positive `MODEL_PART`, and by material it does add.
+- **MCP**: `list_fills` now reports `negative` per fill volume, so the sign is observable from a script -
+  which is how this change was verified.
+- **Verification**: a 20 mm cube scaled 4x (so the overlays are large on screen), `+12` top-to-bottom
+  through MCP: `+12` draws a **green** slab and `-12` a **red** pocket, and in both captures the plate's
+  own "snapmaker" text and grid read *through* the overlay (that is the translucency, checked, not
+  assumed). `list_fills` reports `negative: false` then `true`. Captured with `ui_screenshot` region=window,
+  dark theme.
+- **Left alone deliberately**: the orange prism preview (that is "what you are about to make" - the user's
+  "yellow highlight"), and the other gizmos' applied red at 0.80 (each has its own constant, and a hole
+  ring or a rim dress has no sign to colour by).
+- **Branch state**: on `port/extrude-applied-colors`, branched from `port/integration`. Not merged until
+  the user has tested it (section 0).
