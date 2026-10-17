@@ -265,6 +265,62 @@ bool extend_feature_edge(const indexed_triangle_set &its, const std::vector<std:
     return true;
 }
 
+// [ORCAPORT:EF-1] The two mode glyphs: the shared plate (a part face, gizmo_glyph_plate's rect, its
+// rounding and its stroke) with ONE corner dressed - a 45 degree cut for chamfer, a radius for
+// fillet. So the pair reads with the other fork panels' icons.
+//
+// 🔑 They must differ by GEOMETRY alone. At rest an idle icon is one flat ink colour (docs/handoff.md
+// section 25), so the corner cannot be tinted the way the toolbar icon tints its fillet arc, and the
+// dressing has to be large enough to still curve visibly at 28 px.
+constexpr float EDGE_GLYPH_CORNER = 0.36f; // cut leg / radius, as a share of the plate side
+
+// Appends `seg` + 1 points on the arc from a0 to a1 (degrees; screen axes have y down, so the order
+// used below runs clockwise, which is what ImGui's anti-aliased convex fill assumes).
+int push_arc(ImVec2 *out, int n, const ImVec2 &c, float r, float a0, float a1, int seg)
+{
+    for (int i = 0; i <= seg; ++i) {
+        const float a = float((a0 + (a1 - a0) * double(i) / double(seg)) * PI / 180.);
+        out[n++] = ImVec2(c.x + r * std::cos(a), c.y + r * std::sin(a));
+    }
+    return n;
+}
+
+// Three plate corners as drawn, the top-right one dressed. CONVEX either way - a cut is a pentagon,
+// a radius is that pentagon with the chord bowed - so AddConvexPolyFilled is enough (this ImGui has
+// no concave fill, see the me_chamfer note in GLGizmoHoles.cpp).
+void edge_dress_corner_glyph(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col, bool fillet)
+{
+    const float l = p.x + 0.12f * s, r = p.x + 0.88f * s; // the plate rect
+    const float t = p.y + 0.12f * s, b = p.y + 0.88f * s;
+    const float k   = 0.06f * s;                    // plate corner rounding
+    const float leg = EDGE_GLYPH_CORNER * (r - l);  // how far the dressing reaches along each edge
+
+    ImVec2 pts[24];
+    int    n = 0;
+    n = push_arc(pts, n, ImVec2(l + k, t + k), k, 180.f, 270.f, 3); // top-left
+    if (fillet)
+        n = push_arc(pts, n, ImVec2(r - leg, t + leg), leg, 270.f, 360.f, 10);
+    else {
+        pts[n++] = ImVec2(r - leg, t); // the cut
+        pts[n++] = ImVec2(r, t + leg);
+    }
+    n = push_arc(pts, n, ImVec2(r - k, b - k), k, 0.f, 90.f, 3);   // bottom-right
+    n = push_arc(pts, n, ImVec2(l + k, b - k), k, 90.f, 180.f, 3); // bottom-left
+
+    dl->AddConvexPolyFilled(pts, n, (col & ~IM_COL32_A_MASK) | (66u << IM_COL32_A_SHIFT));
+    dl->AddPolyline(pts, n, col, ImDrawFlags_Closed, kGizmoGlyphStroke * s);
+}
+
+void edge_dress_chamfer_glyph(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    edge_dress_corner_glyph(dl, p, s, col, false);
+}
+
+void edge_dress_fillet_glyph(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+{
+    edge_dress_corner_glyph(dl, p, s, col, true);
+}
+
 } // namespace
 
 GLGizmoEdgeDress::GLGizmoEdgeDress(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id)
@@ -1090,15 +1146,22 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
 
 void GLGizmoEdgeDress::render_panel_body()
 {
-    // Chamfer | Fillet: a small exclusive choice, so segmented (section 28: never a dropdown, never
-    // radios). Drawn without a caption, like the Extrude panel's mode row.
+    // Chamfer | Fillet as two icon toggles with the name on hover, the same convention as the Holes
+    // panel's operation row (section 28): the two modes are one word apart in a row that also has to
+    // hold the size slider, so the drawing carries the meaning.
     {
-        const std::string c = m_desc.at("chamfer").utf8_str().data();
-        const std::string f = m_desc.at("fillet").utf8_str().data();
-        const char       *labels[] = {c.c_str(), f.c_str()};
-        const int         sel      = gizmo_segment("##mode", labels, 2, m_mode == EdgeDressMode::Fillet ? 1 : 0);
-        if (sel >= 0)
-            set_mode(sel == 0 ? EdgeDressMode::Chamfer : EdgeDressMode::Fillet);
+        void (*const drawers[2])(ImDrawList *, const ImVec2 &, float, ImU32) =
+            {edge_dress_chamfer_glyph, edge_dress_fillet_glyph};
+        const EdgeDressMode modes[2]   = {EdgeDressMode::Chamfer, EdgeDressMode::Fillet};
+        // The names the buttons already carried, so they are translated and cost nothing new.
+        const std::string   names[2] = {m_desc.at("chamfer").utf8_str().data(),
+                                        m_desc.at("fillet").utf8_str().data()};
+        for (int i = 0; i < 2; ++i) {
+            if (i > 0)
+                ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
+            if (gizmo_icon_toggle(names[i].c_str(), m_mode == modes[i], names[i].c_str(), drawers[i]))
+                set_mode(modes[i]);
+        }
     }
 
     // Only the size row has a caption, so the label column is measured on that one.
