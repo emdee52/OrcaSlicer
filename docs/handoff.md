@@ -1511,3 +1511,40 @@ lost and there is nothing new to translate.
 - **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Merged `--no-ff` as
   `db7e763343` (user-verified in the app 2026-10-17: both glyphs read as intended, the mode switches and
   the tool still dresses an edge).
+
+
+## 30. HF-4 - the Extrude face distance is signed (branch `port/extrude-distance`)
+
+The Extrude tool's **Height** is now **Distance**, and it is *signed*: a positive value grows a solid out
+of the picked face (what Height did), a negative one adds the very same prism as a **negative volume**,
+so it cuts a pocket into the model. Nothing else in the tool moved - the pick, the offset, Both
+directions and cavity fill are untouched, and the shape of the prism at a given magnitude is identical.
+
+- **The signed mapping.** `picked_prism()` builds the prism in the face's flattened frame, where `+z`
+  grows out of the face: `height = |d|` and `z0 = both ? face_z - 0.5·|d| : face_z + min(d, 0)`. The same
+  code path therefore puts the solid on either side of the surface, and `SurfaceExtrude::extrude_outline()`
+  - which rejects `height <= 0` - never sees a negative. A distance of exactly 0 builds nothing and the
+  panel says which way the sign goes, rather than adding an empty volume.
+- **The sign picks the volume type.** `create_from_pick()` adds a `ModelVolumeType::NEGATIVE_VOLUME` for
+  `!both && d < 0`, the same type the Holes, Edge dress and Perforations gizmos use, and a `MODEL_PART`
+  otherwise. *Both directions* always straddles the face, so it ignores the sign and always produces a
+  solid. The volume is named `Extrude#<id>` either way, so `is_fill_volume()` still claims it: it counts
+  as applied, is what the red preview draws, and right-click / `clear_all` removes it.
+- **Bounds.** `EXTRUDE_DISTANCE_MIN/MAX = -50 / 200` mm. The negative side only has to reach through a
+  real part, which is what fixes its bound; the typed field beside the slider sets a precise value.
+- **MCP.** `extrude_gizmo`'s `set_extrude` takes `distance`, still accepts `height` as the old name, and
+  `status` reports `distance`. ⚠️ **A renamed MCP parameter is not callable from a session that started
+  before the rename**: the client keeps the tool list it fetched at session start, and it drops an
+  unknown property *silently* - the call returns `ok` with the value unchanged. Measured 2026-10-17:
+  `set_extrude {distance: -7}` left the distance at -5, while `{height: -7}` applied it.
+- **Verification.** Build green. On `20mm_cube.obj` through MCP: pick the -Y face and `create` with
+  `distance = -5` reports the fill's object-space centre at y = **-7.5**, i.e. a 5 mm prism inside a cube
+  that spans ±10; the old `height = +5` reports **-12.5**, outside it. The panel was read back at 1x in
+  the app and shows `Distance -5.00`. The volume *type* is not exposed by any MCP tool, and
+  `export_gcode` and `get_print_estimate` both hang in this build (untouched here and pre-existing), so
+  what remains is the user's click-test: the pocket is visible on the face the moment it is applied.
+- **Not done, pre-existing.** Parameters are baked when the face is committed (clear and re-apply to
+  change one), and a negative distance together with the *Holes* target cuts the holes' own filled
+  outline - empty space, so it removes nothing.
+- **Branch state**: on `port/extrude-distance`, branched from `port/integration`. Not merged until the
+  user has tested it (section 0).
