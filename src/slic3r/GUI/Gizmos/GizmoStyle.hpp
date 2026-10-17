@@ -521,9 +521,16 @@ inline void gizmo_hint(const char *text, GizmoCol col = GizmoCol::TextDim)
 }
 
 // The narrow panel width, in the same units the gizmo panels are laid out in. One place to change it.
+//
+// 🔑 This is Support Zones' own expression, promoted to the standard: the width in FONT HEIGHTS, with a
+// floor so a very small font cannot squeeze a panel into nothing. It replaces a fixed 360 at the
+// reference font, which was proportionally wider than everything else in the fork (360/13.5 = 26.7 font
+// heights against Support Zones' 22) and made every slider in the migrated panels about a third wider
+// than the one the owner was comparing them with. Expressing it in font heights also means the panel
+// keeps its proportions at any font or DPI, which a pixel width does not.
 inline float gizmo_panel_width()
 {
-    return 360.f * (ImGui::GetFontSize() / 13.5f);
+    return std::max(380.f, 22.f * gizmo_u());
 }
 
 }} // namespace Slic3r::GUI

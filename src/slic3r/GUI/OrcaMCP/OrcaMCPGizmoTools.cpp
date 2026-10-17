@@ -521,17 +521,18 @@ bool gizmo_panel_screen_rect(GLCanvas3D *canvas, wxRect &out, std::string &err)
         return false;
     }
     const wxPoint origin = gl->GetScreenPosition();
-    out = wxRect(int(std::lround(origin.x + p.x)), int(std::lround(origin.y + p.y)),
-                 int(std::lround(p.w)), int(std::lround(p.h)));
 
-    // The canvas must be the size ImGui was told about, or the offset above is in the wrong space.
-    const Size cnv = canvas->get_canvas_size();
-    const float disp_w = ImGui::GetIO().DisplaySize.x;
-    if (disp_w > 1.f && std::abs(disp_w - float(cnv.get_width())) > 1.5f) {
-        err = "ImGui display size does not match the canvas (" + std::to_string(int(disp_w)) + " vs " +
-              std::to_string(cnv.get_width()) + ")";
-        return false;
-    }
+    // ImGui coordinates are in the space Orca last handed it - set_display_size(get_canvas_size()) - so
+    // when the canvas has been resized since (restoring the window from minimised does it every time)
+    // the ratio is what converts, not equality. Aborting on a mismatch is what made three captures out
+    // of seven come back as errors while the window was still settling.
+    const Size  cnv    = canvas->get_canvas_size();
+    const float disp_w = ImGui::GetIO().DisplaySize.x, disp_h = ImGui::GetIO().DisplaySize.y;
+    const float sx = disp_w > 1.f ? float(cnv.get_width()) / disp_w : 1.f;
+    const float sy = disp_h > 1.f ? float(cnv.get_height()) / disp_h : 1.f;
+
+    out = wxRect(int(std::lround(origin.x + p.x * sx)), int(std::lround(origin.y + p.y * sy)),
+                 int(std::lround(p.w * sx)), int(std::lround(p.h * sy)));
     return true;
 }
 

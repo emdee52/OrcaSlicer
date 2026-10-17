@@ -51,4 +51,16 @@ were measured pixel by pixel. The user then confirmed it in the app (2026-10-17)
 be captured: Hole walls' strengthening mode (nothing in the MCP surface can click into it) and the Move
 gizmo (not part of this migration).
 
+## Later changes to the same layer
+
+- **Panel alpha** (patch `60_panel-alpha.patch`, merged): `gizmo_push_window_style()` has to be pushed
+  *after* `ImGuiWrapper::push_toolbar_style()`, which pushes an opaque `WindowBg` and won at `Begin`;
+  see section 28.
+- **Panel width** (patch `62_panel-width.patch`): one expression for the whole fork,
+  `max(380, 22 font heights)`, replacing a fixed 360 at the reference font. The sliders were about a
+  third wider than Support Zones' because of it. Two rows were sized for the wider panel and changed
+  with it (Holes' head row, Hole walls' strengthening buttons); see section 28.
+- **`hover` on the icons**: both icon rows take their names as tooltips from msgids that already
+  existed, so none of this added a translatable string.
+
 GUI only: no config keys, no `.3mf` or profile impact, no msgid changed.
