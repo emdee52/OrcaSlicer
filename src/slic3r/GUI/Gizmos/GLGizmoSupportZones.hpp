@@ -152,6 +152,11 @@ private:
         // 🔑 El testigo del candado: el `offset` que el gizmo le dejó puesto al volumen. Si ya no
         // coincide, alguien lo movió por fuera.
         Vec3d     lock_offset   { Vec3d::Zero() };
+        // [ORCAPORT:SU-17] Overhang-only brush and the threshold it was painted with. A gesture
+        // without these keys (anything saved before SU-17) repaints with the filter OFF, i.e.
+        // exactly as stored.
+        bool      overhang_only { false };
+        float     overhang_cut_deg { 30.f };
     };
     static std::string gesture_to_json(const ZoneGesture &g);
     static bool        gesture_from_json(const std::string &text, ZoneGesture &out);
@@ -669,6 +674,11 @@ private:
     std::vector<StumpSpot> m_extra_stumps;
     bool  m_stump_pick_mode = false;
     float m_stump_size_mm   = 8.f;
+// [ORCAPORT:SU-17] Brush filter: mark only faces leaning past `m_paint_cut_deg`, which is frozen
+// into the gesture at paint time so reopening a zone repaints it identically. On by default, as in
+// the fork; a gesture saved before SU-17 loads with it off and is unchanged.
+bool  m_paint_overhang_only = true;
+float m_paint_cut_deg       = 30.f;
     // 🔑 Altura FIJA y no un mando (decisión suya): la altura de un tocón no es algo que se juzgue
     // mirándola, sólo tiene que dar unas cuantas capas de imán y de pie. 2 mm son 6 capas a 0.32.
     static constexpr double STUMP_HEIGHT_MM = 2.0;
