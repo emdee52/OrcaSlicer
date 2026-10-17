@@ -1,4 +1,5 @@
 #include "GLGizmoMove.hpp"
+#include "GizmoStyle.hpp" // [ORCAPORT:PP-2] the shared 3D overlay colours
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Shortcuts.hpp"
@@ -742,7 +743,7 @@ void GLGizmoMove3D::update_face_highlight(const Vec2d& mouse_pos)
             indexed_triangle_set patch = build_coplanar_patch(hover_mv, region, m_face_cache, 0.10f);
             if (!patch.indices.empty()) {
                 m_face_highlight.init_from(patch);
-                m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+                m_face_highlight.set_color(gizmo_surface_colour());
             }
         }
 

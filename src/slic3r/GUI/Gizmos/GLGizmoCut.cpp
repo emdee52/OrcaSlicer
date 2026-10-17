@@ -1,4 +1,5 @@
 #include "GLGizmoCut.hpp"
+#include "GizmoStyle.hpp" // [ORCAPORT:PP-2] the shared 3D overlay colours
 #include "slic3r/GUI/GLCanvas3D.hpp"
 
 #include <cmath>
@@ -1444,7 +1445,7 @@ void GLGizmoCut3D::render_shape_highlight()
 
         if (!combined.indices.empty()) {
             m_shape_highlight.init_from(combined);
-            m_shape_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+            m_shape_highlight.set_color(gizmo_surface_colour());
         }
     }
 
@@ -3230,7 +3231,7 @@ void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
     if (highlight.indices.empty())
         return;
     m_face_highlight.init_from(highlight);
-    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
+    m_face_highlight.set_color(gizmo_surface_colour());
 }
 
 bool GLGizmoCut3D::gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal)

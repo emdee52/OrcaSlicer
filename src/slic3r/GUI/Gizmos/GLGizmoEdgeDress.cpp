@@ -36,10 +36,13 @@ constexpr const char *EDGE_CHAMFER_NAME = "EdgeChamfer";
 constexpr const char *EDGE_FILLET_NAME  = "EdgeFillet";
 constexpr const char *EDGE_LOOP_NAME    = "EdgeLoop";
 
+// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp): the edge under the cursor is
+// what you would dress, so it is yellow (the fork's "proposal" colour), and an applied feature is always
+// a NEGATIVE volume here, so it is the scheme's cut red. Candidates stay blue.
 const ColorRGBA ALL_COLOR{ 0.25f, 0.70f, 1.00f, 0.40f };
-const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
+const ColorRGBA HOVER_COLOR   = gizmo_proposed_colour();
 // Applied features, the same red the hole gizmo uses for applied holes.
-const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
+const ColorRGBA APPLIED_COLOR = gizmo_cut_colour();
 
 // Chamfer leg / fillet radius, in mm, that the panel offers.
 constexpr double EDGE_SIZE_MIN = 0.5;
