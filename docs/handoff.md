@@ -1511,3 +1511,31 @@ lost and there is nothing new to translate.
 - **Branch state**: on `port/ef-mode-icons`, branched from `port/integration`. Merged `--no-ff` as
   `db7e763343` (user-verified in the app 2026-10-17: both glyphs read as intended, the mode switches and
   the tool still dresses an edge).
+
+
+## 31. HF-5 - a panel flips to the left anchor sooner (branch `port/panel-flip-margin`)
+
+The anchor rule from UI-1 (section 27) - left under the icon while the panel fits, hung to the left of the
+icon once it would run past the canvas edge - flipped only on a genuine overrun. A panel that came *close*
+to the edge therefore spent a band of widths butted up against it, which is what the owner reported as
+wrong on the Holes tool ("it does not touch the edge but is very close to it"). The test is now
+`gizmo_panel_near_right_edge()` in `GizmoStyle.hpp`, with `kGizmoPanelEdgeMargin = 1.0` icon: within one
+icon cell of the canvas's right edge the panel is anchored at the icon's right edge instead.
+
+- **Measured**, window 2552 px wide, every fork panel 396 px (**screen x**, from `ui_screenshot`, which
+  reports the panel's own rect): Holes 2137, Hole walls 2085, Support Zones 2033, Align & Stack 1981,
+  Perforations 1945, Extrude 1893, Edge dress 1841. Holes therefore sat `2552 - (2137 + 396)` = **19 px**
+  from the edge, the next one (Hole walls) **71 px**. One icon cell is ~33 px of icon plus its spacing
+  here, so one icon flips **Holes and nothing else**, which is the wanted effect; two icons would start
+  moving Hole walls as well.
+- **After**: Holes reports x = **1774** with its right edge at 1774 + 396 = **2170**, which is its icon's
+  right edge (icon left 2137 + 33) - it hangs to the left of its own icon now. The other six panels report
+  *exactly* their previous x, so nothing else moved at this window size.
+- **One knob, one helper.** The four panels that had the condition copy-pasted (Holes, Edge dress, Extrude,
+  Perforations) now share the helper, and the margin is the single constant - in icon cells, so it scales
+  with the toolbar rather than with the font, and every caller moves together.
+- **Verification**: build green, panel rects before and after as above (only the dark theme was needed;
+  nothing here is theme dependent). The user's own check is a *resize*: the band of widths at which Holes
+  hangs left is now one icon wider than it was.
+- **Branch state**: on `port/panel-flip-margin`, branched from `port/integration`. Not merged until the
+  user has tested it (section 0).
