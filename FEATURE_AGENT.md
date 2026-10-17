@@ -26,6 +26,24 @@ Run the whole loop **with the user**, and agree the plan before writing code:
    This is the authority for the feature workflow: the generic "do not commit unless asked"
    rule elsewhere does not apply here - committing at verified milestones is expected.
 
+## One branch, one build, per batch
+
+**When the user asks for several changes in one go - a colour scheme across gizmos, a gizmo
+rework plus its follow-ups, a handful of unrelated one-liners - do them on ONE branch, build
+ONCE, verify the batch together, and report it together.**
+
+- Branch once off the integration branch (`port/<batch-id>`, or the name the user gave the
+  batch), make every change in it, then build.
+- Commit **per logical change inside the branch**, and keep the docs/patch commits separate, so
+  the history and any patch series stay readable. The commits are what carry traceability; the
+  branches are not.
+- One feature per `port/<id>` branch is still right when the user asks for the features
+  separately or hands them over at different times. It exists for traceability, **not** for
+  extra build cycles: a build is a couple of minutes of machine time and, worse, a test round of
+  the user's. Never spend a second build on something that could have ridden along the first.
+- Corollary: when a batch is planned and agreed, gather **all** the open questions first and ask
+  them together. Each round trip costs the user a review, and each premature build costs a build.
+
 ## Feature rules
 
 - Features are **opt-in** and behavior-neutral at defaults: with the feature's options at

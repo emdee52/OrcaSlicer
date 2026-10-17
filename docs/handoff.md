@@ -1637,5 +1637,6 @@ orange prism uses): **green** for a solid that adds material, **red** for a cut 
 - **Left alone deliberately**: the orange prism preview (that is "what you are about to make" - the user's
   "yellow highlight"), and the other gizmos' applied red at 0.80 (each has its own constant, and a hole
   ring or a rim dress has no sign to colour by).
-- **Branch state**: on `port/extrude-applied-colors`, branched from `port/integration`. Not merged until
-  the user has tested it (section 0).
+- **Branch state**: on `port/extrude-applied-colors`, branched from `port/integration`. Merged `--no-ff`
+  as `b3658fd246` (user-tested 2026-10-17; the same batch then carried the shared colour scheme in
+  section 34).
