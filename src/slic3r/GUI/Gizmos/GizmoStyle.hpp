@@ -533,6 +533,25 @@ inline float gizmo_panel_width()
     return std::max(380.f, 22.f * gizmo_u());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// [ORCAPORT:HF-5] Where a fork panel hangs.
+//
+// A fork panel is anchored left, under its own icon. Once it would come within one icon of the canvas's
+// right edge, it is anchored at the icon's RIGHT edge instead and hangs to the left, so its right edge
+// stays under its icon and it never has to be slid along the canvas edge.
+//
+// 🔑 The margin is the point of the helper. Testing only `x + width > canvas_width` flips the panel the
+// moment it would genuinely overrun, which means it first spends a band of widths hugging the edge - the
+// state that reads as broken. One icon cell is the unit: it scales with the toolbar, so the band is the
+// same visual distance at any DPI. Raise it here and every panel that calls this moves together.
+// ─────────────────────────────────────────────────────────────────────────────
+constexpr float kGizmoPanelEdgeMargin = 1.0f; // icons
+
+inline bool gizmo_panel_near_right_edge(float panel_x, float panel_width, float canvas_width, float icon_width)
+{
+    return panel_width > 0.f && panel_x + panel_width + kGizmoPanelEdgeMargin * icon_width > canvas_width;
+}
+
 }} // namespace Slic3r::GUI
 
 #endif

@@ -1119,7 +1119,8 @@ void GLGizmoEdgeDress::on_render_input_window(float x, float y, float bottom_lim
     // icon. Width 0 skips the clamp, which only makes sense for a left edge.
 #if BBS_TOOLBAR_ON_TOP
     float right = x + m_parent.get_gizmos_manager().get_scaled_icons_size();
-    if (last_input_window_width > 0.f && x + last_input_window_width > m_parent.get_canvas_size().get_width())
+    if (gizmo_panel_near_right_edge(x, last_input_window_width, m_parent.get_canvas_size().get_width(),
+                                    m_parent.get_gizmos_manager().get_scaled_icons_size()))
         GizmoImguiSetNextWIndowPos(right, y, 0.f, 0.f, ImGuiCond_Always, 1.0f, 0.0f);
     else
         GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
