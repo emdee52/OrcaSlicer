@@ -23,6 +23,7 @@
 
 #include "GLGizmoBase.hpp"
 #include "GLGizmosCommon.hpp"
+#include "GizmoStyle.hpp"   // [ORCAPORT:HF-3] the shared panel widget layer
 
 #include "libslic3r/HoleShapes.hpp"
 #include "libslic3r/Model.hpp"
@@ -31,6 +32,7 @@
 #include <array>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace Slic3r {
@@ -55,6 +57,13 @@ public:
     void   set_mode(Mode m);
     double get_radius() const { return m_radius; }
     void   set_radius(double radius);
+    // [ORCAPORT:HF-3] Click a face to PICK it; Extrude commits. `apply_hovered` and `apply_at` are
+    // kept as aliases so MCP scripts written before the rework still work: they now pick, then
+    // commit, in one call.
+    bool   pick_at(const Vec2d& screen_pos);
+    void   clear_pick();
+    bool   pick_valid() const { return m_pick.valid; }
+    bool   create_from_pick();
     double get_extrude_height() const { return m_extrude_height; }
     void   set_extrude_height(double h);
     double get_extrude_offset() const { return m_extrude_offset; }
@@ -105,13 +114,60 @@ private:
     double       volume_scale(const ModelVolume* mv) const;
     void         update_hover(const Vec2d& screen_pos);
     void         clear_hover();
+
+    // [ORCAPORT:HF-3] The PICK. Clicking a face selects it; Height/Offset then reshape the preview
+    // and nothing is committed until the panel's Extrude button.
+    //
+    // Everything that does NOT depend on Height/Offset is computed once, here: the face's flat frame
+    // (a pure rotation bringing its normal to +Z), the region's outline and its holes. Dragging a
+    // slider then only re-runs the (cheap) prism build, which is what keeps the live preview smooth
+    // on a dense mesh - computing normals + neighbours + region + outline per frame would not be.
+    struct Pick
+    {
+        bool               valid{ false };
+        const ModelVolume* mv{ nullptr };
+        int                facet{ -1 };
+        Transform3d        to_flat{ Transform3d::Identity() };  // object space -> face-up frame
+        ExPolygons         outline;   // the whole coplanar face
+        ExPolygons         holes;     // only its holes, each one filled
+        double             face_z{ 0. };
+    };
+    Pick m_pick;
+    // The same derivation, into a caller-owned Pick: the hover highlight needs the geometry too, and
+    // must not disturb what the user has already picked.
+    bool make_pick(const Hover& hover, Pick* out) const;
+    bool build_pick(const Hover& hover);
+    void invalidate_pick();
+    // The prism for the current pick + parameters, in object space. Empty with `why` set when the
+    // pick has no usable outline or the offset eats it.
+    indexed_triangle_set picked_prism(std::string* why = nullptr) const;
+    // Why the current pick cannot be extruded, recomputed with the preview (not per frame: the panel
+    // reads it, and building the prism twice a frame on a dense mesh is exactly what we avoid).
+    std::string m_pick_why;
+    // The flat slab that renders the outline as a highlighted surface, in object space.
+    indexed_triangle_set face_slab(const ExPolygons& outline, const Transform3d& to_flat, double face_z) const;
+
+    // [ORCAPORT:HF-3] Ghost: dim the object while a face is picked, so the highlight reads. Same
+    // discipline as Support Zones: ALWAYS restore first, or a second call saves an already-tinted
+    // colour as "the original" and the scene fades a little more on every refresh.
+    void apply_ghost();
+    void restore_ghost();
+    std::map<std::tuple<int, int, int>, ColorRGBA> m_saved_colors;
+
+    // Facet normals and neighbours, cached per volume: they are O(mesh) and the hover needs them on
+    // every facet change. Invalidated when the volume changes or its mesh size changes.
+    const std::vector<Vec3f>*   cached_normals(const ModelVolume* mv) const;
+    const std::vector<Vec3i32>* cached_neighbors(const ModelVolume* mv) const;
+    mutable const ModelVolume*  m_cache_mv{ nullptr };
+    mutable size_t              m_cache_verts{ 0 };
+    mutable size_t              m_cache_tris{ 0 };
+    mutable std::vector<Vec3f>   m_cache_normals;
+    mutable std::vector<Vec3i32> m_cache_neighbors;
+
     // The plug for the hovered face, or for a whole brush stroke, in object space; empty when there
     // is nothing to fill.
     indexed_triangle_set fill_mesh(const Hover& hover) const;
     indexed_triangle_set fill_mesh(const std::vector<Hover>& seeds) const;
-    // [ORCAPORT:HF-3] The prism for the hovered face, in object space. Empty, with `why` filled in,
-    // when the face has no usable outline or the offset eats the shape.
-    indexed_triangle_set face_extrude_mesh(const Hover& hover, std::string* why = nullptr) const;
     void                 record_stroke_sample();
     void                 commit_stroke();
     // Volume index of an applied plug that already covers `hit_world`, or -1.
@@ -135,8 +191,10 @@ private:
     bool         m_painting{ false };
     std::vector<Hover> m_stroke;
 
-    PickingModel m_preview;
-    PickingModel m_preview_applied;
+    PickingModel m_preview_hover;    // [ORCAPORT:HF-3] the face under the cursor (teal)
+    PickingModel m_preview_pick;     // the picked face (green)
+    PickingModel m_preview_prism;    // the extrusion for the pick + parameters (orange)
+    PickingModel m_preview_applied;  // the fills already committed (red)
     bool         m_preview_dirty{ true };
 
     const ModelObject* m_old_object{ nullptr };

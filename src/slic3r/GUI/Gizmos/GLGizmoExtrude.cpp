@@ -34,9 +34,18 @@ namespace {
 constexpr const char *EXTRUDE_NAME        = "Extrude";
 constexpr const char *LEGACY_EXTRUDE_NAME = "HoleFill";
 
-const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
-// Applied plugs, the same red the hole gizmo uses for applied holes.
+// [ORCAPORT:HF-3] The highlight colours, lifted from the fork's Align & Construct preview so the two
+// tools read the same: teal is "the face under your cursor", green is "the face you picked", orange
+// is "the solid you are about to make". Alpha is part of the value - these are overlays.
+const ColorRGBA HOVER_COLOR { 0.10f, 0.80f, 0.74f, 0.55f };  // teal
+const ColorRGBA PICK_COLOR  { 0.16f, 0.85f, 0.30f, 0.60f };  // green
+const ColorRGBA PRISM_COLOR { 1.00f, 0.55f, 0.00f, 0.55f };  // orange
+// Applied fills, the same red the hole gizmo uses for applied holes.
 const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
+
+// How far the object is pushed towards the panel background while a face is picked. The fork ghosts
+// it fairly hard; a light ghost is enough to let the green read without hiding the part's shape.
+constexpr float GHOST_MIX = 0.62f;
 
 // Brush reach, in world mm, that the panel offers. Small enough to stay inside one engraved mark,
 // so the local surface the fill is measured against stays local to it.
@@ -180,7 +189,7 @@ void GLGizmoExtrude::clear_hover()
     m_hover                = Hover();
     m_hover_applied        = -1;
     m_preview_dirty        = true;
-    m_preview.reset();
+    m_preview_hover.reset();
 }
 
 void GLGizmoExtrude::update_hover(const Vec2d &screen_pos)
@@ -267,67 +276,184 @@ indexed_triangle_set GLGizmoExtrude::fill_mesh(const std::vector<Hover> &seeds) 
     return plug;
 }
 
-// [ORCAPORT:HF-3] The prism for the picked face, in OBJECT space (the same space the cavity-fill
-// plug comes back in, so add_named_fill treats both the same way). The face is grown into a coplanar
-// region, projected to an outline in a frame where it points +Z, closed into a solid with the
-// requested height and offset, and turned back. The rotation is pure, so an angled face extrudes
-// exactly like a top face and nothing is distorted.
-indexed_triangle_set GLGizmoExtrude::face_extrude_mesh(const Hover &hover, std::string *why) const
+// ---------------------------------------------------------------------------------------------
+// [ORCAPORT:HF-3] Extrude face: pick, cache, prism
+// ---------------------------------------------------------------------------------------------
+
+// Facet normals + neighbours are O(mesh) and the hover asks for them on every facet change, so they
+// are cached for the volume in play. The stamp is the mesh's own size: a volume whose mesh is
+// rebuilt to the same vertex and triangle counts is the one case this misses, and it is rare enough
+// (and harmless: the region would just be computed with stale normals until the cursor moves again).
+const std::vector<Vec3f>* GLGizmoExtrude::cached_normals(const ModelVolume *mv) const
 {
-    auto fail = [&](const std::string &msg) -> indexed_triangle_set {
-        if (why != nullptr)
-            *why = msg;
-        return {};
-    };
+    if (mv == nullptr)
+        return nullptr;
+    const indexed_triangle_set &its = mv->mesh().its;
+    if (m_cache_mv != mv || m_cache_verts != its.vertices.size() || m_cache_tris != its.indices.size()) {
+        m_cache_mv        = mv;
+        m_cache_verts     = its.vertices.size();
+        m_cache_tris      = its.indices.size();
+        m_cache_normals   = its_face_normals(its);
+        m_cache_neighbors = its_face_neighbors(its);
+    }
+    return &m_cache_normals;
+}
 
-    if (!hover.valid || hover.mv == nullptr || hover.facet < 0)
-        return fail(_u8L("Hover a flat face of the object."));
+const std::vector<Vec3i32>* GLGizmoExtrude::cached_neighbors(const ModelVolume *mv) const
+{
+    if (cached_normals(mv) == nullptr)
+        return nullptr;
+    return &m_cache_neighbors;
+}
 
-    const indexed_triangle_set &its = hover.mv->mesh().its;
-    if (hover.facet >= int(its.indices.size()))
-        return fail(_u8L("That face is not usable."));
+// Turn a hovered facet into a PICK: the flat frame, the region's outline and its holes. This is the
+// expensive half, and it runs once per pick - not per frame, and not per slider drag.
+bool GLGizmoExtrude::make_pick(const Hover &hover, Pick *out) const
+{
+    *out = Pick();
+    if (! hover.valid || hover.mv == nullptr || hover.facet < 0)
+        return false;
 
-    const std::vector<Vec3f>   normals   = its_face_normals(its);
-    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
-    if (int(normals.size()) != int(its.indices.size()))
-        return fail(_u8L("That mesh has no usable facet normals."));
+    const std::vector<Vec3f>   *normals   = cached_normals(hover.mv);
+    const std::vector<Vec3i32> *neighbors = cached_neighbors(hover.mv);
+    if (normals == nullptr || neighbors == nullptr || hover.facet >= int(normals->size())
+        || int(normals->size()) != int(hover.mv->mesh().its.indices.size()))
+        return false;
 
-    // The picked facet's normal in object space. Normals do not transform with the matrix itself,
-    // so the inverse transpose of the volume's linear part is the right thing.
+    // The picked facet's normal in object space. Normals do not transform with the matrix itself, so
+    // the inverse transpose of the volume's linear part is the right thing.
     const Transform3d to_obj  = hover.mv->get_matrix();
     const Matrix3d    nrm_mat = to_obj.linear().inverse().transpose();
-    Vec3d             obj_n   = nrm_mat * normals[size_t(hover.facet)].cast<double>();
+    Vec3d             obj_n   = nrm_mat * (*normals)[size_t(hover.facet)].cast<double>();
     const double      nl      = obj_n.norm();
     if (nl < 1e-12)
-        return fail(_u8L("That face has no usable normal."));
+        return false;
     obj_n /= nl;
 
+    // A pure rotation (nothing is distorted) that brings the face normal to +Z, so the extrusion is
+    // built exactly as it would be on a top face and turned back afterwards.
     const Eigen::Quaterniond q_flat = Eigen::Quaterniond::FromTwoVectors(obj_n, Vec3d::UnitZ());
     Transform3d              to_flat = Transform3d::Identity();
     to_flat.linear() = q_flat.toRotationMatrix();
 
     // ~2.6 deg: the region stops where the surface stops being that plane.
     constexpr float kPickedFaceCos = 0.999f;
-    const std::vector<int> region = SurfaceExtrude::coplanar_region(normals, neighbors, hover.facet, kPickedFaceCos);
-    double       face_z = 0.;
-    ExPolygons   outline = SurfaceExtrude::region_outline(its, region, to_flat * to_obj, &face_z);
+    const std::vector<int> region = SurfaceExtrude::coplanar_region(*normals, *neighbors, hover.facet, kPickedFaceCos);
+    double     face_z = 0.;
+    ExPolygons outline = SurfaceExtrude::region_outline(hover.mv->mesh().its, region, to_flat * to_obj, &face_z);
     if (outline.empty())
-        return fail(_u8L("That face has no usable outline."));
-    if (m_extrude_holes) {
-        // Only the face's holes, each one filled - e.g. the circle of a screw, to grow into a plug.
-        outline = SurfaceExtrude::outline_holes(outline);
-        if (outline.empty())
-            return fail(_u8L("That face has no holes."));
-    }
+        return false;
+
+    out->valid   = true;
+    out->mv      = hover.mv;
+    out->facet   = hover.facet;
+    out->to_flat = to_flat;
+    out->outline = std::move(outline);
+    out->holes   = SurfaceExtrude::outline_holes(out->outline);   // cheap, and Holes mode wants it
+    out->face_z  = face_z;
+    return true;
+}
+
+bool GLGizmoExtrude::build_pick(const Hover &hover)
+{
+    return make_pick(hover, &m_pick);
+}
+
+void GLGizmoExtrude::invalidate_pick()
+{
+    m_pick = Pick();
+    m_preview_dirty = true;
+}
+
+// The prism for the current pick and parameters, in OBJECT space (the same space cavity-fill's plug
+// comes back in, so add_named_fill treats both modes identically).
+indexed_triangle_set GLGizmoExtrude::picked_prism(std::string *why) const
+{
+    auto fail = [&](const char *msg) -> indexed_triangle_set {
+        if (why != nullptr)
+            *why = msg;
+        return {};
+    };
+
+    if (! m_pick.valid)
+        return fail(_u8L("Click a flat face of the object.").c_str());
+    const ExPolygons &outline = m_extrude_holes ? m_pick.holes : m_pick.outline;
+    if (outline.empty())
+        return fail(_u8L("That face has no holes.").c_str());
 
     // Out of the face, or half out and half into the model.
     const double h  = m_extrude_height;
-    const double z0 = m_extrude_both ? face_z - 0.5 * h : face_z;
+    const double z0 = m_extrude_both ? m_pick.face_z - 0.5 * h : m_pick.face_z;
     indexed_triangle_set out = SurfaceExtrude::extrude_outline(outline, m_extrude_offset, z0, h);
     if (out.indices.empty())
-        return fail(_u8L("With that offset nothing is left of the shape."));
+        return fail(_u8L("With that offset nothing is left of the shape.").c_str());
+    its_transform(out, m_pick.to_flat.inverse());
+    return out;
+}
+
+// The outline as a flat surface on the face: a hair-thick slab, so it lies on the surface without
+// z-fighting with it. Used for both the hover (teal) and the pick (green).
+indexed_triangle_set GLGizmoExtrude::face_slab(const ExPolygons &outline, const Transform3d &to_flat, double face_z) const
+{
+    if (outline.empty())
+        return {};
+    indexed_triangle_set out = SurfaceExtrude::extrude_outline(outline, 0., face_z, 0.02);
+    if (out.indices.empty())
+        return {};
     its_transform(out, to_flat.inverse());
     return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// [ORCAPORT:HF-3] Ghost: dim the object while a face is picked
+// ---------------------------------------------------------------------------------------------
+
+void GLGizmoExtrude::restore_ghost()
+{
+    // 🚨 Restore FIRST, always - see the note on apply_ghost(). This also runs on gizmo close, so it
+    // must not depend on get_state().
+    for (GLVolume *v : m_parent.get_volumes().volumes) {
+        if (v == nullptr)
+            continue;
+        auto it = m_saved_colors.find(std::make_tuple(v->object_idx(), v->volume_idx(), v->instance_idx()));
+        if (it != m_saved_colors.end())
+            v->set_color(it->second);
+    }
+    m_saved_colors.clear();
+}
+
+void GLGizmoExtrude::apply_ghost()
+{
+    // 🚨 Restore first. Without it a second call would save an already-tinted colour as "the
+    // original" and the object would fade a little more on every refresh, down to nothing.
+    restore_ghost();
+
+    if (get_state() != On || m_mode != Mode::ExtrudeFace || ! m_pick.valid)
+        return;
+
+    const ModelObject *mo = model_object();
+    if (mo == nullptr)
+        return;
+
+    // Push every volume of this object towards a dark grey and let it go translucent, so the green
+    // face and the orange solid are what the eye lands on.
+    const ColorRGBA dim(0.16f, 0.18f, 0.20f, 1.f);
+    for (GLVolume *v : m_parent.get_volumes().volumes) {
+        if (v == nullptr || v->object_idx() < 0)
+            continue;
+        const Model &model = wxGetApp().plater()->model();
+        if (v->object_idx() >= int(model.objects.size()) || model.objects[size_t(v->object_idx())] != mo)
+            continue;
+        const auto key = std::make_tuple(v->object_idx(), v->volume_idx(), v->instance_idx());
+        m_saved_colors.emplace(key, v->color);
+        // ColorRGBA's components are accessor functions, not fields.
+        ColorRGBA c = v->color;
+        c.r(c.r() * (1.f - GHOST_MIX) + dim.r() * GHOST_MIX);
+        c.g(c.g() * (1.f - GHOST_MIX) + dim.g() * GHOST_MIX);
+        c.b(c.b() * (1.f - GHOST_MIX) + dim.b() * GHOST_MIX);
+        c.a(std::min(c.a(), 0.55f));
+        v->set_color(c);
+    }
 }
 
 void GLGizmoExtrude::record_stroke_sample()
@@ -367,31 +493,57 @@ void GLGizmoExtrude::rebuild_preview()
     m_preview_dirty = false;
     // GLModel::init_from only builds a model once: an already initialized one has to be reset, or
     // the preview would keep showing whatever it was first built from.
-    m_preview.reset();
+    m_preview_hover.reset();
+    m_preview_pick.reset();
+    m_preview_prism.reset();
     m_preview_applied.reset();
 
-    // The plug for the current stroke, or the hovered one, unless the face already carries a plug:
-    // an applied plug is shown in the applied overlay instead, and must not look like something
-    // waiting to be applied.
-    std::vector<Hover> seeds;
     if (m_mode == Mode::ExtrudeFace) {
-        // [ORCAPORT:HF-3] Extrude face: preview the prism that a click would create.
-        if (m_hover.valid) {
-            const indexed_triangle_set its = face_extrude_mesh(m_hover);
-            if (!its.indices.empty()) {
-                m_preview.model.init_from(its);
-                m_preview.model.set_color(HOVER_COLOR);
+        // [ORCAPORT:HF-3] Three overlays, in the fork's colours:
+        //   teal   - the face under the cursor, so a click's target is visible before you commit;
+        //   green  - the face you picked;
+        //   orange - the solid the current Height/Offset would make.
+        // The candidate is skipped when the cursor is already on the picked facet: the teal would sit
+        // exactly under the green and only muddy it.
+        if (m_hover.valid && ! (m_pick.valid && m_pick.mv == m_hover.mv && m_pick.facet == m_hover.facet)) {
+            Pick candidate;
+            if (make_pick(m_hover, &candidate)) {
+                const indexed_triangle_set its = face_slab(candidate.outline, candidate.to_flat, candidate.face_z);
+                if (! its.indices.empty()) {
+                    m_preview_hover.model.init_from(its);
+                    m_preview_hover.model.set_color(HOVER_COLOR);
+                }
             }
         }
-    } else if (m_painting && !m_stroke.empty())
-        seeds = m_stroke;
-    else if (m_hover.valid && m_hover_applied < 0)
-        seeds.push_back(m_hover);
-    if (!seeds.empty()) {
-        const indexed_triangle_set its = fill_mesh(seeds);
-        if (!its.indices.empty()) {
-            m_preview.model.init_from(its);
-            m_preview.model.set_color(HOVER_COLOR);
+        if (m_pick.valid) {
+            const indexed_triangle_set slab = face_slab(m_pick.outline, m_pick.to_flat, m_pick.face_z);
+            if (! slab.indices.empty()) {
+                m_preview_pick.model.init_from(slab);
+                m_preview_pick.model.set_color(PICK_COLOR);
+            }
+            // The reason is cached here, with the prism: the panel reads it instead of rebuilding.
+            const indexed_triangle_set prism = picked_prism(&m_pick_why);
+            if (! prism.indices.empty()) {
+                m_preview_prism.model.init_from(prism);
+                m_preview_prism.model.set_color(PRISM_COLOR);
+            }
+        } else {
+            m_pick_why.clear();
+        }
+    } else {
+        // Cavity fill, unchanged: the plug for the stroke, or for the face under the cursor unless it
+        // already carries one (an applied plug is drawn in the applied overlay instead of here).
+        std::vector<Hover> seeds;
+        if (m_painting && ! m_stroke.empty())
+            seeds = m_stroke;
+        else if (m_hover.valid && m_hover_applied < 0)
+            seeds.push_back(m_hover);
+        if (! seeds.empty()) {
+            const indexed_triangle_set its = fill_mesh(seeds);
+            if (! its.indices.empty()) {
+                m_preview_pick.model.init_from(its);
+                m_preview_pick.model.set_color(PICK_COLOR);
+            }
         }
     }
 
@@ -493,19 +645,60 @@ bool GLGizmoExtrude::gizmo_hover_at(const Vec2d &screen_pos)
     return m_hover.valid;
 }
 
-bool GLGizmoExtrude::gizmo_apply_hovered()
+// [ORCAPORT:HF-3] Clicking a face PICKS it. Nothing is added until create_from_pick(), so Height and
+// Offset can be dialled in against a live preview first - the release note's workflow.
+bool GLGizmoExtrude::pick_at(const Vec2d &screen_pos)
 {
-    if (!m_hover.valid)
+    update_hover(screen_pos);
+    if (! m_hover.valid || ! build_pick(m_hover))
         return false;
-    // [ORCAPORT:HF-3] Extrude face: a new solid every click - unlike a cavity plug, the same face may
-    // legitimately be extruded more than once.
-    if (m_mode == Mode::ExtrudeFace) {
-        const indexed_triangle_set its = face_extrude_mesh(m_hover);
+    m_preview_dirty = true;
+    apply_ghost();
+    m_parent.set_as_dirty();
+    return true;
+}
+
+void GLGizmoExtrude::clear_pick()
+{
+    if (! m_pick.valid)
+        return;
+    invalidate_pick();
+    apply_ghost();   // restores first, and with no pick left it restores only
+    m_parent.set_as_dirty();
+}
+
+bool GLGizmoExtrude::create_from_pick()
+{
+    if (m_mode != Mode::ExtrudeFace) {
+        // Cavity fill keeps its own, stroke-based commit path (see commit_stroke()).
+        if (! m_hover.valid || m_hover_applied >= 0)
+            return false;
+        const indexed_triangle_set its = fill_mesh(m_hover);
         if (its.indices.empty())
             return false;
-        add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Extrude face"));
+        add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Fill cavity"));
         return true;
     }
+    if (! m_pick.valid)
+        return false;
+    const indexed_triangle_set its = picked_prism();
+    if (its.indices.empty())
+        return false;
+    add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Extrude face"));
+    // The pick is kept, so the same face can be extruded again with different values; the button and
+    // right-click/Esc are the only ways in and out.
+    m_preview_dirty = true;
+    return true;
+}
+
+// Kept so MCP scripts written before the rework still work: it now picks the face under the cursor
+// and commits it in one call, which is what it used to do.
+bool GLGizmoExtrude::gizmo_apply_hovered()
+{
+    if (! m_hover.valid)
+        return false;
+    if (m_mode == Mode::ExtrudeFace)
+        return build_pick(m_hover) && create_from_pick();
     if (m_hover_applied >= 0)
         return false;
     const indexed_triangle_set its = fill_mesh(m_hover);
@@ -604,25 +797,11 @@ bool GLGizmoExtrude::on_init()
 {
     m_shortcut = Shortcut::GizmoExtrude; // [ORCAPORT:HF-3] registered in Shortcuts.cpp
 
-    m_desc["name"]         = _L("Extrude");
-    // [ORCAPORT:HF-3] The two modes.
-    m_desc["mode_extrude"] = _L("Extrude face");
-    m_desc["mode_cavity"]  = _L("Cavity fill");
-    m_desc["height"]       = _L("Height");
-    m_desc["offset"]       = _L("Offset");
-    m_desc["holes"]        = _L("Holes");
-    m_desc["both"]         = _L("Both directions");
-    m_desc["create"]       = _L("Create");
-    m_desc["extrude_hint"] = _L("Click a flat face of the object. Height grows the new solid out of it; a negative offset shrinks its outline.");
-    m_desc["extrude_none"] = _L("No face under the cursor.");
-    m_desc["radius"]       = _L("Brush width");
-    m_desc["clear"]       = _L("Clear all");
-    m_desc["hover_hint"]  = _L("Drag over an engraved mark to fill it.");
-    m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
-    m_desc["cavity"]      = _L("Depression under the cursor.");
-    m_desc["already"]     = _L("Already filled.");
-    m_desc["remove_hint"] = _L("Right-click a filled cavity to remove it.");
-    m_desc["applied"]     = _L("Filled");
+    // [ORCAPORT:HF-3] The panel's captions and hints are passed inline to the shared widgets in
+    // GizmoStyle.hpp (the way Support Zones does it); only the count line needs a stored string, and
+    // it reads differently in each mode.
+    m_desc["applied_ext"] = _L("Extruded");
+    m_desc["applied_cav"] = _L("Filled");
     return true;
 }
 
@@ -643,6 +822,10 @@ void GLGizmoExtrude::on_set_state()
         m_hover_computed = false;
         m_parent.set_as_dirty();
     } else {
+        // [ORCAPORT:HF-3] Drop the pick and put the object's colours back. Closing the gizmo with the
+        // object still ghosted would leave the scene tinted for the rest of the session.
+        invalidate_pick();
+        restore_ghost();
         clear_hover();
     }
 }
@@ -668,6 +851,12 @@ void GLGizmoExtrude::data_changed(bool /*is_serializing*/)
         m_old_matrix       = instance_matrix();
         m_preview_dirty    = true;
         m_hover_computed   = false;
+        // [ORCAPORT:HF-3] The picked face belonged to the old mesh: a rebuilt volume list makes the
+        // cached region meaningless, and the saved colours may not exist any more. Restore first.
+        if (m_pick.valid) {
+            invalidate_pick();
+            restore_ghost();
+        }
         m_parent.set_as_dirty();
     }
 }
@@ -707,8 +896,13 @@ void GLGizmoExtrude::on_render()
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();
     shader->set_uniform("view_model_matrix", view_model_matrix);
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    // Paint order matters: depth test is off here, so later draws win. Hover underneath, then the
+    // picked face, then the solid sitting on it (its inset leaves the green margin showing), then
+    // every fill already committed.
+    m_preview_hover.model.render(shader);
+    m_preview_pick.model.render(shader);
+    m_preview_prism.model.render(shader);
     m_preview_applied.model.render(shader);
-    m_preview.model.render(shader);
 
     glsafe(::glDisable(GL_BLEND));
     glsafe(::glEnable(GL_CULL_FACE));
@@ -721,19 +915,25 @@ bool GLGizmoExtrude::on_mouse(const wxMouseEvent &mouse_event)
     if (get_state() != On)
         return false;
     if (mouse_event.RightDown()) {
-        // Right-click removes the plug the cursor is on, like the hole gizmo removes a hole.
+        // [ORCAPORT:HF-3] Extrude face: right-click drops the pick. Cavity fill: it removes the plug
+        // the cursor is on, like the hole gizmo removes a hole.
+        if (m_mode == Mode::ExtrudeFace) {
+            clear_pick();
+            return true;
+        }
         gizmo_hover_at(m_parent.get_local_mouse_position());
         return gizmo_remove_hovered();
     }
-    // [ORCAPORT:HF-3] Extrude face is a click, not a stroke: one left click makes one solid. The
-    // panel's Create button runs the same path, for anyone who would rather not click the model.
+    // [ORCAPORT:HF-3] Extrude face: a click PICKS the face, it does not extrude. Height/Offset are
+    // dialled in against the preview and the panel's Extrude button commits. Right-click drops the
+    // pick instead of removing a fill.
     if (m_mode == Mode::ExtrudeFace) {
         if (! mouse_event.LeftUp())
             return false;
-        gizmo_hover_at(m_parent.get_local_mouse_position());
-        if (! m_hover.valid)
-            return false;   // a click on empty space falls through to the canvas
-        return gizmo_apply_hovered();
+        if (! pick_at(m_parent.get_local_mouse_position()))
+            return false;
+        m_parent.request_extra_frame();
+        return true;
     }
     if (mouse_event.LeftUp() && m_painting) {
         m_painting = false;
@@ -784,112 +984,107 @@ void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit
 #else
     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
 #endif
+    // [ORCAPORT:HF-3] Fixed narrow width. The window used to auto-size to the longest hint and to the
+    // numeric fields and came out about three times wider than the content needed; the hints now wrap
+    // inside this width. SetNextWindowSize overrides AlwaysAutoResize on the axes it sets, so the
+    // height still follows the content.
+    ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
+    gizmo_push_window_style();
     ImGuiWrapper::push_toolbar_style(scale);
     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+    gizmo_push_panel_style();
 
-    const float sliders_width = m_imgui->scaled(6.0f);
+    // The widest caption the rows below use, so the label column is exact rather than a magic number.
+    const float label_w = gizmo_label_w(_u8L("Both directions").c_str());
 
-    // [ORCAPORT:HF-3] Mode selector: the one icon does two jobs.
-    ImGui::AlignTextToFramePadding();
-    if (m_imgui->radio_button(m_desc.at("mode_extrude"), m_mode == Mode::ExtrudeFace))
-        set_mode(Mode::ExtrudeFace);
-    ImGui::SameLine(0.f, m_imgui->scaled(1.5f));
-    if (m_imgui->radio_button(m_desc.at("mode_cavity"), m_mode == Mode::CavityFill))
-        set_mode(Mode::CavityFill);
+    // Tool mode: one icon, two jobs.
+    {
+        const std::string m0 = _u8L("Extrude face");
+        const std::string m1 = _u8L("Cavity fill");
+        const char       *labels[] = { m0.c_str(), m1.c_str() };
+        const int         seg      = gizmo_segment("##mode", labels, 2, int(m_mode));
+        if (seg >= 0)
+            set_mode(seg == 0 ? Mode::ExtrudeFace : Mode::CavityFill);
+    }
+
+    ImGui::Separator();
 
     if (m_mode == Mode::ExtrudeFace) {
-        const float left_width = m_imgui->calc_text_size(m_desc.at("height")).x + m_imgui->scaled(2.0f);
+        // Face | Holes.
+        {
+            const std::string f0 = _u8L("Face");
+            const std::string f1 = _u8L("Holes");
+            const char       *labels[] = { f0.c_str(), f1.c_str() };
+            const int         seg = gizmo_segment("##target", labels, 2, m_extrude_holes ? 1 : 0,
+                                                  _u8L("Face extrudes the picked face; Holes extrudes only its holes, each one filled.").c_str());
+            if (seg >= 0)
+                set_extrude_holes(seg == 1);
+        }
 
-        // Height: how thick the new solid is, grown out of the face (or half in, with Both).
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("height"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
+        ImGui::Separator();
+
         float h = float(m_extrude_height);
-        if (m_imgui->bbl_slider_float_style("##extrude_h", &h, float(EXTRUDE_HEIGHT_MIN), float(EXTRUDE_HEIGHT_MAX), "%.2f", 0.1f, true))
+        if (gizmo_row_slider("##eh", _u8L("Height").c_str(), &h, float(EXTRUDE_HEIGHT_MIN), float(EXTRUDE_HEIGHT_MAX),
+                             "%.2f", label_w,
+                             _u8L("How thick the new solid is, measured out of the face. With Both directions on, half goes out and half into the model.").c_str()))
             set_extrude_height(h);
-        ImGui::PopItemWidth();
-        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
-        float h_typed = float(m_extrude_height);
-        if (ImGui::InputFloat("##extrude_h_in", &h_typed, 0.1f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-            set_extrude_height(h_typed);
-        ImGui::PopItemWidth();
 
-        // Offset: grow (positive) or shrink (negative) the outline of the face before extruding.
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("offset"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
         float off = float(m_extrude_offset);
-        if (m_imgui->bbl_slider_float_style("##extrude_off", &off, float(EXTRUDE_OFFSET_MIN), float(EXTRUDE_OFFSET_MAX), "%.2f", 0.05f, true))
+        if (gizmo_row_slider("##eo", _u8L("Offset").c_str(), &off, float(EXTRUDE_OFFSET_MIN), float(EXTRUDE_OFFSET_MAX),
+                             "%.2f", label_w,
+                             _u8L("Grows the outline before extruding; a negative value shrinks it. A negative offset is what leaves the green face showing around the solid.").c_str()))
             set_extrude_offset(off);
-        ImGui::PopItemWidth();
-        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
-        float off_typed = float(m_extrude_offset);
-        if (ImGui::InputFloat("##extrude_off_in", &off_typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-            set_extrude_offset(off_typed);
-        ImGui::PopItemWidth();
 
-        bool holes = m_extrude_holes;
-        if (m_imgui->checkbox(m_desc.at("holes"), holes))
-            set_extrude_holes(holes);
         bool both = m_extrude_both;
-        if (m_imgui->checkbox(m_desc.at("both"), both))
+        if (gizmo_row_switch("##eb", _u8L("Both directions").c_str(), &both,
+                             _u8L("Splits the height: half grows out of the face, half goes into the model, so the solid passes through the face without being moved.").c_str()))
             set_extrude_both(both);
 
-        // Why the face under the cursor cannot be extruded, if it cannot.
-        if (m_hover.valid) {
-            std::string why;
-            if (face_extrude_mesh(m_hover, &why).indices.empty() && ! why.empty())
-                m_imgui->text(wxString::FromUTF8(why.c_str()));
+        // Nothing picked, a pick that cannot be extruded, or go.
+        if (! m_pick.valid) {
+            gizmo_hint(_u8L("Click a flat face of the object to pick it, then set the height and the offset and press Extrude. Right-click or Esc drops the pick.").c_str());
+        } else if (! m_pick_why.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::Warn));
+            gizmo_hint(m_pick_why.c_str());
+            ImGui::PopStyleColor();
         }
-        if (m_imgui->button(m_desc.at("create")))
-            gizmo_apply_hovered();
-        m_imgui->text(m_desc.at("extrude_hint"));
-        if (! m_hover.valid)
-            m_imgui->text(m_desc.at("extrude_none"));
-    } else {
-        const float left_width = m_imgui->calc_text_size(m_desc.at("radius")).x + m_imgui->scaled(2.0f);
 
-        ImGui::AlignTextToFramePadding();
-        m_imgui->text(m_desc.at("radius"));
-        ImGui::SameLine(left_width);
-        ImGui::PushItemWidth(sliders_width);
+        // The primary action, right-aligned and in the accent colour.
+        const wxString btn = _L("Extrude");
+        const float    bw  = m_imgui->calc_text_size(btn).x + ImGui::GetStyle().FramePadding.x * 3.f;
+        ImGui::SameLine(std::max(ImGui::GetWindowContentRegionMax().x - bw, ImGui::GetCursorPosX()));
+        ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, gizmo_col(GizmoCol::AccentBright));
+        if (m_imgui->button(btn))
+            create_from_pick();
+        ImGui::PopStyleColor(2);
+    } else {
         float radius = float(m_radius);
-        if (m_imgui->bbl_slider_float_style("##fill_radius", &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX), "%.1f", 0.1f, true))
+        if (gizmo_row_slider("##fr", _u8L("Brush width").c_str(), &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX),
+                             "%.1f", label_w,
+                             _u8L("How far the brush reaches, in mm. Small enough to stay inside one engraved mark, so the surface the plug is measured against stays local to it.").c_str()))
             set_radius(radius);
-        ImGui::PopItemWidth();
-        // A field next to the slider, so an exact radius can be typed instead of dragged. ImGui carves the
-        // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
-        // scaled(4.5) clipped the value.
-        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
-        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
-        float typed = float(m_radius);
-        if (ImGui::InputFloat("##fill_radius_in", &typed, 0.1f, 1.0f, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-            set_radius(typed);
-        ImGui::PopItemWidth();
 
         // Left-dragging over a cavity already fills it (on_mouse), so there is no separate fill button.
-        if (m_imgui->button(m_desc.at("clear")))
+        if (m_imgui->button(_L("Clear all")))
             gizmo_clear_all();
 
         if (m_hover.valid && m_hover_applied >= 0)
-            m_imgui->text(m_desc.at("already"));
+            gizmo_hint(_u8L("Already filled. Right-click it to remove the plug.").c_str());
         else if (m_hover.valid)
-            m_imgui->text(m_desc.at("cavity"));
+            gizmo_hint(_u8L("Depression under the cursor. Drag over an engraved mark to fill it.").c_str());
         else
-            m_imgui->text(m_desc.at("no_cavity"));
-        m_imgui->text(m_desc.at("hover_hint"));
-        if (applied_count() > 0)
-            m_imgui->text(m_desc.at("remove_hint"));
+            gizmo_hint(_u8L("Nothing to fill under the cursor.").c_str());
     }
-    const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), applied_count());
+
+    const wxString applied = wxString::Format("%s: %d",
+        (m_mode == Mode::ExtrudeFace ? m_desc.at("applied_ext") : m_desc.at("applied_cav")).c_str(), applied_count());
     m_imgui->text(applied);
 
+    gizmo_pop_panel_style();
     GizmoImguiEnd();
     ImGuiWrapper::pop_toolbar_style();
+    gizmo_pop_window_style();
 }
 
 void GLGizmoExtrude::on_register_raycasters_for_picking()
