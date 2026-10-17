@@ -130,15 +130,19 @@ TEST_CASE("A sphere is not reported as a hole", "[HoleDetector]")
 
 // [ORCAPORT:PP-5] HIDDEN, and knowingly failing: a teardrop is still not detected.
 //
-// What this pins down: the patch that grows around a teardrop contains its roof as well as its round
-// wall, and the roof poisons what were the first gates in the chain - the axis fit (a PCA over the
-// patch normals, which the roof's normals tilt and whose out-of-plane eigenvalue they inflate), the
-// circle residual, the angular coverage and the convexity average. The detector now fits the axis (two
-// passes, keeping only the faces normal to the seed axis) and the circle (keeping only the faces whose
-// centroid is on it) on the wall alone, with the gates on that subset. Every pre-existing case still
-// passes with the change in place (19 of 20, 288 of 289 assertions), but this one does not, so one gate
-// is still dropping the patch. Next step: instrument detect_holes to report which `continue` fires for a
-// patch that holds a teardrop wall, then fix that gate - and un-hide this test in the same change.
+// Instrumented once, which is what the numbers below are (they are why the code fits the axis and the
+// circle on wall faces only):
+//   [PP5] pass1 wall=132 evals=0/0.538/1 axis=(0,0,1) cylinder=1     <- the whole side wall, one patch
+//   [PP5] seed pts=132 r=2.543 residual=0.902                        <- the roof pulls the fit out
+//   [PP5] reject residual ... tol=0.203 inliers=132/132              <- every face was an "inlier"
+// So the patch is the arc AND the roof (they meet tangentially), and with the whole wall in the fit the
+// residual gate is what rejected it. The band that selects wall faces is the fitted tolerance now (a
+// roof face's centroid sits ~0.35 r off the circle, well outside 0.08 r), and the axis fit keeps only the
+// faces perpendicular to a seed axis - yet this test still fails, so one of the remaining gates (or the
+// fixture's own winding) is still at fault. Next step: put the same instrumentation back and print the
+// inlier count, the refitted r/residual, the angular gap and the convexity average for THIS patch.
+// What is already verified: the reshape does not disturb a plain hole (every other case in the suite
+// passes, 288 of 289 assertions).
 TEST_CASE("A teardrop tunnel is detected as a hole", "[HoleDetector][NotWorking]")
 {
     // What a teardrop bore leaves behind: a round wall for part of the perimeter and a sloped roof for

@@ -147,7 +147,7 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             }
         }
         if (int(patch.size()) < params.min_facets)
-            continue;
+        continue;
 
         // The cylinder axis is the direction in which the wall normals vary least: the
         // normals of a cylinder lie on a great circle in the plane perpendicular to the axis.
@@ -229,9 +229,9 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
 
         double cu = 0., cv = 0., r = 0., residual = 0.;
         if (!fit_circle(pts, cu, cv, r, residual))
-            continue;
+        continue;
         if (r < params.min_radius || r > params.max_radius)
-            continue;
+        continue;
 
         // [ORCAPORT:PP-5] One refinement left: the axis wall set can still hold a face or two whose
         // vertices sit off the circle (the arc meets the roof tangentially, so a shared segment can
@@ -245,13 +245,17 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
                               its.vertices[tri[2]].cast<double>()) / 3.;
             const double u = c(0) * frame.e1(0) + c(1) * frame.e1(1) + c(2) * frame.e1(2) - cu;
             const double v = c(0) * frame.e2(0) + c(1) * frame.e2(1) + c(2) * frame.e2(2) - cv;
-            // A first pass only has to separate wall from roof: the seed fit is biased by the roof, so
-            // the band is generous here and the tight `radial_tolerance` is applied to the refit below.
-            if (std::abs(std::hypot(u, v) - r) <= 0.25 * r)
+            // 🔑 The band has to be the TIGHT one. A teardrop's roof faces are slanted planes that
+            // CONTAIN the axis, so their normals are perpendicular to it like a wall's - the axis test
+            // cannot separate them - and their centroids sit at roughly 1.2 r, which a 0.25 r band would
+            // happily keep (measured: 132 of 132 faces kept, then the residual gate rejected the patch at
+            // 0.90 against a 0.20 limit). At the fitted tolerance the arc's faces are in and the roof's
+            // are out, and the refit below lands on r.
+            if (std::abs(std::hypot(u, v) - r) <= params.radial_tolerance * r)
                 inliers.push_back(f);
         }
         if (inliers.empty())
-            continue;
+        continue;
 
         std::vector<Vec2d> inlier_pts;
         inlier_pts.reserve(inliers.size() * 3);
@@ -265,19 +269,19 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
         if (inliers.size() < wall.size()) {
             double cu2 = 0., cv2 = 0., r2 = 0., residual2 = 0.;
             if (!fit_circle(inlier_pts, cu2, cv2, r2, residual2))
-                continue;
+            continue;
             cu       = cu2;
             cv       = cv2;
             r        = r2;
             residual = residual2;
             if (r < params.min_radius || r > params.max_radius)
-                continue;
+            continue;
         }
         if (residual > params.radial_tolerance * r)
             continue;
         const double depth = t_max - t_min;
         if (depth < 1e-6)
-            continue;
+        continue;
 
         // The wall must wrap around the axis: find the largest empty angular sector. Measured on the
         // wall faces, so a roof cannot make the coverage look complete where there is no wall.
@@ -293,7 +297,7 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             max_gap = std::max(max_gap, a1 - a0);
         }
         if (max_gap > params.max_angular_gap_deg * PI / 180.)
-            continue;
+        continue;
 
         // A hole is a cavity: the solid lies outside the wall, so the outward face normals point
         // TOWARD the axis. On a convex surface (a solid cylinder, or the outside of a boss) they
@@ -314,7 +318,7 @@ std::vector<DetectedHole> detect_holes(const indexed_triangle_set &its, const Ho
             radial_dot += n(0) * radial(0) + n(1) * radial(1) + n(2) * radial(2);
         }
         if (radial_dot / double(inliers.size()) > 0.5)
-            continue;
+        continue;
 
         const double t_mid = 0.5 * (t_min + t_max);
         DetectedHole h;

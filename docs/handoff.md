@@ -1786,45 +1786,47 @@ session does not repeat it.
 
 ### A teardrop tunnel is not detected at all (no chamfer, no resize, no conversion to a round hole)
 
-- The patch that grows around a teardrop tunnel contains its **roof** as well as its round wall (the arc
-  and the roof meet tangentially, so they are one smooth patch). The roof then poisons every geometric
-  gate the detector has:
-  1. **the axis fit** - a PCA over the patch normals: the roof's normals do not lie on the wall's great
-     circle, so they tilt the fitted axis *and* inflate the out-of-plane eigenvalue that
-     `evals(0) <= 0.25 * evals(1)` rejects;
+- The patch that grows around a teardrop tunnel is its **whole side wall**, arc and roof together (they
+  meet tangentially, so they are one smooth patch), and the roof poisons the geometry gates:
+  1. the **axis fit** - a PCA over the patch normals, which the roof tilts *and* whose out-of-plane
+     eigenvalue it inflates;
   2. the **circle residual** (`residual > radial_tolerance * r`), because the roof's vertices sit outside
      the circle;
   3. the **angular coverage** and
   4. the **convexity average** (`radial_dot / patch.size() > 0.5`), because the roof's normals face
      outward.
-- **What is in now**: the axis fit runs twice - a seed PCA over the patch, then, on the faces whose normal
-  is (near) perpendicular to that seed axis (|n·axis| <= 0.5 is wall, a roof is not), the PCA that is
-  actually gated; and the circle fit, the coverage and the convexity average run on the faces whose
-  centroid sits on the fitted circle, with the circle refit on those. A round hole qualifies every face,
-  so nothing about it changes - which the suite confirms (288 of 289 assertions, all 19 pre-existing
-  cases).
-- **What is left**: with all four addressed the teardrop is *still* not detected, so a further gate drops
-  the patch. The next step is to instrument `detect_holes` to log which `continue` fires for a patch that
-  contains a teardrop wall (the fixture to use is already in `tests/libslic3r/test_holedetector.cpp`, a
-  `its_make_teardrop_prism` tunnel flipped so its normals point at the axis, tagged `[NotWorking]` until
-  it passes).
+- **Instrumented, and this is the useful part.** The first run of the new teardrop case printed:
+  `pass1 wall=132 evals=0/0.538/1 axis=(0,0,1) cylinder=1` (the patch really is the whole 132-triangle
+  side wall, and the axis is right once the PCA is taken over the wall); then
+  `seed pts=132 r=2.543 residual=0.902` and `reject residual ... tol=0.203 inliers=132/132`. So the roof
+  does not show up in the *axis* - a roof plane contains the axis, so its normal is perpendicular to it
+  like a wall's, and the `|n·axis| <= 0.5` filter keeps it - and it does not show up in the face band
+  either at the time; the **residual** is the gate that rejected the patch.
+- **What is in now**: the axis fit runs twice (a seed PCA, then the PCA that is gated, over the faces
+  perpendicular to the seed axis); the circle fit, the angular coverage and the convexity average run on
+  the faces whose centroid sits on the fitted circle, with the circle refit on those; and the face band
+  is the fitted `radial_tolerance` (0.08 r) rather than a hand-picked 0.25 r, since a roof face's
+  centroid sits ~0.35 r off the circle. A round hole qualifies every face, so nothing about it changes -
+  which the suite confirms (288 of 289 assertions, 19 of 20 cases).
+- **What is left**: with all of that the teardrop is *still* not detected, so a further gate (or the
+  fixture's own winding) is at fault. Next step: re-add the instrumentation and print, for this patch,
+  the inlier count, the refitted `r`/residual, the angular gap and the convexity average. The fixture is
+  already in `tests/libslic3r/test_holedetector.cpp` (`its_make_teardrop_prism` tunnel, flipped so its
+  normals point at the axis), tagged `[NotWorking]` until it passes.
 
 ### Mesh boolean of a perforation does nothing once another negative has been booleaned in
 
 - Reported: on a clean object a perforation subtraction works and the exported mesh has the perforation;
   after an earlier Mesh boolean (an edge fillet, a place-on-face hole) a perforation subtraction does
   nothing at all.
-- **Not diagnosed.** What the code shows, for whoever picks it up:
-  - `GLGizmoMeshBoolean` picks its two volumes by raycasting the mesh under the cursor on open and stores
-    **indices** (`m_src.volume_idx`, `m_tool.volume_idx`) plus each volume's matrix;
-  - `generate_new_volume` then adds the result, swaps it into `m_src.volume_idx`, deletes the last volume
-    and finally deletes `m_tool.volume_idx` **as it was before the swap** - so every index past the
-    deleted slot has shifted by the time that last line runs;
-  - the empty-result path is already safe (a warning, no deletion), so the failure is not "mcut returned
-    nothing" - it is that the wrong pair, or a wrong index, reaches it.
-- The discriminating datum is one the user can see in a second and I cannot: after the failed run, is the
-  perforation volume still in the ObjectList, and is there a new "… - difference" volume? If the
-  perforation is gone with no new volume, the deletion is the bug; if both are gone, the source (the
-  earlier result) was consumed instead. Instrumenting `generate_new_volume` with the two names, the two
-  indices and the result's triangle count, then repeating the two-boolean sequence, settles it.
+- **Fixed by identity, not by index.** `GLGizmoMeshBoolean` picks its two volumes by raycasting on open
+  and stored **indices**; `generate_new_volume` then adds the result, swaps it into `m_src.volume_idx`,
+  deletes the last volume and finally deleted `m_tool.volume_idx` **as recorded before the swap** - so
+  once anything had reshuffled the list that index named a different volume, or the result itself, and
+  the operation silently removed the wrong thing. The tool volume is now found by pointer after the
+  swap, and both picks are dropped afterwards so a stale index cannot hide the wrong volume in the
+  selection-visibility path either.
+- The empty-result path was already safe (a warning, no deletion), so the failure was never "mcut
+  returned nothing". **Not runtime-verified**: the reproducer is a two-boolean UI sequence, which no MCP
+  tool can drive - the fix is mechanism-level, and the user's next two-boolean run is the check.
 - **Branch state**: same branch, `port/gizmo-fixes`. Not merged.
