@@ -16,6 +16,7 @@
 #define slic3r_GizmoStyle_hpp_
 
 #include <algorithm>
+#include <utility>
 
 #include <imgui/imgui.h>
 
@@ -458,19 +459,29 @@ inline void gizmo_glyph_plate(ImDrawList *dl, const ImVec2 &p, float s, ImU32 co
 // ─────────────────────────────────────────────────────────────────────────────
 constexpr float kGizmoIconGlyph = 0.78f; // the drawing's share of the button; the chrome is a frame
 
+// The fork's one font unit and the reference size every panel is designed against. Panels are laid out
+// in font heights, never in pixels, so no font/DPI combination can squeeze them.
+constexpr float kGizmoRefFont = 13.5f;
+
+inline float gizmo_u() { return ImGui::GetFontSize(); }
+
 inline float gizmo_icon_size()
 {
-    return 28.f * (ImGui::GetFontSize() / 13.5f);
+    return 28.f * (gizmo_u() / kGizmoRefFont);
 }
 
-// `draw` paints the glyph inside the box [p, p + s] in the colour it is handed, so every gizmo keeps
-// its own iconography and this stays pure chrome. Returns true when it was clicked.
-inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip,
-                              void (*draw)(ImDrawList *, const ImVec2 &, float, ImU32))
+// The icon button chrome, at a caller-chosen size: Support Zones sizes its view strip and its card
+// actions in font heights, so the size has to be a parameter. `draw` paints the glyph inside the box
+// [p, p + s] in the colour it is handed, so every gizmo keeps its own iconography and this stays pure
+// chrome. A template, not a function pointer, so a caller may pass either a plain drawer or a lambda
+// that closes over its own icon enum (Support Zones' draw_glyph takes a Glyph). Returns true when
+// clicked.
+template <typename DrawFn>
+inline bool gizmo_icon_toggle_sized(const char *id, float size, bool active, const char *tip, DrawFn &&draw,
+                                    bool danger = false)
 {
-    const float size = gizmo_icon_size();
-    const bool  hit  = ImGui::InvisibleButton(id, ImVec2(size, size));
-    ImDrawList *dl   = ImGui::GetWindowDrawList();
+    const bool   hit = ImGui::InvisibleButton(id, ImVec2(size, size));
+    ImDrawList  *dl  = ImGui::GetWindowDrawList();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const bool   hv = ImGui::IsItemHovered();
     const float  r  = size * 0.15f;
@@ -480,10 +491,18 @@ inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip,
         dl->AddRect(a, b, gizmo_col_u32(GizmoCol::AccentBright), r, 0, 1.2f);
     const float gs = size * kGizmoIconGlyph;
     draw(dl, ImVec2(a.x + (size - gs) * 0.5f, a.y + (size - gs) * 0.5f), gs,
-         active ? gizmo_col_u32(GizmoCol::Ink) : gizmo_fade(GizmoCol::TextDim, hv ? 1.0f : 0.85f));
+         active ? gizmo_col_u32(GizmoCol::Ink)
+                : gizmo_fade(danger ? GizmoCol::Warn : GizmoCol::TextDim, hv ? 1.0f : 0.85f));
     if (hv && tip != nullptr)
         ImGui::SetTooltip("%s", tip);
     return hit;
+}
+
+// A panel's own icon control, at the standard size.
+template <typename DrawFn>
+inline bool gizmo_icon_toggle(const char *id, bool active, const char *tip, DrawFn &&draw)
+{
+    return gizmo_icon_toggle_sized(id, gizmo_icon_size(), active, tip, std::forward<DrawFn>(draw));
 }
 
 // A hint at the bottom of a panel: dim, indented slightly so it reads as prose and not as a row, and
