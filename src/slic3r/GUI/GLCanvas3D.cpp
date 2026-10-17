@@ -10751,9 +10751,12 @@ void GLCanvas3D::_update_support_zones()
         for (const ModelVolume *volume : object->volumes) {
             if (! volume->is_support_enforcer())
                 continue;
-            // The probe is instance-independent, so it runs once per zone and every instance reuses
-            // the answer. Probing per instance would multiply the AABB work for identical results.
-            const SupportZones::ZoneProbe probe = SupportZones::probe_zone(*object, *volume, step);
+            // [ORCAPORT:SU-14] Probe with the first instance's orientation (see notes/SU-14.md for
+            // the per-instance-rotation limitation). It runs once per zone and every instance reuses
+            // the answer; probing per instance would multiply the AABB work for identical results.
+            const Transform3d orient = SupportZones::instance_orientation(
+                object->instances.front()->get_matrix());
+            const SupportZones::ZoneProbe probe = SupportZones::probe_zone(*object, *volume, step, orient);
             if (probe.sterile()) {
                 m_support_zone_sterile = true;
                 continue;
@@ -10768,13 +10771,12 @@ void GLCanvas3D::_update_support_zones()
                 if (instance == nullptr)
                     continue;
                 const Transform3d &trafo = instance->get_matrix();
-                // Normals do not transform with the matrix itself. Instances only ever carry
-                // rotation, uniform-ish scaling and a translation, but the inverse transpose is the
-                // correct thing regardless and costs one matrix per instance.
-                const Matrix3d normal_matrix = trafo.linear().inverse().transpose();
+                // [ORCAPORT:SU-14] The probe returns samples already in world orientation, so the
+                // world position is the sample plus the instance translation and the normal needs no
+                // transform at all. Applying the instance rotation here would apply it twice.
                 for (const SupportZones::LitSample &sample : probe.lit) {
-                    const Vec3d c = trafo * sample.pos.cast<double>();
-                    Vec3d       n = normal_matrix * sample.normal.cast<double>();
+                    const Vec3d c = trafo.translation() + sample.pos.cast<double>();
+                    Vec3d       n = sample.normal.cast<double>();
                     const double n_len = n.norm();
                     if (n_len <= 0.)
                         continue;
@@ -10834,7 +10836,8 @@ void GLCanvas3D::_update_support_zones()
         // 🔑 El mapa NO usa la resolución del pilar: usa la suya. Son dos preguntas distintas —
         // una es cómo se imprime el soporte, la otra cuánto detalle quiere ver quien mira.
         const SupportZones::CoverageProbe cov =
-            SupportZones::probe_object_coverage(*object, m_support_zone_gap_step, m_support_zone_gap_normal_z);
+            SupportZones::probe_object_coverage(*object, m_support_zone_gap_step, m_support_zone_gap_normal_z,
+                                                SupportZones::instance_orientation(object->instances.front()->get_matrix()));
         if (cov.uncovered.empty() && cov.covered.empty())
             continue;
         const float half = MARKER_FATNESS * cov.grid_step_mm;
@@ -10842,12 +10845,12 @@ void GLCanvas3D::_update_support_zones()
             if (instance == nullptr)
                 continue;
             const Transform3d &trafo = instance->get_matrix();
-            const Matrix3d normal_matrix = trafo.linear().inverse().transpose();
+            // [ORCAPORT:SU-14] Samples are already world-oriented (see the gap map above).
             // Dos vueltas sobre la misma rejilla: primero lo que ya está cogido (verde) y luego lo
             // que no (rojo). Mismo paso, mismo tamaño, misma medida.
             for (const SupportZones::LitSample &sample : cov.covered) {
-                const Vec3d c = trafo * sample.pos.cast<double>();
-                Vec3d       n = normal_matrix * sample.normal.cast<double>();
+                const Vec3d c = trafo.translation() + sample.pos.cast<double>();
+                Vec3d       n = sample.normal.cast<double>();
                 const double n_len = n.norm();
                 if (n_len <= 0.)
                     continue;
@@ -10869,8 +10872,8 @@ void GLCanvas3D::_update_support_zones()
             }
 
             for (const SupportZones::LitSample &sample : cov.uncovered) {
-                const Vec3d c = trafo * sample.pos.cast<double>();
-                Vec3d       n = normal_matrix * sample.normal.cast<double>();
+                const Vec3d c = trafo.translation() + sample.pos.cast<double>();
+                Vec3d       n = sample.normal.cast<double>();
                 const double n_len = n.norm();
                 if (n_len <= 0.)
                     continue;
