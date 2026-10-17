@@ -43,7 +43,7 @@ enum class Shortcut : uint8_t {
     GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
     GizmoMmuSegmentation, GizmoEmboss, GizmoMeasure, GizmoAssembly, GizmoBrimEars, GizmoDisplacement,
     // [ORCAPORT:UI-1] the port's gizmos: appended here so the table order still matches this enum.
-    GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoCavityFill, GizmoPerforation,
+    GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoExtrude, GizmoPerforation,
     // Sliders
     GoToLayer, LayerSliderUp, LayerSliderDown, MovesSliderLeft, MovesSliderRight, MovesSliderStart, MovesSliderEnd,
     // Painting tools

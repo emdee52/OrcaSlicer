@@ -13,7 +13,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
-#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
 #include "slic3r/GUI/Selection.hpp"
 
@@ -304,7 +304,7 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
 }
 
 // [ORCAPORT:HF-1] Open and drive the Cavity fill tool.
-GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+GLGizmoExtrude *active_extrude_gizmo(bool open_if_needed)
 {
     Plater     *plater = wxGetApp().plater();
     GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
@@ -312,7 +312,7 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
         return nullptr;
     GLGizmosManager &mgr = canvas->get_gizmos_manager();
 
-    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HoleFill) {
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Extrude) {
         Selection &sel = canvas->get_selection();
         if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
             int oid = sel.get_object_idx();
@@ -323,14 +323,14 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
                 sel.add_object(unsigned(oid), true);
             }
         }
-        mgr.open_gizmo(GLGizmosManager::EType::HoleFill);
+        mgr.open_gizmo(GLGizmosManager::EType::Extrude);
         canvas->set_as_dirty();
         canvas->request_extra_frame();
     }
 
-    if (mgr.get_current_type() != GLGizmosManager::EType::HoleFill)
+    if (mgr.get_current_type() != GLGizmosManager::EType::Extrude)
         return nullptr;
-    return dynamic_cast<GLGizmoHoleFill *>(mgr.get_current());
+    return dynamic_cast<GLGizmoExtrude *>(mgr.get_current());
 }
 
 nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
@@ -346,11 +346,17 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
         {"object_scale", g.object_scale()}};
 }
 
-nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
+nlohmann::json extrude_gizmo_state(GLGizmoExtrude &g)
 {
     return nlohmann::json{
+        {"mode", g.get_mode() == GLGizmoExtrude::Mode::ExtrudeFace ? "extrude_face" : "cavity_fill"},
         {"radius", g.get_radius()},
         {"hover_valid", g.hover_valid()},
+        {"pick_valid", g.pick_valid()},
+        {"height", g.get_extrude_height()},
+        {"offset", g.get_extrude_offset()},
+        {"holes", g.get_extrude_holes()},
+        {"both", g.get_extrude_both()},
         {"applied_count", g.applied_count()},
         {"object_scale", g.object_scale()}};
 }
@@ -1068,26 +1074,34 @@ void OrcaMCPServer::register_gizmo_tools()
         }
     });
     register_tool(
-        {"hole_fill_gizmo",
-         "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
-         "watermark, pocket) with a positive volume built from the recessed faces projected up to "
-         "the surface fitted around them, so it sits flush on a curved wall without a boolean and "
-         "without any reference to set. Actions: "
-         "'open', 'status', 'set_radius' (brush width, mm), 'hover_at' "
-         "(screen_x/screen_y), 'apply_at' (screen_x/screen_y), 'apply' (fill under the cursor), "
-         "'list_fills' (volume index + object-space centre of each applied plug), 'remove_fill' "
-         "(index), 'clear_all', 'refresh', 'close'. A face that is already covered is not filled "
-         "twice; remove it first (right-click in the UI).",
+        {"extrude_gizmo",
+         "[ORCAPORT:HF-1] [ORCAPORT:HF-3] Open and drive the Extrude tool. Two modes: extrude_face "
+         "(default) turns a picked flat face into a solid; cavity_fill plugs a depression (engraving, "
+         "watermark, pocket) with a positive volume built from the recessed faces projected up to the "
+         "surface fitted around them. Actions: "
+         "'open', 'status', 'set_mode' (extrude_face | cavity_fill), 'set_extrude' (height / offset / "
+         "holes / both), 'pick_at' (screen_x/screen_y - click a face to SELECT it), 'clear_pick', "
+         "'create' (commit the picked face as a solid), 'set_radius' (cavity brush width, mm), "
+         "'hover_at' (screen_x/screen_y), 'apply_at' (screen_x/screen_y - pick then create, one call), "
+         "'apply' (same, for the face already under the cursor), "
+         "'list_fills' (volume index + object-space centre of each volume added), 'remove_fill' "
+         "(index), 'clear_all', 'refresh', 'close'. In extrude_face mode nothing is added until "
+         "'create': pick first, then dial the height and offset against the preview.",
          {{"type", "object"},
           {"properties",
            {{"action",
              {{"type", "string"},
               {"description",
-               "open | status | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
+               "open | status | set_mode | set_extrude | pick_at | clear_pick | create | set_radius | hover_at | apply_at | apply | list_fills | remove_fill | clear_all | refresh | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
+            {"mode", {{"type", "string"}, {"description", "extrude_face | cavity_fill, for action=set_mode."}}},
+            {"height", {{"type", "number"}, {"description", "Extrusion height in mm, for action=set_extrude."}}},
+            {"offset", {{"type", "number"}, {"description", "Outline offset in mm (negative shrinks), for action=set_extrude."}}},
+            {"holes", {{"type", "boolean"}, {"description", "Extrude only the face's holes, for action=set_extrude."}}},
+            {"both", {{"type", "boolean"}, {"description", "Half out of the face, half into the model, for action=set_extrude."}}},
             {"radius", {{"type", "number"}, {"description", "Brush width in mm, for action=set_radius."}}},
-            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=apply_at / hover_at."}}},
-            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=apply_at / hover_at."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X, for action=pick_at / apply_at / hover_at."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y, for action=pick_at / apply_at / hover_at."}}},
             {"index",
              {{"type", "integer"}, {"description", "Fill volume index from list_fills, for action=remove_fill."}}}}},
           {"required", {"action"}}},
@@ -1114,7 +1128,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     sel.add_object(unsigned(oid), true);
                 }
 
-                GLGizmoHoleFill *g = active_hole_fill_gizmo(action == "open");
+                GLGizmoExtrude *g = active_extrude_gizmo(action == "open");
                 if (g == nullptr)
                     return {{"status", "error"},
                             {"error", "Cavity fill gizmo is not active. Load a model and pass object_id or "
@@ -1126,6 +1140,40 @@ void OrcaMCPServer::register_gizmo_tools()
                     if (!need("radius"))
                         return {{"status", "error"}, {"error", "Missing radius"}};
                     g->set_radius(params["radius"].get<double>());
+                } else if (action == "set_mode") {
+                    if (!need("mode"))
+                        return {{"status", "error"}, {"error", "Missing mode (extrude_face | cavity_fill)"}};
+                    const std::string m = params["mode"].get<std::string>();
+                    if (m == "extrude_face" || m == "extrude")
+                        g->set_mode(GLGizmoExtrude::Mode::ExtrudeFace);
+                    else if (m == "cavity_fill" || m == "cavity")
+                        g->set_mode(GLGizmoExtrude::Mode::CavityFill);
+                    else
+                        return {{"status", "error"}, {"error", "Unknown mode: " + m}};
+                } else if (action == "set_extrude") {
+                    // [ORCAPORT:HF-3] The extrude-face parameters.
+                    if (need("height"))
+                        g->set_extrude_height(params["height"].get<double>());
+                    if (need("offset"))
+                        g->set_extrude_offset(params["offset"].get<double>());
+                    if (need("holes"))
+                        g->set_extrude_holes(params["holes"].get<bool>());
+                    if (need("both"))
+                        g->set_extrude_both(params["both"].get<bool>());
+                } else if (action == "pick_at") {
+                    if (!need("screen_x") || !need("screen_y"))
+                        return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
+                    const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
+                    if (!g->pick_at(pos))
+                        return {{"status", "error"},
+                                {"error", "No flat face at that point (nothing under the cursor, or the face has no usable outline)."}};
+                } else if (action == "clear_pick") {
+                    g->clear_pick();
+                } else if (action == "create") {
+                    // [ORCAPORT:HF-3] Commit the picked face as a solid.
+                    if (!g->create_from_pick())
+                        return {{"status", "error"},
+                                {"error", "Nothing to extrude (no face picked, or the offset removes the shape)."}};
                 } else if (action == "hover_at") {
                     if (!need("screen_x") || !need("screen_y"))
                         return {{"status", "error"}, {"error", "Missing screen_x / screen_y"}};
@@ -1137,11 +1185,11 @@ void OrcaMCPServer::register_gizmo_tools()
                     const Vec2d pos(params["screen_x"].get<double>(), params["screen_y"].get<double>());
                     if (!g->gizmo_apply_at(pos))
                         return {{"status", "error"},
-                                {"error", "No fillable cavity at that point (nothing under the cursor, the face is already covered, or the patch is too flat)."}};
+                                {"error", "Nothing to add at that point (nothing under the cursor, the face is already covered, or the offset removes the shape)."}};
                 } else if (action == "apply") {
                     if (!g->gizmo_apply_hovered())
                         return {{"status", "error"},
-                                {"error", "No fillable cavity is under the cursor (hover first, or the face is already covered / too flat)."}};
+                                {"error", "Nothing to add under the cursor (hover first, or the face is already covered / the offset removes the shape)."}};
                 } else if (action == "list_fills") {
                     nlohmann::json fills = nlohmann::json::array();
                     const int      oi    = canvas->get_selection().get_object_idx();
@@ -1149,7 +1197,10 @@ void OrcaMCPServer::register_gizmo_tools()
                         const ModelObject *mo = plater->model().objects[oi];
                         for (size_t i = 0; i < mo->volumes.size(); ++i) {
                             const ModelVolume *v = mo->volumes[i];
-                            if (v == nullptr || v->name.rfind("HoleFill#", 0) != 0 || v->mesh().its.vertices.empty())
+                            // Accept the current prefix and the legacy one, so fills created before
+                            // the tool was renamed to Extrude can still be listed and removed.
+                            if (v == nullptr || (v->name.rfind("Extrude#", 0) != 0 && v->name.rfind("HoleFill#", 0) != 0)
+                                || v->mesh().its.vertices.empty())
                                 continue;
                             Vec3f c = Vec3f::Zero();
                             for (const stl_vertex &p : v->mesh().its.vertices)
@@ -1159,7 +1210,7 @@ void OrcaMCPServer::register_gizmo_tools()
                             fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
                         }
                     }
-                    nlohmann::json result = hole_fill_gizmo_state(*g);
+                    nlohmann::json result = extrude_gizmo_state(*g);
                     result["status"] = "ok";
                     result["open"]   = true;
                     result["action"] = action;
@@ -1178,7 +1229,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     return {{"status", "error"}, {"error", "Unknown action: " + action}};
                 }
 
-                nlohmann::json result = hole_fill_gizmo_state(*g);
+                nlohmann::json result = extrude_gizmo_state(*g);
                 result["status"] = "ok";
                 result["open"] = true;
                 result["action"] = action;

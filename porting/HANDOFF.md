@@ -112,6 +112,15 @@ Depth stops at the first surface behind the face. MCP tool `perforation_gizmo`. 
 
 ## What to do next
 
+**NEXT TASK: migrate the custom gizmos to the panel style standard.** The owner's decision is that
+every gizmo this fork adds should look like ours and not like stock Orca. HF-3 (the Extrude gizmo,
+branch `feat/extrude-fill`) is the first built against the standard and is the reference to copy;
+the style rules, the widget list, the migration table and the two traps are in **`docs/handoff.md`
+section 28**. Still on the old style: Hole walls (PF-2b/RF-1), Holes (ME-1/ME-2), Edge chamfer /
+fillet (EF-1), Align & Stack (AS-2) and Perforations (PP-1). Support Zones is on the palette but
+carries private copies of the widgets that should be hoisted into `GizmoStyle.hpp` as its own change
+(do not fold that into an unrelated gizmo's migration - see section 28).
+
 **Gizmo panel chrome is DONE on `port/gizmo-ui-panels` and awaits your test.** Branched from
 `port/integration` `9e5ce7fb2b`; nine single-ID commits (UI-1 panel anchor + overflow flip, PF-2b/RF-1
 hole-walls selectors, EF-1 edge chamfer, HF-1 cavity fill, PP-1 perforations, MV-1 pick-pivot shortcut

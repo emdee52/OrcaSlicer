@@ -14,6 +14,8 @@
 #ifndef slic3r_GizmoStyle_hpp_
 #define slic3r_GizmoStyle_hpp_
 
+#include <algorithm>
+
 #include <imgui/imgui.h>
 
 #include "slic3r/GUI/GUI_App.hpp"
@@ -223,6 +225,128 @@ inline void gizmo_draw_node(ImDrawList* dl, const ImVec2& c, float radius, ImU32
     }
     dl->AddCircleFilled(c, radius, fill, 20);
     dl->AddCircle(c, radius, gizmo_col_u32(GizmoCol::Canvas), 20, 1.6f);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [ORCAPORT:HF-3] The panel widget layer: the shapes every custom gizmo panel uses.
+//
+// Same reason this header exists at all - it is pulled out when a SECOND gizmo wants it. Extrude is
+// the second; Support Zones still carries private copies of the same widgets in its own anonymous
+// namespace, and consolidating those is a deliberate follow-up so a user-verified gizmo is not
+// refactored inside a UI task. New gizmos should use THESE.
+//
+// Shape rules, all of which come from the fork's panels:
+//   - a fixed-width label column, so a stack of rows reads as a table and not as sentences;
+//   - a slider with a typed field beside it and NO +/- step buttons (they cost a third of the width);
+//   - a switch for a yes/no, not a checkbox, when the row has a label on the left;
+//   - segmented buttons for a small exclusive choice, never a dropdown;
+//   - hints WRAP inside a fixed panel width instead of widening the window.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Width of the label column. Derived from the widest caption the caller uses, so it is exact rather
+// than a magic number: pass the longest label in the panel.
+inline float gizmo_label_w(const char *widest_caption)
+{
+    return ImGui::CalcTextSize(widest_caption).x + ImGui::GetStyle().ItemSpacing.x * 0.5f;
+}
+
+// Slider + typed field on one row, with the caption in the label column. Returns true when either
+// one changed the value. The field is clamped to the same range as the slider, so typing can never
+// push the value outside it.
+inline bool gizmo_row_slider(const char *id, const char *caption, float *v, float mn, float mx,
+                             const char *fmt, float label_w, const char *tip)
+{
+    bool changed = false;
+    ImGui::PushID(id);
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::TextUnformatted(caption);
+    ImGui::PopStyleColor();
+    if (tip != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tip);
+    ImGui::SameLine(label_w);
+    // The slider takes whatever is left after the field.
+    const float field_w = ImGui::CalcTextSize("0000.00").x + ImGui::GetStyle().FramePadding.x * 2.f;
+    ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - field_w - ImGui::GetStyle().ItemSpacing.x, 1.f));
+    if (ImGui::SliderFloat("##v", v, mn, mx, fmt))
+        changed = true;
+    ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
+    ImGui::SetNextItemWidth(field_w);
+    float typed = *v;
+    if (ImGui::InputFloat("##t", &typed, 0.f, 0.f, fmt, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        *v      = std::clamp(typed, mn, mx);
+        changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// Label on the left, toggle switch on the right. The switch is drawn, not an ImGui::Checkbox, so it
+// reads as a state rather than as an action. Returns true when it was flipped.
+inline bool gizmo_row_switch(const char *id, const char *caption, bool *v, const char *tip = nullptr)
+{
+    ImGui::PushID(id);
+    const float  h = ImGui::GetFrameHeight() * 0.72f;
+    const float  w = h * 1.9f;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(caption);
+    if (tip != nullptr && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tip);
+    // Right-align: place the invisible button so its right edge sits on the content's right edge.
+    ImGui::SameLine(std::max(ImGui::GetWindowContentRegionMax().x - w, ImGui::GetCursorPosX()));
+    const ImVec2 p   = ImGui::GetCursorScreenPos();
+    const bool   hit = ImGui::InvisibleButton("##sw", ImVec2(w, h));
+    if (hit)
+        *v = !*v;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
+                      *v ? gizmo_col_u32(GizmoCol::Accent) : gizmo_col_u32(GizmoCol::SurfaceHi), h * 0.5f);
+    const float kr = h * 0.5f - 2.f;
+    dl->AddCircleFilled(ImVec2(*v ? p.x + w - kr - 2.f : p.x + kr + 2.f, p.y + h * 0.5f), kr,
+                        IM_COL32(255, 255, 255, 240), 20);
+    ImGui::PopID();
+    return hit;
+}
+
+// Segmented buttons: a small exclusive choice. Returns the newly selected index, or -1 if nothing
+// was clicked. `n` is the number of labels.
+inline int gizmo_segment(const char *id, const char *const *labels, int n, int sel, const char *tip = nullptr)
+{
+    int clicked = -1;
+    ImGui::PushID(id);
+    for (int i = 0; i < n; ++i) {
+        if (i > 0)
+            ImGui::SameLine(0.f, 2.f);
+        const bool on = (i == sel);
+        if (on)
+            ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
+        const bool hit = ImGui::Button(labels[i]);
+        if (on)
+            ImGui::PopStyleColor();
+        if (tip != nullptr && i == 0 && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tip);
+        if (hit)
+            clicked = i;
+    }
+    ImGui::PopID();
+    return clicked;
+}
+
+// A hint at the bottom of a panel: dim, indented slightly so it reads as prose and not as a row, and
+// WRAPPED to the panel width. This is the thing that keeps a panel narrow.
+inline void gizmo_hint(const char *text)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+// The narrow panel width, in the same units the gizmo panels are laid out in. One place to change it.
+inline float gizmo_panel_width()
+{
+    return 360.f * (ImGui::GetFontSize() / 13.5f);
 }
 
 }} // namespace Slic3r::GUI

@@ -125,7 +125,7 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
     SHORTCUT(GizmoCounterboreBridge, "gizmo_hole_walls",  L("Gizmo hole walls"),                                   PLATER, { 'K' }),
     SHORTCUT(GizmoHoles,        "gizmo_holes",        L("Gizmo holes"),                                          PLATER, { 'J' }),
     SHORTCUT(GizmoEdgeDress,    "gizmo_edge_dress",   L("Gizmo edge chamfer / fillet"),                           PLATER, { 'X' }),
-    SHORTCUT(GizmoCavityFill,   "gizmo_cavity_fill",  L("Gizmo cavity fill"),                                     PLATER, { 'G' }),
+    SHORTCUT(GizmoExtrude,   "gizmo_extrude",  L("Gizmo extrude"),                                     PLATER, { 'G' }),
     SHORTCUT(GizmoPerforation,  "gizmo_perforation",  L("Gizmo perforations"),                                    PLATER, { 'Z' }),
 
     // Sliders

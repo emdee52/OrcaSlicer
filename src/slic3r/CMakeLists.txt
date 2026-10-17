@@ -203,8 +203,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoHoles.hpp
     GUI/Gizmos/GLGizmoEdgeDress.cpp
     GUI/Gizmos/GLGizmoEdgeDress.hpp
-    GUI/Gizmos/GLGizmoHoleFill.cpp
-    GUI/Gizmos/GLGizmoHoleFill.hpp
+    GUI/Gizmos/GLGizmoExtrude.cpp
+    GUI/Gizmos/GLGizmoExtrude.hpp
     GUI/Gizmos/GLGizmoPerforation.cpp
     GUI/Gizmos/GLGizmoPerforation.hpp
     GUI/Gizmos/GLGizmoMeasure.cpp
