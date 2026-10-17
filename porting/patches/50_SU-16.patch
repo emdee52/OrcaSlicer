@@ -1,0 +1,57 @@
+diff --git a/src/libslic3r/Support/SupportMaterial.cpp b/src/libslic3r/Support/SupportMaterial.cpp
+index da5af8e823..91273628aa 100644
+--- a/src/libslic3r/Support/SupportMaterial.cpp
++++ b/src/libslic3r/Support/SupportMaterial.cpp
+@@ -3656,7 +3656,52 @@ SupportGeneratorLayersPtr PrintObjectSupportMaterial::bottom_contact_layers_and_
+                         << "  🚨 esta raíz no da para todo: " << n_unreached
+                         << " isla(s) no alcanzan ningún tocón con " << zone_stumps[zi].size()
+                         << " plantado(s) — planta otro tocón bajo esa zona, o sube el ángulo");
++                // [ORCAPORT:SU-16] BEGIN - what does not fit the stumps goes down the general flow
++                // Measured on the release note's surfboard: fixing only the islands that reached no
++                // stump still left the support hanging ~2.6 mm off the bed, because the guided run
++                // is only ~2 layers deep (a 1 mm gap at 45 deg) and has no time to contract, so the
++                // clip against the stump band ate everything outside the stumps.
++                // The rule is therefore per-AREA, not per-island: at the stump cap, whatever sits
++                // outside the stumps is handed to the general flow (overhangs_projection), which
++                // falls plumb and is clipped against the part layer by layer. What does land on a
++                // stump keeps using it. The warning above still names the islands that missed.
++                {
++                    const Polygons overflow = diff(projection, all_stumps);
++                    if (! overflow.empty()) {
++                        const double overflow_area = area(overflow);
++                        projection = intersection(projection, all_stumps);
++                        // With build-plate-only support the base comes from `enforcers_projection`,
++                        // so it has to receive the overflow too or it would be lost the same way.
++                        if (buildplate_only)
++                            polygons_append(enforcers_projection, overflow);
++                        polygons_append(overhangs_projection, overflow);
++                        CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " zona=" << zones[zi].priority
++                            << " SU-16 fuera_de_tocones=" << unscale<double>(unscale<double>(overflow_area)) << "mm2"
++                            << " (islas_sin_tocon=" << n_unreached << ")"
++                            << " -> bajan a plomo por el flujo general");
++                    }
++                }
++                // [ORCAPORT:SU-16] END
++            }
++            // [ORCAPORT:SU-16] BEGIN - below the cap, the same thing, layer by layer
++            // The cap fell plumb but the layer under it lost area again: that is NEW contact the
++            // stump footprint seeded just there (expanded a little past the band by the grid), and
++            // the next layer's clip ate it. So across the whole stump band, whatever sticks out of
++            // its section goes to the general flow before the clip, exactly as at the cap.
++            if (zone_guided[zi] != 0 && layer_id < zone_stump_top[zi] && ! corridor_here.empty()) {
++                const Polygons overflow = diff(projection, corridor_here);
++                if (! overflow.empty()) {
++                    const double overflow_area = area(overflow);
++                    projection = intersection(projection, corridor_here);
++                    if (buildplate_only)
++                        polygons_append(enforcers_projection, overflow);
++                    polygons_append(overhangs_projection, overflow);
++                    CORRIDOR_LOG("[CORRIDOR] layer=" << layer_id << " zona=" << zones[zi].priority
++                        << " SU-16 fuera_del_corredor=" << unscale<double>(unscale<double>(overflow_area)) << "mm2"
++                        << " -> bajan a plomo por el flujo general");
++                }
+             }
++            // [ORCAPORT:SU-16] END
+             if (corridor_above.empty())
+                 continue;
+ 

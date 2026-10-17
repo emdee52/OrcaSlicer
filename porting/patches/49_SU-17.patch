@@ -1,0 +1,161 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+index 72d94d2529..8cbc0e140d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.cpp
+@@ -1594,6 +1594,23 @@ size_t GLGizmoSupportZones::paint_facets(int seed, const Vec3d &hit_world, doubl
+               + m_world_trafo * m_mesh.its.vertices[t[2]].cast<double>()) / 3.;
+     };
+ 
++    // [ORCAPORT:SU-17] BEGIN - overhang-only brush filter
++    // Same question the red map asks with `overhang_normal_z_cut()`, but measured against the
++    // threshold FROZEN into this gesture (`m_paint_cut_deg`) and not the live one: a zone painted at
++    // 30 deg must repaint the same faces after the user moves the global overhang angle. The eraser
++    // never filters - whatever is marked has to be removable.
++    const bool     filter  = ! erase && m_paint_overhang_only;
++    const double   cut     = - std::cos(Geometry::deg2rad(double(m_paint_cut_deg)));
++    const Matrix3d nrm_mat = m_world_trafo.linear().inverse().transpose();
++    auto leans_enough = [&](int f) -> bool {
++        if (f >= int(m_face_normals.size()))
++            return false;
++        Vec3d n = nrm_mat * m_face_normals[f].cast<double>();
++        const double l = n.norm();
++        return l > 1e-12 && n.z() / l <= cut;
++    };
++    // [ORCAPORT:SU-17] END
++
+     size_t changed = 0;
+     std::vector<int> stack { seed };
+     m_visit_stamp[seed] = m_visit_epoch;
+@@ -1606,7 +1623,9 @@ size_t GLGizmoSupportZones::paint_facets(int seed, const Vec3d &hit_world, doubl
+         ++ visits;
+         if ((centroid(f) - hit_world).squaredNorm() > r2)
+             continue;                    // fuera del pincel: ni se pinta ni se sigue por aquí
+-        if (m_painted[f] != want) {
++        // [ORCAPORT:SU-17] Outside the filter the walk CONTINUES - a wall carries from one bulge to
++        // the next - only the marking is gated.
++        if (m_painted[f] != want && (! filter || leans_enough(f))) {
+             m_painted[f] = want;
+             if (want)
+                 m_painted_list.push_back(f);
+@@ -3724,6 +3743,12 @@ std::string GLGizmoSupportZones::gesture_to_json(const ZoneGesture &g)
+     r["ef"]  = g.edge_foot_mm;
+     r["la"]  = g.lean_deg;
+     r["lo"]  = { g.lock_offset.x(), g.lock_offset.y(), g.lock_offset.z() };
++    // [ORCAPORT:SU-17] Only when on: a gesture painted without the filter produces the same JSON
++    // as before, so an old project is untouched.
++    if (g.overhang_only) {
++        r["oo"] = true;
++        r["oc"] = g.overhang_cut_deg;
++    }
+     return r.dump();
+ }
+ 
+@@ -3766,6 +3791,9 @@ bool GLGizmoSupportZones::gesture_from_json(const std::string &text, ZoneGesture
+         g.edge_patch_mm = r.value("ep", 0.f);
+         g.edge_foot_mm  = r.value("ef", 0.f);
+         g.lean_deg      = r.value("la", 45.f);
++        // [ORCAPORT:SU-17] Absent in a pre-SU-17 gesture: filter off, i.e. exactly as stored.
++        g.overhang_only    = r.value("oo", false);
++        g.overhang_cut_deg = r.value("oc", 30.f);
+         if (r.contains("st") && r["st"].is_array())
+             for (const auto &q : r["st"])
+                 if (q.is_array() && q.size() >= 3)
+@@ -3843,6 +3871,11 @@ GLGizmoSupportZones::ZoneGesture GLGizmoSupportZones::current_gesture(const Tran
+     g.edge_patch_mm = m_footprint_shrink_mm;
+     g.edge_foot_mm  = m_footprint_base_mm;
+     g.lean_deg      = m_lean_angle_deg;
++    // [ORCAPORT:SU-17] Frozen into the gesture: the brush filter and the angle it was painted with,
++    // so reopening the zone repaints it the same way even after the global angle changes. Only the
++    // brush (block-tree) footprint paints facets, so only it carries the filter.
++    g.overhang_only    = block_tree_mode() && m_paint_overhang_only;
++    g.overhang_cut_deg = m_paint_cut_deg;
+     return g;
+ }
+ 
+@@ -4046,6 +4079,9 @@ bool GLGizmoSupportZones::begin_edit_zone(int row_idx)
+     m_footprint_shrink_mm = g.edge_patch_mm;
+     m_footprint_base_mm   = g.edge_foot_mm;
+     m_lean_angle_deg      = g.lean_deg;
++    // [ORCAPORT:SU-17] A pre-SU-17 gesture carries overhang_only = false, so it repaints as stored.
++    m_paint_overhang_only = g.overhang_only;
++    m_paint_cut_deg       = g.overhang_cut_deg;
+ 
+     // 🚨 s299 — AQUÍ SE RECORTABA EL ÁNGULO GUARDADO y ya no se recorta. El tope de antes salía de
+     // milímetros por capa, así que reabrir una zona con otra altura de capa le cambiaba el ángulo a
+@@ -4077,6 +4113,10 @@ void GLGizmoSupportZones::end_edit()
+ {
+     m_editing_volume_idx = -1;
+     clear_pick();
++    // [ORCAPORT:SU-17] The NEXT zone returns to the default - filter on, at the live angle - even
++    // when the zone just edited was an old one without the filter.
++    m_paint_overhang_only = true;
++    m_paint_cut_deg       = m_overhang_threshold_deg;
+     m_parent.set_as_dirty();
+ }
+ 
+@@ -5832,6 +5872,16 @@ void GLGizmoSupportZones::render_view_strip()
+                            _u8L("Highlight overhangs").c_str())) {
+             m_overhang_model_dirty = true;
+             apply_overhang_highlight();
++            // [ORCAPORT:SU-17] With the overhang-only brush on, this same slider decides what stays
++            // painted: moving it repaints the strokes at the new threshold, so the user sees live
++            // how much the brush grabs.
++            if (block_tree_mode() && m_paint_overhang_only && ! m_stamps.empty()) {
++                m_paint_cut_deg = m_overhang_threshold_deg;
++                repaint_from_stamps();
++                invalidate_patch();
++                m_preview_dirty         = true;
++                m_footprint_model_dirty = true;
++            }
+             // Mismo número para el sombreado y para el mapa: no pueden discrepar en pantalla.
+             if (m_show_gaps)
+                 m_parent.set_support_zone_gaps(true, overhang_normal_z_cut(), m_gap_step_mm);
+@@ -6496,6 +6546,20 @@ void GLGizmoSupportZones::render_panel_body()
+                 m_parent.set_as_dirty();
+             }
+ 
++            // [ORCAPORT:SU-17] BEGIN - overhang-only brush toggle
++            // The brush circle sweeps across walls too, so without this a stroke along an edge drags
++            // the box up the side of the part. The threshold is the live "Highlight overhangs" angle
++            // while it is being moved, and is frozen into the gesture when the zone is created.
++            if (gizmo_row_toggle("##ovhonly", _u8L("overhang only").c_str(), &m_paint_overhang_only,
++                                 _u8L("On: the brush only marks surface that leans past the overhang angle, so painting along an edge no longer drags the box up. The angle is the one of Highlight overhangs; turn that on and move overhangs to grab more or less, and what you painted is redone live. Off: it marks everything the brush touches.").c_str())) {
++                repaint_from_stamps();
++                invalidate_patch();
++                m_preview_dirty         = true;
++                m_footprint_model_dirty = true;
++                m_parent.set_as_dirty();
++            }
++            // [ORCAPORT:SU-17] END
++
+             ImGui::AlignTextToFramePadding();
+             ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
+             ImGui::TextUnformatted(_u8L("stumps").c_str());
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp
+index 0c34c43a18..91460f0dd1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp
+@@ -152,6 +152,11 @@ private:
+         // 🔑 El testigo del candado: el `offset` que el gizmo le dejó puesto al volumen. Si ya no
+         // coincide, alguien lo movió por fuera.
+         Vec3d     lock_offset   { Vec3d::Zero() };
++        // [ORCAPORT:SU-17] Overhang-only brush and the threshold it was painted with. A gesture
++        // without these keys (anything saved before SU-17) repaints with the filter OFF, i.e.
++        // exactly as stored.
++        bool      overhang_only { false };
++        float     overhang_cut_deg { 30.f };
+     };
+     static std::string gesture_to_json(const ZoneGesture &g);
+     static bool        gesture_from_json(const std::string &text, ZoneGesture &out);
+@@ -669,6 +674,11 @@ private:
+     std::vector<StumpSpot> m_extra_stumps;
+     bool  m_stump_pick_mode = false;
+     float m_stump_size_mm   = 8.f;
++// [ORCAPORT:SU-17] Brush filter: mark only faces leaning past `m_paint_cut_deg`, which is frozen
++// into the gesture at paint time so reopening a zone repaints it identically. On by default, as in
++// the fork; a gesture saved before SU-17 loads with it off and is unchanged.
++bool  m_paint_overhang_only = true;
++float m_paint_cut_deg       = 30.f;
+     // 🔑 Altura FIJA y no un mando (decisión suya): la altura de un tocón no es algo que se juzgue
+     // mirándola, sólo tiene que dar unas cuantas capas de imán y de pie. 2 mm son 6 capas a 0.32.
+     static constexpr double STUMP_HEIGHT_MM = 2.0;
