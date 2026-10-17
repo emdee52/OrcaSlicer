@@ -37,7 +37,7 @@ constexpr const char *LEGACY_EXTRUDE_NAME = "HoleFill";
 // [ORCAPORT:HF-3] The highlight colours, lifted from the fork's Align & Construct preview so the two
 // tools read the same: teal is "the face under your cursor", green is "the face you picked", orange
 // is "the solid you are about to make". Alpha is part of the value - these are overlays.
-const ColorRGBA HOVER_COLOR { 0.10f, 0.80f, 0.74f, 0.55f };  // teal
+const ColorRGBA HOVER_COLOR = gizmo_surface_colour();  // the face under the cursor
 const ColorRGBA PICK_COLOR  { 0.16f, 0.85f, 0.30f, 0.60f };  // green
 const ColorRGBA PRISM_COLOR { 1.00f, 0.55f, 0.00f, 0.55f };  // orange
 // Applied volumes, coloured by what they DO to the part and drawn at the preview's translucency: 0.80
@@ -955,9 +955,11 @@ void GLGizmoExtrude::data_changed(bool /*is_serializing*/)
         m_old_matrix       = instance_matrix();
         m_preview_dirty    = true;
         m_hover_computed   = false;
-        // [ORCAPORT:HF-3] The picked face belonged to the old mesh: a rebuilt volume list makes the
-        // cached region meaningless, and the saved colours may not exist any more. Restore first.
-        if (m_pick.valid) {
+        // [ORCAPORT:PP-2] A volume-list change is usually OUR OWN create, and the picked face is still
+        // on the same mesh, so the pick survives it - pressing Extrude twice makes two solids, which is
+        // what the note in create_from_pick() promises. It does not survive the volume it pointed at
+        // going away (a delete in the ObjectList, or a rebuild).
+        if (m_pick.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_pick.mv) == mo->volumes.end()) {
             invalidate_pick();
             restore_ghost();
         }
