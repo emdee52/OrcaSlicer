@@ -1,0 +1,1211 @@
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 6e84994fe5..1bce5acf40 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -517,6 +517,8 @@ set(lisbslic3r_sources
+     SLA/SupportTreeMesher.hpp
+     SlicesToTriangleMesh.cpp
+     SlicesToTriangleMesh.hpp
++    SurfaceExtrude.cpp
++    SurfaceExtrude.hpp
+     SlicingAdaptive.cpp
+     SlicingAdaptive.hpp
+     Slicing.cpp
+diff --git a/src/libslic3r/SurfaceExtrude.cpp b/src/libslic3r/SurfaceExtrude.cpp
+new file mode 100644
+index 0000000000..be9c08a063
+--- /dev/null
++++ b/src/libslic3r/SurfaceExtrude.cpp
+@@ -0,0 +1,110 @@
++// [ORCAPORT FILE] SurfaceExtrude - see SurfaceExtrude.hpp
++// Source: NEOTKOCM_RELEASE_2_48.md; fork sha 2c41b67aa3
++#include "SurfaceExtrude.hpp"
++
++#include "ClipperUtils.hpp"
++#include "SlicesToTriangleMesh.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++namespace Slic3r {
++namespace SurfaceExtrude {
++
++std::vector<int> coplanar_region(const std::vector<Vec3f>   &normals,
++                                 const std::vector<Vec3i32> &neighbors,
++                                 int                         seed,
++                                 float                       cos_thresh,
++                                 size_t                      max_facets)
++{
++    std::vector<int> region;
++    const int n_facets = (int) normals.size();
++    if (seed < 0 || seed >= n_facets || (int) neighbors.size() != n_facets)
++        return region;
++
++    const Vec3f seed_n = normals[seed].normalized();
++    region.reserve(256);
++    std::vector<char> visited(n_facets, 0);
++    std::vector<int>  stack { seed };
++    visited[seed] = 1;
++    while (! stack.empty() && region.size() < max_facets) {
++        const int f = stack.back();
++        stack.pop_back();
++        region.push_back(f);
++        for (int e = 0; e < 3; ++ e) {
++            const int nb = neighbors[f][e];
++            if (nb < 0 || nb >= n_facets || visited[nb])
++                continue;
++            if (normals[nb].normalized().dot(seed_n) >= cos_thresh) {
++                visited[nb] = 1;
++                stack.push_back(nb);
++            }
++        }
++    }
++    return region;
++}
++
++ExPolygons region_outline(const indexed_triangle_set &its,
++                          const std::vector<int>     &region,
++                          const Transform3d          &trafo,
++                          double                     *mean_z)
++{
++    Polygons tris;
++    tris.reserve(region.size());
++    double z_sum = 0.;
++    size_t z_cnt = 0;
++    for (int f : region) {
++        if (f < 0 || f >= (int) its.indices.size())
++            continue;
++        const Vec3i32 &tri = its.indices[f];
++        Polygon        p;
++        p.points.reserve(3);
++        for (int k = 0; k < 3; ++ k) {
++            const Vec3d v = trafo * its.vertices[tri[k]].cast<double>();
++            p.points.emplace_back(Point::new_scale(v.x(), v.y()));
++            z_sum += v.z();
++            ++ z_cnt;
++        }
++        if (std::abs(p.area()) < 1.)
++            continue;   // degenerates to a line once projected
++        p.make_counter_clockwise();
++        tris.emplace_back(std::move(p));
++    }
++    if (mean_z != nullptr)
++        *mean_z = z_cnt > 0 ? z_sum / double(z_cnt) : 0.;
++    if (tris.empty())
++        return {};
++    // The tiny closing welds the hairline seams left between neighbouring triangles.
++    return closing_ex(union_ex(tris), float(scale_(0.01)));
++}
++
++ExPolygons outline_holes(const ExPolygons &outline)
++{
++    ExPolygons out;
++    for (const ExPolygon &ex : outline)
++        for (const Polygon &hole : ex.holes) {
++            Polygon p = hole;
++            p.make_counter_clockwise();
++            out.emplace_back(std::move(p));
++        }
++    return out;
++}
++
++indexed_triangle_set extrude_outline(const ExPolygons &outline,
++                                     double            offset_mm,
++                                     double            z0,
++                                     double            height)
++{
++    if (outline.empty() || height <= 0.)
++        return {};
++    const ExPolygons shape = std::abs(offset_mm) > 1e-6
++        ? offset_ex(outline, float(scale_(offset_mm)))
++        : outline;
++    if (shape.empty())
++        return {};
++    // One slice = one slab: bottom cap at z0, walls, top cap at z0 + height.
++    return slices_to_mesh(std::vector<ExPolygons>{ shape }, z0, height, height);
++}
++
++} // namespace SurfaceExtrude
++} // namespace Slic3r
+diff --git a/src/libslic3r/SurfaceExtrude.hpp b/src/libslic3r/SurfaceExtrude.hpp
+new file mode 100644
+index 0000000000..a8de64af52
+--- /dev/null
++++ b/src/libslic3r/SurfaceExtrude.hpp
+@@ -0,0 +1,60 @@
++// [ORCAPORT FILE] SurfaceExtrude - turn a flat face of a mesh into a solid
++// Source: NEOTKOCM_RELEASE_2_48.md; fork sha 2c41b67aa3
++//
++// Geometry only, no UI. Four steps, in order:
++//   1. coplanar_region() - grow a flat region outwards from one picked facet, stopping where the
++//      surface stops being that plane (normal within acos(cos_thresh) of the seed's).
++//   2. region_outline()  - project that region to XY in a frame where the face points +Z, and union
++//      the triangles into a polygon outline, holes kept.
++//   3. outline_holes()   - optionally keep only the holes, each one filled (e.g. the circle of a
++//      screw hole, to grow into a plug).
++//   4. extrude_outline() - build a closed prism from the outline, grown or shrunk by an offset,
++//      from z0 to z0 + height.
++//
++// The caller is expected to rotate the face normal to +Z before calling (a pure rotation, so
++// nothing is distorted) and to rotate the result back afterwards; see GLGizmoExtrude.
++//
++// The fork's `s363c` half - a debug-only curved extrusion with tension nodes - is deliberately not
++// ported (it was marked hidden and undocumented on purpose).
++#ifndef slic3r_SurfaceExtrude_hpp_
++#define slic3r_SurfaceExtrude_hpp_
++
++#include <cstddef>
++#include <vector>
++
++#include "ExPolygon.hpp"
++#include "Point.hpp"
++#include "TriangleMesh.hpp"
++
++namespace Slic3r {
++namespace SurfaceExtrude {
++
++// Facets connected to `seed` whose normal stays within acos(cos_thresh) of the seed's normal.
++// `normals` / `neighbors` come from its_face_normals() / its_face_neighbors().
++std::vector<int> coplanar_region(const std::vector<Vec3f>   &normals,
++                                 const std::vector<Vec3i32> &neighbors,
++                                 int                         seed,
++                                 float                       cos_thresh,
++                                 size_t                      max_facets = 40000);
++
++// The region projected onto XY after `trafo` (scaled coordinates), holes kept.
++// `mean_z` receives the average Z of the region's vertices after `trafo`.
++ExPolygons region_outline(const indexed_triangle_set &its,
++                          const std::vector<int>     &region,
++                          const Transform3d          &trafo,
++                          double                     *mean_z = nullptr);
++
++// The holes of `outline`, each one as a filled shape (counter-clockwise, no holes of its own).
++ExPolygons outline_holes(const ExPolygons &outline);
++
++// Closed prism of `outline` grown/shrunk by `offset_mm`, from z0 to z0 + height.
++// Empty when the offset eats the whole shape or height <= 0.
++indexed_triangle_set extrude_outline(const ExPolygons &outline,
++                                     double            offset_mm,
++                                     double            z0,
++                                     double            height);
++
++} // namespace SurfaceExtrude
++} // namespace Slic3r
++
++#endif // slic3r_SurfaceExtrude_hpp_
+diff --git a/src/slic3r/CMakeLists.txt b/src/slic3r/CMakeLists.txt
+index 972ed8865c..70be60a38a 100644
+--- a/src/slic3r/CMakeLists.txt
++++ b/src/slic3r/CMakeLists.txt
+@@ -203,8 +203,8 @@ set(SLIC3R_GUI_SOURCES
+     GUI/Gizmos/GLGizmoHoles.hpp
+     GUI/Gizmos/GLGizmoEdgeDress.cpp
+     GUI/Gizmos/GLGizmoEdgeDress.hpp
+-    GUI/Gizmos/GLGizmoHoleFill.cpp
+-    GUI/Gizmos/GLGizmoHoleFill.hpp
++    GUI/Gizmos/GLGizmoExtrude.cpp
++    GUI/Gizmos/GLGizmoExtrude.hpp
+     GUI/Gizmos/GLGizmoPerforation.cpp
+     GUI/Gizmos/GLGizmoPerforation.hpp
+     GUI/Gizmos/GLGizmoMeasure.cpp
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+index 9344aab930..f4016e47f6 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+@@ -4436,7 +4436,9 @@ void GLGizmoCut3D::gizmo_fill_from_above()
+     for (const ModelVolume *v : mo->volumes) {
+         if (v == nullptr || !v->is_model_part())
+             continue;
+-        if (v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0 || v->name.rfind("HoleFill#", 0) == 0)
++        if (v->name.rfind(FILL_FROM_ABOVE_NAME, 0) == 0
++            || v->name.rfind("Extrude#", 0) == 0
++            || v->name.rfind("HoleFill#", 0) == 0)   // legacy prefix, kept for old projects
+             continue;
+         TriangleMesh part = v->mesh();
+         if (!v->get_matrix().isApprox(Transform3d::Identity()))
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoleFill.cpp b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+similarity index 57%
+rename from src/slic3r/GUI/Gizmos/GLGizmoHoleFill.cpp
+rename to src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+index fe316c36e8..49d5988e94 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoleFill.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.cpp
+@@ -1,9 +1,12 @@
+-#include "GLGizmoHoleFill.hpp"
++#include "GLGizmoExtrude.hpp"
+ 
+ #include "libslic3r/CutUtils.hpp"
+ #include "libslic3r/Model.hpp"
++#include "libslic3r/SurfaceExtrude.hpp"   // [ORCAPORT:HF-3] extrude-face geometry
+ #include "libslic3r/TriangleMesh.hpp"
+ 
++#include <Eigen/Geometry>   // [ORCAPORT:HF-3] Quaterniond::FromTwoVectors
++
+ #include "slic3r/GUI/GLCanvas3D.hpp"
+ #include "slic3r/GUI/GUI.hpp"
+ #include "slic3r/GUI/GUI_App.hpp"
+@@ -26,7 +29,10 @@ namespace GUI {
+ 
+ namespace {
+ 
+-constexpr const char *HOLE_FILL_NAME = "HoleFill";
++// [ORCAPORT:HF-3] New volumes carry the "Extrude#" prefix. The legacy "HoleFill#" prefix is still
++// recognised on read, so fills created before the tool was renamed stay editable and removable.
++constexpr const char *EXTRUDE_NAME        = "Extrude";
++constexpr const char *LEGACY_EXTRUDE_NAME = "HoleFill";
+ 
+ const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
+ // Applied plugs, the same red the hole gizmo uses for applied holes.
+@@ -37,6 +43,13 @@ const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
+ constexpr double FILL_RADIUS_MIN = 0.5;
+ constexpr double FILL_RADIUS_MAX = 50.0;
+ 
++// [ORCAPORT:HF-3] Extrude-face limits, in mm. Height must stay positive; the offset may be negative
++// (it shrinks the outline) as long as the shape survives, which extrude_outline() checks.
++constexpr double EXTRUDE_HEIGHT_MIN = 0.05;
++constexpr double EXTRUDE_HEIGHT_MAX = 200.0;
++constexpr double EXTRUDE_OFFSET_MIN = -20.0;
++constexpr double EXTRUDE_OFFSET_MAX = 20.0;
++
+ // Feature volumes are named <prefix>#<id>, the id matched by prefix like the hole features.
+ std::string feature_name(const char *prefix, int idx)
+ {
+@@ -57,7 +70,8 @@ int parsed_feature_index(const std::string &name, const char *prefix)
+ 
+ bool is_fill_volume(const ModelVolume *v)
+ {
+-    return v != nullptr && parsed_feature_index(v->name, HOLE_FILL_NAME) >= 0;
++    return v != nullptr && (parsed_feature_index(v->name, EXTRUDE_NAME) >= 0
++                            || parsed_feature_index(v->name, LEGACY_EXTRUDE_NAME) >= 0);
+ }
+ 
+ int object_idx_of(const Selection &selection, const ModelObject *mo)
+@@ -74,7 +88,7 @@ int object_idx_of(const Selection &selection, const ModelObject *mo)
+ 
+ } // namespace
+ 
+-GLGizmoHoleFill::GLGizmoHoleFill(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id)
++GLGizmoExtrude::GLGizmoExtrude(GLCanvas3D &parent, const std::string &icon_filename, unsigned int sprite_id)
+     : GLGizmoBase(parent, icon_filename, sprite_id)
+ {}
+ 
+@@ -82,12 +96,12 @@ GLGizmoHoleFill::GLGizmoHoleFill(GLCanvas3D &parent, const std::string &icon_fil
+ // State
+ // ---------------------------------------------------------------------------------------------
+ 
+-ModelObject *GLGizmoHoleFill::model_object() const
++ModelObject *GLGizmoExtrude::model_object() const
+ {
+     return m_c != nullptr && m_c->selection_info() != nullptr ? m_c->selection_info()->model_object() : nullptr;
+ }
+ 
+-Transform3d GLGizmoHoleFill::instance_matrix() const
++Transform3d GLGizmoExtrude::instance_matrix() const
+ {
+     const ModelObject *mo = model_object();
+     if (mo == nullptr || mo->instances.empty())
+@@ -95,14 +109,14 @@ Transform3d GLGizmoHoleFill::instance_matrix() const
+     return mo->instances.front()->get_matrix();
+ }
+ 
+-double GLGizmoHoleFill::object_scale() const
++double GLGizmoExtrude::object_scale() const
+ {
+     const Transform3d im = instance_matrix();
+     const double      s  = (im.linear().col(0).norm() + im.linear().col(1).norm() + im.linear().col(2).norm()) / 3.;
+     return std::isfinite(s) && s > 1e-9 ? s : 1.0;
+ }
+ 
+-double GLGizmoHoleFill::volume_scale(const ModelVolume *mv) const
++double GLGizmoExtrude::volume_scale(const ModelVolume *mv) const
+ {
+     if (mv == nullptr)
+         return 1.0;
+@@ -111,7 +125,7 @@ double GLGizmoHoleFill::volume_scale(const ModelVolume *mv) const
+     return std::isfinite(s) && s > 1e-9 ? s : 1.0;
+ }
+ 
+-int GLGizmoHoleFill::applied_count() const
++int GLGizmoExtrude::applied_count() const
+ {
+     const ModelObject *mo = model_object();
+     if (mo == nullptr)
+@@ -123,18 +137,21 @@ int GLGizmoHoleFill::applied_count() const
+     return n;
+ }
+ 
+-int GLGizmoHoleFill::next_feature_id() const
++int GLGizmoExtrude::next_feature_id() const
+ {
+     const ModelObject *mo = model_object();
+     if (mo == nullptr)
+         return 0;
+     int next = 0;
+-    for (const ModelVolume *v : mo->volumes)
+-        next = std::max(next, parsed_feature_index(v->name, HOLE_FILL_NAME) + 1);
++    for (const ModelVolume *v : mo->volumes) {
++        next = std::max(next, parsed_feature_index(v->name, EXTRUDE_NAME) + 1);
++        // Count the legacy prefix too, so a new id never collides with an old fill's name.
++        next = std::max(next, parsed_feature_index(v->name, LEGACY_EXTRUDE_NAME) + 1);
++    }
+     return next;
+ }
+ 
+-int GLGizmoHoleFill::find_covering_fill(const Vec3d &hit_world) const
++int GLGizmoExtrude::find_covering_fill(const Vec3d &hit_world) const
+ {
+     const ModelObject *mo = model_object();
+     if (mo == nullptr)
+@@ -158,7 +175,7 @@ int GLGizmoHoleFill::find_covering_fill(const Vec3d &hit_world) const
+     return -1;
+ }
+ 
+-void GLGizmoHoleFill::clear_hover()
++void GLGizmoExtrude::clear_hover()
+ {
+     m_hover                = Hover();
+     m_hover_applied        = -1;
+@@ -166,7 +183,7 @@ void GLGizmoHoleFill::clear_hover()
+     m_preview.reset();
+ }
+ 
+-void GLGizmoHoleFill::update_hover(const Vec2d &screen_pos)
++void GLGizmoExtrude::update_hover(const Vec2d &screen_pos)
+ {
+     const Hover previous = m_hover;
+     m_hover = Hover();
+@@ -204,12 +221,12 @@ void GLGizmoHoleFill::update_hover(const Vec2d &screen_pos)
+     }
+ }
+ 
+-indexed_triangle_set GLGizmoHoleFill::fill_mesh(const Hover &hover) const
++indexed_triangle_set GLGizmoExtrude::fill_mesh(const Hover &hover) const
+ {
+     return fill_mesh(std::vector<Hover>{ hover });
+ }
+ 
+-indexed_triangle_set GLGizmoHoleFill::fill_mesh(const std::vector<Hover> &seeds) const
++indexed_triangle_set GLGizmoExtrude::fill_mesh(const std::vector<Hover> &seeds) const
+ {
+     if (seeds.empty())
+         return indexed_triangle_set();
+@@ -250,7 +267,70 @@ indexed_triangle_set GLGizmoHoleFill::fill_mesh(const std::vector<Hover> &seeds)
+     return plug;
+ }
+ 
+-void GLGizmoHoleFill::record_stroke_sample()
++// [ORCAPORT:HF-3] The prism for the picked face, in OBJECT space (the same space the cavity-fill
++// plug comes back in, so add_named_fill treats both the same way). The face is grown into a coplanar
++// region, projected to an outline in a frame where it points +Z, closed into a solid with the
++// requested height and offset, and turned back. The rotation is pure, so an angled face extrudes
++// exactly like a top face and nothing is distorted.
++indexed_triangle_set GLGizmoExtrude::face_extrude_mesh(const Hover &hover, std::string *why) const
++{
++    auto fail = [&](const std::string &msg) -> indexed_triangle_set {
++        if (why != nullptr)
++            *why = msg;
++        return {};
++    };
++
++    if (!hover.valid || hover.mv == nullptr || hover.facet < 0)
++        return fail(_u8L("Hover a flat face of the object."));
++
++    const indexed_triangle_set &its = hover.mv->mesh().its;
++    if (hover.facet >= int(its.indices.size()))
++        return fail(_u8L("That face is not usable."));
++
++    const std::vector<Vec3f>   normals   = its_face_normals(its);
++    const std::vector<Vec3i32> neighbors = its_face_neighbors(its);
++    if (int(normals.size()) != int(its.indices.size()))
++        return fail(_u8L("That mesh has no usable facet normals."));
++
++    // The picked facet's normal in object space. Normals do not transform with the matrix itself,
++    // so the inverse transpose of the volume's linear part is the right thing.
++    const Transform3d to_obj  = hover.mv->get_matrix();
++    const Matrix3d    nrm_mat = to_obj.linear().inverse().transpose();
++    Vec3d             obj_n   = nrm_mat * normals[size_t(hover.facet)].cast<double>();
++    const double      nl      = obj_n.norm();
++    if (nl < 1e-12)
++        return fail(_u8L("That face has no usable normal."));
++    obj_n /= nl;
++
++    const Eigen::Quaterniond q_flat = Eigen::Quaterniond::FromTwoVectors(obj_n, Vec3d::UnitZ());
++    Transform3d              to_flat = Transform3d::Identity();
++    to_flat.linear() = q_flat.toRotationMatrix();
++
++    // ~2.6 deg: the region stops where the surface stops being that plane.
++    constexpr float kPickedFaceCos = 0.999f;
++    const std::vector<int> region = SurfaceExtrude::coplanar_region(normals, neighbors, hover.facet, kPickedFaceCos);
++    double       face_z = 0.;
++    ExPolygons   outline = SurfaceExtrude::region_outline(its, region, to_flat * to_obj, &face_z);
++    if (outline.empty())
++        return fail(_u8L("That face has no usable outline."));
++    if (m_extrude_holes) {
++        // Only the face's holes, each one filled - e.g. the circle of a screw, to grow into a plug.
++        outline = SurfaceExtrude::outline_holes(outline);
++        if (outline.empty())
++            return fail(_u8L("That face has no holes."));
++    }
++
++    // Out of the face, or half out and half into the model.
++    const double h  = m_extrude_height;
++    const double z0 = m_extrude_both ? face_z - 0.5 * h : face_z;
++    indexed_triangle_set out = SurfaceExtrude::extrude_outline(outline, m_extrude_offset, z0, h);
++    if (out.indices.empty())
++        return fail(_u8L("With that offset nothing is left of the shape."));
++    its_transform(out, to_flat.inverse());
++    return out;
++}
++
++void GLGizmoExtrude::record_stroke_sample()
+ {
+     if (!m_hover.valid || m_hover.mv == nullptr)
+         return;
+@@ -269,7 +349,7 @@ void GLGizmoHoleFill::record_stroke_sample()
+     m_preview_dirty = true;
+ }
+ 
+-void GLGizmoHoleFill::commit_stroke()
++void GLGizmoExtrude::commit_stroke()
+ {
+     if (m_stroke.empty())
+         return;
+@@ -277,12 +357,12 @@ void GLGizmoHoleFill::commit_stroke()
+     m_stroke.clear();
+     if (its.indices.empty())
+         return; // painted a plain wall: nothing to fill
+-    add_named_fill(feature_name(HOLE_FILL_NAME, next_feature_id()), its);
++    add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Fill cavity"));
+     m_hover_applied = -1;
+     m_preview_dirty = true;
+ }
+ 
+-void GLGizmoHoleFill::rebuild_preview()
++void GLGizmoExtrude::rebuild_preview()
+ {
+     m_preview_dirty = false;
+     // GLModel::init_from only builds a model once: an already initialized one has to be reset, or
+@@ -294,7 +374,16 @@ void GLGizmoHoleFill::rebuild_preview()
+     // an applied plug is shown in the applied overlay instead, and must not look like something
+     // waiting to be applied.
+     std::vector<Hover> seeds;
+-    if (m_painting && !m_stroke.empty())
++    if (m_mode == Mode::ExtrudeFace) {
++        // [ORCAPORT:HF-3] Extrude face: preview the prism that a click would create.
++        if (m_hover.valid) {
++            const indexed_triangle_set its = face_extrude_mesh(m_hover);
++            if (!its.indices.empty()) {
++                m_preview.model.init_from(its);
++                m_preview.model.set_color(HOVER_COLOR);
++            }
++        }
++    } else if (m_painting && !m_stroke.empty())
+         seeds = m_stroke;
+     else if (m_hover.valid && m_hover_applied < 0)
+         seeds.push_back(m_hover);
+@@ -326,7 +415,7 @@ void GLGizmoHoleFill::rebuild_preview()
+     }
+ }
+ 
+-void GLGizmoHoleFill::add_named_fill(const std::string &name, const indexed_triangle_set &its)
++void GLGizmoExtrude::add_named_fill(const std::string &name, const indexed_triangle_set &its, const std::string &action)
+ {
+     ModelObject *mo = model_object();
+     const int    oi = object_idx_of(m_parent.get_selection(), mo);
+@@ -334,7 +423,7 @@ void GLGizmoHoleFill::add_named_fill(const std::string &name, const indexed_tria
+         return;
+ 
+     Plater *plater = wxGetApp().plater();
+-    plater->take_snapshot(_u8L("Fill cavity"));
++    plater->take_snapshot(action);
+     indexed_triangle_set copy = its;
+     ModelVolume         *v    = mo->add_volume(TriangleMesh(std::move(copy)), ModelVolumeType::MODEL_PART, false);
+     v->name = name;
+@@ -349,14 +438,54 @@ void GLGizmoHoleFill::add_named_fill(const std::string &name, const indexed_tria
+ // MCP surface
+ // ---------------------------------------------------------------------------------------------
+ 
+-void GLGizmoHoleFill::set_radius(double radius)
++void GLGizmoExtrude::set_radius(double radius)
+ {
+     m_radius        = std::clamp(radius, FILL_RADIUS_MIN, FILL_RADIUS_MAX);
+     m_preview_dirty = true;
+     m_parent.set_as_dirty();
+ }
+ 
+-bool GLGizmoHoleFill::gizmo_hover_at(const Vec2d &screen_pos)
++// [ORCAPORT:HF-3] Mode and extrude-face parameters.
++void GLGizmoExtrude::set_mode(Mode m)
++{
++    if (m_mode == m)
++        return;
++    m_mode          = m;
++    m_painting      = false;
++    m_stroke.clear();
++    m_preview_dirty = true;
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoExtrude::set_extrude_height(double h)
++{
++    m_extrude_height = std::clamp(h, EXTRUDE_HEIGHT_MIN, EXTRUDE_HEIGHT_MAX);
++    m_preview_dirty  = true;
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoExtrude::set_extrude_offset(double off)
++{
++    m_extrude_offset = std::clamp(off, EXTRUDE_OFFSET_MIN, EXTRUDE_OFFSET_MAX);
++    m_preview_dirty  = true;
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoExtrude::set_extrude_holes(bool on)
++{
++    m_extrude_holes = on;
++    m_preview_dirty = true;
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoExtrude::set_extrude_both(bool on)
++{
++    m_extrude_both  = on;
++    m_preview_dirty = true;
++    m_parent.set_as_dirty();
++}
++
++bool GLGizmoExtrude::gizmo_hover_at(const Vec2d &screen_pos)
+ {
+     update_hover(screen_pos);
+     rebuild_preview();
+@@ -364,32 +493,43 @@ bool GLGizmoHoleFill::gizmo_hover_at(const Vec2d &screen_pos)
+     return m_hover.valid;
+ }
+ 
+-bool GLGizmoHoleFill::gizmo_apply_hovered()
++bool GLGizmoExtrude::gizmo_apply_hovered()
+ {
+-    if (!m_hover.valid || m_hover_applied >= 0)
++    if (!m_hover.valid)
++        return false;
++    // [ORCAPORT:HF-3] Extrude face: a new solid every click - unlike a cavity plug, the same face may
++    // legitimately be extruded more than once.
++    if (m_mode == Mode::ExtrudeFace) {
++        const indexed_triangle_set its = face_extrude_mesh(m_hover);
++        if (its.indices.empty())
++            return false;
++        add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Extrude face"));
++        return true;
++    }
++    if (m_hover_applied >= 0)
+         return false;
+     const indexed_triangle_set its = fill_mesh(m_hover);
+     if (its.indices.empty())
+         return false; // the patch is too flat: there is no cavity to fill
+-    add_named_fill(feature_name(HOLE_FILL_NAME, next_feature_id()), its);
++    add_named_fill(feature_name(EXTRUDE_NAME, next_feature_id()), its, _u8L("Fill cavity"));
+     return true;
+ }
+ 
+-bool GLGizmoHoleFill::gizmo_apply_at(const Vec2d &screen_pos)
++bool GLGizmoExtrude::gizmo_apply_at(const Vec2d &screen_pos)
+ {
+     if (!gizmo_hover_at(screen_pos))
+         return false;
+     return gizmo_apply_hovered();
+ }
+ 
+-bool GLGizmoHoleFill::gizmo_remove_hovered()
++bool GLGizmoExtrude::gizmo_remove_hovered()
+ {
+     if (!m_hover.valid || m_hover_applied < 0)
+         return false;
+     return gizmo_remove_fill(m_hover_applied);
+ }
+ 
+-bool GLGizmoHoleFill::gizmo_remove_fill(int index)
++bool GLGizmoExtrude::gizmo_remove_fill(int index)
+ {
+     ModelObject *mo = model_object();
+     const int    oi = object_idx_of(m_parent.get_selection(), mo);
+@@ -408,7 +548,7 @@ bool GLGizmoHoleFill::gizmo_remove_fill(int index)
+     return true;
+ }
+ 
+-void GLGizmoHoleFill::gizmo_clear_all()
++void GLGizmoExtrude::gizmo_clear_all()
+ {
+     ModelObject *mo = model_object();
+     const int    oi = object_idx_of(m_parent.get_selection(), mo);
+@@ -431,13 +571,13 @@ void GLGizmoHoleFill::gizmo_clear_all()
+     m_hover_applied = -1;
+ }
+ 
+-void GLGizmoHoleFill::gizmo_refresh()
++void GLGizmoExtrude::gizmo_refresh()
+ {
+     m_preview_dirty = true;
+     m_parent.set_as_dirty();
+ }
+ 
+-std::vector<std::array<double, 3>> GLGizmoHoleFill::gizmo_list_fills() const
++std::vector<std::array<double, 3>> GLGizmoExtrude::gizmo_list_fills() const
+ {
+     std::vector<std::array<double, 3>> out;
+     const ModelObject *mo = model_object();
+@@ -460,12 +600,22 @@ std::vector<std::array<double, 3>> GLGizmoHoleFill::gizmo_list_fills() const
+ // GLGizmoBase callbacks
+ // ---------------------------------------------------------------------------------------------
+ 
+-bool GLGizmoHoleFill::on_init()
+-{
+-    m_shortcut = Shortcut::GizmoCavityFill; // [ORCAPORT:HF-1] registered in Shortcuts.cpp
+-
+-    m_desc["name"]        = _L("Cavity fill");
+-    m_desc["radius"]      = _L("Brush width");
++bool GLGizmoExtrude::on_init()
++{
++    m_shortcut = Shortcut::GizmoExtrude; // [ORCAPORT:HF-3] registered in Shortcuts.cpp
++
++    m_desc["name"]         = _L("Extrude");
++    // [ORCAPORT:HF-3] The two modes.
++    m_desc["mode_extrude"] = _L("Extrude face");
++    m_desc["mode_cavity"]  = _L("Cavity fill");
++    m_desc["height"]       = _L("Height");
++    m_desc["offset"]       = _L("Offset");
++    m_desc["holes"]        = _L("Holes");
++    m_desc["both"]         = _L("Both directions");
++    m_desc["create"]       = _L("Create");
++    m_desc["extrude_hint"] = _L("Click a flat face of the object. Height grows the new solid out of it; a negative offset shrinks its outline.");
++    m_desc["extrude_none"] = _L("No face under the cursor.");
++    m_desc["radius"]       = _L("Brush width");
+     m_desc["clear"]       = _L("Clear all");
+     m_desc["hover_hint"]  = _L("Drag over an engraved mark to fill it.");
+     m_desc["no_cavity"]   = _L("Nothing to fill under the cursor.");
+@@ -476,17 +626,17 @@ bool GLGizmoHoleFill::on_init()
+     return true;
+ }
+ 
+-std::string GLGizmoHoleFill::on_get_name() const
++std::string GLGizmoExtrude::on_get_name() const
+ {
+-    return _u8L("Cavity fill");
++    return _u8L("Extrude");
+ }
+ 
+-bool GLGizmoHoleFill::on_is_activable() const
++bool GLGizmoExtrude::on_is_activable() const
+ {
+     return m_parent.get_selection().is_single_full_instance();
+ }
+ 
+-void GLGizmoHoleFill::on_set_state()
++void GLGizmoExtrude::on_set_state()
+ {
+     if (get_state() == On) {
+         m_preview_dirty  = true;
+@@ -497,12 +647,12 @@ void GLGizmoHoleFill::on_set_state()
+     }
+ }
+ 
+-CommonGizmosDataID GLGizmoHoleFill::on_get_requirements() const
++CommonGizmosDataID GLGizmoExtrude::on_get_requirements() const
+ {
+     return CommonGizmosDataID(int(CommonGizmosDataID::SelectionInfo) | int(CommonGizmosDataID::ObjectClipper));
+ }
+ 
+-void GLGizmoHoleFill::data_changed(bool /*is_serializing*/)
++void GLGizmoExtrude::data_changed(bool /*is_serializing*/)
+ {
+     const ModelObject *mo = model_object();
+     if (mo == nullptr) {
+@@ -522,7 +672,7 @@ void GLGizmoHoleFill::data_changed(bool /*is_serializing*/)
+     }
+ }
+ 
+-void GLGizmoHoleFill::on_render()
++void GLGizmoExtrude::on_render()
+ {
+     if (get_state() != On)
+         return;
+@@ -566,7 +716,7 @@ void GLGizmoHoleFill::on_render()
+     shader->stop_using();
+ }
+ 
+-bool GLGizmoHoleFill::on_mouse(const wxMouseEvent &mouse_event)
++bool GLGizmoExtrude::on_mouse(const wxMouseEvent &mouse_event)
+ {
+     if (get_state() != On)
+         return false;
+@@ -575,6 +725,16 @@ bool GLGizmoHoleFill::on_mouse(const wxMouseEvent &mouse_event)
+         gizmo_hover_at(m_parent.get_local_mouse_position());
+         return gizmo_remove_hovered();
+     }
++    // [ORCAPORT:HF-3] Extrude face is a click, not a stroke: one left click makes one solid. The
++    // panel's Create button runs the same path, for anyone who would rather not click the model.
++    if (m_mode == Mode::ExtrudeFace) {
++        if (! mouse_event.LeftUp())
++            return false;
++        gizmo_hover_at(m_parent.get_local_mouse_position());
++        if (! m_hover.valid)
++            return false;   // a click on empty space falls through to the canvas
++        return gizmo_apply_hovered();
++    }
+     if (mouse_event.LeftUp() && m_painting) {
+         m_painting = false;
+         commit_stroke();
+@@ -604,7 +764,7 @@ bool GLGizmoHoleFill::on_mouse(const wxMouseEvent &mouse_event)
+     return true; // swallow the press while over the object
+ }
+ 
+-void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limit)
++void GLGizmoExtrude::on_render_input_window(float x, float y, float bottom_limit)
+ {
+     if (model_object() == nullptr)
+         return;
+@@ -628,39 +788,103 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
+     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
+ 
+     const float sliders_width = m_imgui->scaled(6.0f);
+-    const float left_width    = m_imgui->calc_text_size(m_desc.at("radius")).x + m_imgui->scaled(2.0f);
+ 
++    // [ORCAPORT:HF-3] Mode selector: the one icon does two jobs.
+     ImGui::AlignTextToFramePadding();
+-    m_imgui->text(m_desc.at("radius"));
+-    ImGui::SameLine(left_width);
+-    ImGui::PushItemWidth(sliders_width);
+-    float radius = float(m_radius);
+-    if (m_imgui->bbl_slider_float_style("##fill_radius", &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX), "%.1f", 0.1f, true))
+-        set_radius(radius);
+-    ImGui::PopItemWidth();
+-    // A field next to the slider, so an exact radius can be typed instead of dragged. ImGui carves the
+-    // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
+-    // scaled(4.5) clipped the value.
+-    ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
+-    ImGui::PushItemWidth(m_imgui->scaled(5.5f));
+-    float typed = float(m_radius);
+-    if (ImGui::InputFloat("##fill_radius_in", &typed, 0.1f, 1.0f, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+-        set_radius(typed);
+-    ImGui::PopItemWidth();
+-
+-    // Left-dragging over a cavity already fills it (on_mouse), so there is no separate fill button.
+-    if (m_imgui->button(m_desc.at("clear")))
+-        gizmo_clear_all();
+-
+-    if (m_hover.valid && m_hover_applied >= 0)
+-        m_imgui->text(m_desc.at("already"));
+-    else if (m_hover.valid)
+-        m_imgui->text(m_desc.at("cavity"));
+-    else
+-        m_imgui->text(m_desc.at("no_cavity"));
+-    m_imgui->text(m_desc.at("hover_hint"));
+-    if (applied_count() > 0)
+-        m_imgui->text(m_desc.at("remove_hint"));
++    if (m_imgui->radio_button(m_desc.at("mode_extrude"), m_mode == Mode::ExtrudeFace))
++        set_mode(Mode::ExtrudeFace);
++    ImGui::SameLine(0.f, m_imgui->scaled(1.5f));
++    if (m_imgui->radio_button(m_desc.at("mode_cavity"), m_mode == Mode::CavityFill))
++        set_mode(Mode::CavityFill);
++
++    if (m_mode == Mode::ExtrudeFace) {
++        const float left_width = m_imgui->calc_text_size(m_desc.at("height")).x + m_imgui->scaled(2.0f);
++
++        // Height: how thick the new solid is, grown out of the face (or half in, with Both).
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("height"));
++        ImGui::SameLine(left_width);
++        ImGui::PushItemWidth(sliders_width);
++        float h = float(m_extrude_height);
++        if (m_imgui->bbl_slider_float_style("##extrude_h", &h, float(EXTRUDE_HEIGHT_MIN), float(EXTRUDE_HEIGHT_MAX), "%.2f", 0.1f, true))
++            set_extrude_height(h);
++        ImGui::PopItemWidth();
++        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
++        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
++        float h_typed = float(m_extrude_height);
++        if (ImGui::InputFloat("##extrude_h_in", &h_typed, 0.1f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++            set_extrude_height(h_typed);
++        ImGui::PopItemWidth();
++
++        // Offset: grow (positive) or shrink (negative) the outline of the face before extruding.
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("offset"));
++        ImGui::SameLine(left_width);
++        ImGui::PushItemWidth(sliders_width);
++        float off = float(m_extrude_offset);
++        if (m_imgui->bbl_slider_float_style("##extrude_off", &off, float(EXTRUDE_OFFSET_MIN), float(EXTRUDE_OFFSET_MAX), "%.2f", 0.05f, true))
++            set_extrude_offset(off);
++        ImGui::PopItemWidth();
++        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
++        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
++        float off_typed = float(m_extrude_offset);
++        if (ImGui::InputFloat("##extrude_off_in", &off_typed, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++            set_extrude_offset(off_typed);
++        ImGui::PopItemWidth();
++
++        bool holes = m_extrude_holes;
++        if (m_imgui->checkbox(m_desc.at("holes"), holes))
++            set_extrude_holes(holes);
++        bool both = m_extrude_both;
++        if (m_imgui->checkbox(m_desc.at("both"), both))
++            set_extrude_both(both);
++
++        // Why the face under the cursor cannot be extruded, if it cannot.
++        if (m_hover.valid) {
++            std::string why;
++            if (face_extrude_mesh(m_hover, &why).indices.empty() && ! why.empty())
++                m_imgui->text(wxString::FromUTF8(why.c_str()));
++        }
++        if (m_imgui->button(m_desc.at("create")))
++            gizmo_apply_hovered();
++        m_imgui->text(m_desc.at("extrude_hint"));
++        if (! m_hover.valid)
++            m_imgui->text(m_desc.at("extrude_none"));
++    } else {
++        const float left_width = m_imgui->calc_text_size(m_desc.at("radius")).x + m_imgui->scaled(2.0f);
++
++        ImGui::AlignTextToFramePadding();
++        m_imgui->text(m_desc.at("radius"));
++        ImGui::SameLine(left_width);
++        ImGui::PushItemWidth(sliders_width);
++        float radius = float(m_radius);
++        if (m_imgui->bbl_slider_float_style("##fill_radius", &radius, float(FILL_RADIUS_MIN), float(FILL_RADIUS_MAX), "%.1f", 0.1f, true))
++            set_radius(radius);
++        ImGui::PopItemWidth();
++        // A field next to the slider, so an exact radius can be typed instead of dragged. ImGui carves the
++        // step buttons out of the item width, so it needs the room the hole tool's typed fields have;
++        // scaled(4.5) clipped the value.
++        ImGui::SameLine(0.f, m_imgui->scaled(1.0f));
++        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
++        float typed = float(m_radius);
++        if (ImGui::InputFloat("##fill_radius_in", &typed, 0.1f, 1.0f, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
++            set_radius(typed);
++        ImGui::PopItemWidth();
++
++        // Left-dragging over a cavity already fills it (on_mouse), so there is no separate fill button.
++        if (m_imgui->button(m_desc.at("clear")))
++            gizmo_clear_all();
++
++        if (m_hover.valid && m_hover_applied >= 0)
++            m_imgui->text(m_desc.at("already"));
++        else if (m_hover.valid)
++            m_imgui->text(m_desc.at("cavity"));
++        else
++            m_imgui->text(m_desc.at("no_cavity"));
++        m_imgui->text(m_desc.at("hover_hint"));
++        if (applied_count() > 0)
++            m_imgui->text(m_desc.at("remove_hint"));
++    }
+     const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), applied_count());
+     m_imgui->text(applied);
+ 
+@@ -668,12 +892,12 @@ void GLGizmoHoleFill::on_render_input_window(float x, float y, float bottom_limi
+     ImGuiWrapper::pop_toolbar_style();
+ }
+ 
+-void GLGizmoHoleFill::on_register_raycasters_for_picking()
++void GLGizmoExtrude::on_register_raycasters_for_picking()
+ {
+     // Face picking uses raycast_object_face on the scene volumes, so no gizmo raycaster is added.
+ }
+ 
+-void GLGizmoHoleFill::on_unregister_raycasters_for_picking()
++void GLGizmoExtrude::on_unregister_raycasters_for_picking()
+ {
+     m_parent.remove_raycasters_for_picking(SceneRaycaster::EType::Gizmo);
+     m_parent.set_raycaster_gizmos_on_top(false);
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.hpp
+similarity index 57%
+rename from src/slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp
+rename to src/slic3r/GUI/Gizmos/GLGizmoExtrude.hpp
+index 894aa04d0d..843abf69d1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoExtrude.hpp
+@@ -1,12 +1,25 @@
+-#ifndef slic3r_GLGizmoHoleFill_hpp_
+-#define slic3r_GLGizmoHoleFill_hpp_
+-
+-// [ORCAPORT:HF-1] Cavity fill tool. Fills a depression cut into the mesh (an engraving, a watermark,
+-// a pocket) by adding a positive MODEL_PART volume over it. Paint the recessed faces: every facet is
+-// measured against the surface fitted to its own neighbourhood, so the plug is those facets projected
+-// up to that local surface, sits flush, and follows a curved or coarsely facetted wall without any
+-// reference to set. A facet that is level with its neighbourhood (a plain wall) is left alone. Works
+-// on the mesh directly - no boolean and no CAD reconstruction. Full through-holes are deferred.
++#ifndef slic3r_GLGizmoExtrude_hpp_
++#define slic3r_GLGizmoExtrude_hpp_
++
++// [ORCAPORT:HF-1] [ORCAPORT:HF-3] Extrude tool. Two jobs in one, chosen by the mode selector:
++//
++//   Extrude face - pick a flat face and turn it into a solid: the face is grown into a coplanar
++//   region, projected to a polygon outline, and closed into a prism of a given height, grown or
++//   shrunk by an offset. Optionally only the face's holes are extruded (each one filled), and
++//   optionally the prism is split half out of the face and half into the model.
++//
++//   Cavity fill - fill a depression cut into the mesh (an engraving, a watermark, a pocket) by
++//   adding a positive MODEL_PART volume over it. Paint the recessed faces: every facet is measured
++//   against the surface fitted to its own neighbourhood, so the plug is those facets projected up to
++//   that local surface, sits flush, and follows a curved or coarsely facetted wall without any
++//   reference to set. A facet level with its neighbourhood (a plain wall) is left alone.
++//
++// Both work on the mesh directly - no boolean and no CAD reconstruction. Both add an ordinary
++// positive MODEL_PART volume, so one undo removes the result.
++//
++// Renamed from GLGizmoHoleFill when the extrude mode was added. Volumes are written with the
++// "Extrude#" prefix; the legacy "HoleFill#" prefix is still recognised on read so fills made before
++// the rename stay editable.
+ 
+ #include "GLGizmoBase.hpp"
+ #include "GLGizmosCommon.hpp"
+@@ -27,17 +40,29 @@ class ModelVolume;
+ 
+ namespace GUI {
+ 
+-class GLGizmoHoleFill : public GLGizmoBase
++class GLGizmoExtrude : public GLGizmoBase
+ {
+ public:
+-    GLGizmoHoleFill(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
++    GLGizmoExtrude(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id);
+ 
+     void data_changed(bool is_serializing) override;
+     bool render_follows_cursor() const override { return get_state() == On; }
+ 
+     // --- control surface for the embedded MCP tool (see OrcaMCPGizmoTools.cpp) ---
++    // [ORCAPORT:HF-3] The tool has two modes; the MCP surface drives both.
++    enum class Mode { ExtrudeFace = 0, CavityFill = 1 };
++    Mode   get_mode() const { return m_mode; }
++    void   set_mode(Mode m);
+     double get_radius() const { return m_radius; }
+     void   set_radius(double radius);
++    double get_extrude_height() const { return m_extrude_height; }
++    void   set_extrude_height(double h);
++    double get_extrude_offset() const { return m_extrude_offset; }
++    void   set_extrude_offset(double off);
++    bool   get_extrude_holes() const { return m_extrude_holes; }
++    void   set_extrude_holes(bool on);
++    bool   get_extrude_both() const { return m_extrude_both; }
++    void   set_extrude_both(bool on);
+     double object_scale() const;
+     int    applied_count() const;
+     bool   hover_valid() const { return m_hover.valid; }
+@@ -84,17 +109,27 @@ private:
+     // is nothing to fill.
+     indexed_triangle_set fill_mesh(const Hover& hover) const;
+     indexed_triangle_set fill_mesh(const std::vector<Hover>& seeds) const;
++    // [ORCAPORT:HF-3] The prism for the hovered face, in object space. Empty, with `why` filled in,
++    // when the face has no usable outline or the offset eats the shape.
++    indexed_triangle_set face_extrude_mesh(const Hover& hover, std::string* why = nullptr) const;
+     void                 record_stroke_sample();
+     void                 commit_stroke();
+     // Volume index of an applied plug that already covers `hit_world`, or -1.
+     int          find_covering_fill(const Vec3d& hit_world) const;
+     void         rebuild_preview();
+-    void         add_named_fill(const std::string& name, const indexed_triangle_set& its);
++    void         add_named_fill(const std::string& name, const indexed_triangle_set& its, const std::string& action);
+     int          next_feature_id() const;
+ 
+     double m_radius{ 2.5 }; // brush reach in world mm, converted to mesh units per volume
+     std::map<std::string, wxString> m_desc;
+ 
++    // [ORCAPORT:HF-3] Mode and the extrude-face parameters. Height and offset are in mm.
++    Mode   m_mode{ Mode::ExtrudeFace };
++    double m_extrude_height{ 5.0 };
++    double m_extrude_offset{ 0.0 };
++    bool   m_extrude_holes{ false }; // extrude only the holes of the face, each one filled
++    bool   m_extrude_both{ false };  // half out of the face, half into the model
++
+     Hover        m_hover;
+     int          m_hover_applied{ -1 };
+     bool         m_painting{ false };
+@@ -117,4 +152,4 @@ private:
+ } // namespace GUI
+ } // namespace Slic3r
+ 
+-#endif // slic3r_GLGizmoHoleFill_hpp_
++#endif // slic3r_GLGizmoExtrude_hpp_
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+index d95a32bc5a..13f10d04d9 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.cpp
+@@ -21,7 +21,7 @@
+ #include "slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.hpp" // [ORCAPORT:PF-2b]
+ #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"  // [ORCAPORT:ME-1]
+ #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp" // [ORCAPORT:EF-1]
+-#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp" // [ORCAPORT:HF-1]
++#include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp" // [ORCAPORT:HF-3]
+ #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
+ #include "slic3r/GUI/Gizmos/GLGizmoBrimEars.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoAlignStack.hpp" // [ORCAPORT:AS-2]
+@@ -128,7 +128,7 @@ static bool is_orcaport_gizmo(GLGizmosManager::EType type)
+     case GLGizmosManager::CounterboreBridge:
+     case GLGizmosManager::Holes:
+     case GLGizmosManager::EdgeDress:
+-    case GLGizmosManager::HoleFill:
++    case GLGizmosManager::Extrude:
+     case GLGizmosManager::Perforation:
+         return true;
+     default:
+@@ -277,8 +277,8 @@ void GLGizmosManager::switch_gizmos_icon_filename()
+         case (EType::EdgeDress): // [ORCAPORT:EF-1]
+             gizmo->set_icon_filename(m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg"); // [ORCAPORT:UI-1]
+             break;
+-        case (EType::HoleFill): // [ORCAPORT:HF-1]
+-            gizmo->set_icon_filename(m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg");
++        case (EType::Extrude): // [ORCAPORT:HF-3]
++            gizmo->set_icon_filename(m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg"); // [ORCAPORT:UI-1] icon file kept when the tool was renamed to Extrude
+             break;
+         case (EType::Perforation): // [ORCAPORT:PP-1]
+             gizmo->set_icon_filename(m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg");
+@@ -333,7 +333,7 @@ bool GLGizmosManager::init()
+     m_gizmos.emplace_back(new GLGizmoCounterboreBridge(m_parent, m_is_dark ? "toolbar_hole_walls_dark.svg" : "toolbar_hole_walls.svg", EType::CounterboreBridge)); // [ORCAPORT:PF-2b]
+     m_gizmos.emplace_back(new GLGizmoHoles(m_parent, m_is_dark ? "toolbar_holes_dark.svg" : "toolbar_holes.svg", EType::Holes)); // [ORCAPORT:ME-1]
+     m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
+-    m_gizmos.emplace_back(new GLGizmoHoleFill(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::HoleFill)); // [ORCAPORT:HF-1]
++    m_gizmos.emplace_back(new GLGizmoExtrude(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::Extrude)); // [ORCAPORT:HF-3]
+     m_gizmos.emplace_back(new GLGizmoPerforation(m_parent, m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg", EType::Perforation)); // [ORCAPORT:PP-1]
+     //m_gizmos.emplace_back(new GLGizmoSlaSupports(m_parent, "sla_supports.svg", sprite_id++));
+     //m_gizmos.emplace_back(new GLGizmoFaceDetector(m_parent, "face recognition.svg", sprite_id++));
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+index 873e5195de..248e4203a8 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmosManager.hpp
+@@ -107,7 +107,7 @@ public:
+         CounterboreBridge, // [ORCAPORT:PF-2b]
+         Holes, // [ORCAPORT:ME-2] holes tool (teardrop / bore-pocket)
+         EdgeDress, // [ORCAPORT:EF-1] chamfer / fillet a straight mesh edge
+-        HoleFill, // [ORCAPORT:HF-1] fill a depression (engraving / watermark) with a positive plug
++        Extrude, // [ORCAPORT:HF-3] turn a picked flat face into a solid, or fill a cavity
+         Perforation, // [ORCAPORT:PP-1] stamp a perforation pattern into a planar face
+         //SlaSupports,
+         // BBS
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+index bf02efffe4..965f1cb79b 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
+@@ -13,7 +13,7 @@
+ #include "slic3r/GUI/Gizmos/GLGizmoHoles.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoCut.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
+-#include "slic3r/GUI/Gizmos/GLGizmoHoleFill.hpp"
++#include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp"
+ #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
+ #include "slic3r/GUI/Selection.hpp"
+ 
+@@ -304,7 +304,7 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
+ }
+ 
+ // [ORCAPORT:HF-1] Open and drive the Cavity fill tool.
+-GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
++GLGizmoExtrude *active_extrude_gizmo(bool open_if_needed)
+ {
+     Plater     *plater = wxGetApp().plater();
+     GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+@@ -312,7 +312,7 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+         return nullptr;
+     GLGizmosManager &mgr = canvas->get_gizmos_manager();
+ 
+-    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::HoleFill) {
++    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Extrude) {
+         Selection &sel = canvas->get_selection();
+         if (!sel.is_single_full_instance() && !sel.is_single_volume() && !plater->model().objects.empty()) {
+             int oid = sel.get_object_idx();
+@@ -323,14 +323,14 @@ GLGizmoHoleFill *active_hole_fill_gizmo(bool open_if_needed)
+                 sel.add_object(unsigned(oid), true);
+             }
+         }
+-        mgr.open_gizmo(GLGizmosManager::EType::HoleFill);
++        mgr.open_gizmo(GLGizmosManager::EType::Extrude);
+         canvas->set_as_dirty();
+         canvas->request_extra_frame();
+     }
+ 
+-    if (mgr.get_current_type() != GLGizmosManager::EType::HoleFill)
++    if (mgr.get_current_type() != GLGizmosManager::EType::Extrude)
+         return nullptr;
+-    return dynamic_cast<GLGizmoHoleFill *>(mgr.get_current());
++    return dynamic_cast<GLGizmoExtrude *>(mgr.get_current());
+ }
+ 
+ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
+@@ -346,7 +346,7 @@ nlohmann::json edge_dress_gizmo_state(GLGizmoEdgeDress &g)
+         {"object_scale", g.object_scale()}};
+ }
+ 
+-nlohmann::json hole_fill_gizmo_state(GLGizmoHoleFill &g)
++nlohmann::json extrude_gizmo_state(GLGizmoExtrude &g)
+ {
+     return nlohmann::json{
+         {"radius", g.get_radius()},
+@@ -1068,7 +1068,7 @@ void OrcaMCPServer::register_gizmo_tools()
+         }
+     });
+     register_tool(
+-        {"hole_fill_gizmo",
++        {"extrude_gizmo",
+          "[ORCAPORT:HF-1] Open and drive the Cavity fill tool. It plugs a depression (engraving, "
+          "watermark, pocket) with a positive volume built from the recessed faces projected up to "
+          "the surface fitted around them, so it sits flush on a curved wall without a boolean and "
+@@ -1114,7 +1114,7 @@ void OrcaMCPServer::register_gizmo_tools()
+                     sel.add_object(unsigned(oid), true);
+                 }
+ 
+-                GLGizmoHoleFill *g = active_hole_fill_gizmo(action == "open");
++                GLGizmoExtrude *g = active_extrude_gizmo(action == "open");
+                 if (g == nullptr)
+                     return {{"status", "error"},
+                             {"error", "Cavity fill gizmo is not active. Load a model and pass object_id or "
+@@ -1149,7 +1149,10 @@ void OrcaMCPServer::register_gizmo_tools()
+                         const ModelObject *mo = plater->model().objects[oi];
+                         for (size_t i = 0; i < mo->volumes.size(); ++i) {
+                             const ModelVolume *v = mo->volumes[i];
+-                            if (v == nullptr || v->name.rfind("HoleFill#", 0) != 0 || v->mesh().its.vertices.empty())
++                            // Accept the current prefix and the legacy one, so fills created before
++                            // the tool was renamed to Extrude can still be listed and removed.
++                            if (v == nullptr || (v->name.rfind("Extrude#", 0) != 0 && v->name.rfind("HoleFill#", 0) != 0)
++                                || v->mesh().its.vertices.empty())
+                                 continue;
+                             Vec3f c = Vec3f::Zero();
+                             for (const stl_vertex &p : v->mesh().its.vertices)
+@@ -1159,7 +1162,7 @@ void OrcaMCPServer::register_gizmo_tools()
+                             fills.push_back({{"index", int(i)}, {"center", {center.x(), center.y(), center.z()}}});
+                         }
+                     }
+-                    nlohmann::json result = hole_fill_gizmo_state(*g);
++                    nlohmann::json result = extrude_gizmo_state(*g);
+                     result["status"] = "ok";
+                     result["open"]   = true;
+                     result["action"] = action;
+@@ -1178,7 +1181,7 @@ void OrcaMCPServer::register_gizmo_tools()
+                     return {{"status", "error"}, {"error", "Unknown action: " + action}};
+                 }
+ 
+-                nlohmann::json result = hole_fill_gizmo_state(*g);
++                nlohmann::json result = extrude_gizmo_state(*g);
+                 result["status"] = "ok";
+                 result["open"] = true;
+                 result["action"] = action;
+diff --git a/src/slic3r/GUI/Shortcuts.cpp b/src/slic3r/GUI/Shortcuts.cpp
+index a6a5db9127..2a15b9088c 100644
+--- a/src/slic3r/GUI/Shortcuts.cpp
++++ b/src/slic3r/GUI/Shortcuts.cpp
+@@ -125,7 +125,7 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
+     SHORTCUT(GizmoCounterboreBridge, "gizmo_hole_walls",  L("Gizmo hole walls"),                                   PLATER, { 'K' }),
+     SHORTCUT(GizmoHoles,        "gizmo_holes",        L("Gizmo holes"),                                          PLATER, { 'J' }),
+     SHORTCUT(GizmoEdgeDress,    "gizmo_edge_dress",   L("Gizmo edge chamfer / fillet"),                           PLATER, { 'X' }),
+-    SHORTCUT(GizmoCavityFill,   "gizmo_cavity_fill",  L("Gizmo cavity fill"),                                     PLATER, { 'G' }),
++    SHORTCUT(GizmoExtrude,   "gizmo_extrude",  L("Gizmo extrude"),                                     PLATER, { 'G' }),
+     SHORTCUT(GizmoPerforation,  "gizmo_perforation",  L("Gizmo perforations"),                                    PLATER, { 'Z' }),
+ 
+     // Sliders
+diff --git a/src/slic3r/GUI/Shortcuts.hpp b/src/slic3r/GUI/Shortcuts.hpp
+index 5e33fda11e..c7f408027d 100644
+--- a/src/slic3r/GUI/Shortcuts.hpp
++++ b/src/slic3r/GUI/Shortcuts.hpp
+@@ -43,7 +43,7 @@ enum class Shortcut : uint8_t {
+     GizmoRotate, GizmoScale, GizmoFlatten, GizmoCut, GizmoMeshBoolean, GizmoFdmSupports, GizmoSeam, GizmoFuzzySkin,
+     GizmoMmuSegmentation, GizmoEmboss, GizmoMeasure, GizmoAssembly, GizmoBrimEars, GizmoDisplacement,
+     // [ORCAPORT:UI-1] the port's gizmos: appended here so the table order still matches this enum.
+-    GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoCavityFill, GizmoPerforation,
++    GizmoCounterboreBridge, GizmoHoles, GizmoEdgeDress, GizmoExtrude, GizmoPerforation,
+     // Sliders
+     GoToLayer, LayerSliderUp, LayerSliderDown, MovesSliderLeft, MovesSliderRight, MovesSliderStart, MovesSliderEnd,
+     // Painting tools
