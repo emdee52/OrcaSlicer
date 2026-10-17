@@ -32,11 +32,17 @@ indexed_triangle_set extrude_profile(const std::vector<Vec2d> &profile, const Ve
 // normals `n_a` and `n_b`. `size` is the chamfer leg / fillet radius, measured along each face.
 // The solid is over-extended by `margin` past both edge ends so neighbouring negatives at corners
 // overlap and subtract cleanly. Returns an empty mesh for a degenerate edge or non-positive size.
+//
+// [ORCAPORT:PP-4] `side_margin` pushes the whole cross section OUTWARD, out of both faces. At 0 the
+// two legs of the profile lie exactly IN the part's faces, which is a coplanar face for a mesh boolean
+// and leaves the sliver that shows up in an exported mesh; a small positive value makes the cutter stand
+// a hair proud of the surface without changing the visible cut at all.
 indexed_triangle_set make_edge_chamfer(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
-                                       const Vec3d &n_b, double size, double margin = 0.);
+                                       const Vec3d &n_b, double size, double margin = 0.,
+                                       double side_margin = 0.);
 indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
                                       const Vec3d &n_b, double size, double margin = 0.,
-                                      int segments = EDGE_FILLET_SEGMENTS);
+                                      int segments = EDGE_FILLET_SEGMENTS, double side_margin = 0.);
 
 // One straight run of a closed feature loop, from `p` to `q`, with `u` lying in the bordered face
 // (pointing away from the crease) and `v` in the neighbouring face. Runs are merged along a flat
@@ -74,10 +80,11 @@ std::vector<std::vector<LoopFrame>> its_face_patch_loops_around(
 indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::vector<Vec2d> &profile);
 
 // Chamfer / fillet ring around a closed loop; `size` is the chamfer leg / fillet radius, as for
-// a straight edge. Returns an empty mesh for a degenerate loop or non-positive size.
-indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size);
+// a straight edge. `side_margin` is the same outward push as on a straight edge (PP-4).
+indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size,
+                                       double side_margin = 0.);
 indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
-                                      int segments = EDGE_FILLET_SEGMENTS);
+                                      int segments = EDGE_FILLET_SEGMENTS, double side_margin = 0.);
 
 } // namespace Slic3r
 

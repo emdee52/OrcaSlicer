@@ -143,8 +143,8 @@ bool GLGizmoPerforation::on_init()
     m_desc["angle"]      = _L("Angle");
     m_desc["invert"]     = _L("Invert (grooves)");
     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
-    m_desc["click_hint"] = _L("Click a flat face to pick it, adjust the pattern, then press Perforate.");
-    m_desc["drop_hint"]  = _L("Right-click or Esc drops the pick.");
+    m_desc["click_hint"] = _L("Click a flat face to pick it, adjust the pattern, then press Perforate (or right-click).");
+    m_desc["drop_hint"]  = _L("Esc drops the pick.");
     m_desc["perforate"]  = _L("Perforate");
     m_desc["applied"]    = _L("Perforated");
     m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
@@ -598,17 +598,20 @@ void GLGizmoPerforation::add_pattern_volume(const indexed_triangle_set &prism)
 
 bool GLGizmoPerforation::on_mouse(const wxMouseEvent &mouse_event)
 {
-    // [ORCAPORT:PP-2] A click PICKS the face; nothing is cut until the panel's Perforate button.
-    // Right-click drops the pick, the same way Extrude does. A click that misses the object is not
-    // swallowed, so it still reaches the canvas.
+    // [ORCAPORT:PP-4] Right-click CONFIRMS: it cuts the picked pattern, the same as the panel's
+    // Perforate button. Esc is what drops the pick. A right-click with nothing picked is left to the
+    // canvas.
     if (mouse_event.RightDown()) {
         if (! m_pick.valid)
             return false;
-        clear_pick();
+        create_from_pick();
+        m_parent.request_extra_frame();
         return true;
     }
     if (! mouse_event.LeftDown())
         return false;
+    // A click PICKS the face; nothing is cut until Perforate or a right-click. Swallow the click only
+    // when it landed on a face, so a click on empty space still falls through to the canvas.
     pick_at(m_parent.get_local_mouse_position());
     return m_pick.valid;
 }
@@ -643,7 +646,9 @@ void GLGizmoPerforation::on_render()
     // a strict test would reject the overlay and the red would never be seen. LEQUAL lets the overlay
     // win against its own volume while geometry genuinely in front still occludes it.
     glsafe(::glDepthFunc(GL_LEQUAL));
-    glsafe(::glDisable(GL_CULL_FACE));
+    // Culling stays ON: the patterns are closed prisms and the patches come from the volume's own
+    // (outward-wound) triangles, so only the surfaces facing the camera should blend.
+    glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
     shader->set_uniform("projection_matrix", camera.get_projection_matrix());
 

@@ -512,12 +512,32 @@ void GLGizmoMeshBoolean::generate_new_volume(const bool delete_input, TriangleMe
     std::swap(curr_model_object->volumes[m_src.volume_idx], curr_model_object->volumes.back());
     curr_model_object->delete_volume(curr_model_object->volumes.size() - 1);
 
-    if (delete_input) {
-        std::vector<ItemForDelete> items;
-        auto obj_idx = m_parent.get_selection().get_object_idx();
-        items.emplace_back(ItemType::itVolume, obj_idx, m_tool.volume_idx);
-        wxGetApp().obj_list()->delete_from_model_and_list(items);
+    // [ORCAPORT:PP-5] The tool volume is deleted by IDENTITY, not by the recorded index. The swap above
+    // moved the last volume into the source's slot, so every index at or past it shifted and
+    // `m_tool.volume_idx` - recorded when the tool was picked - can now name a different volume, or the
+    // result itself. That is how a Mesh boolean of a perforation came to do nothing once an earlier
+    // boolean had already reshuffled the list: the wrong volume was removed, or the result was.
+    if (delete_input && m_tool.mv != nullptr) {
+        ModelVolume *tool     = m_tool.mv;
+        int          tool_idx = -1;
+        for (size_t i = 0; i < curr_model_object->volumes.size(); ++i)
+            if (curr_model_object->volumes[i] == tool) {
+                tool_idx = int(i);
+                break;
+            }
+        if (tool_idx >= 0) {
+            std::vector<ItemForDelete> items;
+            auto                       obj_idx = m_parent.get_selection().get_object_idx();
+            items.emplace_back(ItemType::itVolume, obj_idx, tool_idx);
+            wxGetApp().obj_list()->delete_from_model_and_list(items);
+        }
     }
+
+    // Both picks named volumes that have been consumed or moved: drop them rather than leave a stale
+    // index behind, so the next operation picks again. (The selection-visibility path compares against
+    // these indices too, and a stale one hides the wrong volume.)
+    m_src.reset();
+    m_tool.reset();
 
     //bool sinking = curr_model_object->bounding_box().min.z() < SINKING_Z_THRESHOLD;
     //if (!sinking)

@@ -108,16 +108,17 @@ indexed_triangle_set extrude_profile(const std::vector<Vec2d> &profile, const Ve
 }
 
 indexed_triangle_set make_edge_chamfer(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
-                                       const Vec3d &n_b, double size, double margin)
+                                       const Vec3d &n_b, double size, double margin, double side_margin)
 {
-    return make_edge_fillet(p0, p1, n_a, n_b, size, margin, 0);
+    return make_edge_fillet(p0, p1, n_a, n_b, size, margin, 0, side_margin);
 }
 
 indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Vec3d &n_a,
-                                      const Vec3d &n_b, double size, double margin, int segments)
+                                      const Vec3d &n_b, double size, double margin, int segments,
+                                      double side_margin)
 {
     indexed_triangle_set its;
-    if (size <= 0. || margin < 0.)
+    if (size <= 0. || margin < 0. || side_margin < 0.)
         return its;
     const Vec3d  e = p1 - p0;
     const double len = e.norm();
@@ -129,8 +130,13 @@ indexed_triangle_set make_edge_fillet(const Vec3d &p0, const Vec3d &p1, const Ve
         return its;
     if (!face_inward_dir(w, n_b.normalized(), n_a.normalized(), v))
         return its;
-    const std::vector<Vec2d> profile =
+    std::vector<Vec2d> profile =
         segments > 0 ? fillet_profile(size, segments) : chamfer_profile(size);
+    // [ORCAPORT:PP-4] Push the cross section out of both faces (see the header): the legs are coplanar
+    // with the part's faces at 0, which is what a mesh boolean leaves a sliver on.
+    if (side_margin > 0.)
+        for (Vec2d &q : profile)
+            q -= Vec2d(side_margin, side_margin);
     return extrude_profile(profile, p0, u, v, w, -margin, len + margin);
 }
 
@@ -438,15 +444,23 @@ indexed_triangle_set sweep_loop(const std::vector<LoopFrame> &loop, const std::v
     return its;
 }
 
-indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size)
+indexed_triangle_set make_loop_chamfer(const std::vector<LoopFrame> &loop, double size, double side_margin)
 {
-    return sweep_loop(loop, chamfer_profile(size));
+    std::vector<Vec2d> profile = chamfer_profile(size);
+    if (side_margin > 0.)
+        for (Vec2d &q : profile)
+            q -= Vec2d(side_margin, side_margin);
+    return sweep_loop(loop, profile);
 }
 
-indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size,
-                                      int segments)
+indexed_triangle_set make_loop_fillet(const std::vector<LoopFrame> &loop, double size, int segments,
+                                      double side_margin)
 {
-    return sweep_loop(loop, fillet_profile(size, segments));
+    std::vector<Vec2d> profile = fillet_profile(size, segments);
+    if (side_margin > 0.)
+        for (Vec2d &q : profile)
+            q -= Vec2d(side_margin, side_margin);
+    return sweep_loop(loop, profile);
 }
 
 } // namespace Slic3r

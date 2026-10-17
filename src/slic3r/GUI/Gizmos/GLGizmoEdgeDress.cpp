@@ -587,9 +587,12 @@ indexed_triangle_set GLGizmoEdgeDress::mesh_for_loop(const std::vector<LoopFrame
         return indexed_triangle_set();
 
     const double size = std::max(0.01, m_size / object_scale());
+    // The same outward push as a straight edge (PP-4): a loop has no ends, but its profile still lies
+    // in the two faces.
+    const double side = std::max(0.05, 0.05 * size);
     if (m_mode == EdgeDressMode::Fillet)
-        return make_loop_fillet(loop, size);
-    return make_loop_chamfer(loop, size);
+        return make_loop_fillet(loop, size, EDGE_FILLET_SEGMENTS, side);
+    return make_loop_chamfer(loop, size, side);
 }
 
 const std::vector<std::vector<LoopFrame>> &GLGizmoEdgeDress::loops_for_facet(const ModelVolume *mv, int facet) const
@@ -609,11 +612,19 @@ indexed_triangle_set GLGizmoEdgeDress::mesh_for_edge(const HoverEdge &edge) cons
     if (!edge.valid)
         return indexed_triangle_set();
 
-    const double size   = std::max(0.01, m_size / object_scale());
-    const double margin = 0.5 * size;
+    const double size = std::max(0.01, m_size / object_scale());
+    // [ORCAPORT:PP-4] TWO different margins, and the difference matters:
+    //   `side` pushes the cross section out of both faces, so the cutter stands a hair proud of the
+    //     surface and a mesh boolean has no coplanar face to leave a sliver on. It changes nothing
+    //     visible - the cut is still bounded by the faces.
+    //   `end` extends past both ends of the edge, which is only there so neighbouring negatives at a
+    //     corner overlap. It used to be 0.5 * size, which ran the cut visibly past the end of the
+    //     picked edge as if there were solid there, so it is a hair now.
+    const double side = std::max(0.05, 0.05 * size);
+    const double end  = std::max(0.02, 0.02 * size);
     if (m_mode == EdgeDressMode::Fillet)
-        return make_edge_fillet(edge.p0, edge.p1, edge.n_a, edge.n_b, size, margin);
-    return make_edge_chamfer(edge.p0, edge.p1, edge.n_a, edge.n_b, size, margin);
+        return make_edge_fillet(edge.p0, edge.p1, edge.n_a, edge.n_b, size, end, EDGE_FILLET_SEGMENTS, side);
+    return make_edge_chamfer(edge.p0, edge.p1, edge.n_a, edge.n_b, size, end, side);
 }
 
 // Enumerate the manifold edges of the first model part in object space, deduplicated and in mesh
@@ -1074,7 +1085,9 @@ void GLGizmoEdgeDress::on_render()
     glsafe(::glDepthMask(GL_TRUE));
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
     glsafe(::glDisable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE));
+    // Culling stays ON: the prisms are closed volumes, and drawing their back walls too blends every
+    // surface twice (an applied feature then reads as solid paint instead of a wash).
+    glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
 
     const Transform3d view_model_matrix = camera.get_view_matrix() * instance_matrix();

@@ -742,6 +742,11 @@ void GLGizmoCounterboreBridge::gizmo_refresh()
 bool GLGizmoCounterboreBridge::on_mouse(const wxMouseEvent &mouse_event)
 {
     if (m_strengthen) {
+        // [ORCAPORT:PP-4] Right-click is the Done key, like the panel's Done button.
+        if (mouse_event.RightDown()) {
+            m_parent.reset_all_gizmos();
+            return true;
+        }
         const bool on_hole = m_hover_id >= 0 && m_hover_id < int(m_holes.size());
         if (mouse_event.LeftDown() && on_hole) {
             gizmo_toggle_hole(m_hover_id);
@@ -824,7 +829,9 @@ void GLGizmoCounterboreBridge::on_render()
     glsafe(::glDepthMask(GL_TRUE));
     glsafe(::glClear(GL_DEPTH_BUFFER_BIT));
     glsafe(::glDisable(GL_DEPTH_TEST));
-    glsafe(::glDisable(GL_CULL_FACE));
+    // Culling stays ON: the counterbore/ring previews are closed volumes, and drawing their back walls
+    // too blends every surface twice (an applied ring then reads as solid paint).
+    glsafe(::glEnable(GL_CULL_FACE));
     glsafe(::glEnable(GL_BLEND));
 
     m_preview_avail.model.render(shader);
