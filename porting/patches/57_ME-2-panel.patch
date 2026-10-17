@@ -1,0 +1,633 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index 5daf0a44bc..410230b572 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -1,5 +1,6 @@
+ #include "GLGizmoHoles.hpp"
+ #include "GLGizmoUtils.hpp"
++#include "GizmoStyle.hpp" // [ORCAPORT:ME-2] fork panel style (docs/handoff.md section 28)
+ 
+ #include "libslic3r/HoleShapes.hpp"
+ #include "libslic3r/CutUtils.hpp"
+@@ -33,6 +34,64 @@ namespace GUI {
+ 
+ namespace {
+ 
++// [ORCAPORT:ME-2] The three operation glyphs. The same square plate as the pattern icons, with the
++// operation's feature cut into it, and everything inside the shared pattern box - except the mouth of
++// the hole, which has to reach the face to mean anything.
++//
++// Teardrop and Bore/Pocket are the shapes of the hole; Chamfer/Fillet is what the MOUTH looks like, so
++// it is drawn in SECTION: the hole is the gap between two walls and the dressing is the profile where
++// it breaks the surface. An outer corner (CAD's edge chamfer) or a flat band around the rim both read
++// as "edge chamfer", which is the wrong operation - this one dresses a hole's rim.
++void me_teardrop(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
++{
++    gizmo_glyph_plate(dl, p, s, col);
++    // A hole with a pointed roof: the cone is what makes it printable without support.
++    const ImVec2 tri[3] = {ImVec2(p.x + 0.50f * s, p.y + 0.21f * s),
++                           ImVec2(p.x + 0.652f * s, p.y + 0.565f * s),
++                           ImVec2(p.x + 0.348f * s, p.y + 0.565f * s)};
++    dl->AddConvexPolyFilled(tri, 3, col);
++    dl->AddCircleFilled(ImVec2(p.x + 0.50f * s, p.y + 0.63f * s), 0.165f * s, col, 22);
++}
++
++void me_bore(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
++{
++    gizmo_glyph_plate(dl, p, s, col);
++    // A stepped bore: the shaft, then the counterbore ring standing off it.
++    dl->AddCircleFilled(ImVec2(p.x + 0.50f * s, p.y + 0.50f * s), 0.13f * s, col, 22);
++    dl->AddCircle(ImVec2(p.x + 0.50f * s, p.y + 0.50f * s), (0.5f - kGizmoGlyphInset) * s, col, 26,
++                  std::max(1.2f, 0.075f * s));
++}
++
++// A chamfered mouth, in section: the hole opens on the top face with a 45 deg flare and stops at the
++// middle, so the plate keeps its silhouette. This is the profile the panel's Chamfer sub-button
++// produces on a real hole.
++void me_chamfer(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
++{
++    gizmo_glyph_plate(dl, p, s, col);
++    // 🔑 Three convex pieces, not one polygon. A bucket-shaped hole is CONCAVE, and this ImGui (1.83)
++    // has no AddConcavePolyFilled - it arrived later - so AddConvexPolyFilled triangulates it as a fan
++    // and draws the inverse: a solid block with a notch instead of a hole with a flared mouth. The
++    // pieces overlap by half a pixel, because two adjacent fills of the same colour otherwise leave
++    // the background visible in the gap between them (the same trap as the honeycomb cell wall).
++    const float ov     = 0.5f; // overlap, in pixels
++    // A long 45 deg leg (0.19 of the glyph, half the plate's height) so the chamfer is unmistakable,
++    // and the mouth lands exactly on the shared pattern box: the outer edges of the flare are the same
++    // 0.21 margin every other glyph keeps.
++    const float wl     = p.x + 0.40f * s, wr = p.x + 0.60f * s;
++    const float top    = p.y + 0.12f * s; // the top face
++    const float dressY = p.y + 0.31f * s; // where the 45 deg flare meets the wall
++    const float bot    = p.y + 0.58f * s; // the closed bottom
++    // 🔑 Both flares must be in the SAME winding. ImGui's anti-aliased convex fill assumes clockwise
++    // order, and a counter-clockwise triangle is filled with its AA fringe on the wrong side, so the
++    // two legs of the mouth come out different widths - the hole looked asymmetric. Mirroring a
++    // triangle by negating x reverses its winding, which is exactly how the right leg was built.
++    dl->AddRectFilled(ImVec2(wl, top), ImVec2(wr, bot), col);
++    const ImVec2 flare_l[3] = {ImVec2(p.x + 0.21f * s, top), ImVec2(wl + ov, top), ImVec2(wl + ov, dressY)};
++    const ImVec2 flare_r[3] = {ImVec2(p.x + 0.79f * s, top), ImVec2(wr - ov, dressY), ImVec2(wr - ov, top)};
++    dl->AddConvexPolyFilled(flare_l, 3, col);
++    dl->AddConvexPolyFilled(flare_r, 3, col);
++}
++
+ constexpr const char *TEARDROP_NAME = "Teardrop";
+ constexpr const char *POCKET_NAME   = "HolePocket";
+ constexpr const char *FACE_POCKET_NAME = "FacePocket";
+@@ -1638,52 +1697,48 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+ #else
+     GizmoImguiSetNextWIndowPos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+ #endif
++    // [ORCAPORT:ME-2] Fork panel style (docs/handoff.md section 28): the shared palette, one fixed
++    // narrow width with wrapped hints, and the shared widget layer.
++    ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
++    gizmo_push_window_style();
+     ImGuiWrapper::push_toolbar_style(scale);
+     GizmoImguiBegin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar);
++    gizmo_push_panel_style();
++    render_panel_body();
++    gizmo_pop_panel_style();
++    GizmoImguiEnd();
++    ImGuiWrapper::pop_toolbar_style();
++    gizmo_pop_window_style();
++}
+ 
+-    const float sliders_width = m_imgui->scaled(7.0f);
+-    const float left_width    = m_imgui->calc_text_size(m_desc.at("true_dia")).x + m_imgui->scaled(1.0f);
++void GLGizmoHoles::render_panel_body()
++{
++    // The widest caption the parameter rows below use, so the label column is exact (section 28).
++    float label_w = 0.f;
++    for (const char *key : {"standard", "diameter", "across_flats", "tolerance", "true_dia", "screw_fit",
++                            "head", "fit", "head_fit", "height", "depth", "through", "entry", "both_ends",
++                            "clipping_of_view", "apex", "rim_size"})
++        label_w = std::max(label_w, ImGui::CalcTextSize(m_desc.at(key).utf8_str().data()).x);
++    label_w += ImGui::GetStyle().ItemSpacing.x * 0.5f;
+ 
+-    // Operation: two mutually exclusive buttons; the active one is highlighted.
++    // Operation: Teardrop | Bore/Pocket | Chamfer/Fillet, as icon buttons with the name on hover -
++    // the same convention as the Perforations pattern row. Drawn without a caption, like the Extrude
++    // panel's own mode row: the three icons would not also fit a caption and its label column.
+     {
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("operation"));
+-        ImGui::SameLine(left_width);
+-        auto op_button = [&](const wxString &label, HoleOperation op) {
+-            const bool on = (m_operation == op);
+-            if (on) {
+-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+-            }
+-            const bool clicked = m_imgui->button(label);
+-            if (on)
+-                ImGui::PopStyleColor(3);
+-            if (clicked)
+-                set_operation(op);
+-        };
+-        op_button(m_desc.at("op_teardrop"), HoleOperation::Teardrop);
+-        ImGui::SameLine();
+-        op_button(m_desc.at("op_bore"), HoleOperation::Bore);
+-        ImGui::SameLine();
+-        op_button(m_desc.at("op_chamfer_fillet"), HoleOperation::ChamferFillet);
+-    }
+-
+-    // A quick style for a row of mutually exclusive buttons: the active one is filled teal, so the
+-    // current choice is obvious.
+-    auto sel_button = [&](const wxString &label, bool on, auto cb) {
+-        if (on) {
+-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
++        void (*const drawers[3])(ImDrawList *, const ImVec2 &, float, ImU32) =
++            {me_teardrop, me_bore, me_chamfer};
++        // The names are the ones the buttons already used, so they are translated and cost nothing new.
++        const std::string names[3] = {m_desc.at("op_teardrop").utf8_str().data(),
++                                      m_desc.at("op_bore").utf8_str().data(),
++                                      m_desc.at("op_chamfer_fillet").utf8_str().data()};
++        for (int i = 0; i < 3; ++i) {
++            if (i > 0)
++                ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
++            if (gizmo_icon_toggle(names[i].c_str(), int(m_operation) == i, names[i].c_str(), drawers[i]))
++                set_operation(HoleOperation(i));
+         }
+-        const bool clicked = m_imgui->button(label);
+-        if (on)
+-            ImGui::PopStyleColor(3);
+-        if (clicked)
+-            cb();
+-    };
++    }
+ 
+     // Place a new pocket on any flat face, instead of only reworking detected holes. This only
+     // makes sense for a bore/pocket: a rim needs an existing hole edge and a teardrop is centred
+@@ -1691,38 +1746,26 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+     if (m_operation == HoleOperation::Bore) {
+         const bool on = m_place_face_mode;
+         if (on) {
+-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
++            ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
++            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, gizmo_col(GizmoCol::AccentBright));
+         }
+         const bool clicked = m_imgui->button(on ? _L("Cancel face pick") : _L("Place on face"));
+         if (on)
+-            ImGui::PopStyleColor(3);
++            ImGui::PopStyleColor(2);
+         if (clicked)
+             set_place_face_mode(!on);
+         if (m_place_face_mode)
+-            m_imgui->text(_L("Click a flat face to place the feature; right-click to finish."));
++            gizmo_hint(_L("Click a flat face to place the feature; right-click to finish.").utf8_str().data());
+     }
+ 
+     ImGui::Separator();
+ 
+     if (m_operation == HoleOperation::Teardrop) {
+-        // Apex angle: slider plus a typed value.
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("apex"));
+-        ImGui::SameLine(left_width);
+-        ImGui::PushItemWidth(sliders_width);
++        // Apex angle: a slider with a typed field beside it, and no [-][+] step buttons (section 28).
+         float angle = m_angle_deg;
+-        if (m_imgui->bbl_slider_float_style("##apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
++        if (gizmo_row_slider("##apex", m_desc.at("apex").utf8_str().data(), &angle, ANGLE_MIN, ANGLE_MAX,
++                             "%.0f", label_w, nullptr))
+             set_angle(angle);
+-        ImGui::PopItemWidth();
+-        ImGui::SameLine();
+-        // Face the widest value ("60") plus the spinner's +/- buttons: ImGui carves both buttons
+-        // out of the item width, which clipped the value at scaled(4).
+-        ImGui::PushItemWidth(m_imgui->scaled(5.5f));
+-        if (ImGui::InputFloat("##apex_in", &angle, 1.f, 5.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue))
+-            set_angle(angle);
+-        ImGui::PopItemWidth();
+     } else if (m_operation == HoleOperation::Bore) {
+         // Category buttons (image buttons in Orca's toolbar style).
+         const HoleCategory categories[] = {HoleCategory::Screw, HoleCategory::Nut, HoleCategory::Magnet,
+@@ -1732,7 +1775,7 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+         for (HoleCategory cat : categories) {
+             ImTextureID  tex = category_icon(cat);
+             const bool   on  = (m_category == cat);
+-            const ImVec4 tint = on ? ImVec4(0.10f, 0.59f, 0.53f, 1.f) : ImVec4(1.f, 1.f, 1.f, 1.f);
++            const ImVec4 tint = on ? gizmo_col(GizmoCol::Accent) : ImVec4(1.f, 1.f, 1.f, 1.f);
+             const ImVec4 bg   = on ? ImVec4(0.92f, 0.92f, 0.92f, 1.f) : ImVec4(0.f, 0.f, 0.f, 0.f);
+             if (tex != nullptr) {
+                 if (m_imgui->image_button(tex, ImVec2(icon_sz, icon_sz), ImVec2(0, 0), ImVec2(1, 1), -1, bg, tint))
+@@ -1764,7 +1807,11 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+                     break;
+                 }
+             const int prev = sel;
+-            if (render_combo(m_desc.at("standard").ToStdString(), names, sel, left_width, m_imgui->scaled(12.0f)) && sel != prev)
++            // A dropdown, not a segment: the catalogue runs to a dozen entries per category, and
++            // section 28 reserves the segmented row for a SMALL exclusive choice. The width is what
++            // is left of the label column, so the widest designation cannot push the panel out.
++            const float combo_w = std::max(gizmo_panel_width() - label_w - ImGui::GetStyle().WindowPadding.x * 2.f, 40.f);
++            if (render_combo(m_desc.at("standard").ToStdString(), names, sel, label_w, combo_w) && sel != prev)
+                 set_standard(idxs[sel]);
+         }
+ 
+@@ -1777,86 +1824,69 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+         const bool is_pocket = m_category == HoleCategory::Insert || m_category == HoleCategory::Magnet;
+ 
+         // Diameter is always editable; typing an existing standard's size relabels the combo.
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(is_nut ? m_desc.at("across_flats") : m_desc.at("diameter"));
+-        ImGui::SameLine(left_width);
+-        ImGui::PushItemWidth(sliders_width);
++        // A typed field, not a slider: the size is free and has no range the geometry refuses.
+         float d = float(m_diameter);
+-        if (ImGui::InputFloat("##dia", &d, 0.1f, 1.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++        if (gizmo_row_input("##dia", (is_nut ? m_desc.at("across_flats") : m_desc.at("diameter")).utf8_str().data(),
++                            &d, "%.2f", label_w))
+             set_diameter(d);
+-        ImGui::PopItemWidth();
+ 
+         // Tolerance: read-only and fit-derived for inserts/magnets, editable otherwise.
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("tolerance"));
+-        ImGui::SameLine(left_width);
+-        ImGui::PushItemWidth(sliders_width);
+         if (is_pocket) {
+             float t = float(hole_fit_diameter_delta(standard_kind(m_category), m_diameter, HoleFit(m_fit)));
+             m_imgui->disabled_begin(true);
+-            ImGui::InputFloat("##tol", &t, 0.f, 0.f, "%.2f");
++            gizmo_row_input("##tol", m_desc.at("tolerance").utf8_str().data(), &t, "%.2f", label_w);
+             m_imgui->disabled_end();
+         } else {
+             float t = float(m_tolerance);
+-            if (ImGui::InputFloat("##tol", &t, 0.05f, 0.2f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++            if (gizmo_row_input("##tol", m_desc.at("tolerance").utf8_str().data(), &t, "%.2f", label_w))
+                 set_tolerance(t);
+         }
+-        ImGui::PopItemWidth();
+ 
+         // Read-only effective diameter = diameter + tolerance.
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("true_dia"));
+-        ImGui::SameLine(left_width);
+-        m_imgui->disabled_begin(true);
+-        ImGui::PushItemWidth(sliders_width);
+-        float true_d = float(bore_diameter());
+-        ImGui::InputFloat("##true_dia", &true_d, 0.f, 0.f, "%.2f");
+-        ImGui::PopItemWidth();
+-        m_imgui->disabled_end();
++        {
++            m_imgui->disabled_begin(true);
++            float true_d = float(bore_diameter());
++            gizmo_row_input("##true_dia", m_desc.at("true_dia").utf8_str().data(), &true_d, "%.2f", label_w);
++            m_imgui->disabled_end();
++        }
+ 
+         if (is_screw && s != nullptr) {
+             // Free (clearance) or Tap (thread-forming into plastic). Only the fits this screw
+-            // actually has are shown.
++            // actually has are shown, so the segmented row is built from what is available.
+             const bool has_free = s->clearance_d > 0.;
+             const bool has_tap  = s->tap_d > 0.;
+             if (has_free || has_tap) {
+-                ImGui::AlignTextToFramePadding();
+-                m_imgui->text(m_desc.at("screw_fit"));
+-                ImGui::SameLine(left_width);
+-                bool first = true;
+-                if (has_free) {
+-                    sel_button(m_desc.at("fit_free"), m_screw_fit == ScrewFit::Free, [&] { set_screw_fit(ScrewFit::Free); });
+-                    first = false;
+-                }
+-                if (has_tap) {
+-                    if (!first)
+-                        ImGui::SameLine();
+-                    sel_button(m_desc.at("fit_tap"), m_screw_fit == ScrewFit::Tap, [&] { set_screw_fit(ScrewFit::Tap); });
+-                }
++                std::vector<ScrewFit>    fits;
++                std::vector<std::string> vals;
++                if (has_free) { vals.push_back(m_desc.at("fit_free").utf8_str().data()); fits.push_back(ScrewFit::Free); }
++                if (has_tap)  { vals.push_back(m_desc.at("fit_tap").utf8_str().data());  fits.push_back(ScrewFit::Tap); }
++                std::vector<const char *> lbl;
++                for (const std::string &v : vals) lbl.push_back(v.c_str());
++                int cur = -1;
++                for (size_t i = 0; i < fits.size(); ++i)
++                    if (fits[i] == m_screw_fit) cur = int(i);
++                const int sel = gizmo_row_segment("##screw_fit", m_desc.at("screw_fit").utf8_str().data(),
++                                                  lbl.data(), int(lbl.size()), cur, label_w);
++                if (sel >= 0) set_screw_fit(fits[sel]);
+             }
+ 
+             // Head styles this screw has dimensions for; hidden entirely when it has none.
+             const bool has_head = s->socket_d > 0. || s->button_d > 0. || s->csink_d > 0.;
+             if (has_head) {
+-                ImGui::AlignTextToFramePadding();
+-                m_imgui->text(m_desc.at("head"));
+-                ImGui::SameLine(left_width);
+-                sel_button(m_desc.at("head_none"), m_head == BoreHead::None, [&] { set_head(BoreHead::None); });
+-                if (s->socket_d > 0.) {
+-                    ImGui::SameLine();
+-                    sel_button(m_desc.at("head_socket"), m_head == BoreHead::SocketHead,
+-                               [&] { set_head(BoreHead::SocketHead); });
+-                }
+-                if (s->button_d > 0.) {
+-                    ImGui::SameLine();
+-                    sel_button(m_desc.at("head_button"), m_head == BoreHead::ButtonHead,
+-                               [&] { set_head(BoreHead::ButtonHead); });
+-                }
+-                if (s->csink_d > 0.) {
+-                    ImGui::SameLine();
+-                    sel_button(m_desc.at("head_csink"), m_head == BoreHead::Countersink,
+-                               [&] { set_head(BoreHead::Countersink); });
+-                }
++                std::vector<BoreHead>    heads;
++                std::vector<std::string> vals;
++                vals.push_back(m_desc.at("head_none").utf8_str().data());   heads.push_back(BoreHead::None);
++                if (s->socket_d > 0.) { vals.push_back(m_desc.at("head_socket").utf8_str().data()); heads.push_back(BoreHead::SocketHead); }
++                if (s->button_d > 0.) { vals.push_back(m_desc.at("head_button").utf8_str().data()); heads.push_back(BoreHead::ButtonHead); }
++                if (s->csink_d  > 0.) { vals.push_back(m_desc.at("head_csink").utf8_str().data());  heads.push_back(BoreHead::Countersink); }
++                std::vector<const char *> lbl;
++                for (const std::string &v : vals) lbl.push_back(v.c_str());
++                int cur = 0;
++                for (size_t i = 0; i < heads.size(); ++i)
++                    if (heads[i] == m_head) cur = int(i);
++                const int sel = gizmo_row_segment("##head", m_desc.at("head").utf8_str().data(),
++                                                  lbl.data(), int(lbl.size()), cur, label_w);
++                if (sel >= 0) set_head(heads[sel]);
+             }
+         }
+ 
+@@ -1864,45 +1894,40 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+         // horizontal hole. The head/apex options show only once the teardrop is on.
+         if (is_screw) {
+             bool teardrop = m_screw_teardrop;
+-            ImGui::AlignTextToFramePadding();
+-            m_imgui->text(m_desc.at("op_teardrop"));
+-            ImGui::SameLine(left_width);
+-            if (ImGui::Checkbox("##screw_teardrop", &teardrop))
++            if (gizmo_row_switch("##screw_teardrop", m_desc.at("op_teardrop").utf8_str().data(), &teardrop,
++                                 _u8L("Shapes the screw's clearance bore for a horizontal hole, so its roof does not droop.").c_str()))
+                 set_screw_teardrop(teardrop);
+ 
+-            // The head teardrop sits on the same row, but only once the teardrop is on and the screw
+-            // has a counterbore head to shape (a countersink has no vertical wall to teardrop).
++            // The head teardrop appears only once the teardrop is on and the screw has a counterbore
++            // head to shape (a countersink has no vertical wall to teardrop).
+             const bool cbore_head = s != nullptr &&
+                                     ((m_head == BoreHead::SocketHead && s->socket_d > 0.) ||
+                                      (m_head == BoreHead::ButtonHead && s->button_d > 0.));
+             if (m_screw_teardrop && cbore_head) {
+                 bool head_teardrop = m_screw_teardrop_head;
+-                ImGui::SameLine();
+-                m_imgui->text(m_desc.at("teardrop_head"));
+-                ImGui::SameLine();
+-                if (ImGui::Checkbox("##screw_teardrop_head", &head_teardrop))
++                if (gizmo_row_switch("##screw_teardrop_head", m_desc.at("teardrop_head").utf8_str().data(),
++                                     &head_teardrop, nullptr))
+                     set_screw_teardrop_head(head_teardrop);
+             }
+ 
+             if (m_screw_teardrop) {
+-                ImGui::AlignTextToFramePadding();
+-                m_imgui->text(m_desc.at("apex"));
+-                ImGui::SameLine(left_width);
+-                ImGui::PushItemWidth(sliders_width);
+                 float angle = m_angle_deg;
+-                if (m_imgui->bbl_slider_float_style("##screw_apex", &angle, ANGLE_MIN, ANGLE_MAX, "%.0f", 1.0f, true))
++                if (gizmo_row_slider("##screw_apex", m_desc.at("apex").utf8_str().data(), &angle,
++                                     ANGLE_MIN, ANGLE_MAX, "%.0f", label_w, nullptr))
+                     set_angle(angle);
+-                ImGui::PopItemWidth();
+             }
+         }
+ 
+         if (is_pocket) {
+-            ImGui::AlignTextToFramePadding();
+-            m_imgui->text(m_desc.at("fit"));
+-            ImGui::SameLine(left_width);
+-            sel_button(m_desc.at("fit_tight"), m_fit == int(HoleFit::Tight), [&] { set_fit(HoleFit::Tight); });
+-            ImGui::SameLine();
+-            sel_button(m_desc.at("fit_slip"), m_fit == int(HoleFit::Slip), [&] { set_fit(HoleFit::Slip); });
++            const std::string f0 = m_desc.at("fit_tight").utf8_str().data();
++            const std::string f1 = m_desc.at("fit_slip").utf8_str().data();
++            const char       *labels[] = {f0.c_str(), f1.c_str()};
++            // m_fit is the enum value, so a third preset (if one is ever added) simply highlights
++            // nothing here instead of silently showing the wrong button as active.
++            const int sel = gizmo_row_segment("##fit", m_desc.at("fit").utf8_str().data(), labels, 2,
++                                              m_fit, label_w);
++            if (sel >= 0)
++                set_fit(HoleFit(sel));
+         }
+ 
+         // Head fit: sink the head / pocket below the surface by 0.08 or 0.16 mm (Z tolerance).
+@@ -1913,113 +1938,84 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+                                       (m_head == BoreHead::Countersink && s->csink_d > 0.));
+             const bool show = head_active || is_nut || m_category == HoleCategory::Magnet;
+             if (show) {
+-                ImGui::AlignTextToFramePadding();
+-                m_imgui->text(m_desc.at("head_fit"));
+-                ImGui::SameLine(left_width);
+-                auto fit_button = [&](const wxString &label, double v) {
+-                    const bool on = std::abs(m_head_fit - v) < 1e-6;
+-                    if (on) {
+-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+-                    }
+-                    const bool clicked = m_imgui->button(label);
+-                    if (on)
+-                        ImGui::PopStyleColor(3);
+-                    if (clicked)
+-                        set_head_fit(v);
+-                };
+-                fit_button(m_desc.at("fit_flush"), 0.0);
+-                ImGui::SameLine();
+-                fit_button(m_desc.at("sink_008"), -0.08);
+-                ImGui::SameLine();
+-                fit_button(m_desc.at("sink_016"), -0.16);
++                const std::string h0 = m_desc.at("fit_flush").utf8_str().data();
++                const std::string h1 = m_desc.at("sink_008").utf8_str().data();
++                const std::string h2 = m_desc.at("sink_016").utf8_str().data();
++                const char       *labels[] = {h0.c_str(), h1.c_str(), h2.c_str()};
++                const double      values[] = {0.0, -0.08, -0.16};
++                int cur = -1;
++                for (int i = 0; i < 3; ++i)
++                    if (std::abs(m_head_fit - values[i]) < 1e-6)
++                        cur = i;
++                const int sel = gizmo_row_segment("##head_fit", m_desc.at("head_fit").utf8_str().data(),
++                                                  labels, 3, cur, label_w);
++                if (sel >= 0)
++                    set_head_fit(values[sel]);
+             }
+         }
+ 
+         if (is_pocket || is_nut) {
+             // Insert heights map to the pocket depth; the depth can still be fine-tuned below.
+             if (s != nullptr && s->kind == HoleStandardKind::Insert && !s->insert_heights.empty()) {
+-                ImGui::AlignTextToFramePadding();
+-                m_imgui->text(m_desc.at("height"));
+-                ImGui::SameLine(left_width);
+-                for (size_t hi = 0; hi < s->insert_heights.size(); ++hi) {
+-                    const double hv = s->insert_heights[hi];
+-                    const bool   on = std::abs(m_depth - hv) < 1e-6;
+-                    if (on) {
+-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.59f, 0.53f, 1.f));
+-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.68f, 0.61f, 1.f));
+-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.08f, 0.50f, 0.45f, 1.f));
+-                    }
+-                    const bool clicked = m_imgui->button(wxString::Format("%.1f", hv));
+-                    if (on)
+-                        ImGui::PopStyleColor(3);
+-                    if (clicked)
+-                        set_depth(hv);
+-                    if (hi + 1 < s->insert_heights.size())
+-                        ImGui::SameLine();
+-                }
++                std::vector<std::string> vals;
++                for (double hv : s->insert_heights)
++                    vals.push_back(wxString::Format("%.1f", hv).utf8_str().data());
++                std::vector<const char *> lbl;
++                for (const std::string &v : vals) lbl.push_back(v.c_str());
++                int cur = -1;
++                for (size_t i = 0; i < s->insert_heights.size(); ++i)
++                    if (std::abs(m_depth - s->insert_heights[i]) < 1e-6)
++                        cur = int(i);
++                const int sel = gizmo_row_segment("##insert_h", m_desc.at("height").utf8_str().data(),
++                                                  lbl.data(), int(lbl.size()), cur, label_w);
++                if (sel >= 0)
++                    set_depth(s->insert_heights[sel]);
+             }
+             // Editable pocket depth (insert / magnet / nut).
+-            ImGui::AlignTextToFramePadding();
+-            m_imgui->text(m_desc.at("depth"));
+-            ImGui::SameLine(left_width);
+-            ImGui::PushItemWidth(sliders_width);
+             float pocket_depth = float(m_depth);
+-            if (ImGui::InputFloat("##depth", &pocket_depth, 0.5f, 2.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++            if (gizmo_row_input("##depth", m_desc.at("depth").utf8_str().data(), &pocket_depth, "%.2f", label_w))
+                 m_depth = std::max(0.1, double(pocket_depth));
+-            ImGui::PopItemWidth();
+         } else {
+             bool through = m_through;
+-            ImGui::AlignTextToFramePadding();
+-            m_imgui->text(m_desc.at("through"));
+-            ImGui::SameLine(left_width);
+-            if (ImGui::Checkbox("##through", &through))
++            if (gizmo_row_switch("##through", m_desc.at("through").utf8_str().data(), &through, nullptr))
+                 set_through(through);
+             if (!m_through) {
+-                ImGui::SameLine();
+-                ImGui::PushItemWidth(sliders_width);
+                 float depth = float(m_depth);
+-                if (ImGui::InputFloat("##depth", &depth, 0.5f, 2.f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++                if (gizmo_row_input("##depth", m_desc.at("depth").utf8_str().data(), &depth, "%.2f", label_w))
+                     m_depth = std::max(0.1, double(depth));
+-                ImGui::PopItemWidth();
+             }
+         }
+     } else if (m_operation == HoleOperation::ChamferFillet) {
+-        // Chamfer or fillet on the hole's mouth. The type defaults to chamfer.
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("op_chamfer_fillet"));
+-        ImGui::SameLine(left_width);
+-        sel_button(m_desc.at("type_chamfer"), !m_rim_fillet, [&] { set_rim_fillet(false); });
+-        ImGui::SameLine();
+-        sel_button(m_desc.at("type_fillet"), m_rim_fillet, [&] { set_rim_fillet(true); });
+-
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("rim_size"));
+-        ImGui::SameLine(left_width);
+-        ImGui::PushItemWidth(sliders_width);
++        // Chamfer or fillet on the hole's mouth. A small exclusive choice, so segmented, and drawn
++        // without a caption because the operation row above already says Chamfer/Fillet.
++        {
++            const std::string t0 = m_desc.at("type_chamfer").utf8_str().data();
++            const std::string t1 = m_desc.at("type_fillet").utf8_str().data();
++            const char       *labels[] = {t0.c_str(), t1.c_str()};
++            const int         sel      = gizmo_segment("##rim_type", labels, 2, m_rim_fillet ? 1 : 0);
++            if (sel == 0)
++                set_rim_fillet(false);
++            else if (sel == 1)
++                set_rim_fillet(true);
++        }
++
+         float rim = float(m_rim_size);
+-        if (ImGui::InputFloat("##rim_size", &rim, 0.05f, 0.5f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
++        if (gizmo_row_input("##rim_size", m_desc.at("rim_size").utf8_str().data(), &rim, "%.2f", label_w))
+             set_rim_size(rim);
+-        ImGui::PopItemWidth();
+ 
+         // Both mouths of a through hole at once (the flipped one is irrelevant then, so Flip hides).
+         bool both = m_rim_both;
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("both_ends"));
+-        ImGui::SameLine(left_width);
+-        if (ImGui::Checkbox("##rim_both", &both))
++        if (gizmo_row_switch("##rim_both", m_desc.at("both_ends").utf8_str().data(), &both, nullptr))
+             set_rim_both(both);
+     }
+ 
+-    // Entry end (Flip): bore and chamfer/fillet place their feature at the chosen mouth. A teardrop
+-    // is centred on the hole, and Both ends covers both mouths, so both get no Flip control.
++    // Entry end: which mouth of the hole the feature sits on. A plain yes/no, so a switch and not a
++    // button - the button used to repeat its own caption on the same row ("Flip [Flip]").
+     if (m_operation != HoleOperation::Teardrop && !(m_operation == HoleOperation::ChamferFillet && m_rim_both)) {
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("entry"));
+-        ImGui::SameLine(left_width);
+-        if (m_imgui->button(m_desc.at("entry")))
+-            set_flip(!m_flip);
++        bool flip = m_flip;
++        if (gizmo_row_switch("##entry", m_desc.at("entry").utf8_str().data(), &flip,
++                             _u8L("Puts the feature on the far mouth of the hole instead of the near one.").c_str()))
++            set_flip(flip);
+     }
+ 
+     ImGui::Separator();
+@@ -2045,27 +2041,19 @@ void GLGizmoHoles::on_render_input_window(float x, float y, float bottom_limit)
+ 
+     ImGui::Separator();
+ 
+-    if (m_c->object_clipper()->get_position() == 0.f) {
+-        ImGui::AlignTextToFramePadding();
+-        m_imgui->text(m_desc.at("clipping_of_view"));
+-    } else if (m_imgui->button(m_desc.at("reset_direction"))) {
+-        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
+-    }
+-    auto clp_dist = float(m_c->object_clipper()->get_position());
+-    ImGui::SameLine(left_width);
+-    ImGui::PushItemWidth(sliders_width);
+-    if (m_imgui->bbl_slider_float_style("##clp_dist", &clp_dist, 0.f, 1.f, "%.2f", 1.0f, true))
++    // Section view: the same row, plus Reset direction once the cut has been moved off the face.
++    float clp_dist = float(m_c->object_clipper()->get_position());
++    if (gizmo_row_slider("##clp_dist", m_desc.at("clipping_of_view").utf8_str().data(), &clp_dist,
++                         0.f, 1.f, "%.2f", label_w, nullptr))
+         m_parent.set_section_view_ratio(clp_dist);
+-    ImGui::PopItemWidth();
++    if (m_c->object_clipper()->get_position() > 0.f && m_imgui->button(m_desc.at("reset_direction")))
++        wxGetApp().CallAfter([this]() { m_parent.align_section_view_to_camera(); });
+ 
+     ImGui::Separator();
+ 
+     GLGizmoUtils::begin_right_aligned_buttons({_L("Done")});
+     if (m_imgui->button(_L("Done")))
+         m_parent.reset_all_gizmos();
+-
+-    GizmoImguiEnd();
+-    ImGuiWrapper::pop_toolbar_style();
+ }
+ 
+ } // namespace GUI
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+index a5f2921359..50b5bcddcf 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.hpp
+@@ -125,6 +125,10 @@ protected:
+     void on_unregister_raycasters_for_picking() override;
+ 
+ private:
++    // [ORCAPORT:ME-2] The panel body, in its own function so the style push/pop in
++    // on_render_input_window() cannot be crossed by an early return (docs/handoff.md section 28).
++    void render_panel_body();
++
+     struct HoleView
+     {
+         DetectedHole hole; // object coordinates (axis, center, radius, depth)
