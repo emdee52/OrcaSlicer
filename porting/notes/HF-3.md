@@ -11,15 +11,47 @@
 
 ## What it is
 
-The cavity-fill gizmo becomes an **Extrude** tool with two modes, chosen by a selector at the top of
-the panel. **Extrude face** is the default.
+The cavity-fill gizmo becomes an **Extrude** tool with two modes, chosen by a segmented selector at
+the top of the panel. **Extrude face** is the default.
 
 | Mode | What it does |
 |---|---|
-| **Extrude face** | Click a flat face and it becomes a solid. The face is grown into a coplanar region, projected to a polygon outline, and closed into a prism. |
+| **Extrude face** | Click a flat face to **pick** it, then Height/Offset reshape a live preview, then the **Extrude** button commits it as a solid. |
 | **Cavity fill** | Unchanged from HF-1: paint the recessed faces of an engraving/watermark and each facet is measured against the surface fitted to its own neighbourhood, so the plug sits flush and follows a curved or coarsely facetted wall. |
 
 Both add an ordinary positive `MODEL_PART` volume, in object space, so one undo removes the result.
+
+## UI rework (2026-10-17) - the pick/adjust/create workflow
+
+The first cut extruded on **click**, using whatever Height/Offset happened to be set, which is no way
+to dial a solid in. Reworked to the fork's workflow and its own style:
+
+- **Click picks, the button commits.** `on_mouse` no longer extrudes. `pick_at()` stores the pick;
+  `create_from_pick()` (the panel's **Extrude** button, right-aligned in the accent colour) commits
+  it. Right-click and `Esc` drop the pick. `gizmo_apply_hovered()` / `gizmo_apply_at()` are kept as
+  MCP aliases that pick-then-create in one call, so existing scripts still work.
+- **Three highlights, in the fork's own RGBA** (lifted from its Align & Construct preview, not
+  eyeballed): **teal** `0.10,0.80,0.74,0.55` the face under the cursor, **green**
+  `0.16,0.85,0.30,0.60` the picked face, **orange** `1.00,0.55,0.00,0.55` the solid you would get.
+  The green face shows a margin around the orange solid whenever the offset is negative - that is the
+  feature, not decoration.
+- **The object is ghosted** while a face is picked (the volumes are pushed towards a dark grey and
+  made translucent). Reuses the Support Zones discipline: **restore first, always**, or a second call
+  saves an already-tinted colour as "the original" and the scene fades to nothing; restored on gizmo
+  close and on any object/mesh change.
+- **Both modes share one panel style** - fixed 360 px width, wrapped hints, a label column,
+  slider+typed field with no `[-][+]` buttons, a switch for *Both directions*, segmented buttons for
+  the mode and for *Face | Holes*. This is the fork's chrome and the first use of the shared widget
+  layer in `GizmoStyle.hpp`; the standard and the migration list are in `docs/handoff.md` section 28.
+- **Holes is a segmented pair with Face**, not a checkbox, matching the fork's panel.
+
+### Perf: the pick is cached
+
+`build_pick()` computes the expensive half once per pick - facet normals and neighbours (cached per
+volume, O(mesh)), the coplanar region, the outline and its holes. Height/Offset then only re-run the
+prism build (`picked_prism()`). Before this, `face_extrude_mesh()` rebuilt normals + region + outline
+**twice a frame** (once for the preview, once for the panel's "no face here" message), which would
+have made a live slider drag crawl on a dense mesh. The panel now reads a cached `m_pick_why`.
 
 ### Extrude-face controls
 
@@ -90,13 +122,15 @@ ordinary model parts and they could not be removed with the tool.
 
 ## Verification
 
-- **Build clean** (11m23s, configure needed for the added/removed files), no errors.
-- **`ctest` 2407/2407 passed.**
-- Still to do, all runtime: extrude a face with 0 / positive / negative offset; check Holes produces
-  a plug; check Both splits the height around the face; check a face on an angled or curved part;
-  check the cavity mode still behaves as before; check the Cut tool still ignores fill volumes; and
-  reopen a project saved before the rename and confirm its `HoleFill#` plugs are still listed and
-  removable.
+- **Build clean** (11m23s first pass, 15m17s after the UI rework), no errors.
+- **`ctest` 2407/2407 passed** (both passes).
+- Still to do, all runtime: pick a face and confirm the teal hover and green pick; drag Height and
+  Offset and confirm the orange solid follows live and the green margin opens up as the offset goes
+  negative; press **Extrude** and confirm the volume appears; check **Holes**; check **Both
+  directions**; check a face on an angled or curved part; check the object is ghosted while a face is
+  picked and returns to normal on close; check the cavity mode still behaves as before; check the Cut
+  tool still ignores fill volumes; and reopen a project saved before the rename and confirm its
+  `HoleFill#` plugs are still listed and removable.
 
 ## Traceability
 

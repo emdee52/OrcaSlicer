@@ -1294,3 +1294,95 @@ behaviour, no config keys, no new files; every panel is anchored or trimmed in p
 - **Button spacing.** The move window pushes `ImGuiStyleVar_ItemSpacing, ImVec2(0.0, 6.0)` so its XYZ
   fields butt together, which left the bare `SameLine()` between Pick pivot and Reset pivot with no
   gap. They are now spaced by the window's own column unit (`get_style_scaling() * 8`).
+
+
+## 28. Panel style standard for the custom gizmos (branch `feat/extrude-fill`, HF-3)
+
+**Owner's decision:** every gizmo this fork adds should be visually distinguishable from stock Orca,
+so it is obvious at a glance which panels are ours. HF-3 (the Extrude gizmo) is the **first built
+against the standard and is the reference implementation to copy**; the rest migrate next.
+
+### The standard
+
+**Palette** - `GizmoStyle.hpp`, `enum class GizmoCol`. Rules, in the header's own words: teal is the
+accent and means "this is yours / this is your selection"; the amber (`Warn`) is reserved
+*exclusively* for "something is off" and is never decorative; every grey is a step on one ramp so a
+panel reads as one surface. Light and dark are both defined and `gizmo_col()` picks.
+
+**Layout rules**, all visible in the Extrude panel:
+
+- **Fixed narrow width, wrapped hints.** `ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f),
+  ImGuiCond_Always)` plus wrapped text (`gizmo_hint()`, or `ImGui::PushTextWrapPos(0.f)`).
+  `SetNextWindowSize` overrides `AlwaysAutoResize` on the axes it sets, so the height still follows
+  the content. An auto-resizing window sizes to its longest line: the Extrude panel used to come out
+  ~830 px for content that needs ~360.
+- **A label column**, so a stack of rows reads as a table rather than as sentences
+  (`gizmo_label_w(widest_caption)` - pass the longest caption in the panel).
+- **Slider + typed field, and NO `[-][+]` step buttons** (`gizmo_row_slider`). The step buttons cost
+  about a third of the width; the field still accepts a typed value and clamps it to the range.
+- **A switch, not a checkbox, when the caption sits on the left** (`gizmo_row_switch`).
+- **Segmented buttons for a small exclusive choice** (`gizmo_segment`) - not a dropdown, not radios.
+- **A right-aligned primary action** in the accent colour.
+
+**Widgets** live in `GizmoStyle.hpp`: `gizmo_label_w`, `gizmo_row_slider`, `gizmo_row_switch`,
+`gizmo_segment`, `gizmo_hint`, `gizmo_panel_width`. New panels use those.
+
+### What still has to migrate
+
+| Gizmo | ID | State |
+|---|---|---|
+| **Extrude** (bare `Extrude` / `Cavity fill`) | HF-3 | **reference** - built on the shared widgets |
+| Support Zones | SU-5 / SU-6 | on the palette, but carries **its own private copies** of the widgets in an anonymous namespace in `GLGizmoSupportZones.cpp` |
+| Hole walls (Bridging / Strengthen) | PF-2b / RF-1 | stock style |
+| Holes | ME-1 / ME-2 | stock style |
+| Edge chamfer / fillet | EF-1 | stock style |
+| Align & Stack | AS-2 | stock style |
+| Perforations | PP-1 | stock style |
+
+Two follow-ups when that work happens:
+
+1. **Consolidate the Support Zones widgets** into `GizmoStyle.hpp` and delete its private copies, so
+   there is one implementation. Left alone here deliberately: moving code out from under a
+   user-verified gizmo inside a UI task is how a verified feature gets broken. Do it as its own
+   change, with a build and the SU-5/SU-6 checklists.
+2. **`GizmoStyle.hpp`'s header comment is stale for this tree.** It names
+   `GLGizmoHeightAdaptiveEffects` and `GLGizmoPrecisionALH` as its users; those are the *fork's*
+   gizmos (the `VL-*` features we never ported). Its real users here are Support Zones and Extrude.
+   Fix the comment while migrating.
+
+### The recipe, as HF-3 does it
+
+```cpp
+ImGui::SetNextWindowSize(ImVec2(gizmo_panel_width(), 0.f), ImGuiCond_Always);
+gizmo_push_window_style();                       // BEFORE GizmoImguiBegin - it sets WindowBg
+GizmoImguiBegin(get_name(), ...AlwaysAutoResize | NoCollapse | NoTitleBar);
+gizmo_push_panel_style();                        // widget colours + rounding
+    ...
+    const float label_w = gizmo_label_w(_u8L("Both directions").c_str());
+    gizmo_row_slider("##eh", _u8L("Height").c_str(), &h, min, max, "%.2f", label_w, tooltip);
+    gizmo_row_switch("##eb", _u8L("Both directions").c_str(), &both, tooltip);
+    gizmo_segment("##mode", labels, n, selected, tooltip);
+    gizmo_hint(_u8L("...a sentence that wraps...").c_str());
+    // right-aligned primary action in the accent colour
+gizmo_pop_panel_style();
+GizmoImguiEnd();
+gizmo_pop_window_style();                        // AFTER GizmoImguiEnd - skipping it leaks the
+                                                 // light panel background into EVERY other panel
+```
+
+Two traps the header documents and that bit here:
+
+- `gizmo_push_window_style()` **must** go before `GizmoImguiBegin()` (ImGui resolves `WindowBg` when
+  the window opens) and its pop after `GizmoImguiEnd()`. Skipping the pop leaks the background into
+  every other gizmo panel.
+- A `PushStyleColor` whose pop is skipped by an early `return` leaks into every ImGui window. If a
+  panel body has early exits, put the body in its own function and keep push/pop in the caller.
+
+### HF-3 in one line
+
+`GLGizmoExtrude` (renamed from `GLGizmoHoleFill`) now has two modes - **Extrude face** (default) and
+**Cavity fill** - a click **picks** a face (it no longer extrudes), Height/Offset reshape the
+preview live, and a single **Extrude** button commits. Highlights are the fork's own values (teal
+hover, green pick, orange preview) and the object is ghosted while a face is picked. See
+`porting/notes/HF-3.md`; the mockup the design was signed off against is
+`docs/superpowers/extrude-gizmo-mockup.html` (gitignored - planning output).
