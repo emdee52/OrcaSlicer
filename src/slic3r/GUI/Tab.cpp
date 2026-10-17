@@ -2925,6 +2925,13 @@ void TabPrint::build()
         optgroup->append_single_option_line("hybrid_pin_outer_width", "quality_settings_wall_generator");
         optgroup->append_single_option_line("hybrid_bead_count_hysteresis_pct", "quality_settings_wall_generator");
         optgroup->append_single_option_line("hybrid_transition_filter_dist_mm", "quality_settings_wall_generator");
+        // [ORCAPORT:PQ-4] Single-line fill ("spine"). Only meaningful with inner walls = Classic;
+        // option-driven visibility is handled by ConfigManipulation toggling hybrid_edge_active.
+        optgroup->append_single_option_line("hybrid_single_line_fill", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_single_line_min_width_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_single_line_max_width_pct", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_single_line_min_length", "quality_settings_wall_generator");
+        optgroup->append_single_option_line("hybrid_single_line_sliver_pct", "quality_settings_wall_generator");
 
         optgroup = page->new_optgroup(L("Walls and surfaces"), L"param_wall_surface");
         optgroup->append_single_option_line("wall_sequence", "quality_settings_wall_and_surfaces#walls-printing-order");

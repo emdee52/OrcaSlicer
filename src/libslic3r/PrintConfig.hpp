@@ -1751,6 +1751,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,    hybrid_pin_outer_width))
     ((ConfigOptionPercent, hybrid_bead_count_hysteresis_pct))
     ((ConfigOptionFloat,   hybrid_transition_filter_dist_mm))
+((ConfigOptionBool,    hybrid_single_line_fill))
+((ConfigOptionPercent, hybrid_single_line_min_width_pct))
+((ConfigOptionPercent, hybrid_single_line_max_width_pct))
+((ConfigOptionFloat,   hybrid_single_line_min_length))
+((ConfigOptionPercent, hybrid_single_line_sliver_pct))
     )
 
 PRINT_CONFIG_CLASS_DEFINE(
