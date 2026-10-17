@@ -1,0 +1,172 @@
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoAlignStack.cpp b/src/slic3r/GUI/Gizmos/GLGizmoAlignStack.cpp
+index 53f6f9d523..5aa653cda1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoAlignStack.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoAlignStack.cpp
+@@ -707,7 +707,7 @@ void GLGizmoAlignStack::render_face_highlights()
+         if (m_mate_hover_facet != m_mate_hover_model_facet) {
+             if (m_mate_hover_facet >= 0)
+                 build_mesh_face_model(m_src_mesh, m_src_normals, m_src_neighbors, m_mate_hover_model,
+-                                      m_mate_hover_facet, ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
++                                      m_mate_hover_facet, gizmo_surface_colour());
+             else
+                 m_mate_hover_model.reset();
+             m_mate_hover_model_facet = m_mate_hover_facet;
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+index e9ffcfade9..a50e3d033c 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCounterboreBridge.cpp
+@@ -307,9 +307,13 @@ constexpr const char *REINFORCE_NAME = "HoleReinforce";
+ constexpr double HORIZONTAL_COS = 0.5;
+ 
+ // Hole highlight colours, mirroring the holes gizmo.
+-const ColorRGBA AVAIL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};
+-const ColorRGBA APPLIED_COLOR{1.00f, 0.15f, 0.15f, 0.80f};
+-const ColorRGBA HOVER_COLOR{0.10f, 1.00f, 0.20f, 0.90f};
++// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp). The AVAL colour is the set of
++// counterbores you have neither hovered nor picked, so it stays blue; the hovered one is the counterbore
++// you would act on (yellow), and the "applied" overlay here holds the STRENGTHEN rings - a
++// PARAMETER_MODIFIER, i.e. material ADDED, not removed - so it takes the scheme's green, not its red.
++const ColorRGBA AVAIL_COLOR = ColorRGBA(0.25f, 0.70f, 1.00f, 0.40f);
++const ColorRGBA APPLIED_COLOR = gizmo_added_colour();
++const ColorRGBA HOVER_COLOR   = gizmo_proposed_colour();
+ 
+ void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
+ {
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+index f4016e47f6..afaca5ccba 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoCut.cpp
+@@ -1,4 +1,5 @@
+ #include "GLGizmoCut.hpp"
++#include "GizmoStyle.hpp" // [ORCAPORT:PP-2] the shared 3D overlay colours
+ #include "slic3r/GUI/GLCanvas3D.hpp"
+ 
+ #include <cmath>
+@@ -1444,7 +1445,7 @@ void GLGizmoCut3D::render_shape_highlight()
+ 
+         if (!combined.indices.empty()) {
+             m_shape_highlight.init_from(combined);
+-            m_shape_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
++            m_shape_highlight.set_color(gizmo_surface_colour());
+         }
+     }
+ 
+@@ -3230,7 +3231,7 @@ void GLGizmoCut3D::build_face_highlight(const ModelVolume* mv, size_t facet)
+     if (highlight.indices.empty())
+         return;
+     m_face_highlight.init_from(highlight);
+-    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
++    m_face_highlight.set_color(gizmo_surface_colour());
+ }
+ 
+ bool GLGizmoCut3D::gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal)
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+index bd88c2abf7..14703766e1 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoEdgeDress.cpp
+@@ -36,10 +36,13 @@ constexpr const char *EDGE_CHAMFER_NAME = "EdgeChamfer";
+ constexpr const char *EDGE_FILLET_NAME  = "EdgeFillet";
+ constexpr const char *EDGE_LOOP_NAME    = "EdgeLoop";
+ 
++// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp): the edge under the cursor is
++// what you would dress, so it is yellow (the fork's "proposal" colour), and an applied feature is always
++// a NEGATIVE volume here, so it is the scheme's cut red. Candidates stay blue.
+ const ColorRGBA ALL_COLOR{ 0.25f, 0.70f, 1.00f, 0.40f };
+-const ColorRGBA HOVER_COLOR{ 0.10f, 1.00f, 0.20f, 0.90f };
++const ColorRGBA HOVER_COLOR   = gizmo_proposed_colour();
+ // Applied features, the same red the hole gizmo uses for applied holes.
+-const ColorRGBA APPLIED_COLOR{ 1.00f, 0.15f, 0.15f, 0.80f };
++const ColorRGBA APPLIED_COLOR = gizmo_cut_colour();
+ 
+ // Chamfer leg / fillet radius, in mm, that the panel offers.
+ constexpr double EDGE_SIZE_MIN = 0.5;
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+index 9d2a6da307..98b9433d2d 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoHoles.cpp
+@@ -103,9 +103,13 @@ constexpr double HORIZONTAL_COS = 0.5;
+ constexpr double FACE_LEAVE_GRACE_SEC = 0.35;
+ constexpr float        ANGLE_MIN = 45.f;
+ constexpr float        ANGLE_MAX = 60.f;
++// [ORCAPORT:PP-2] The 3D overlays use the shared scheme (GizmoStyle.hpp): the feature under the
++// cursor is what you would apply, so it is yellow like every other fork gizmo's proposal; a committed
++// feature is a NEGATIVE volume here, so it is the scheme's cut red. Candidates stay blue.
++// `ALL_COLOR` is the candidate set (blue), `HOVER_COLOR` the feature under the cursor (yellow).
+ const ColorRGBA        ALL_COLOR{0.25f, 0.70f, 1.00f, 0.40f};      // candidate
+-const ColorRGBA        APPLIED_COLOR{1.00f, 0.15f, 0.15f, 0.80f};   // applied
+-const ColorRGBA        HOVER_COLOR{0.10f, 1.00f, 0.20f, 0.90f};     // hover
++const ColorRGBA        APPLIED_COLOR = gizmo_cut_colour();         // applied: always a cut here
++const ColorRGBA        HOVER_COLOR   = gizmo_proposed_colour();    // under the cursor: would apply
+ 
+ void merge_into(indexed_triangle_set &dst, indexed_triangle_set &src)
+ {
+@@ -1082,7 +1086,7 @@ void GLGizmoHoles::build_face_highlight(const ModelVolume *mv, size_t facet)
+     if (patch.indices.empty())
+         return;
+     m_face_highlight.init_from(patch);
+-    m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
++    m_face_highlight.set_color(gizmo_surface_colour());
+ }
+ 
+ void GLGizmoHoles::render_face_highlight()
+diff --git a/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp b/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
+index cd9f654537..8304d47b75 100644
+--- a/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
++++ b/src/slic3r/GUI/Gizmos/GLGizmoMove.cpp
+@@ -1,4 +1,5 @@
+ #include "GLGizmoMove.hpp"
++#include "GizmoStyle.hpp" // [ORCAPORT:PP-2] the shared 3D overlay colours
+ #include "slic3r/GUI/GLCanvas3D.hpp"
+ #include "slic3r/GUI/GUI_App.hpp"
+ #include "slic3r/GUI/Shortcuts.hpp"
+@@ -742,7 +743,7 @@ void GLGizmoMove3D::update_face_highlight(const Vec2d& mouse_pos)
+             indexed_triangle_set patch = build_coplanar_patch(hover_mv, region, m_face_cache, 0.10f);
+             if (!patch.indices.empty()) {
+                 m_face_highlight.init_from(patch);
+-                m_face_highlight.set_color(ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f));
++                m_face_highlight.set_color(gizmo_surface_colour());
+             }
+         }
+ 
+diff --git a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+index 53a6b0ac95..538743b971 100644
+--- a/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
++++ b/src/slic3r/GUI/Gizmos/GizmoStyle.hpp
+@@ -20,6 +20,7 @@
+ 
+ #include <imgui/imgui.h>
+ 
++#include "libslic3r/Color.hpp" // ColorRGBA: the 3D overlay scheme at the bottom of this header
+ #include "slic3r/GUI/GUI_App.hpp"
+ 
+ namespace Slic3r { namespace GUI {
+@@ -552,6 +553,29 @@ inline bool gizmo_panel_near_right_edge(float panel_x, float panel_width, float
+     return panel_width > 0.f && panel_x + panel_width + kGizmoPanelEdgeMargin * icon_width > canvas_width;
+ }
+ 
++// ─────────────────────────────────────────────────────────────────────────────
++// [ORCAPORT:PP-2] THE 3D OVERLAY SCHEME. One meaning per colour, in every fork gizmo that draws a
++// preview or an already-committed volume on the part:
++//
++//   surface   teal    the surface the cursor is POINTING AT (not clicked)
++//   picked    green   what you CLICKED - the thing the panel's action will act on
++//   proposed  yellow  the geometry the current panel values would add or cut, before you commit
++//   cut       red     committed material REMOVED (every NEGATIVE_VOLUME this fork's gizmos add)
++//   added     green   committed material ADDED (a positive volume or a parameter modifier)
++//
++// 🔑 All of them are TRANSLUCENT (0.55). At 0.80 an overlay over the part read as solid paint and hid
++// what was underneath it; the point of these overlays is to show WHERE, not to hide the part.
++//
++// 🔑 "Pointing at" and "picked" must never read the same: a hovered surface is teal, and only a click
++// turns a surface green. Candidate/available hints (the ones you have neither hovered nor picked) stay
++// blue, and the WHITE/other gizmo-specific colours of the upstream tools are not part of this scheme.
++// ─────────────────────────────────────────────────────────────────────────────
++inline ColorRGBA gizmo_surface_colour()  { return ColorRGBA(0.10f, 0.80f, 0.74f, 0.55f); }
++inline ColorRGBA gizmo_picked_colour()   { return ColorRGBA(0.16f, 0.85f, 0.30f, 0.55f); }
++inline ColorRGBA gizmo_proposed_colour() { return ColorRGBA(1.00f, 0.55f, 0.00f, 0.55f); }
++inline ColorRGBA gizmo_cut_colour()      { return ColorRGBA(1.00f, 0.15f, 0.15f, 0.55f); }
++inline ColorRGBA gizmo_added_colour()    { return ColorRGBA(0.16f, 0.85f, 0.30f, 0.55f); }
++
+ }} // namespace Slic3r::GUI
+ 
+ #endif
