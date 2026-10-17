@@ -233,6 +233,15 @@ indexed_triangle_set extrude_perforation_pattern(const ExPolygons &polys, const 
         for (const Polygon &h : p.holes)
             add_walls(h);
     }
+
+    // [ORCAPORT:PP-5] Weld the soup the builder above produces. Every cap triangle pushes three fresh
+    // vertices and each wall strip its own, so the prism is geometrically closed but topologically
+    // open (measured: 360 open edges on a honeycomb). mcut is given this as a solid; a mesh that is not
+    // manifold makes it fail or crash, and a result it produced from one poisons the NEXT boolean -
+    // which is exactly "Mesh boolean does nothing once the object has already had a boolean". The cap
+    // and wall vertices come from the same Point coordinates through the same scaling, so the weld is
+    // exact. its_merge_vertices() also shrinks the array, which suits a negative volume.
+    its_merge_vertices(its);
     return its;
 }
 
