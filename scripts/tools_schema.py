@@ -145,6 +145,149 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['type', 'source_name', 'new_name'],
                   'type': 'object'},
   'name': 'clone_preset'},
+ {'description': "Control the Cut tool. Actions: 'open' (activate it; selects "
+                 "the object if needed; optional 'part' selects a single "
+                 "part), 'status' (plane pose, keep flags, mode, cut part), "
+                 "'set_part' (cut only one model part of a multi-part object; "
+                 "-1 = whole object), 'set_plane_normal' (align the cut plane "
+                 'to a normal, e.g. a face normal - the same path as the '
+                 "interactive 'Pick flat face' mode), 'set_plane_center' "
+                 "(plane point), 'shift_cut' (move the plane along its normal "
+                 "by delta mm), 'set_mode' (0=Planar, 1=Dovetail, 2=Shape), "
+                 "'set_keep' (keep_upper/keep_lower/keep_as_parts), "
+                 "'set_shape' (profile kind 0=circle, 1=square, 2=hexagon, "
+                 'size in mm, optional through and depth in mm; switches to '
+                 "Shape mode), 'flip' (swap upper/lower), 'reset' (reset plane "
+                 "and connectors), 'apply' (perform the cut), "
+                 "'fill_from_above' (add the slab of the object above the cut "
+                 "plane, lowered by 'offset' mm, as a positive part - "
+                 'reproduces the manual cut/duplicate/lower workflow without '
+                 "cutting), 'pick_face' (raycast the object and align the "
+                 'plane to the face under screen_x/screen_y, or the viewport '
+                 "centre if omitted - the same path as the interactive 'Pick "
+                 "flat face' mode), 'hover_face' (report the facet under "
+                 'screen_x/screen_y and how many coplanar facets its hover '
+                 "highlight covers), 'close'. To cut parallel to a face: "
+                 'set_plane_normal to the face normal, then set_plane_center '
+                 'to a point on the face, then shift_cut to move it into the '
+                 'part, then apply.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_part | '
+                                                           'set_plane_normal | '
+                                                           'set_plane_center | '
+                                                           'shift_cut | '
+                                                           'set_mode | '
+                                                           'set_keep | '
+                                                           'set_shape | flip | '
+                                                           'reset | apply | '
+                                                           'fill_from_above | '
+                                                           'pick_face | '
+                                                           'hover_face | close',
+                                            'type': 'string'},
+                                 'center': {'description': '[x,y,z] '
+                                                           'world-space plane '
+                                                           'point, for '
+                                                           'action=set_plane_center.',
+                                            'items': {'type': 'number'},
+                                            'type': 'array'},
+                                 'delta': {'description': 'Signed distance mm '
+                                                          'to move the plane '
+                                                          'along its normal, '
+                                                          'for '
+                                                          'action=shift_cut.',
+                                           'type': 'number'},
+                                 'depth': {'description': 'Blind-pocket depth '
+                                                          'in mm (used when '
+                                                          'through is false), '
+                                                          'for '
+                                                          'action=set_shape.',
+                                           'type': 'number'},
+                                 'keep_as_parts': {'description': 'Keep both '
+                                                                  'halves as '
+                                                                  'parts of '
+                                                                  'one object, '
+                                                                  'for '
+                                                                  'action=set_keep.',
+                                                   'type': 'boolean'},
+                                 'keep_lower': {'description': 'Keep the part '
+                                                               'below the '
+                                                               'plane, for '
+                                                               'action=set_keep.',
+                                                'type': 'boolean'},
+                                 'keep_upper': {'description': 'Keep the part '
+                                                               'above the '
+                                                               'plane, for '
+                                                               'action=set_keep.',
+                                                'type': 'boolean'},
+                                 'mode': {'description': '0=Planar, '
+                                                         '1=Dovetail, 2=Shape, '
+                                                         'for action=set_mode.',
+                                          'type': 'integer'},
+                                 'normal': {'description': '[x,y,z] '
+                                                           'world-space '
+                                                           'cut-plane normal, '
+                                                           'for '
+                                                           'action=set_plane_normal.',
+                                            'items': {'type': 'number'},
+                                            'type': 'array'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select when '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'offset': {'description': 'Lower-by distance '
+                                                           'in mm for '
+                                                           'action=fill_from_above '
+                                                           '(how far the slab '
+                                                           'above the plane is '
+                                                           'dropped into the '
+                                                           'object). Default '
+                                                           'keeps the current '
+                                                           'value.',
+                                            'type': 'number'},
+                                 'part': {'description': 'Model-volume index '
+                                                         '(see status.parts) '
+                                                         'to cut alone, for '
+                                                         'action=set_part or '
+                                                         'open. -1 = whole '
+                                                         'object.',
+                                          'type': 'integer'},
+                                 'screen_x': {'description': 'Canvas X for '
+                                                             'action=pick_face '
+                                                             'or hover_face '
+                                                             '(defaults to the '
+                                                             'viewport '
+                                                             'centre).',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y for '
+                                                             'action=pick_face '
+                                                             'or hover_face '
+                                                             '(defaults to the '
+                                                             'viewport '
+                                                             'centre).',
+                                              'type': 'number'},
+                                 'shape_kind': {'description': '0=circle, '
+                                                               '1=square, '
+                                                               '2=hexagon, for '
+                                                               'action=set_shape.',
+                                                'type': 'integer'},
+                                 'shape_size': {'description': 'Shape size in '
+                                                               'mm (diameter / '
+                                                               'side / '
+                                                               'across-flats), '
+                                                               'for '
+                                                               'action=set_shape.',
+                                                'type': 'number'},
+                                 'through': {'description': 'Cut all the way '
+                                                            'through (default '
+                                                            'true); false cuts '
+                                                            'a blind pocket of '
+                                                            "'depth' mm, for "
+                                                            'action=set_shape.',
+                                             'type': 'boolean'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'cut_gizmo'},
  {'description': 'Cut object at Z height. keep: below, above, or both.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'include_preview': {'description': 'Return '
@@ -225,6 +368,77 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['type', 'name'],
                   'type': 'object'},
   'name': 'delete_preset'},
+ {'description': '[ORCAPORT:EF-1] Open and drive the Edge chamfer / fillet '
+                 "tool. Actions: 'open', 'status', 'set_mode' "
+                 "(chamfer|fillet), 'set_size', 'apply' (dress the edge under "
+                 "the cursor), 'apply_at' (screen_x/screen_y), 'hover_at' "
+                 "(screen_x/screen_y), 'list_edges', 'apply_edge' (index), "
+                 "'remove_edge' (index), 'applied_edges', 'set_loop' (whole "
+                 "rim), 'list_loops' (facet), 'apply_loop' (facet + index), "
+                 "'remove_loop', 'applied_loops' (facet), 'clear_all', "
+                 "'close'. An edge or loop that already carries a feature is "
+                 'not dressed twice; remove it first (right-click in the UI).',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_mode | '
+                                                           'set_size | apply | '
+                                                           'apply_at | '
+                                                           'hover_at | '
+                                                           'list_edges | '
+                                                           'apply_edge | '
+                                                           'remove_edge | '
+                                                           'applied_edges | '
+                                                           'set_loop | '
+                                                           'list_loops | '
+                                                           'apply_loop | '
+                                                           'remove_loop | '
+                                                           'applied_loops | '
+                                                           'clear_all | close',
+                                            'type': 'string'},
+                                 'facet': {'description': 'Patch seed face '
+                                                          'index, for '
+                                                          'list_loops / '
+                                                          'apply_loop. -1 uses '
+                                                          'the last hovered '
+                                                          'facet.',
+                                           'type': 'integer'},
+                                 'index': {'description': 'Edge index from '
+                                                          'list_edges, or loop '
+                                                          'index from '
+                                                          'list_loops.',
+                                           'type': 'integer'},
+                                 'loop': {'description': 'Whole-loop mode '
+                                                         'on/off, for '
+                                                         'action=set_loop.',
+                                          'type': 'boolean'},
+                                 'max_count': {'description': 'Maximum edges '
+                                                              'or loops to '
+                                                              'return, for '
+                                                              'list_edges / '
+                                                              'list_loops.',
+                                               'type': 'integer'},
+                                 'mode': {'description': 'chamfer | fillet, '
+                                                         'for action=set_mode.',
+                                          'type': 'string'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select before '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'screen_x': {'description': 'Canvas X, for '
+                                                             'action=apply_at '
+                                                             '/ hover_at.',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y, for '
+                                                             'action=apply_at '
+                                                             '/ hover_at.',
+                                              'type': 'number'},
+                                 'size': {'description': 'Chamfer leg / fillet '
+                                                         'radius in mm, for '
+                                                         'action=set_size.',
+                                          'type': 'number'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'edge_dress_gizmo'},
  {'description': 'Export project as 3MF file.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'output_path': {'description': 'Output path. '
@@ -245,6 +459,123 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'export_gcode'},
+ {'description': '[ORCAPORT:HF-1] [ORCAPORT:HF-3] Open and drive the Extrude '
+                 'tool. Two modes: extrude_face (default) turns a picked flat '
+                 'face into a solid; cavity_fill plugs a depression '
+                 '(engraving, watermark, pocket) with a positive volume built '
+                 'from the recessed faces projected up to the surface fitted '
+                 "around them. Actions: 'open', 'status', 'set_mode' "
+                 "(extrude_face | cavity_fill), 'set_extrude' (distance / "
+                 "offset / holes / both), 'pick_at' (screen_x/screen_y - click "
+                 "a face to SELECT it), 'clear_pick', 'create' (commit the "
+                 'picked face as a solid, or as a cut when the distance is '
+                 "negative), 'set_radius' (cavity brush width, mm), 'hover_at' "
+                 "(screen_x/screen_y), 'apply_at' (screen_x/screen_y - pick "
+                 "then create, one call), 'apply' (same, for the face already "
+                 "under the cursor), 'list_fills' (volume index + object-space "
+                 'centre of each volume added, and whether it is a negative / '
+                 "cut volume), 'remove_fill' (index), 'clear_all', 'refresh', "
+                 "'close'. In extrude_face mode nothing is added until "
+                 "'create': pick first, then dial the distance and offset "
+                 'against the preview.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_mode | '
+                                                           'set_extrude | '
+                                                           'pick_at | '
+                                                           'clear_pick | '
+                                                           'create | '
+                                                           'set_radius | '
+                                                           'hover_at | '
+                                                           'apply_at | apply | '
+                                                           'list_fills | '
+                                                           'remove_fill | '
+                                                           'clear_all | '
+                                                           'refresh | close',
+                                            'type': 'string'},
+                                 'both': {'description': 'Half out of the '
+                                                         'face, half into the '
+                                                         'model, for '
+                                                         'action=set_extrude.',
+                                          'type': 'boolean'},
+                                 'distance': {'description': 'Signed distance '
+                                                             'in mm along the '
+                                                             'face normal, for '
+                                                             'action=set_extrude: '
+                                                             'positive '
+                                                             'extrudes a solid '
+                                                             'out of the face, '
+                                                             'negative cuts a '
+                                                             'pocket into it. '
+                                                             '`height` is '
+                                                             'accepted as the '
+                                                             'old name.',
+                                              'type': 'number'},
+                                 'height': {'description': 'Deprecated alias '
+                                                           'for distance, for '
+                                                           'action=set_extrude.',
+                                            'type': 'number'},
+                                 'holes': {'description': 'Extrude only the '
+                                                          "face's holes, for "
+                                                          'action=set_extrude.',
+                                           'type': 'boolean'},
+                                 'index': {'description': 'Fill volume index '
+                                                          'from list_fills, '
+                                                          'for '
+                                                          'action=remove_fill.',
+                                           'type': 'integer'},
+                                 'mode': {'description': 'extrude_face | '
+                                                         'cavity_fill, for '
+                                                         'action=set_mode.',
+                                          'type': 'string'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select before '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'offset': {'description': 'Outline offset in '
+                                                           'mm (negative '
+                                                           'shrinks), for '
+                                                           'action=set_extrude.',
+                                            'type': 'number'},
+                                 'radius': {'description': 'Brush width in mm, '
+                                                           'for '
+                                                           'action=set_radius.',
+                                            'type': 'number'},
+                                 'screen_x': {'description': 'Canvas X, for '
+                                                             'action=pick_at / '
+                                                             'apply_at / '
+                                                             'hover_at.',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y, for '
+                                                             'action=pick_at / '
+                                                             'apply_at / '
+                                                             'hover_at.',
+                                              'type': 'number'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'extrude_gizmo'},
+ {'description': "Detect cylindrical holes on a model object's mesh (no CAD "
+                 'reconstruction). Returns axis, center, radius, depth, '
+                 'through/blind and whether each hole is horizontal (eligible '
+                 'for a teardrop; every hole is eligible for a bore/pocket). '
+                 'Omit object_id for the selection.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'include_vertical': {'description': 'Also '
+                                                                     'return '
+                                                                     'vertical '
+                                                                     'holes '
+                                                                     '(default '
+                                                                     'false).',
+                                                      'type': 'boolean'},
+                                 'object_id': {'description': 'Object index '
+                                                              '(0-based); omit '
+                                                              'for the '
+                                                              'selected '
+                                                              'object.',
+                                               'type': 'integer'}},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'find_holes'},
  {'description': 'Automatically orient an object to lay flat on its best face '
                  'for printing',
   'inputSchema': {'additionalProperties': False,
@@ -269,6 +600,15 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['object_id'],
                   'type': 'object'},
   'name': 'flatten_object'},
+ {'description': "Get this fork's OraExt app-level preferences (idle tool "
+                 'power down, free-Z placement, Snap & Drag, MCP server) with '
+                 'current and default values. These are AppConfig keys, so the '
+                 'generic config tools cannot see them.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'get_app_preferences'},
  {'description': 'Enumerate an achievable palette of filament mixes (pairs, '
                  "and optionally triples) from the printer's loaded physical "
                  'filaments -- a shortlist to choose from before painting.',
@@ -316,6 +656,18 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'get_flush_volumes'},
+ {'description': 'Return the tail of the newest OrcaSlicer debug log '
+                 '(%APPDATA%/OrcaSlicer/log). Useful for diagnosing slicing '
+                 'errors and crashes without a screenshot.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'lines': {'description': 'Number of trailing '
+                                                          'lines to return '
+                                                          '(default 200, max '
+                                                          '5000).',
+                                           'type': 'integer'}},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'get_log_tail'},
  {'description': 'Get per-object setting overrides.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'object_id': {'description': 'Object index '
@@ -324,6 +676,19 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['object_id'],
                   'type': 'object'},
   'name': 'get_object_config'},
+ {'description': "Get this fork's per-volume annotations and feature state: "
+                 'painted facets (support, seam, multi-material, fuzzy skin, '
+                 'counterbore bridge) and Support Zones settings. Fills the '
+                 "gap left by get_scene_info's empty "
+                 'with_model_object_features in this fork.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'object_id': {'description': 'Optional object '
+                                                              'index; omit for '
+                                                              'all objects.',
+                                               'type': 'integer'}},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'get_object_features'},
  {'description': 'Get info about a single object.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'object_id': {'description': 'Object index '
@@ -405,6 +770,14 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'get_slicing_status'},
+ {'description': 'Return the info/dialog messages that were captured (not '
+                 'shown) while MCP was driving the app. Complements '
+                 'active_warnings.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'get_suppressed_dialogs'},
  {'description': 'Get toolchanger / multi-extruder settings (retraction on '
                  'toolchange, prime tower, filament map, ...) from the printer '
                  'preset, print preset, and project config.',
@@ -428,6 +801,156 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'get_valid_config_keys'},
+ {'description': "Control the Holes tool. Actions: 'open' (activate it; "
+                 "selects the object if needed), 'status' (detected holes + "
+                 "which are teardropped / bored), 'set_operation' "
+                 "(teardrop|bore|chamfer_fillet), 'set_angle', 'set_rim_size', "
+                 "'set_rim_type' (chamfer|fillet), 'set_rim_both' (both "
+                 "mouths), 'set_standard' (0=Custom, else 1-based index into "
+                 "the standards list), 'set_head' "
+                 "(none|counterbore|countersink), 'set_fit' (tight|slip), "
+                 "'set_diameter', 'set_screw_teardrop' / "
+                 "'set_screw_teardrop_head' (teardrop a screw's horizontal "
+                 "bore and optionally its counterbore head), 'set_through', "
+                 "'set_flip', 'toggle' (one hole by index), 'apply_all', "
+                 "'clear_all', 'refresh', 'close'. Use find_holes first for "
+                 'indices.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_operation | '
+                                                           'set_category | '
+                                                           'set_angle | '
+                                                           'set_rim_size | '
+                                                           'set_rim_type | '
+                                                           'set_rim_both | '
+                                                           'set_standard | '
+                                                           'set_head | '
+                                                           'set_screw_fit | '
+                                                           'set_screw_teardrop '
+                                                           '| '
+                                                           'set_screw_teardrop_head '
+                                                           '| set_fit | '
+                                                           'set_diameter | '
+                                                           'set_tolerance | '
+                                                           'set_head_fit | '
+                                                           'set_through | '
+                                                           'set_depth | '
+                                                           'set_flip | toggle '
+                                                           '| apply_all | '
+                                                           'clear_all | '
+                                                           'refresh | '
+                                                           'set_place_face | '
+                                                           'place_face | '
+                                                           'hover_face | close',
+                                            'type': 'string'},
+                                 'angle': {'description': 'Apex angle (45-60) '
+                                                          'for '
+                                                          'action=set_angle.',
+                                           'type': 'number'},
+                                 'category': {'description': 'screw | nut | '
+                                                             'magnet | insert, '
+                                                             'for '
+                                                             'action=set_category.',
+                                              'type': 'string'},
+                                 'depth': {'description': 'Pocket / blind '
+                                                          'depth mm, for '
+                                                          'action=set_depth.',
+                                           'type': 'number'},
+                                 'diameter': {'description': 'Nominal diameter '
+                                                             'mm, for '
+                                                             'action=set_diameter. '
+                                                             'Matching a '
+                                                             "standard's size "
+                                                             'selects it.',
+                                              'type': 'number'},
+                                 'fit': {'description': 'tight | slip, for '
+                                                        'action=set_fit.',
+                                         'type': 'string'},
+                                 'flip': {'description': 'For action=set_flip.',
+                                          'type': 'boolean'},
+                                 'head': {'description': 'none | socket | '
+                                                         'button | '
+                                                         'countersink, for '
+                                                         'action=set_head.',
+                                          'type': 'string'},
+                                 'head_fit': {'description': '0, -0.08 or '
+                                                             '-0.16 mm, for '
+                                                             'action=set_head_fit '
+                                                             '(screws/nuts/magnets).',
+                                              'type': 'number'},
+                                 'hole_index': {'description': 'Hole index for '
+                                                               'action=toggle.',
+                                                'type': 'integer'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select when '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'on': {'description': 'For '
+                                                       'action=set_place_face '
+                                                       '/ set_screw_teardrop / '
+                                                       'set_screw_teardrop_head '
+                                                       '/ set_rim_both: enable '
+                                                       'or disable.',
+                                        'type': 'boolean'},
+                                 'operation': {'description': 'teardrop | bore '
+                                                              '| '
+                                                              'chamfer_fillet, '
+                                                              'for '
+                                                              'action=set_operation.',
+                                               'type': 'string'},
+                                 'rim_type': {'description': 'chamfer | '
+                                                             'fillet, for '
+                                                             'action=set_rim_type.',
+                                              'type': 'string'},
+                                 'screen_x': {'description': 'Canvas X for '
+                                                             'place_face / '
+                                                             'hover_face. '
+                                                             'Defaults to the '
+                                                             'viewport centre.',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y for '
+                                                             'place_face / '
+                                                             'hover_face. '
+                                                             'Defaults to the '
+                                                             'viewport centre.',
+                                              'type': 'number'},
+                                 'screw_fit': {'description': 'free | tap, for '
+                                                              'action=set_screw_fit '
+                                                              '(screws only).',
+                                               'type': 'string'},
+                                 'size': {'description': 'Chamfer leg / fillet '
+                                                         'radius mm, for '
+                                                         'action=set_rim_size.',
+                                          'type': 'number'},
+                                 'standard_index': {'description': '0=Custom, '
+                                                                   'else '
+                                                                   '1-based '
+                                                                   'standard '
+                                                                   'index, for '
+                                                                   'action=set_standard.',
+                                                    'type': 'integer'},
+                                 'through': {'description': 'For '
+                                                            'action=set_through.',
+                                             'type': 'boolean'},
+                                 'tolerance': {'description': 'Extra diameter '
+                                                              'mm, for '
+                                                              'action=set_tolerance '
+                                                              '(ignored for '
+                                                              'insert/magnet, '
+                                                              'which derive it '
+                                                              'from the fit).',
+                                               'type': 'number'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'holes_gizmo'},
+ {'description': "List this fork's OraExt print/region/object config keys with "
+                 'their current (active preset) value and default. Use these '
+                 'with apply_config / set_object_config.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'list_orcaext_keys'},
  {'description': 'Import a 3D model file (STL, 3MF, OBJ, STEP, etc.)',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'file_path': {'description': 'Path to model '
@@ -454,6 +977,109 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['file_path'],
                   'type': 'object'},
   'name': 'load_project'},
+ {'description': 'Drive the Mesh boolean gizmo: open it, set the operation and '
+                 "'Delete input', pick the source and the tool volume, and "
+                 'apply. This is the only gizmo no other MCP tool could drive, '
+                 'so it reports everything a diagnosis needs: the panel state, '
+                 'whether the gizmo can open (the selection gate), and each '
+                 "volume's index, name, type, triangle count and screen point. "
+                 'A pick is either by volume_index (no raycast - the only way '
+                 'to reach a cutter buried inside the part) or at '
+                 'screen_x/screen_y (the same ray the interactive click '
+                 'casts), and it reports which volume the ray actually '
+                 "reached, so a wrong pick is visible. 'probe_pick' reports "
+                 'which volume a ray reaches without changing a pick. Actions: '
+                 "'open' (select_object=false opens with the current selection "
+                 "to test the gate), 'status', 'set_operation' "
+                 "(union|difference|intersection), 'set_delete_input' (bool), "
+                 "'pick_source', 'pick_tool', 'probe_pick', 'run' (set the "
+                 'mode, pick both volumes by index and apply, in one '
+                 "callback), 'apply', 'close'.",
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_operation | '
+                                                           'set_delete_input | '
+                                                           'pick_source | '
+                                                           'pick_tool | '
+                                                           'probe_pick | run | '
+                                                           'apply | close',
+                                            'type': 'string'},
+                                 'delete_input': {'description': 'Delete the '
+                                                                 'tool volume '
+                                                                 'after the '
+                                                                 'operation, '
+                                                                 'for '
+                                                                 'action=set_delete_input '
+                                                                 'or run.',
+                                                  'type': 'boolean'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select before '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'operation': {'description': 'union | '
+                                                              'difference | '
+                                                              'intersection, '
+                                                              'for '
+                                                              'action=set_operation '
+                                                              'or run.',
+                                               'type': 'string'},
+                                 'screen_x': {'description': 'For pick_source '
+                                                             '/ pick_tool: '
+                                                             'cast a ray here '
+                                                             'instead (canvas '
+                                                             'pixels).',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'For pick_source '
+                                                             '/ pick_tool: '
+                                                             'cast a ray here '
+                                                             'instead (canvas '
+                                                             'pixels).',
+                                              'type': 'number'},
+                                 'select_object': {'description': 'For '
+                                                                  'action=open: '
+                                                                  'select the '
+                                                                  'whole '
+                                                                  'object '
+                                                                  'first so '
+                                                                  'the gizmo '
+                                                                  'can '
+                                                                  'activate '
+                                                                  '(default '
+                                                                  'true). '
+                                                                  'false keeps '
+                                                                  'the current '
+                                                                  'selection, '
+                                                                  'which '
+                                                                  'reports '
+                                                                  'whether the '
+                                                                  'natural one '
+                                                                  'still opens '
+                                                                  'the panel.',
+                                                   'type': 'boolean'},
+                                 'source_index': {'description': 'For '
+                                                                 'action=run: '
+                                                                 'the source '
+                                                                 "volume's "
+                                                                 'index in '
+                                                                 "'volumes'.",
+                                                  'type': 'integer'},
+                                 'tool_index': {'description': 'For '
+                                                               'action=run: '
+                                                               'the tool '
+                                                               "volume's index "
+                                                               "in 'volumes'.",
+                                                'type': 'integer'},
+                                 'volume_index': {'description': 'For '
+                                                                 'pick_source '
+                                                                 '/ pick_tool: '
+                                                                 'pick this '
+                                                                 'volume '
+                                                                 'directly, no '
+                                                                 'raycast.',
+                                                  'type': 'integer'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'mesh_boolean_gizmo'},
  {'description': 'Mirror an object across the specified axis',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'axis': {'description': 'Axis: x, y, or z',
@@ -521,6 +1147,74 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'new_project'},
+ {'description': 'Control the Perforations tool: stamp a 2D pattern '
+                 '(lines/grid/honeycomb/circles) into a picked planar face and '
+                 'add it as one negative volume, cut through the local wall. '
+                 "The flow is pick -> adjust -> cut: 'pick_at' selects the "
+                 'face (nothing is cut yet), the parameters reshape a live '
+                 "preview on it, and 'create' commits the pattern. Actions: "
+                 "'open' (activate; selects the object if needed), 'status' "
+                 '(current parameters, pick_valid and applied_count), '
+                 "'set_params' (any of pattern, angle, spacing, width, "
+                 "boundary, invert), 'hover_face' (report the facet and "
+                 "coplanar-region size under screen_x/screen_y), 'pick_at' "
+                 '(pick the face under screen_x/screen_y, or the viewport '
+                 "centre), 'create' (cut the current pattern into the picked "
+                 "face), 'clear_pick', 'apply' (pick + create in one call, the "
+                 "old auto-apply behaviour), 'close'.",
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'set_params | '
+                                                           'hover_face | '
+                                                           'pick_at | create | '
+                                                           'clear_pick | apply '
+                                                           '| close',
+                                            'type': 'string'},
+                                 'angle': {'description': 'In-plane pattern '
+                                                          'angle, degrees: '
+                                                          '0-90 for lines, '
+                                                          '0-45 for grid. '
+                                                          'Honeycomb and '
+                                                          'circles are '
+                                                          'isotropic and '
+                                                          'ignore it.',
+                                           'type': 'number'},
+                                 'boundary': {'description': 'Boundary inset '
+                                                             'from the face '
+                                                             'outline, mm.',
+                                              'type': 'number'},
+                                 'invert': {'description': 'Subtract the '
+                                                           'material between '
+                                                           'holes (grooves).',
+                                            'type': 'boolean'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select when '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'pattern': {'description': 'lines | grid | '
+                                                            'honeycomb | '
+                                                            'circles',
+                                             'type': 'string'},
+                                 'screen_x': {'description': 'Canvas X for '
+                                                             'hover_face / '
+                                                             'pick_at / apply. '
+                                                             'Defaults to the '
+                                                             'viewport centre.',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y for '
+                                                             'hover_face / '
+                                                             'pick_at / apply.',
+                                              'type': 'number'},
+                                 'spacing': {'description': 'Hole / slot '
+                                                            'centre-to-centre '
+                                                            'spacing, mm.',
+                                             'type': 'number'},
+                                 'width': {'description': 'Hole / slot width, '
+                                                          'mm.',
+                                           'type': 'number'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'perforation_gizmo'},
  {'description': 'Redo the last undone operation',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'include_preview': {'description': 'Return '
@@ -728,6 +1422,20 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'send_to_printer'},
+ {'description': 'Set one OraExt app-level preference. Applies the same side '
+                 'effects as the Preferences checkboxes (OrcaExt setters / MCP '
+                 'server start-stop).',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'key': {'description': 'Preference key, e.g. '
+                                                        'orca_ext_free_z; call '
+                                                        'get_app_preferences '
+                                                        'for the list.',
+                                         'type': 'string'},
+                                 'value': {'description': 'New value',
+                                           'type': 'boolean'}},
+                  'required': ['key', 'value'],
+                  'type': 'object'},
+  'name': 'set_app_preference'},
  {'description': "Overwrite one extruder's full flush-volume matrix (NxN, N = "
                  "physical filament count) and, optionally, that extruder's "
                  'flush multiplier.',
@@ -986,6 +1694,72 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['transforms'],
                   'type': 'object'},
   'name': 'transform_objects'},
+ {'description': 'Screenshot a gizmo panel, or the whole window, as a PNG. The '
+                 'panels are ImGui drawn into the GL canvas, so this is the '
+                 'ONLY way to see one. By default it opens the named gizmo, '
+                 'crops to that panel and upscales it 2x, so the image is the '
+                 'panel and nothing else - what you want for checking a row, a '
+                 "label column, an icon or a switch. Pass region='window' when "
+                 'WHERE the panel sits is the question (anchoring, clipping, '
+                 "overlap). gizmo: 'perforation', 'holes', 'edge_dress', "
+                 "'hole_walls', 'support_zones', 'align_stack', 'extrude', "
+                 "'cut', 'seam', 'fuzzy_skin', 'move', ... or 'close' for "
+                 'none. Use save_to_file=true (the default) and read the '
+                 'returned path. The window must be visible: raise=true '
+                 '(default) brings it to the front first, since the capture is '
+                 'a screen blit.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'file_path': {'description': 'Where to write '
+                                                              'the PNG. '
+                                                              'Defaults to the '
+                                                              'temp dir with a '
+                                                              'timestamp.',
+                                               'type': 'string'},
+                                 'gizmo': {'description': 'Gizmo to open '
+                                                          'before capturing '
+                                                          "('perforation', "
+                                                          "'holes', "
+                                                          "'edge_dress', "
+                                                          "'hole_walls', "
+                                                          "'support_zones', "
+                                                          "'align_stack', "
+                                                          "'extrude', 'cut', "
+                                                          "'seam', "
+                                                          "'fuzzy_skin', "
+                                                          "'move', ...). Omit "
+                                                          'to capture whatever '
+                                                          "is open; 'close' "
+                                                          'closes every gizmo '
+                                                          'first.',
+                                           'type': 'string'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select before '
+                                                              'opening a '
+                                                              'gizmo.',
+                                               'type': 'integer'},
+                                 'raise': {'description': 'Bring the window to '
+                                                          'the front first '
+                                                          '(default true).',
+                                           'type': 'boolean'},
+                                 'region': {'description': "'gizmo' (default) "
+                                                           'crops to the open '
+                                                           'gizmo panel; '
+                                                           "'window' returns "
+                                                           'the whole window.',
+                                            'type': 'string'},
+                                 'save_to_file': {'description': 'Save a PNG '
+                                                                 'and return '
+                                                                 'its path '
+                                                                 '(default '
+                                                                 'true).',
+                                                  'type': 'boolean'},
+                                 'scale': {'description': 'Upscale factor, '
+                                                          'default 2. Use 1 '
+                                                          'for pixel-exact.',
+                                           'type': 'integer'}},
+                  'required': [],
+                  'type': 'object'},
+  'name': 'ui_screenshot'},
  {'description': 'Undo the last operation.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'include_preview': {'description': 'Return '
