@@ -271,7 +271,13 @@ void GLGizmoSupportZones::rebuild_zone_rows()
         row.priority   = priority ++;
         row.name       = v->name.empty() ? std::string("?") : v->name;
 
-        const SupportZones::ZoneProbe probe = SupportZones::probe_zone(*mo, *v, step);
+        // [ORCAPORT:SU-14] Probe with the instance orientation, so "down" is the plate's down even
+        // when the object is rotated. Only counts are read from this probe, so nothing downstream
+        // changes. Multi-instance rotations: see notes/SU-14.md (first instance wins).
+        const Transform3d orient = mo->instances.empty()
+            ? Transform3d::Identity()
+            : SupportZones::instance_orientation(mo->instances.front()->get_matrix());
+        const SupportZones::ZoneProbe probe = SupportZones::probe_zone(*mo, *v, step, orient);
         row.cells_in_zone = probe.cells_inside_zone;
         row.lit           = probe.lit.size();
         row.sterile       = probe.sterile();

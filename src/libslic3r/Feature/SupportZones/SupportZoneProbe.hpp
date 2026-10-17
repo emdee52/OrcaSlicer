@@ -77,14 +77,33 @@ struct ZoneProbe
     bool sterile() const { return lit.empty(); }
 };
 
+// [ORCAPORT:SU-14] BEGIN - instance orientation for the world-down probe
+// Orientation of an instance: its matrix without the translation.
+//
+// The probe is direction-sensitive - it asks what faces world-down - so it must be given the
+// instance orientation and not just the volume matrix. Samples then come out already oriented, and
+// a caller drawing them adds only the instance translation. The translation is stripped because a
+// translation cannot change a direction, and leaving it out keeps the callers' arithmetic
+// (translation + sample) unambiguous.
+inline Transform3d instance_orientation(const Transform3d &instance_matrix)
+{
+    Transform3d orient = instance_matrix;
+    orient.translation() = Vec3d::Zero();
+    return orient;
+}
+// [ORCAPORT:SU-14] END
+
 // Probes one enforcer volume against the object's model parts.
 // `grid_step_mm` is meant to be `support_base_pattern_spacing`; it is clamped so a huge spacing on
 // a small block still gets a few samples, and so a tiny spacing on a large block cannot explode.
+// `orient` is `instance_orientation()` of the instance the zone is measured on; the identity
+// default reproduces the pre-SU-14 object-local behaviour for any caller that does not pass it.
 //
 // ⚠️ This builds an AABB tree over the object's parts on every call. Callers that ask per frame
 // must cache: the natural key is the object's mesh identity plus the volume transforms. Keeping
 // the cache OUT of here is deliberate — the GUI knows when the model changed, this does not.
-ZoneProbe probe_zone(const ModelObject &object, const ModelVolume &enforcer, float grid_step_mm);
+ZoneProbe probe_zone(const ModelObject &object, const ModelVolume &enforcer, float grid_step_mm,
+                     const Transform3d &orient = Transform3d::Identity());
 
 // NEOTKO_SUPPORTZONES_TAG s286b — "esto se te ha quedado sin sujetar".
 //
@@ -113,11 +132,13 @@ struct CoverageProbe
 // `max_normal_z` es el corte del umbral: cuenta la superficie cuya normal tiene z <= ese valor.
 // Se pasa desde fuera a propósito, para que el mapa y el sombreado de voladizos del canvas usen el
 // MISMO número y no puedan discrepar en pantalla.
-CoverageProbe probe_object_coverage(const ModelObject &object, float grid_step_mm, float max_normal_z);
+CoverageProbe probe_object_coverage(const ModelObject &object, float grid_step_mm, float max_normal_z,
+                                    const Transform3d &orient = Transform3d::Identity());
 
 // Convenience for the warning path: every SUPPORT_ENFORCER volume of the object that catches
 // nothing. Returns pointers into `object.volumes`, in list order.
-std::vector<const ModelVolume*> sterile_zones(const ModelObject &object, float grid_step_mm);
+std::vector<const ModelVolume*> sterile_zones(const ModelObject &object, float grid_step_mm,
+                                              const Transform3d &orient = Transform3d::Identity());
 
 // NEOTKO_SUPPORTZONES_TAG s286 — the brake of §3, in one place.
 //
