@@ -25,11 +25,10 @@ TabSpec tab_12deg()
     s.root_len  = 6.;
     s.tip_len   = 10.;
     s.taper_deg = 12.;
-    s.corner_r  = 0.;
     s.passage_r = 1.7;
     s.min_wall  = 2.;
     s.thickness = 3.;
-    s.bite      = 0.6;
+    s.weld      = 0.6;
     return s;
 }
 
@@ -290,20 +289,20 @@ TEST_CASE("A tab too small to hold its screw is grown, not refused", "[TabShapes
 TEST_CASE("A plate never ends flush with the surface it sits on", "[TabShapes]")
 {
     TabSpec s = tab_12deg();
-    s.bite    = 0.; // asking for no bite still has to bury the plate a little
+    s.weld    = 0.; // asking for no bite still has to bury the plate a little
 
     const BoundingBoxf3 bb = bounding_box(make_tab_plate(s));
     CHECK(bb.min.z() < -0.01);
     CHECK_THAT(bb.max.z(), WithinAbs(s.thickness, 1e-3));
 
-    s.bite = 0.6;
+    s.weld = 0.6;
     const indexed_triangle_set plate = make_tab_plate(s);
     CHECK(its_num_open_edges(plate) == 0);
     CHECK_THAT(bounding_box(plate).min.z(), WithinAbs(-0.6, 1e-3));
 
     // One closed solid whose volume is the outline's area times its height.
     CHECK_THAT(double(its_volume(plate)),
-               WithinRel(area_mm2(tab_outline(s).poly.front().contour) * (s.thickness + s.bite), 1e-3));
+               WithinRel(area_mm2(tab_outline(s).poly.front().contour) * (s.thickness + s.weld), 1e-3));
 }
 
 TEST_CASE("A boss passes through the plate and reaches the height asked for", "[TabShapes]")
@@ -321,9 +320,9 @@ TEST_CASE("A boss passes through the plate and reaches the height asked for", "[
     const BoundingBoxf3 bb = bounding_box(boss);
     // It starts INSIDE the plate - below its top, above its own bottom - so the two solids overlap in
     // volume instead of sharing a face the boolean would have to resolve as coplanar.
-    CHECK_THAT(bb.min.z(), WithinAbs(s.thickness - s.bite, 1e-4));
+    CHECK_THAT(bb.min.z(), WithinAbs(s.thickness - s.weld, 1e-4));
     CHECK(bb.min.z() < s.thickness);
-    CHECK(bb.min.z() > -s.bite);
+    CHECK(bb.min.z() > -s.weld);
     CHECK_THAT(bb.max.z(), WithinAbs(tab_top(s), 1e-4));
     CHECK_THAT(bb.max.x(), WithinAbs(0.5 * s.boss_d, 1e-3));
 
@@ -428,7 +427,7 @@ TEST_CASE("A tab on a wall lies parallel to the bed with its root on the face", 
     s.root_len = root_len;
     s.tip_len  = 8.;
     s.thickness = thickness;
-    s.bite      = bite;
+    s.weld      = bite;
     indexed_triangle_set plate = make_tab_plate(s);
     its_transform(plate, f.to_obj);
     const BoundingBoxf3 bb = bounding_box(plate);

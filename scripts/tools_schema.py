@@ -1732,8 +1732,7 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                                                               'select before '
                                                               'opening.',
                                                'type': 'integer'},
-                                 'on': {'description': 'For action=set_through '
-                                                       '/ set_boss.',
+                                 'on': {'description': 'For action=set_boss.',
                                         'type': 'boolean'},
                                  'passage': {'description': 'hole | slot, for '
                                                             'action=set_passage.',
@@ -1753,11 +1752,6 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                                  'screw_fit': {'description': 'free | tap, for '
                                                               'action=set_screw_fit.',
                                                'type': 'string'},
-                                 'shape': {'description': 'rect | rounded | '
-                                                          'stadium | tapered_u '
-                                                          '| circle, for '
-                                                          'action=set_shape.',
-                                           'type': 'string'},
                                  'standard_index': {'description': '0=Custom, '
                                                                    'else '
                                                                    '1-based '
@@ -1765,6 +1759,9 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                                                                    'index, for '
                                                                    'action=set_standard.',
                                                     'type': 'integer'},
+                                 'tip': {'description': 'round | flat, for '
+                                                        'action=set_tip.',
+                                         'type': 'string'},
                                  'value': {'description': 'The number for '
                                                           'set_root_w / '
                                                           'set_root_len / '

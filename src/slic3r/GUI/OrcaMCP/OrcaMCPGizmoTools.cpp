@@ -771,35 +771,33 @@ GLGizmoTabs *active_tabs_gizmo(bool open_if_needed, bool *did_open)
 
 nlohmann::json tabs_gizmo_state(GLGizmoTabs &g)
 {
-    const char *shape = "tapered_u";
-    switch (g.get_shape()) {
-    case TabShape::Rect: shape = "rect"; break;
-    case TabShape::Rounded: shape = "rounded"; break;
-    case TabShape::Stadium: shape = "stadium"; break;
-    case TabShape::TaperedU: shape = "tapered_u"; break;
-    case TabShape::Circle: shape = "circle"; break;
-    }
+    nlohmann::json names = nlohmann::json::array();
+    for (int i = 0; i < g.standard_count(); ++i)
+        names.push_back(g.standard_name(i));
 
     nlohmann::json tabs = nlohmann::json::array();
     for (const std::array<double, 3> &c : g.list_tabs())
         tabs.push_back({{"center", {{"x", c[0]}, {"y", c[1]}, {"z", c[2]}}}});
 
-    nlohmann::json names = nlohmann::json::array();
-    for (int i = 0; i < g.standard_count(); ++i)
-        names.push_back(g.standard_name(i));
-
     nlohmann::json result = {
         {"anchored", g.anchor_valid()},
+        // Placement: a wall click gives a plate parallel to the bed (the frame's +z is the bed's up),
+        // a face within 25 degrees of horizontal keeps the plate in that face's own plane. `axis` is
+        // the frame's +x: the direction the tab reaches out in.
         {"wall", g.frame_is_wall()},
         {"axis", vec3_json(g.frame_axis())},
-        {"shape", shape},
+        // The geometry, in world mm: Length with the screw Hole offset from the root, Taper and the Tip
+        // shape it into the plate. The weld is not a field - the root always enters the material by it.
+        {"tip", g.get_tip() == TabTip::Flat ? "flat" : "round"},
         {"root_w", g.get_root_w()},
-        {"root_len", g.get_root_len()},
-        {"tip_len", g.get_tip_len()},
-        {"taper", g.get_taper()},
-        {"corner_r", g.get_corner_r()},
+        {"length", g.get_length()},
         {"hole_offset", g.get_hole_offset()},
+        {"hole_offset_min", g.hole_offset_min()},
+        {"hole_offset_max", g.hole_offset_max()},
+        {"taper", g.get_taper()},
+        {"weld", g.effective_weld()},
         {"passage", g.get_passage() == TabPassage::Slot ? "slot" : "hole"},
+        // The screw, from the Holes tool's own standards table.
         {"standard_index", g.get_standard() + 1},
         {"standard", g.standard_name(g.get_standard() + 1)},
         {"standards", names},
@@ -812,17 +810,12 @@ nlohmann::json tabs_gizmo_state(GLGizmoTabs &g)
                  : g.get_head() == BoreHead::ButtonHead  ? "button"
                                                          : "countersink"},
         {"head_fit", g.get_head_fit()},
-        {"depth", g.get_depth()},
-        {"through", g.get_through()},
         {"boss", g.get_boss()},
         {"boss_d", g.get_boss_d()},
         {"boss_h", g.get_boss_h()},
         {"thickness", g.get_thickness()},
-        {"bite", g.get_bite()},
-        {"effective_bite", g.effective_bite()},
         {"angle", g.get_angle()},
-        // What the surface under the tab looks like, which is what decides the bite and whether the
-        // tab can be added at all.
+        // What the surface under the tab looked like, and what is already there.
         {"coverage", g.coverage()},
         {"fall_away", g.fall_away()},
         {"tabs_total", g.tab_count()},
@@ -2158,7 +2151,7 @@ void OrcaMCPServer::register_gizmo_tools()
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
             {"screen_x", {{"type", "number"}, {"description", "Canvas X for anchor / remove_at. Defaults to the viewport centre."}}},
             {"screen_y", {{"type", "number"}, {"description", "Canvas Y for anchor / remove_at. Defaults to the viewport centre."}}},
-            {"shape", {{"type", "string"}, {"description", "rect | rounded | stadium | tapered_u | circle, for action=set_shape."}}},
+            {"tip", {{"type", "string"}, {"description", "round | flat, for action=set_tip."}}},
             {"passage", {{"type", "string"}, {"description", "hole | slot, for action=set_passage."}}},
             {"head", {{"type", "string"}, {"description", "none | socket | button | countersink, for action=set_head."}}},
             {"screw_fit", {{"type", "string"}, {"description", "free | tap, for action=set_screw_fit."}}},
@@ -2167,7 +2160,7 @@ void OrcaMCPServer::register_gizmo_tools()
                                        "set_corner_r / set_hole_offset / set_diameter / set_tolerance / set_head_fit / "
                                        "set_depth / set_boss_d / set_boss_h / set_thickness / set_bite / set_angle (mm, or degrees "
                                        "for the taper and the angle)."}}},
-            {"on", {{"type", "boolean"}, {"description", "For action=set_through / set_boss."}}},
+            {"on", {{"type", "boolean"}, {"description", "For action=set_boss."}}},
             {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}}}},
           {"required", {"action"}}},
         [](const nlohmann::json &params) -> nlohmann::json {
@@ -2217,48 +2210,40 @@ void OrcaMCPServer::register_gizmo_tools()
                     return result;
                 }
 
-                if (action == "set_shape") {
-                    const std::string s = params.value("shape", std::string("tapered_u"));
-                    if (s == "rect") g->set_shape(TabShape::Rect);
-                    else if (s == "rounded") g->set_shape(TabShape::Rounded);
-                    else if (s == "stadium") g->set_shape(TabShape::Stadium);
-                    else if (s == "tapered_u") g->set_shape(TabShape::TaperedU);
-                    else if (s == "circle") g->set_shape(TabShape::Circle);
-                    else return {{"status", "error"}, {"error", "Unknown shape: " + s}};
+                if (action == "set_tip") {
+                    const std::string t = params.value("tip", std::string("round"));
+                    if (t == "round") g->set_tip(TabTip::Round);
+                    else if (t == "flat") g->set_tip(TabTip::Flat);
+                    else return {{"status", "error"}, {"error", "Unknown tip: " + t}};
                 } else if (action == "set_passage") {
-                    const std::string s = params.value("passage", std::string("hole"));
-                    if (s == "hole") g->set_passage(TabPassage::Hole);
-                    else if (s == "slot") g->set_passage(TabPassage::Slot);
-                    else return {{"status", "error"}, {"error", "Unknown passage: " + s}};
+                    const std::string p = params.value("passage", std::string("hole"));
+                    if (p == "hole") g->set_passage(TabPassage::Hole);
+                    else if (p == "slot") g->set_passage(TabPassage::Slot);
+                    else return {{"status", "error"}, {"error", "Unknown passage: " + p}};
                 } else if (action == "set_screw_fit") {
-                    const std::string s = params.value("screw_fit", std::string("free"));
-                    if (s == "free") g->set_screw_fit(ScrewFit::Free);
-                    else if (s == "tap") g->set_screw_fit(ScrewFit::Tap);
-                    else return {{"status", "error"}, {"error", "Unknown screw_fit: " + s}};
+                    const std::string f = params.value("screw_fit", std::string("free"));
+                    if (f == "free") g->set_screw_fit(ScrewFit::Free);
+                    else if (f == "tap") g->set_screw_fit(ScrewFit::Tap);
+                    else return {{"status", "error"}, {"error", "Unknown screw_fit: " + f}};
                 } else if (action == "set_head") {
-                    const std::string s = params.value("head", std::string("none"));
-                    if (s == "none") g->set_head(BoreHead::None);
-                    else if (s == "socket") g->set_head(BoreHead::SocketHead);
-                    else if (s == "button") g->set_head(BoreHead::ButtonHead);
-                    else if (s == "countersink") g->set_head(BoreHead::Countersink);
-                    else return {{"status", "error"}, {"error", "Unknown head: " + s}};
+                    const std::string h = params.value("head", std::string("none"));
+                    if (h == "none") g->set_head(BoreHead::None);
+                    else if (h == "socket") g->set_head(BoreHead::SocketHead);
+                    else if (h == "button") g->set_head(BoreHead::ButtonHead);
+                    else if (h == "countersink") g->set_head(BoreHead::Countersink);
+                    else return {{"status", "error"}, {"error", "Unknown head: " + h}};
                 } else if (action == "set_root_w") g->set_root_w(v);
-                else if (action == "set_root_len") g->set_root_len(v);
-                else if (action == "set_tip_len") g->set_tip_len(v);
-                else if (action == "set_taper") g->set_taper(v);
-                else if (action == "set_corner_r") g->set_corner_r(v);
+                else if (action == "set_length") g->set_length(v);
                 else if (action == "set_hole_offset") g->set_hole_offset(v);
+                else if (action == "set_taper") g->set_taper(v);
                 else if (action == "set_standard") g->set_standard(params.value("standard_index", 0));
                 else if (action == "set_diameter") g->set_diameter(v);
                 else if (action == "set_tolerance") g->set_tolerance(v);
                 else if (action == "set_head_fit") g->set_head_fit(v);
-                else if (action == "set_depth") g->set_depth(v);
-                else if (action == "set_through") g->set_through(params.value("on", true));
                 else if (action == "set_boss") g->set_boss(params.value("on", true));
                 else if (action == "set_boss_d") g->set_boss_d(v);
                 else if (action == "set_boss_h") g->set_boss_h(v);
                 else if (action == "set_thickness") g->set_thickness(v);
-                else if (action == "set_bite") g->set_bite(v);
                 else if (action == "set_angle") g->set_angle(v);
                 else if (action == "clear_all") g->clear_all();
                 else if (action == "refresh") g->refresh();

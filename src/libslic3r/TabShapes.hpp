@@ -23,23 +23,19 @@
 //   * the screw cutter's entrance cap starts ABOVE the tab's top - `make_tab_screw` does it, and the
 //     same note explains why a cap lying in the face skins the recess it opens.
 //
-// The outline is one parametric shape, not a menu: the five TabShape presets only write the fields
-// (tab_apply_shape). The flank runs at exactly `taper_deg` from the root corner, and the tip is a
-// circle tangent to it whose radius follows from the taper - so "taper 12 degrees" means 12 degrees
-// and the tip width is the value that answers to it. TabTip::Flat instead cuts the flanks at the tip
-// and leaves a straight end (the Rect / Rounded preset); TabTip::Circle ignores the two lengths and
-// gives a round pad centred on the passage (the Circle preset, i.e. a screw boss).
+// The outline is one parametric shape, not a menu: the only real choice in the plate is its TIP, and
+// the Taper row shapes everything else. The flank runs at exactly `taper_deg` from the root corner,
+// and the tip is a circle tangent to it whose radius follows from the taper - so "taper 12 degrees"
+// means 12 degrees and the tip width is the value that answers to it. TabTip::Flat instead cuts the
+// flanks at the tip, which gives a straight end (a trapezoid once it is tapered).
 
 #include "ExPolygon.hpp"
 #include "TriangleMesh.hpp"
 
 namespace Slic3r {
 
-// A preset writes the fields below; it is not a second geometry path.
-enum class TabShape { Rect, Rounded, Stadium, TaperedU, Circle };
-
 // What the far end of the tab does.
-enum class TabTip { Round, Flat, Circle };
+enum class TabTip { Round, Flat };
 
 // How the screw reaches the tab: a drilled hole, or an open slot from the tip so the tab can be
 // slid onto a screw that is already in place.
@@ -54,7 +50,6 @@ struct TabSpec
     double root_len{6.};     // passage centre -> root edge
     double tip_len{10.};     // passage centre -> the tab's outermost point
     double taper_deg{12.};   // flank angle away from the axis, each side
-    double corner_r{2.};     // rounded corners (the root's, and a flat tip's)
     TabTip tip{TabTip::Round};
     double min_wall{2.};     // material kept around the passage
 
@@ -63,13 +58,19 @@ struct TabSpec
     double     slot_w{0.};     // 0 -> 2 * passage_r
 
     double thickness{3.};      // plate height above the surface (z = 0 .. thickness)
-    double bite{0.6};          // how far the plate reaches INTO the surface (z = -bite .. 0)
+    // How far the root reaches INTO the material. It is a constant in the tool, not a field: the
+    // slicer unions the tab with the part per layer, so a root edge that only TOUCHES the face is a
+    // pinch vertex there - the tab's walls and the part's meet at a point and the root snaps off.
+    // Entering by a millimetre of material is what makes the junction real.
+    double weld{1.0};
     double boss_d{0.};         // 0 -> no boss
     double boss_h{0.};
 };
 
-// The screw passage as a negative volume. `depth` is measured from the tab's top (see tab_top): for
-// a through hole the caller resolves it against the host mesh, exactly as the Holes tool does.
+// The screw passage as a negative volume. `depth` is measured down from the tab's top and the tool
+// always takes it through the tab (and a hair past its far face, the same overshoot the entrance
+// gets): a mounting tab's hole is a clearance hole for a screw that bites whatever is below it, and
+// a floor exactly flush with that surface would be the coplanar pair ME-3 documents.
 struct TabScrew
 {
     double  d{3.4};          // clearance bore diameter
@@ -120,13 +121,6 @@ struct TabSurfaceProbe
 TabSurfaceProbe tab_probe_surface(const indexed_triangle_set &its, const Transform3d &frame_to_its,
                                   const ExPolygons &footprint, double max_drop, int nx = 13, int ny = 9);
 
-// Write a TabShape preset's fields. Only what the preset defines is touched: the sizes, the passage,
-// the thickness, the bite and the boss are the caller's and survive a preset click.
-//   Rect      flat tip, no taper, sharp corners      Stadium   round tip, no taper
-//   Rounded   flat tip, no taper, corners 2 mm       TaperedU  round tip, 12 degree taper
-//   Circle    a round pad centred on the passage
-void tab_apply_shape(TabSpec &spec, TabShape shape);
-
 // --- Placement ------------------------------------------------------------------------------------
 // A tab is a MOUNTING tab, so it is placed PARALLEL TO THE BED with its ROOT attached to the face that
 // was clicked: on a wall that is a foot standing out sideways, screwed down from above, not a plate
@@ -144,7 +138,7 @@ struct TabFrame
     Vec3d       axis{ Vec3d::UnitX() }; // the frame's +x (for the panel's readout)
 };
 TabFrame tab_frame(const Vec3d &face_normal, const Vec3d &click, const Vec3d &centre, double root_len,
-                   double bite, double angle_deg);
+                   double weld, double angle_deg);
 
 } // namespace Slic3r
 

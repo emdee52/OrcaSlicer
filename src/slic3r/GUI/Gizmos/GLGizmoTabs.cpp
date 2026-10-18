@@ -51,17 +51,12 @@ const ColorRGBA CUT_COLOR      = gizmo_cut_colour();
 
 // The panel's ranges, in world mm (degrees for the two angles).
 constexpr double ROOT_W_MIN = 3., ROOT_W_MAX = 80.;
-constexpr double ROOT_LEN_MIN = 0.5, ROOT_LEN_MAX = 40.;
-constexpr double TIP_LEN_MIN = 1., TIP_LEN_MAX = 60.;
+constexpr double LENGTH_MIN = 3., LENGTH_MAX = 80.;
 constexpr double TAPER_MIN = 0., TAPER_MAX = 60.;
-constexpr double CORNER_MIN = 0., CORNER_MAX = 10.;
-constexpr double HOLE_OFF_MIN = -20., HOLE_OFF_MAX = 20.;
 constexpr double HEAD_FIT_MIN = -0.4, HEAD_FIT_MAX = 0.;
-constexpr double DEPTH_MIN = 0.5, DEPTH_MAX = 120.;
 constexpr double BOSS_D_MIN = 2., BOSS_D_MAX = 60.;
 constexpr double BOSS_H_MIN = 0., BOSS_H_MAX = 40.;
 constexpr double THICK_MIN = 0.4, THICK_MAX = 12.;
-constexpr double BITE_MIN = 0.05, BITE_MAX = 3.;
 constexpr double ANGLE_MIN = 0., ANGLE_MAX = 360.;
 
 // Material kept around the passage, and the wall a boss keeps around the seat. World mm.
@@ -69,14 +64,19 @@ constexpr double MIN_WALL = 2.0;
 constexpr double BOSS_WALL = 2.0;
 // A tapped hole wants this much material to bite into; the boss makes up the difference.
 constexpr double TAP_ENGAGEMENT = 6.0;
-// The margin the through-hole march adds past the far wall.
-constexpr double THROUGH_MARGIN = 0.5;
-// The weld the plate owes the surface even on a flat face, and the extra the surface's own fall-away
-// asks for. Past the cap a flat plate cannot sit on the face at all and the tab is refused.
-constexpr double WELD = 0.2;
+// How far the bore's floor lands past the tab's far face, and how far the cutter's entrance cap
+// starts outside its top: both a hair, because a face exactly flush with either is the coplanar pair
+// ME-3 documents (a zero-thickness skin over the recess, or a cutter that leaves a sliver).
+constexpr double BORE_OVERSHOOT = 0.2;
+// The weld: how far the root ALWAYS enters the material. Not a field - the slicer unions the tab with
+// the part per layer, so a root that only touches the face is a pinch vertex there and the tab's
+// walls meet the part's at a point per layer, which snaps off by hand. A millimetre of material is
+// what makes the junction real. The surface's own fall-away raises it on a curved pick (and past
+// CURVE_DROP_MAX the tab is refused, because a flat plate cannot sit on the face at all).
+constexpr double WELD_MM = 1.0;
 constexpr double CURVE_DROP_MAX = 3.0;
-// Share of the footprint that must have material under it before a tab can be added, and the share
-// below which the panel warns.
+// Share of the ROOT BAND that must have material under it before a tab can be added, and the share
+// below which the panel warns. The plate itself is meant to reach past the material.
 constexpr double COVERAGE_REFUSE = 0.3;
 constexpr double COVERAGE_WARN = 0.6;
 // How little the cursor has to move for the tab under it to be worth rebuilding, and the shortest
@@ -124,30 +124,6 @@ int object_idx_of(const Selection &selection, const ModelObject *mo)
     return -1;
 }
 
-int shape_index(TabShape s)
-{
-    switch (s) {
-    case TabShape::Rect: return 0;
-    case TabShape::Rounded: return 1;
-    case TabShape::Stadium: return 2;
-    case TabShape::TaperedU: return 3;
-    case TabShape::Circle: return 4;
-    }
-    return 3;
-}
-
-std::string shape_name(TabShape s)
-{
-    switch (s) {
-    case TabShape::Rect: return _u8L("Rect");
-    case TabShape::Rounded: return _u8L("Rounded");
-    case TabShape::Stadium: return _u8L("Stadium");
-    case TabShape::TaperedU: return _u8L("Tapered U");
-    case TabShape::Circle: return _u8L("Circle");
-    }
-    return _u8L("Tapered U");
-}
-
 std::string head_name(BoreHead h)
 {
     switch (h) {
@@ -157,57 +133,6 @@ std::string head_name(BoreHead h)
     case BoreHead::Countersink: return _u8L("Sink");
     }
     return _u8L("None");
-}
-
-// The preset glyph: the tab's own outline from above, drawn in code so it scales with the DPI. Root on
-// the left, one end round (the u-turn) or cut square, the flanks at the preset's taper. Points run
-// clockwise, which is what ImGui's anti-aliased convex fill wants.
-constexpr float TAB_GLYPH_ARC_DEG = 12.f;
-
-void tab_shape_glyph(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col, TabShape shape)
-{
-    TabSpec probe;
-    tab_apply_shape(probe, shape); // the ONE place a preset is defined
-
-    const float  x0 = p.x + 0.16f * s, x1 = p.x + 0.84f * s;
-    const float  cy = p.y + 0.5f * s;
-    const float  hw = 0.26f * s;
-    // The tip's half width follows the preset's own taper, so a stadium (0 degrees, parallel flanks)
-    // and a tapered U (12) do not come out as the same glyph.
-    const float  tw = hw * (1.f - 0.55f * float(probe.taper_deg) / 60.f);
-
-    if (probe.tip == TabTip::Circle) {
-        dl->AddCircleFilled(ImVec2(p.x + 0.5f * s, cy), 0.34f * s, (col & ~IM_COL32_A_MASK) | (60u << IM_COL32_A_SHIFT));
-        dl->AddCircle(ImVec2(p.x + 0.5f * s, cy), 0.34f * s, col, 24, kGizmoGlyphStroke * s);
-        return;
-    }
-
-    ImVec2 pts[32];
-    int    n = 0;
-    if (probe.tip == TabTip::Round) {
-        const float cx = x1 - tw;
-        pts[n++]       = ImVec2(x0, cy - hw);
-        pts[n++]       = ImVec2(cx, cy - tw);
-        for (float a = -90.f; a <= 90.f + 0.01f; a += TAB_GLYPH_ARC_DEG)
-            pts[n++] = ImVec2(cx + tw * std::cos(deg2rad(double(a))), cy + tw * std::sin(deg2rad(double(a))));
-        pts[n++] = ImVec2(cx, cy + tw);
-        pts[n++] = ImVec2(x0, cy + hw);
-    } else {
-        const float r = std::min(probe.corner_r > 0. ? 0.06f * s : 0.f, 0.06f * s);
-        pts[n++] = ImVec2(x0 + r, cy - hw);
-        pts[n++] = ImVec2(x1 - r, cy - tw);
-        if (r > 0.f) pts[n++] = ImVec2(x1, cy - tw + r);
-        pts[n++] = ImVec2(x1, cy + tw - r);
-        if (r > 0.f) pts[n++] = ImVec2(x1 - r, cy + tw);
-        pts[n++] = ImVec2(x0 + r, cy + hw);
-        if (r > 0.f) { pts[n++] = ImVec2(x0, cy + hw - r); pts[n++] = ImVec2(x0, cy - hw + r); }
-    }
-    if (n < 3)
-        return;
-    ImVec4 fill = ImGui::ColorConvertU32ToFloat4(col);
-    fill.w *= 0.26f;
-    dl->AddConvexPolyFilled(pts, n, ImGui::ColorConvertFloat4ToU32(fill));
-    dl->AddPolyline(pts, n, col, ImDrawFlags_Closed, kGizmoGlyphStroke * s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -334,22 +259,22 @@ TabFrame GLGizmoTabs::frame(double *out_bite) const
 {
     if (!m_pick.valid) {
         if (out_bite != nullptr)
-            *out_bite = BITE_MIN;
+            *out_bite = WELD_MM;
         return TabFrame();
     }
     const double k        = 1. / object_scale(); // world mm -> object units
-    const double root_obj = std::clamp(m_root_len, ROOT_LEN_MIN, ROOT_LEN_MAX) * k;
-    const double bite_obj = std::clamp(m_effective_bite, BITE_MIN, BITE_MAX) * k;
+    const double root_obj = std::clamp(m_hole_offset, hole_offset_min(), hole_offset_max()) * k;
+    const double weld_obj = std::clamp(m_effective_weld, WELD_MM, CURVE_DROP_MAX) * k;
 
-    const TabFrame probe = tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, bite_obj,
-                                     m_angle);
+    const TabFrame probe = tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, 0., m_angle);
+    // Which side the weld goes in: on a wall the plate enters the face SIDEWAYS (tab_frame's origin
+    // carries it, and the plate must not also sink below the click or a foot would sit on nothing); on
+    // a face the plate lies in, the plate itself is pushed in along its own normal. Doing both would
+    // embed it twice.
     if (out_bite != nullptr)
-        *out_bite = probe.wall ? BITE_MIN : bite_obj;
-    if (!probe.wall)
-        return probe;
-    // The root's weld is the plate's bite measured into the face sideways, which tab_frame() puts in
-    // the frame's origin.
-    return tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, WELD * k, m_angle);
+        *out_bite = probe.wall ? 0.05 : weld_obj;
+    return probe.wall ? tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, weld_obj, m_angle)
+                      : probe;
 }
 
 Transform3d GLGizmoTabs::frame_to_volume(const ModelVolume *mv) const
@@ -381,7 +306,6 @@ bool GLGizmoTabs::anchor_at(const Vec2d &screen_pos)
     // object's centre on a face the plate lies in), so a fresh anchor starts at zero and the frame
     // decides what that means.
     m_angle         = 0.;
-    m_merged_dirty  = true;
     m_preview_dirty = true;
     probe_surface(true);
     m_parent.set_as_dirty();
@@ -394,7 +318,7 @@ void GLGizmoTabs::clear_anchor()
         return;
     m_pick          = Pick();
     m_probe         = TabSurfaceProbe();
-    m_effective_bite = m_bite;
+    m_effective_weld = WELD_MM;
     m_why.clear();
     m_preview_dirty = true;
     m_parent.set_as_dirty();
@@ -468,6 +392,11 @@ void GLGizmoTabs::reseat_defaults()
             break;
         }
     }
+    // Length 16 with the screw 6 in from the root: the default a mounting foot wants.
+    m_length        = 16.;
+    m_hole_offset   = 6.;
+    m_tip           = TabTip::Round;
+    m_taper         = 12.;
     // A solo boss's height only means something for a tap; a free screw is held by the host.
     m_boss   = false;
     m_boss_h = std::clamp(std::max(0., TAP_ENGAGEMENT - m_thickness), BOSS_H_MIN, BOSS_H_MAX);
@@ -478,29 +407,9 @@ void GLGizmoTabs::reseat_defaults()
 // The spec, the probe and the geometry
 // ---------------------------------------------------------------------------------------------
 
-void GLGizmoTabs::rebuild_merged()
-{
-    m_merged_its   = indexed_triangle_set();
-    m_merged_dirty = false;
-
-    const ModelObject *mo = model_object();
-    if (mo == nullptr)
-        return;
-    // The object's own parts, in object space: what a through hole has to reach out the far side of.
-    TriangleMesh mesh;
-    for (const ModelVolume *v : mo->volumes) {
-        if (v == nullptr || !v->is_model_part() || is_tab_volume(v))
-            continue;
-        TriangleMesh part = v->mesh();
-        part.transform(v->get_matrix());
-        mesh.merge(part);
-    }
-    m_merged_its = mesh.its;
-}
-
 void GLGizmoTabs::probe_surface(bool force)
 {
-    m_effective_bite = m_bite;
+    m_effective_weld = WELD_MM;
     m_probe          = TabSurfaceProbe();
     if (!m_pick.valid)
         return;
@@ -524,8 +433,8 @@ void GLGizmoTabs::probe_surface(bool force)
     const double k = 1. / object_scale(); // world mm -> object units
     // The ROOT BAND, not the whole plate: the tab is meant to reach out past the material, so what has
     // to be over material is the strip it is welded by.
-    const double   root_obj = std::clamp(m_root_len, ROOT_LEN_MIN, ROOT_LEN_MAX) * k;
-    const double   band     = (m_effective_bite + ROOT_BAND) * k;
+    const double   root_obj = std::clamp(m_hole_offset, hole_offset_min(), hole_offset_max()) * k;
+    const double   band     = (m_effective_weld + ROOT_BAND) * k;
     const double   half_w   = 0.5 * std::clamp(m_root_w, ROOT_W_MIN, ROOT_W_MAX) * k;
     Polygon        root_poly;
     for (const Point &p : {Point::new_scale(-root_obj, -half_w), Point::new_scale(-root_obj + band, -half_w),
@@ -540,7 +449,7 @@ void GLGizmoTabs::probe_surface(bool force)
 
     // The plate owes the surface a weld; where the surface falls away from the tab's plane it owes it
     // that too, or only the middle of the plate would touch.
-    m_effective_bite = std::max(m_bite, m_probe.fall_away * object_scale() + WELD);
+    m_effective_weld = std::max(WELD_MM, m_probe.fall_away * object_scale() + BORE_OVERSHOOT);
 }
 
 TabSpec GLGizmoTabs::build_spec(std::string *why) const
@@ -550,29 +459,25 @@ TabSpec GLGizmoTabs::build_spec(std::string *why) const
         why->clear();
 
     const double k        = 1. / object_scale(); // world mm -> object units
-    double       bite_obj = 0.;
-    frame(&bite_obj); // the weld the plate itself carries (a wall's is the root's overlap instead)
-    s.root_w              = std::clamp(m_root_w, ROOT_W_MIN, ROOT_W_MAX) * k;
-    s.root_len            = std::clamp(m_root_len, ROOT_LEN_MIN, ROOT_LEN_MAX) * k;
-    s.tip_len             = std::clamp(m_tip_len, TIP_LEN_MIN, TIP_LEN_MAX) * k;
-    s.taper_deg           = std::clamp(m_taper, TAPER_MIN, TAPER_MAX);
-    s.corner_r            = std::clamp(m_corner_r, CORNER_MIN, CORNER_MAX) * k;
-    s.min_wall            = MIN_WALL * k;
-    s.passage             = m_passage;
-    s.passage_r           = 0.5 * true_diameter() * k;
-    s.slot_w              = 0.; // the builder defaults it to the screw's own clearance
-    s.thickness           = std::clamp(m_thickness, THICK_MIN, THICK_MAX) * k;
-    s.bite                = bite_obj;
+    double       weld_obj = 0.;
+    frame(&weld_obj); // the weld the PLATE carries (a wall's is in the frame's origin instead)
+    // One Length and one Hole offset: the passage sits `hole_offset` from the root edge and the tip
+    // `length - hole_offset` past it.
+    const double len       = std::clamp(m_length, LENGTH_MIN, LENGTH_MAX);
+    const double off       = std::clamp(m_hole_offset, hole_offset_min(), hole_offset_max());
+    s.root_w               = std::clamp(m_root_w, ROOT_W_MIN, ROOT_W_MAX) * k;
+    s.root_len             = off * k;
+    s.tip_len              = (len - off) * k;
+    s.taper_deg            = std::clamp(m_taper, TAPER_MIN, TAPER_MAX);
+    s.tip                  = m_tip;
+    s.min_wall             = MIN_WALL * k;
+    s.passage              = m_passage;
+    s.passage_r            = 0.5 * true_diameter() * k;
+    s.slot_w               = 0.; // the builder defaults it to the screw's own clearance
+    s.thickness            = std::clamp(m_thickness, THICK_MIN, THICK_MAX) * k;
+    s.weld                 = weld_obj;
     s.boss_d              = m_boss ? std::clamp(m_boss_d, BOSS_D_MIN, BOSS_D_MAX) * k : 0.;
     s.boss_h              = m_boss ? std::clamp(m_boss_h, BOSS_H_MIN, BOSS_H_MAX) * k : 0.;
-    switch (m_shape) {
-    case TabShape::Rect: s.tip = TabTip::Flat; s.taper_deg = 0.; s.corner_r = 0.; break;
-    case TabShape::Rounded: s.tip = TabTip::Flat; s.taper_deg = 0.; s.corner_r = 2. * k; break;
-    case TabShape::Stadium: s.tip = TabTip::Round; s.taper_deg = 0.; break;
-    case TabShape::TaperedU: s.tip = TabTip::Round; break;
-    case TabShape::Circle: s.tip = TabTip::Circle; break;
-    }
-
     if (tab_outline(s).poly.empty() && why != nullptr)
         *why = _u8L("No room for a tab with this passage and these walls - widen the tab or the passage.");
     return s;
@@ -602,20 +507,10 @@ TabScrew GLGizmoTabs::build_screw(const TabSpec &spec) const
     out.seat_depth = seat_depth() * k;
     out.seat_angle = seat_angle();
 
-    // The bore's floor, measured from the tab's top - so a through hole reaches the far side of
-    // whatever the tab is on, and a blind one stops where the panel says.
-    if (m_through) {
-        if (m_merged_dirty)
-            const_cast<GLGizmoTabs *>(this)->rebuild_merged();
-        const Vec3d top   = frame(nullptr).to_obj.translation() + frame(nullptr).to_obj.linear().col(2) * tab_top(spec);
-        const Vec3d down  = -frame(nullptr).to_obj.linear().col(2);
-        const double deep = hole_through_depth(m_merged_its, top, down, THROUGH_MARGIN * k);
-        // Nothing to march through (a free-standing tab, a wall foot over air): through means through
-        // the tab itself, not the depth the blind field happens to hold.
-        out.depth         = deep > 0. ? deep : spec.thickness + spec.bite + THROUGH_MARGIN * k;
-    } else {
-        out.depth = std::clamp(m_depth, DEPTH_MIN, DEPTH_MAX) * k;
-    }
+    // The bore always goes through the TAB and a hair past its far face: a mounting tab's hole is a
+    // clearance hole for a screw that bites whatever is below it, and a floor exactly flush with that
+    // surface would be the coplanar pair ME-3 documents. `depth` is measured down from the tab's top.
+    out.depth = tab_top(spec) + spec.weld + BORE_OVERSHOOT * k;
     return out;
 }
 
@@ -667,7 +562,7 @@ void GLGizmoTabs::rebuild_preview()
             m_why = Slic3r::GUI::format(
                 _L("Only %d%% of the tab's root has the face under it - move it onto the material."),
                 int(m_probe.coverage * 100.));
-        else if (!wall && m_effective_bite > CURVE_DROP_MAX)
+        else if (!wall && m_effective_weld > CURVE_DROP_MAX)
             m_why = _u8L("The face curves away too fast for a tab this size: shorten it, or pick a flatter one.");
 
         indexed_triangle_set ghost = make_tab_plate(spec);
@@ -822,7 +717,7 @@ bool GLGizmoTabs::commit()
             int(m_probe.coverage * 100.));
         return false;
     }
-    if (!frame(nullptr).wall && m_effective_bite > CURVE_DROP_MAX) {
+    if (!frame(nullptr).wall && m_effective_weld > CURVE_DROP_MAX) {
         m_why = _u8L("The face curves away too fast for a tab this size: shorten it, or pick a flatter one.");
         return false;
     }
@@ -931,32 +826,29 @@ void GLGizmoTabs::refresh()
 // The parameters
 // ---------------------------------------------------------------------------------------------
 
-void GLGizmoTabs::set_shape(TabShape s)
+void GLGizmoTabs::set_tip(TabTip t)
 {
-    if (m_shape == s)
+    if (m_tip == t)
         return;
-    m_shape = s;
-    // The preset writes the shape's own fields; the sizes stay where the user put them, so switching
-    // Rect -> Rounded -> Tapered U keeps the tab's dimensions.
-    TabSpec probe;
-    probe.root_w   = m_root_w;
-    probe.root_len = m_root_len;
-    probe.tip_len  = m_tip_len;
-    probe.corner_r = m_corner_r;
-    probe.taper_deg = m_taper;
-    tab_apply_shape(probe, s);
-    m_taper    = probe.taper_deg;
-    m_corner_r = probe.corner_r;
+    m_tip           = t;
     m_preview_dirty = true;
     probe_surface(true);
     m_parent.set_as_dirty();
 }
 
 void GLGizmoTabs::set_root_w(double mm) { m_root_w = std::clamp(mm, ROOT_W_MIN, ROOT_W_MAX); probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
-void GLGizmoTabs::set_root_len(double mm) { m_root_len = std::clamp(mm, ROOT_LEN_MIN, ROOT_LEN_MAX); probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
-void GLGizmoTabs::set_tip_len(double mm) { m_tip_len = std::clamp(mm, TIP_LEN_MIN, TIP_LEN_MAX); probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
+
+void GLGizmoTabs::set_length(double mm)
+{
+    m_length = std::clamp(mm, LENGTH_MIN, LENGTH_MAX);
+    // The hole has to keep material on both sides of it, so a shorter tab pulls it in.
+    m_hole_offset   = std::clamp(m_hole_offset, hole_offset_min(), hole_offset_max());
+    probe_surface(true);
+    m_preview_dirty = true;
+    m_parent.set_as_dirty();
+}
+
 void GLGizmoTabs::set_taper(double deg) { m_taper = std::clamp(deg, TAPER_MIN, TAPER_MAX); probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
-void GLGizmoTabs::set_corner_r(double mm) { m_corner_r = std::clamp(mm, CORNER_MIN, CORNER_MAX); probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
 
 void GLGizmoTabs::set_passage(TabPassage p)
 {
@@ -968,15 +860,40 @@ void GLGizmoTabs::set_passage(TabPassage p)
 
 void GLGizmoTabs::set_hole_offset(double mm)
 {
-    const double d = std::clamp(mm, HOLE_OFF_MIN, HOLE_OFF_MAX) - m_hole_offset;
-    m_hole_offset  = std::clamp(mm, HOLE_OFF_MIN, HOLE_OFF_MAX);
-    // Sliding the passage takes from one side of the tab and gives to the other, so the screw walks
-    // along the tab while its overall length stays where the two sliders put it.
-    m_root_len = std::clamp(m_root_len - d, ROOT_LEN_MIN, ROOT_LEN_MAX);
-    m_tip_len  = std::clamp(m_tip_len + d, TIP_LEN_MIN, TIP_LEN_MAX);
+    // The hole slides INSIDE the tab: the outline stays where Length put it, and the bounds come from
+    // the tab's own ends.
+    m_hole_offset   = std::clamp(mm, hole_offset_min(), hole_offset_max());
     probe_surface(true);
     m_preview_dirty = true;
     m_parent.set_as_dirty();
+}
+
+double GLGizmoTabs::hole_offset_min() const
+{
+    return std::min(MIN_WALL + 0.5 * true_diameter(), 0.4 * std::clamp(m_length, LENGTH_MIN, LENGTH_MAX));
+}
+
+double GLGizmoTabs::hole_offset_max() const
+{
+    return std::max(hole_offset_min(), std::clamp(m_length, LENGTH_MIN, LENGTH_MAX) - hole_offset_min());
+}
+
+int GLGizmoTabs::available_heads(BoreHead *out) const
+{
+    if (out == nullptr)
+        return 0;
+    const HoleStandard *s = screw_standard();
+    if (s == nullptr || s->kind != HoleStandardKind::Screw)
+        return 0; // Custom: there is no catalogue to take a seat from, so no seat to offer
+    int n    = 0;
+    out[n++] = BoreHead::None;
+    if (s->socket_d > 0.)
+        out[n++] = BoreHead::SocketHead;
+    if (s->button_d > 0.)
+        out[n++] = BoreHead::ButtonHead;
+    if (s->csink_d > 0.)
+        out[n++] = BoreHead::Countersink;
+    return n == 1 ? 0 : n; // a single entry (None) is nothing to choose
 }
 
 void GLGizmoTabs::set_standard(int idx)
@@ -1041,13 +958,10 @@ void GLGizmoTabs::set_head_fit(double f)
     m_parent.set_as_dirty();
 }
 
-void GLGizmoTabs::set_depth(double mm) { m_depth = std::clamp(mm, DEPTH_MIN, DEPTH_MAX); m_preview_dirty = true; m_parent.set_as_dirty(); }
-void GLGizmoTabs::set_through(bool on) { m_through = on; m_preview_dirty = true; m_parent.set_as_dirty(); }
 void GLGizmoTabs::set_boss(bool on) { m_boss = on; suggest_boss(); m_preview_dirty = true; m_parent.set_as_dirty(); }
 void GLGizmoTabs::set_boss_d(double mm) { m_boss_d = std::clamp(mm, BOSS_D_MIN, BOSS_D_MAX); m_preview_dirty = true; m_parent.set_as_dirty(); }
 void GLGizmoTabs::set_boss_h(double mm) { m_boss_h = std::clamp(mm, BOSS_H_MIN, BOSS_H_MAX); m_preview_dirty = true; m_parent.set_as_dirty(); }
 void GLGizmoTabs::set_thickness(double mm) { m_thickness = std::clamp(mm, THICK_MIN, THICK_MAX); suggest_boss(); m_preview_dirty = true; m_parent.set_as_dirty(); }
-void GLGizmoTabs::set_bite(double mm) { m_bite = std::clamp(mm, BITE_MIN, BITE_MAX); m_effective_bite = m_bite; probe_surface(true); m_preview_dirty = true; m_parent.set_as_dirty(); }
 void GLGizmoTabs::set_angle(double deg) { m_angle = std::clamp(deg, ANGLE_MIN, ANGLE_MAX); m_preview_dirty = true; m_parent.set_as_dirty(); }
 
 // ---------------------------------------------------------------------------------------------
@@ -1059,7 +973,7 @@ bool GLGizmoTabs::on_init()
     m_shortcut = Shortcut::GizmoTabs; // registered in Shortcuts.cpp
     m_desc["applied"] = _L("Tabs");
     reseat_defaults();
-    m_effective_bite = m_bite;
+    m_effective_weld = WELD_MM;
     return true;
 }
 
@@ -1072,7 +986,6 @@ void GLGizmoTabs::on_set_state()
     if (get_state() == On) {
         m_preview_dirty  = true;
         m_hover_computed = false;
-        m_merged_dirty   = true;
         m_parent.set_as_dirty();
     } else {
         clear_anchor();
@@ -1102,7 +1015,6 @@ void GLGizmoTabs::data_changed(bool /*is_serializing*/)
         m_old_matrix       = instance_matrix();
         m_preview_dirty    = true;
         m_hover_computed   = false;
-        m_merged_dirty     = true;
         // A volume-list change is usually our own commit, and the anchor is still on the same mesh -
         // but it does not survive the volume it pointed at going away.
         if (m_pick.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_pick.mv) == mo->volumes.end())
@@ -1165,9 +1077,6 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
     if (mo == nullptr)
         return;
 
-    if (m_pick.valid && m_merged_dirty)
-        rebuild_merged();
-
     const float scale = m_parent.get_scale();
     y = std::min(y, bottom_limit - m_imgui->scaled(22.f));
 #if BBS_TOOLBAR_ON_TOP
@@ -1188,37 +1097,34 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
     gizmo_push_panel_style();
 
     // The widest caption the rows below use, so the label column is exact rather than a magic number.
-    const float label_w = gizmo_label_w(_u8L("Corner radius").c_str());
+    const float label_w = gizmo_label_w(_u8L("True diameter").c_str());
 
-    const bool    slot    = m_passage == TabPassage::Slot;
-    const TabSpec spec    = build_spec(nullptr); // the hints below read what the geometry resolved to
+    const bool     slot      = m_passage == TabPassage::Slot;
+    const TabSpec  spec      = build_spec(nullptr); // the hint line reads what the geometry resolved to
     const TabOutline outline = tab_outline(spec);
+    const bool     wall      = frame(nullptr).wall;
 
-    // The five presets, as icon toggles with the name on hover - the convention the Perforations
-    // pattern row and the Extrude mode row use, and the reason the shape names do not have to fit a
-    // row: they are read on the hint line below.
+    // Tip: the only real choice in the plate. Round is the u-turn end, Flat cuts the flanks at the tip.
     {
-        const TabShape shapes[5] = {TabShape::Rect, TabShape::Rounded, TabShape::Stadium, TabShape::TaperedU,
-                                    TabShape::Circle};
-        for (int i = 0; i < 5; ++i) {
-            if (i > 0)
-                ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
-            const std::string name = shape_name(shapes[i]);
-            const TabShape    sc   = shapes[i];
-            if (gizmo_icon_toggle(name.c_str(), m_shape == sc, name.c_str(),
-                                  [sc](ImDrawList *dl, const ImVec2 &p, float s, ImU32 col) {
-                                      tab_shape_glyph(dl, p, s, col, sc);
-                                  }))
-                set_shape(sc);
-        }
+        const std::string t0 = _u8L("Round");
+        const std::string t1 = _u8L("Flat");
+        const char       *labels[] = {t0.c_str(), t1.c_str()};
+        const int seg = gizmo_row_segment("##tip", _u8L("Tip").c_str(), labels, 2, m_tip == TabTip::Flat ? 1 : 0,
+                                          label_w,
+                                          _u8L("The tab's far end: Round is the u-turn, Flat cuts the flanks "
+                                               "there (a trapezoid once it is tapered).").c_str());
+        if (seg >= 0)
+            set_tip(seg == 1 ? TabTip::Flat : TabTip::Round);
     }
+    // What the taper and the minimum-material rules resolved to.
     {
-        // What the shape resolved to, including anything the minimum-material rules had to change.
         const std::string what = outline.clamped
-                                     ? Slic3r::GUI::format(_L("%s, clamped to a %.1f mm tip"), shape_name(m_shape).c_str(),
-                                              outline.tip_w * object_scale())
-                                     : Slic3r::GUI::format(_L("%s, %.1f mm tip, %.0f deg flanks"), shape_name(m_shape).c_str(),
-                                              outline.tip_w * object_scale(), outline.taper_deg);
+                                     ? Slic3r::GUI::format(_L("Clamped to a %.1f mm tip, %.0f deg flanks"),
+                                                           outline.tip_w * object_scale(), outline.taper_deg)
+                                     : Slic3r::GUI::format(_L("%.1f mm tip, %.0f deg flanks, %.1f / %.1f root "
+                                                              "to tip"),
+                                                           outline.tip_w * object_scale(), outline.taper_deg,
+                                                           m_hole_offset, m_length - m_hole_offset);
         gizmo_hint(what.c_str(), outline.clamped ? GizmoCol::Warn : GizmoCol::TextDim);
     }
 
@@ -1226,23 +1132,21 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
     if (gizmo_row_slider("##rw", _u8L("Root width").c_str(), &v, float(ROOT_W_MIN), float(ROOT_W_MAX), "%.2f", label_w,
                          _u8L("How wide the tab is where it leaves the part.").c_str()))
         set_root_w(v);
-    v = float(m_root_len);
-    if (gizmo_row_slider("##rl", _u8L("Root length").c_str(), &v, float(ROOT_LEN_MIN), float(ROOT_LEN_MAX), "%.2f",
-                         label_w, _u8L("How far the tab reaches back from the screw. On a wall that is how far "
-                                        "the screw sits out from the face you clicked.").c_str()))
-        set_root_len(v);
-    v = float(m_tip_len);
-    if (gizmo_row_slider("##tl", _u8L("Tip length").c_str(), &v, float(TIP_LEN_MIN), float(TIP_LEN_MAX), "%.2f",
-                         label_w, _u8L("How far the tab reaches past the screw.").c_str()))
-        set_tip_len(v);
+    v = float(m_length);
+    if (gizmo_row_slider("##len", _u8L("Length").c_str(), &v, float(LENGTH_MIN), float(LENGTH_MAX), "%.2f", label_w,
+                         _u8L("How far the tab reaches out from its root.").c_str()))
+        set_length(v);
+    // The hole slides INSIDE the tab: its bounds are the tab's own ends, so the slider follows Length.
+    v = float(m_hole_offset);
+    if (gizmo_row_slider("##ho", _u8L("Hole offset").c_str(), &v, float(hole_offset_min()), float(hole_offset_max()),
+                         "%.2f", label_w,
+                         _u8L("Where the screw sits along the tab, measured from its root. On a wall that is "
+                              "how far the screw is out from the face you clicked.").c_str()))
+        set_hole_offset(v);
     v = float(m_taper);
     if (gizmo_row_slider("##tp", _u8L("Taper").c_str(), &v, float(TAPER_MIN), float(TAPER_MAX), "%.1f", label_w,
                          _u8L("How much the tab narrows toward its tip, on each side.").c_str()))
         set_taper(v);
-    v = float(m_corner_r);
-    if (gizmo_row_slider("##cr", _u8L("Corner radius").c_str(), &v, float(CORNER_MIN), float(CORNER_MAX), "%.2f",
-                         label_w, _u8L("Rounds the tab's square corners.").c_str()))
-        set_corner_r(v);
 
     ImGui::Separator();
 
@@ -1256,12 +1160,6 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
                                               .c_str());
         if (seg >= 0)
             set_passage(seg == 1 ? TabPassage::Slot : TabPassage::Hole);
-    }
-    if (!slot) {
-        v = float(m_hole_offset);
-        if (gizmo_row_slider("##ho", _u8L("Hole offset").c_str(), &v, float(HOLE_OFF_MIN), float(HOLE_OFF_MAX), "%.2f",
-                             label_w, _u8L("Slides the screw along the tab without moving the tab itself.").c_str()))
-            set_hole_offset(v);
     }
 
     ImGui::Separator();
@@ -1314,19 +1212,30 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
         if (seg >= 0)
             set_screw_fit(seg == 1 ? ScrewFit::Tap : ScrewFit::Free);
     }
+    // Only the heads this screw's standard actually carries, and no row at all when it carries none
+    // (Custom): a seat the standard has no dimensions for would cut nothing.
     if (!slot) {
-        const BoreHead heads[4] = {BoreHead::None, BoreHead::SocketHead, BoreHead::ButtonHead, BoreHead::Countersink};
-        for (int i = 0; i < 4; ++i) {
-            if (i > 0)
-                ImGui::SameLine(0.f, 2.f);
-            const bool on = m_head == heads[i];
-            if (on)
-                ImGui::PushStyleColor(ImGuiCol_Button, gizmo_col(GizmoCol::Accent));
-            const std::string name = head_name(heads[i]);
-            if (m_imgui->button(name, ImVec2(0.f, 0.f), false))
-                set_head(heads[i]);
-            if (on)
-                ImGui::PopStyleColor();
+        BoreHead heads[4];
+        const int n = available_heads(heads);
+        if (n > 0) {
+            std::vector<std::string> names;
+            std::vector<BoreHead>     vals;
+            for (int i = 0; i < n; ++i) {
+                names.push_back(head_name(heads[i]));
+                vals.push_back(heads[i]);
+            }
+            std::vector<const char *> lbl;
+            for (const std::string &x : names)
+                lbl.push_back(x.c_str());
+            int cur = 0;
+            for (int i = 0; i < n; ++i)
+                if (vals[size_t(i)] == m_head)
+                    cur = i;
+            const int sel = gizmo_row_segment("##head", _u8L("Head").c_str(), lbl.data(), n, cur, label_w,
+                                              _u8L("Which screw head the tab takes, or None for a bare hole.")
+                                                  .c_str());
+            if (sel >= 0)
+                set_head(vals[size_t(sel)]);
         }
         if (m_head != BoreHead::None) {
             v = float(m_head_fit);
@@ -1335,16 +1244,6 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
                                               .c_str()))
                 set_head_fit(v);
         }
-        v = float(m_depth);
-        if (gizmo_row_slider("##dp", _u8L("Depth").c_str(), &v, float(DEPTH_MIN), float(DEPTH_MAX), "%.1f", label_w,
-                             _u8L("How deep the bore goes below the tab's top, when it is not through.")
-                                 .c_str()))
-            set_depth(v);
-        bool through = m_through;
-        if (gizmo_row_switch("##th", _u8L("Through").c_str(), &through,
-                             _u8L("Bores out the far side of whatever the tab sits on, so a screw passes right "
-                                  "through.").c_str()))
-            set_through(through);
     }
 
     ImGui::Separator();
@@ -1372,19 +1271,13 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
     if (gizmo_row_slider("##tk", _u8L("Thickness").c_str(), &v, float(THICK_MIN), float(THICK_MAX), "%.2f", label_w,
                          _u8L("How thick the tab is, measured from the surface it sits on.").c_str()))
         set_thickness(v);
-    v = float(m_bite);
-    if (gizmo_row_slider("##bi", _u8L("Bite").c_str(), &v, float(BITE_MIN), float(BITE_MAX), "%.2f", label_w,
-                         _u8L("How far the tab is pushed into the surface. It is never zero: a plate that ends "
-                              "flush leaves a zero-thickness contact.").c_str()))
-        set_bite(v);
     v = float(m_angle);
     if (gizmo_row_slider("##an", _u8L("Angle").c_str(), &v, float(ANGLE_MIN), float(ANGLE_MAX), "%.0f", label_w,
                          _u8L("Turns the tab about its own plate. Zero is straight out of the face you clicked "
                               "(on a wall) or away from the object's centre (on a flat face).").c_str()))
         set_angle(v);
 
-    // The state line: what the tab is over, where it stands, how far in it bites, and anything that
-    // stops it.
+    // The state line: where the tab stands, what it is over, and anything that stops it.
     if (!m_why.empty())
         gizmo_hint(m_why.c_str(), GizmoCol::Warn);
     else if (!m_pick.valid)
@@ -1393,16 +1286,17 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
                        .c_str());
     else {
         const int         pct  = int(m_probe.coverage * 100. + 0.5);
-        const std::string line = frame(nullptr).wall
+        const std::string line = wall
                                      ? Slic3r::GUI::format(_L("Root on the face, plate parallel to the bed, screw "
                                                               "%.2f mm out of it."),
-                                                           m_root_len)
-                                     : Slic3r::GUI::format(_L("%d%% of the tab's root is on the face, biting %.2f mm."),
-                                                           pct, m_effective_bite);
-        gizmo_hint(line.c_str(), pct < int(COVERAGE_WARN * 100.) ? GizmoCol::Warn : GizmoCol::TextDim);
+                                                           m_hole_offset)
+                                     : Slic3r::GUI::format(_L("%d%% of the tab's root is on the face, welding "
+                                                              "%.2f mm into it."),
+                                                           pct, m_effective_weld);
+        gizmo_hint(line.c_str(), pct < int(COVERAGE_WARN * 100.) && !wall ? GizmoCol::Warn : GizmoCol::TextDim);
 
-        // A seat deeper than the plate cuts through its underside into whatever it sits on: worth
-        // saying, since it is invisible on the tab itself.
+        // A seat deeper than the plate cuts through its underside: worth saying, since it is invisible
+        // on the tab itself.
         if (!slot && m_head != BoreHead::None && seat_depth() > m_thickness + 1e-6)
             gizmo_hint(_u8L("The head seat is deeper than the tab: it opens through the tab's underside.")
                            .c_str(),

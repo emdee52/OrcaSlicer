@@ -13,15 +13,14 @@ namespace Slic3r {
 
 namespace {
 
-// Tessellation of the tip arc, and of a Circle preset's contour. Degrees / segment count.
+// Tessellation of the tip arc. Degrees / segment count.
 constexpr double TAB_TIP_SEG_DEG = 6.;
-constexpr int    TAB_CIRCLE_SEG  = 72;
 
 // The smallest tip radius a round tip is allowed to collapse to. A pointed tip is not a tab.
 constexpr double TAB_MIN_TIP_R = 0.25;
 
 // Clamped, so a spec typed by hand or driven over MCP can never build a degenerate solid.
-inline double plate_bite(const TabSpec &s)      { return std::max(0.05, s.bite); }
+inline double plate_weld(const TabSpec &s)      { return std::max(0.05, s.weld); }
 inline double plate_thickness(const TabSpec &s) { return std::max(0.4, s.thickness); }
 inline bool   has_boss(const TabSpec &s)        { return s.boss_d > 0. && s.boss_h > 0.; }
 
@@ -175,13 +174,7 @@ TabOutline tab_outline(const TabSpec &spec_in)
 
     // --- the contour ------------------------------------------------------------------------------
     std::vector<Vec2d> pts;
-    if (s.tip == TabTip::Circle) {
-        out.taper_deg = 0.;
-        for (int i = 0; i < TAB_CIRCLE_SEG; ++i) {
-            const double a = 2. * PI * double(i) / double(TAB_CIRCLE_SEG);
-            pts.emplace_back(half_root * std::cos(a), half_root * std::sin(a));
-        }
-    } else if (s.tip == TabTip::Flat) {
+    if (s.tip == TabTip::Flat) {
         out.taper_deg = a_deg;
         pts.emplace_back(-s.root_len, half_root);
         pts.emplace_back(s.tip_len, tip_half);
@@ -218,20 +211,6 @@ TabOutline tab_outline(const TabSpec &spec_in)
     if (p.points.size() < 3)
         return out;
     p.make_counter_clockwise();
-
-    // Rounded corners: erode and dilate by the same radius, so every convex corner comes back with
-    // that radius and nothing else moves. A shape the round-trip cannot keep whole is left sharp
-    // rather than risked.
-    const double r = std::clamp(s.corner_r, 0., 0.45 * std::min(half_root, tip_half));
-    if (r > 0.01) {
-        const float    d    = float(scale_(r));
-        const ExPolygons er = offset_ex(p, -d, jtRound);
-        if (! er.empty()) {
-            const ExPolygons di = offset_ex(er, d, jtRound);
-            if (di.size() == 1 && di.front().holes.empty())
-                p = di.front().contour;
-        }
-    }
 
     ExPolygons poly;
     poly.emplace_back(std::move(p));
@@ -270,8 +249,8 @@ indexed_triangle_set make_tab_plate(const TabSpec &spec)
 
     // From `bite` below the surface to `thickness` above it. Never flush with the surface: see the
     // header.
-    const double bite = plate_bite(spec);
-    return SurfaceExtrude::extrude_outline(outline.poly, 0., -bite, plate_thickness(spec) + bite);
+    const double weld = plate_weld(spec);
+    return SurfaceExtrude::extrude_outline(outline.poly, 0., -weld, plate_thickness(spec) + weld);
 }
 
 indexed_triangle_set make_tab_boss(const TabSpec &spec)
@@ -282,9 +261,9 @@ indexed_triangle_set make_tab_boss(const TabSpec &spec)
     // The boss reaches `bite` below the PLATE'S TOP - not to the plate's own bottom, which would
     // make the two solids share the surface they both end on, and not to the surface, which is the
     // host's own face. It overlaps the plate in volume, which is what a union wants.
-    const double bite = plate_bite(spec);
-    const double base = plate_thickness(spec) - bite;
-    return its_make_bore(spec.boss_d, spec.boss_h + bite, Vec3d::UnitZ(), Vec3d(0., 0., base));
+    const double weld = plate_weld(spec);
+    const double base = plate_thickness(spec) - weld;
+    return its_make_bore(spec.boss_d, spec.boss_h + weld, Vec3d::UnitZ(), Vec3d(0., 0., base));
 }
 
 indexed_triangle_set make_tab_screw(const TabSpec &spec, const TabScrew &screw)
@@ -362,38 +341,12 @@ TabSurfaceProbe tab_probe_surface(const indexed_triangle_set &its, const Transfo
     return out;
 }
 
-void tab_apply_shape(TabSpec &spec, TabShape shape)
-{    switch (shape) {
-    case TabShape::Rect:
-        spec.tip       = TabTip::Flat;
-        spec.taper_deg = 0.;
-        spec.corner_r  = 0.;
-        break;
-    case TabShape::Rounded:
-        spec.tip       = TabTip::Flat;
-        spec.taper_deg = 0.;
-        spec.corner_r  = 2.;
-        break;
-    case TabShape::Stadium:
-        spec.tip       = TabTip::Round;
-        spec.taper_deg = 0.;
-        break;
-    case TabShape::TaperedU:
-        spec.tip       = TabTip::Round;
-        spec.taper_deg = 12.;
-        break;
-    case TabShape::Circle:
-        spec.tip = TabTip::Circle;
-        break;
-    }
-}
-
 // A face this close to horizontal keeps the plate in its own plane: cos(25 degrees). Steeper than
 // that is a wall, and a wall gets a plate parallel to the bed - see the header.
 static constexpr double TAB_HORIZONTAL_COS = 0.9;
 
 TabFrame tab_frame(const Vec3d &face_normal, const Vec3d &click, const Vec3d &centre, double root_len,
-                   double bite, double angle_deg)
+                   double weld, double angle_deg)
 {
     TabFrame out;
 
@@ -438,7 +391,7 @@ TabFrame tab_frame(const Vec3d &face_normal, const Vec3d &click, const Vec3d &ce
     // the screw), and the whole plate is pushed `bite` INTO the face - which on a wall is sideways,
     // and is what welds the root edge to it.
     const Vec3d root_shift = out.wall ? Vec3d(x * root_len) : Vec3d::Zero();
-    out.to_obj.translation() = click + root_shift - n * bite;
+    out.to_obj.translation() = click + root_shift - n * weld;
     return out;
 }
 

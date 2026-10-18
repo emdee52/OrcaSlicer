@@ -44,54 +44,55 @@ public:
     // The ghost follows the cursor, so the frame must not be reused from the scene cache.
     bool render_follows_cursor() const override { return get_state() == On; }
 
-    // --- the parameters. The panel and the embedded MCP tools share these setters. ---
-    void set_shape(TabShape s);
+    // --- the geometry rows. The panel and the embedded MCP tools share these setters. ---
+    void set_tip(TabTip t);
     void set_root_w(double mm);
-    void set_root_len(double mm);
-    void set_tip_len(double mm);
+    void set_length(double mm);      // the tab's reach out from its root
+    void set_hole_offset(double mm); // where the screw sits along that length
     void set_taper(double deg);
-    void set_corner_r(double mm);
     void set_passage(TabPassage p);
-    void set_hole_offset(double mm);
     void set_standard(int idx); // 0 = Custom, else 1 + the index into hole_standards()
     void set_diameter(double mm);
     void set_tolerance(double mm);
     void set_screw_fit(ScrewFit f);
     void set_head(BoreHead h);
     void set_head_fit(double f); // 0 flush, negative sinks the head
-    void set_depth(double mm);
-    void set_through(bool on);
     void set_boss(bool on);
     void set_boss_d(double mm);
     void set_boss_h(double mm);
     void set_thickness(double mm);
-    void set_bite(double mm);
     void set_angle(double deg);
 
-    TabShape    get_shape() const { return m_shape; }
-    TabPassage  get_passage() const { return m_passage; }
-    BoreHead    get_head() const { return m_head; }
-    ScrewFit    get_screw_fit() const { return m_screw_fit; }
-    int         get_standard() const { return m_standard; }
-    int         standard_count() const { return 1 + int(hole_standards().size()); }
+    TabTip     get_tip() const { return m_tip; }
+    TabPassage get_passage() const { return m_passage; }
+    BoreHead   get_head() const { return m_head; }
+    ScrewFit   get_screw_fit() const { return m_screw_fit; }
+    int        get_standard() const { return m_standard; }
+    int        standard_count() const { return 1 + int(hole_standards().size()); }
     std::string standard_name(int idx) const;
-    double      get_diameter() const { return m_diameter; }
-    double      get_tolerance() const { return m_tolerance; }
-    double      get_depth() const { return m_depth; }
-    bool        get_through() const { return m_through; }
-    bool        get_boss() const { return m_boss; }
-    double      get_boss_d() const { return m_boss_d; }
-    double      get_boss_h() const { return m_boss_h; }
-    double      get_thickness() const { return m_thickness; }
-    double      get_bite() const { return m_bite; }
-    double      get_angle() const { return m_angle; }
-    double      get_root_w() const { return m_root_w; }
-    double      get_root_len() const { return m_root_len; }
-    double      get_tip_len() const { return m_tip_len; }
-    double      get_taper() const { return m_taper; }
-    double      get_corner_r() const { return m_corner_r; }
-    double      get_hole_offset() const { return m_hole_offset; }
-    double      get_head_fit() const { return m_head_fit; }
+    double     get_diameter() const { return m_diameter; }
+    double     get_tolerance() const { return m_tolerance; }
+    bool       get_boss() const { return m_boss; }
+    double     get_boss_d() const { return m_boss_d; }
+    double     get_boss_h() const { return m_boss_h; }
+    double     get_thickness() const { return m_thickness; }
+    double     get_angle() const { return m_angle; }
+    double     get_root_w() const { return m_root_w; }
+    double     get_length() const { return m_length; }
+    double     get_hole_offset() const { return m_hole_offset; }
+    double     get_taper() const { return m_taper; }
+    double     get_head_fit() const { return m_head_fit; }
+    // The hole offset the current length allows, and the split it makes: the panel's slider bounds and
+    // the hint line both read these.
+    double hole_offset_min() const;
+    double hole_offset_max() const;
+    // The head styles this screw's standard actually has, prefixed with None. Empty when it has none
+    // (Custom), which is when the panel hides the row rather than offering a seat that would cut
+    // nothing. `out` receives up to 4 entries and returns the count.
+    int    available_heads(BoreHead *out) const;
+    // The weld the geometry is using: the constant the tool always enters the material by, raised by
+    // the surface's own fall-away on a curved pick.
+    double effective_weld() const { return m_effective_weld; }
 
     // The clearance bore the current standard, fit and tolerance resolve to, in world mm - the number
     // the True diameter row shows and the one the cutter is built from.
@@ -111,7 +112,6 @@ public:
     int           tab_count() const;
     double        coverage() const { return m_probe.coverage; }
     double        fall_away() const { return m_probe.fall_away; }
-    double        effective_bite() const { return m_effective_bite; }
     // Where the tab goes: a wall click gives a plate parallel to the bed (its own +z is the bed's up),
     // a face within 25 degrees of horizontal keeps the plate in that face's plane.
     bool          frame_is_wall() const { return frame(nullptr).wall; }
@@ -167,8 +167,8 @@ private:
     TabFrame    frame(double* out_bite = nullptr) const;
     Transform3d frame_to_volume(const ModelVolume* mv) const;     // ... and -> that volume's mesh
 
-    // The spec in object units, with the bite the surface needs and the depth resolved. `why` is set
-    // when the tab cannot be built at all.
+    // The spec in object units, with the weld the surface needs and the bore's depth resolved. `why`
+    // is set when the tab cannot be built at all.
     TabSpec  build_spec(std::string* why) const;
     TabScrew build_screw(const TabSpec& spec) const;
     // The seat the current head and sink ask for, in mm: 0 when the head has no dimensions.
@@ -179,7 +179,6 @@ private:
 
     void probe_surface(bool force);
     void rebuild_preview();
-    void rebuild_merged();      // the object's part volumes, for the through march
 
     // Volumes. `snapshot` is what makes one undo remove the whole tab.
     bool add_tab_volumes(const TabSpec& spec, const TabScrew& screw, const std::string& action);
@@ -195,32 +194,26 @@ private:
     Hover m_hover;
     Pick  m_pick;
 
-    TabShape m_shape{ TabShape::TaperedU };
-    double   m_root_w{ 14. }, m_root_len{ 6. }, m_tip_len{ 10. }, m_taper{ 12. }, m_corner_r{ 2. };
+    TabTip     m_tip{ TabTip::Round };
+    double     m_root_w{ 14. }, m_length{ 16. }, m_hole_offset{ 6. }, m_taper{ 12. };
     TabPassage m_passage{ TabPassage::Hole };
-    double     m_hole_offset{ 0. }; // sliders only: sliding the passage between the two lengths
 
     int       m_standard{ -1 };
     double    m_diameter{ 3.4 }, m_tolerance{ 0. };
     ScrewFit  m_screw_fit{ ScrewFit::Free };
     BoreHead  m_head{ BoreHead::SocketHead };
     double    m_head_fit{ 0. };
-    double    m_depth{ 10. };
-    bool      m_through{ true };
 
     bool   m_boss{ false };
     double m_boss_d{ 6.6 }, m_boss_h{ 4. };
-    double m_thickness{ 3. }, m_bite{ 0.6 }, m_angle{ 0. };
+    double m_thickness{ 3. }, m_angle{ 0. };
 
-    // The last surface measurement, and the bite the geometry actually uses (the surface's own
-    // fall-away can raise it above the panel's value).
+    // The last surface measurement, and the weld the geometry actually uses: the tool's constant,
+    // raised by the surface's own fall-away on a curved pick.
     TabSurfaceProbe m_probe;
-    double          m_effective_bite{ 0. };
+    double          m_effective_weld{ 0. };
     std::string     m_why;
     double          m_probe_time{ 0. }; // throttles the probe while a slider is dragged
-
-    indexed_triangle_set m_merged_its; // object space, all MODEL_PART volumes
-    bool                 m_merged_dirty{ true };
 
     // Per-facet normals and neighbours of the hovered volume, for the face highlight. Shared with the
     // Cut and Holes gizmos' face picking (GLGizmosCommon).
