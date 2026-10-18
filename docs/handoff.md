@@ -67,7 +67,7 @@ Alt-drag snap (SNAP-8) is the newest of them.
 | `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
 | `port/MV-1` | merged (`f6f42220e1`) | Move gizmo: axes align to a picked flat face |
 | `port/MV-2` | merged (`56b5a6acba`) | Move pivot sticks to face coordinates; Alt lands it on another object (section 26) |
-| `port/TB-1` | **awaiting the owner's test** | Tabs gizmo: a mounting tab on a picked face (section 43) |
+| `port/TB-1` | merged (`a8960cc9d1`, user-tested 2026-10-18) | Tabs gizmo: a mounting tab on a picked face (section 43) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),

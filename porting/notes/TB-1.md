@@ -1,6 +1,7 @@
 # TB-1 — Mounting tabs: a plate on a picked face, with a screw passage and an optional boss
 
-Status: **code-complete on `port/TB-1`** off `port/integration` `2706b1a6db`, **not merged**: it is the
+Status: **MERGED** into `port/integration` as **`a8960cc9d1`** (user-tested 2026-10-18) and pushed.
+It was code-complete on `port/TB-1` off `port/integration` `2706b1a6db`; nothing was merged until the
 owner's to test in the app (MERGE_POLICY). P1 (the geometry, with tests) is `a5a39044f2`; P2 and P3
 (the gizmo and its MCP tool) are `ff6d2c8ef7`; **P5** (the placement rule, after the owner's report)
 is `128447f906`; P4 (this note, the manifest row, the handoff section and patch `78_TB-1.patch`)
