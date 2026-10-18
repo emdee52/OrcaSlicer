@@ -2289,19 +2289,32 @@ questions; the answers are the decisions below.
   table, `Free|Tap`, same counterbore / countersink seats), the boss sized to the head and given the
   thread's height for a tap, and the boss / screw section gone in Slot mode (a slot IS the passage).
   `tabs_gizmo` (29 actions) is the MCP surface, `tools_schema.py` regenerated (79 tools).
-- **Found by looking at the real panel**, not by a test: Stadium and Tapered U drew the **same** glyph
-  (both presets have a round tip); the glyph's tip half width now follows the preset's own taper.
+- **Found by the owner testing the built app**, and it was a modelling error, not a tweak: a side-face
+  click put the plate **in the wall's own plane** (a vertical slab with a horizontal screw). A mounting
+  tab on a wall is a **foot that stands out sideways and is screwed down from above**. The rule is now
+  `TabShapes::tab_frame` (libslic3r, so it is testable): on a wall the plate's normal is the **bed's up**,
+  the frame's `+x` is the face's normal projected into the bed's plane, the **root edge is placed on the
+  face** with its `bite` welded sideways into it, and the screw sits `root_len` out from it - so on a wall
+  the click marks where the root attaches, while on a flat face it still marks the screw. A face within
+  25 degrees of horizontal keeps the plate in its own plane (a foot under the part). Two things followed:
+  the probe measures the **root band** now (a tab is meant to reach past the material) and is skipped for
+  a wall, where it reported 0 % and the refusal - which did not know about walls - would have refused
+  **every** wall tab; and `through` on a tab hanging in the air falls back to the tab's own thickness.
+- **Also found by looking at the real panel**, not by a test: Stadium and Tapered U drew the **same**
+  glyph (both presets have a round tip); the glyph's tip half width now follows the preset's own taper.
 - **Verified**: build clean (`ALL_BUILD`, Release, no warnings in the new files); `libslic3r`
-  **1571/1571** via ctest; and the tool driven end to end through the MCP endpoint on a 20 mm cube -
-  `open` -> `anchor` (`coverage 1.000`, `fall_away 2.9e-06` on the flat face, so the bite stayed at the
-  panel's 0.6) -> `set_boss on` (the boss sized itself: `boss_d 9.5` = M3 socket 5.5 + 2 x 2) -> `add`,
-  after which the object carries **`Tab#1` (MODEL_PART)**, **`TabBoss#1` (MODEL_PART)** and
-  **`TabHole#1` (NEGATIVE_VOLUME)`**, and `ui_screenshot` captured the real panel. **Not verified**: the
-  slice of the assembled model (the export call was cancelled) - ordinary volume slicing, but the claim
-  is the owner's check, not a result here.
-- **Branch state**: `port/TB-1` off `port/integration` `2706b1a6db`, three commits (P1 geometry + tests,
-  P2/P3 gizmo + MCP, P4 docs + patch `78_TB-1.patch`), pushed. **Not merged**: awaiting the owner's test
-  in the app (MERGE_POLICY). Deliberately not in v1: a nut / insert pocket on the tab's free side, two
-  bore diameters in one stack (clearance + pilot), several tabs per placement, snapping the passage to a
-  detected hole, a root taper or gusset, and persistence.
+  **1574/1574** via ctest (17 `[TabShapes]` cases / 183 assertions, three of them pinning the placement
+  rule above); and the tool driven end to end through the MCP endpoint on a 20 mm cube - `open` ->
+  `anchor` (a side click now reports `wall: true` with the frame's x `(0, -1, 0)`, i.e. straight out of
+  the wall and parallel to the bed) -> `set_boss on` -> `add`, after which the object carries **`Tab#1`
+  (MODEL_PART)**, **`TabBoss#1` (MODEL_PART)** and **`TabHole#1` (NEGATIVE_VOLUME)`** and measures
+  **20 x 35.7973 x 20 mm / 8493.1 mm3** - 15.8 mm out of the wall, which is exactly `root_len 6 - weld
+  0.2 + tip_len 10`. **Not verified**: the slice of the assembled model (the export call was cancelled) -
+  ordinary volume slicing, but the claim is the owner's check, not a result here.
+- **Branch state**: `port/TB-1` off `port/integration` `2706b1a6db`, four commits (P1 geometry + tests,
+  P2/P3 gizmo + MCP, P5 the placement rule, P4 docs + patch `78_TB-1.patch`), pushed. **Not merged**:
+  awaiting the owner's test in the app (MERGE_POLICY). Deliberately not in v1: a nut / insert pocket on
+  the tab's free side, two bore diameters in one stack (clearance + pilot), several tabs per placement,
+  snapping the passage to a detected hole, a root taper or gusset, a tilt off the bed (the Angle turns
+  about the plate's normal only), and persistence.
 

@@ -2,9 +2,11 @@
 
 Status: **code-complete on `port/TB-1`** off `port/integration` `2706b1a6db`, **not merged**: it is the
 owner's to test in the app (MERGE_POLICY). P1 (the geometry, with tests) is `a5a39044f2`; P2 and P3
-(the gizmo and its MCP tool) are `ff6d2c8ef7`; P4 (this note, the manifest row, the handoff section and
-patch `78_TB-1.patch`) follows. Build clean (`ALL_BUILD`, Release), `libslic3r` **1571/1571** via ctest,
-and the tool driven end to end through the MCP endpoint on a 20 mm cube (see below).
+(the gizmo and its MCP tool) are `ff6d2c8ef7`; **P5** (the placement rule, after the owner's report)
+is `128447f906`; P4 (this note, the manifest row, the handoff section and patch `78_TB-1.patch`)
+follows. Build clean (`ALL_BUILD`, Release), `libslic3r` **1574/1574** via ctest, and the tool driven
+end to end through the MCP endpoint on a 20 mm cube twice (a side click and the first cut's mistake
+in the same place).
 
 Not a port. No Neotko or preFlight source: this is new work on the fork's own feature loop
 (`FEATURE_AGENT.md`), and it is the only ID in `manifest.tsv` with no `fork_sha`.
@@ -107,14 +109,61 @@ material and the second to auto-bite on a curved pick (a flat plate on a 5 mm cy
 Whole suite: `ctest --test-dir build/tests/libslic3r -C Release` — **1571/1571**, 0 failed.
 (The `libslic3r` suite was 1557 cases before ME-3's 14.)
 
+## P5 — the placement rule, after the owner's report
+
+The owner, testing the built app on a side-face click:
+
+> these are mounting tabs not whatever weird thing you have implemented right now with them on the
+> damn part itself... there needs to be an orientation or something because by default i want tab to
+> be placed parallel to the bed... the root of the tab should be attached to the face that you clicked
+
+The first cut built the frame from the picked facet's normal, so a wall gave a **vertical plate lying
+in the wall's own plane** with a horizontal screw. That is not a mounting tab: a tab on a wall is a
+**foot that stands out sideways and is screwed down from above**. The rule is now libslic3r's
+(`TabShapes::tab_frame`, so it is testable) and it is:
+
+- the plate's normal is **the bed's up** on a wall, so the tab prints flat and its screw goes down; the
+  frame's `+x` is the face's normal projected into the bed's plane, so the tab stands straight out of
+  the wall and the panel's Angle turns it about the bed;
+- **the root edge is placed ON that face**, `bite` into it (that sideways overlap is the weld), and the
+  screw sits `root_len` out from it - so on a wall the click marks where the ROOT attaches (the owner's
+  words) while on a flat face it still marks the screw. `Root length` therefore reads "how far the tab
+  reaches back from the screw, which on a wall is how far the screw sits out from the face";
+- a face within **25 degrees of horizontal keeps the plate in its own plane**, which is the same thing
+  for a bottom or top face (a foot under the part, welded by the bite in z, walking out from under it).
+  Anything steeper is a wall, including a 45 degree face.
+
+Two things followed from the rule, both found at runtime rather than by a test:
+
+- the probe now measures the **root band**, not the whole plate: a tab is meant to reach out past the
+  material, so what has to be over material is the strip it is welded by. It is also skipped entirely
+  for a wall, where the plate hangs beside the face and the root is welded by construction - measuring
+  the plate there reported **0 %** and, because the refusal did not know about walls, set `why` and
+  would have refused **every wall tab**.
+- with nothing to march through ("through" on a tab hanging in the air), the bore's fallback is the
+  tab's own thickness + bite, not the blind-depth field's value.
+
+**Tests** (17 cases / 183 assertions, `[TabShapes]`): a wall click gives a **horizontal slab** - its z
+extent IS its thickness, its underside is at the click, its root reaches into the wall and it stands
+out of it, with the width running along the wall; a bottom/top face keeps the plate in that face's
+plane; 25 degrees off horizontal is still the plate's plane and 45 is a wall; and the angle turns it
+about the bed, not the wall.
+
+**Runtime**, on the 20 mm cube with a side click (Tapered U, boss on, through): `wall: true`, the
+frame's x is `(0, -1, 0)` - straight out of the wall with no vertical component - and adding it takes
+the object to **20 x 35.7973 x 20 mm** and **8493.1 mm3**, i.e. 15.8 mm out of the wall
+(`root_len 6 - weld 0.2 + tip_len 10`). The panel's own line for a wall tab reads "Root on the face,
+plate parallel to the bed, screw 6.00 mm out of it."
+
 ## P2 — the tool (`GLGizmoTabs.{hpp,cpp}`)
 
-**The frame.** `+x` outward along the tab, `+y` the width, `+z` out of the surface, the passage at the
-ORIGIN - so the click marks the screw and every length is measured from it. It comes from the picked
-facet's normal, a tangent (the world axis least parallel to it, projected) and the panel's angle. The
-panel's mm are divided by `object_scale()` before `TabShapes` sees them, so one unit is decided in one
-place; the geometry is built in the frame and transformed to object space by `frame_to_obj()`, which is
-what the volumes are added in (identity volume matrix, the convention the Holes and Extrude gizmos use).
+**The frame.** `+x` outward along the tab, `+y` the width, `+z` **the plate's normal**, the passage at
+the ORIGIN - so the click marks the screw (or, on a wall, the root: see P5 above) and every length is
+measured from it. Which normal that is, and where the origin lands, is `TabShapes::tab_frame`'s job and
+is the P5 rule. The panel's mm are divided by `object_scale()` before `TabShapes` sees them, so one
+unit is decided in one place; the geometry is built in the frame and transformed to object space by
+`frame()`, which is what the volumes are added in (identity volume matrix, the convention the Holes and
+Extrude gizmos use).
 
 **The default angle** points away from the object's own centre, projected into the face plane: a
 mounting tab hangs off the nearest edge, and that is the one default that makes the first click usually
