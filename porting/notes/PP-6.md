@@ -1,11 +1,11 @@
-# PP-6 — Perforations: Lines up to 90°, a live preview, grooves for Grid, and a depth you pick
+# PP-6 — Perforations: Lines up to 90°, a live preview, grooves for Grid, a depth you pick, and a centred lattice
 
-Status: **implemented, build clean, tests green** (ctest 2413/2413). Product commits on `port/PP-6`,
+Status: **implemented, build clean, tests green** (ctest 2414/2414). Product commits on `port/PP-6`,
 docs+patch in the follow-up `port:` commit. Not merged and not pushed.
 
 ## What it is
 
-Five changes to the Perforations gizmo (PP-1/PP-2), asked for by the user after living with it:
+Six changes to the Perforations gizmo (PP-1/PP-2), asked for by the user after living with it:
 
 1. **Lines gets 0..90°**, so the single slot family can be turned all the way to vertical. The other
    three patterns keep their ranges.
@@ -17,6 +17,8 @@ Five changes to the Perforations gizmo (PP-1/PP-2), asked for by the user after 
    off, the holes leave floating squares of material the slicer cannot print.
 5. **"To": pick a second, parallel face** that the pattern stops on, instead of the first surface the
    depth probe finds - so a pattern can cross a void and stop on a chosen far wall.
+6. **The lattice is anchored at the centre of the face**, so a face that is not a whole number of pitches
+   across is cut the same on both parallel edges instead of differently on each.
 
 ## 1. Lines turns through the full quarter
 
@@ -135,11 +137,46 @@ own pick actions over MCP and is not part of `set_params`.
 - **MCP**: `pick_to` (screen_x/screen_y, or the viewport centre), `clear_to`, and `to_valid` /
   `to_distance` in every report.
 
+## 6. The lattice is anchored at the centre of the face
+
+The reported symptom: with a spacing that does not divide the face, the cut at one boundary edge does not
+match the cut at the parallel opposite one. The cause was the phase, not the clipping - three loops
+anchored the lattice on the bounding box's minimum corner (`line_family`'s first strip at
+`y0 + spacing/2`; `honeycomb`/`circles` starting a row at `bbox.min - dy` with the stagger driven by a
+counter that began at that corner), so the phase was a function of where the bounding box happened to
+start. The leftover at one end of the face was unrelated to the leftover at the other, and the lattice
+was not even symmetric about the face centre.
+
+The fix, in `PerforationPattern.cpp` only:
+
+- every index runs symmetrically about the centre, `-n .. n` with `n = ceil(farthest extent / pitch)`, and
+  features sit at `centre + k * pitch`;
+- the stagger follows the **row index's parity**, not a counter, so the negative half behaves (the parity
+  of a negative index is its own, two's complement);
+- therefore the mirror of every strip or cell about either centre axis is another strip or cell, and the
+  clipped pattern is invariant under a 180-degree turn about the centre - which is exactly the property
+  that makes the two parallel edges match;
+- index ranges are symmetric by construction rather than derived from both ends, because a range computed
+  from both ends can add one strip on one side in a sub-unit parity case;
+- **Lines is included**, and Grid inherits the fix twice over (it is two `line_family` calls).
+
+Rejected alternatives, and why: deriving the spacing from the face changes a value the user set, against
+the tool's own rule, and cannot work for the staggered lattices at all (their row pitch is
+`spacing * sqrt(3)/2`, so no spacing puts a whole number of features across both axes); a button or a mode
+adds a second code path for a state that is never better than the centred one (the corner phase is not
+aligned to anything meaningful); and anchoring on the clicked point - the pattern's origin is already
+there - only matches the two edges when the click is dead centre, so it does not answer the report.
+
+Unchanged: the four inputs, the margin, the clipping, the extrusion, and the partial feature at the edge
+(accepted by the user - a boundary still cuts through a cell). `spacing` remains exactly the pitch that
+was typed; only the phase moved. Each loop now places up to one extra feature beyond each edge, clipped by
+the intersection; `MAX_FEATURES = 20000` still bounds the work.
+
 ## Files
 
 | Kind | Path |
 |------|------|
-| Core | `src/libslic3r/PerforationPattern.{hpp,cpp}` (the two constants, the angle + kind rules, the forced Grid invert) |
+| Core | `src/libslic3r/PerforationPattern.{hpp,cpp}` (the two constants, the angle + kind rules, the forced Grid invert, the centred lattice) |
 | Gizmo | `src/slic3r/GUI/Gizmos/GLGizmoPerforation.{hpp,cpp}` |
 | MCP | `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp` (`angle` description, `pick_to`/`clear_to`, `to_valid`/`to_distance`, the two rules) |
 | Test | `tests/libslic3r/test_perforationpattern.cpp` |
@@ -155,8 +192,8 @@ Marker: `[ORCAPORT:PP-6]` at the sites listed by `grep -n "ORCAPORT:PP-6"`.
   Not asserted: equal area between 0° and 90°. On that rectangle the two happen to agree
   (6 rows x 100 mm = 10 columns x 60 mm = 600 mm of slot), but that is the numbers lining up, not a
   property of the pattern - the strip phase differs between the two axes.
-- Run: `[PerforationPattern]` **9 cases / 434 assertions**, all passed (6 before this batch). Full suite
-  `ctest --test-dir build/tests -C Release`: **2413 passed, 0 failed**, seven `RequiresApp`/plugin cases
+- Run: `[PerforationPattern]` **10 cases / 474 assertions**, all passed (6 before this batch). Full suite
+  `ctest --test-dir build/tests -C Release`: **2414 passed, 0 failed**, seven `RequiresApp`/plugin cases
   skipped as usual. Builds: `build_win.bat -s --tests` (the four touched TUs compiled), then an
   incremental `-s --no-configure` after the MCP rule fix below.
 - New cases:
@@ -165,6 +202,9 @@ Marker: `[ORCAPORT:PP-6]` at the sites listed by `grep -n "ORCAPORT:PP-6"`.
     floating-square property, stated as the thing that matters.
   - **The angle rule**: 80 → 0 on Grid, 30 and 45 kept, Grid → Lines kept, 120 → 0, and the isotropic
     patterns carry the pair bound.
+  - **Symmetry**: a 180-degree turn about the FACE centre leaves the pattern unchanged, all four kinds,
+    `invert` both ways, angle 0 and 30 where the angle applies - and the case asserts the inset's centre
+    equals the face centre, which is the uniform-margin step that makes an inset anchor a face anchor.
   - The pre-existing Grid assertion in the same file (`grid.front().holes.size() > 1`) had to **flip** to
     the new contract - it was written against the holes reading.
 - Runtime over MCP on the 20 mm cube (Release, `ORCA_EXT_MCP=1`): `open` → honeycomb/0/off; `pick_at` at
@@ -183,6 +223,11 @@ Marker: `[ORCAPORT:PP-6]` at the sites listed by `grep -n "ORCAPORT:PP-6"`.
   line against the wall thickness you know, then Perforate - and check that the cut reaches that face
   and not the first void. Two variants worth doing: a target that stops the cut *earlier* than the probe
   would have (a shorter hole), and a `Clear` that puts the depth back on the probe.
+- **Runtime, the centred lattice**: all four kinds created on a 4x cube face at `spacing 7` (80/7 is
+  deliberately not whole - the interesting case) and sliced to `idle` with only the pre-existing warning.
+  **Not reachable over MCP: seeing it.** A negative volume is buried inside the wall it cuts, so the
+  prepare view shows nothing new, and there is no MCP switch into the sliced preview - so the look of it
+  is yours: pick a face, use a spacing that does not divide it, and compare the two parallel edges.
 - Manual (user, in the app), the rest: (a) the Angle slider's right end reaches 90 and a Lines pattern
   goes vertical as it does; (b) switching Lines(80°) → Grid drops the angle to 0, and Grid shows no
   Invert row; (c) with a face picked, dragging Spacing / Hole width / Boundary / Angle moves the yellow

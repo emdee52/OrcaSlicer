@@ -1990,3 +1990,47 @@ regeneration MCP-3's own note asked for.
   angle + live preview, then the angle reset / Grid grooves / To), a `tools_schema.py` commit, then the
   `port:` docs+patch commit. Not merged and not pushed - the merge is the owner's gate.
 
+## 39. PP-6b - the pattern is anchored at the centre of the face (same branch `port/PP-6`)
+
+The owner's report: with a spacing that does not divide the face, the cut at one boundary edge does not
+match the cut at the parallel opposite edge. It was the phase, not the clipping.
+
+- **What it was.** Three loops anchored the lattice on the bounding box's minimum corner: `line_family`
+  laid its first strip at `y0 + spacing/2` and stepped by `spacing`; `honeycomb` and `circles` started a
+  row at `bbox.min - dy` and drove the stagger from a *counter* that began at that corner. The phase was
+  therefore f(`bbox.min`, `spacing`), so the leftover at one end of the face was unrelated to the
+  leftover at the other, and the lattice was not symmetric about the face centre at all.
+- **The fix.** Every index now runs symmetrically about the centre (`-n .. n`, with
+  `n = ceil(farthest extent / pitch)`), features sit at `centre + k*pitch`, and the stagger follows the
+  ROW INDEX's parity instead of a counter - so the mirror of every strip or cell about either centre axis
+  is another strip or cell, in the negative half too (the parity of a negative index is its own, two's
+  complement). Index ranges are built symmetric by construction rather than from the two ends, because a
+  range derived from both ends can add one strip on one side in a sub-unit parity case. **Lines is
+  included** and Grid inherits it twice over, being two `line_family` calls.
+- **Why not the other ways out.** Deriving the spacing from the face would change a value the user set,
+  against the tool's own rule ("the geometry uses exactly what is set; the UI never clamps one value
+  against another"), and it cannot work for the staggered lattices at all: their row pitch is
+  `spacing * sqrt(3)/2`, irrational against the column pitch, so no spacing puts a whole number of
+  features across both axes. A button or a mode would add a second code path for a state that is never
+  better than the centred one - the corner phase is not aligned to anything meaningful. Anchoring on the
+  clicked point instead of the centre (the pattern's origin is already there) only matches the two edges
+  if the click happens to be dead centre, so it does not solve the report.
+- **What did not change.** The two `spacing` `width` `boundary` `angle` inputs, the margin, the clipping,
+  the price of the extrusion, and the partial feature at the edge: a boundary still cuts through a cell,
+  which the owner accepted. Nothing about the face is recomputed, and `spacing` is still exactly the
+  pitch the user typed - only the phase moved. Each loop now places up to one extra feature beyond each
+  edge (clipped by the intersection), and the `MAX_FEATURES = 20000` guard is untouched.
+- **Verification.** A new symmetry case: a 180-degree turn about the **face** centre leaves the pattern
+  unchanged, for all four kinds, `invert` both ways, and the angle both 0 and 30 where the angle applies;
+  it also asserts that the inset's centre equals the face centre, which is what a uniform margin gives
+  and which is why anchoring on the inset lands on the face. `[PerforationPattern]` is now **10 cases /
+  474 assertions**; full `ctest` **2414 passed, 0 failed**. Runtime over MCP: all four kinds created on a
+  4x cube face at `spacing 7` (80/7 is deliberately not whole) and sliced to `idle` with only the
+  pre-existing `precise wall` warning.
+- **Not reachable over MCP**: seeing the pattern in the app. A negative volume is buried inside the wall
+  it cuts, so the prepare view shows nothing new, and there is no MCP switch into the sliced preview. The
+  eyeball check is in `notes/PP-6.md`: pick a face, use a spacing that does not divide it, and compare the
+  two parallel edges.
+- **Branch state**: same branch as section 38, one more product commit, docs and patch in the `port:`
+  commit. No `tools_schema.py` regen: nothing about the tool's schema changed.
+
