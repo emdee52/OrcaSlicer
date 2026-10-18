@@ -2123,3 +2123,59 @@ difference leaves a near-invisible negative leftover and reports nothing.
     logic is an exact-copy comparison; the owner's checklist has it.
 - **Branch state**: `port/MB-1`, branched from `port/integration` `40f7e1a70a`. Not merged, not pushed.
 
+## 41. MB-2 - the right-click Mesh boolean: not a union, and no longer silent (same branch `port/MB-1`)
+
+The owner asked: "is the right click mesh boolean a union then? is there no way to make it automatically
+make negatives into differences and positives into unions?" - and reported that it "doesn't actually do
+it" with **no error and no toast**.
+
+- **It is not a union, and it already does what was asked.** `GUI_Factories.cpp` attaches the context-menu
+  item to `obj_list()->boolean()`, which calls `Plater::combine_mesh_fff()`. That builds
+  `csg::model_to_csgmesh(mo, ..., mpartsPositive | mpartsNegative)`, where each volume maps as
+  `vol->is_model_part() ? CSGType::Union : CSGType::Difference` - every model part unioned, every
+  **negative** volume subtracted, in one operation - and then runs the same mcut kernel the gizmo uses.
+  One click, all volumes, type-aware. The gizmo is the *pairwise* tool; this is the one-shot.
+- **Two silent ways for a negative volume to do nothing.** (1) The pre-flight was *stricter than the
+  kernel*: `combine_mesh_fff` gated with `csg::check_csgmesh_booleans(range)`, which defaults to the
+  **CGAL** predicates (empty / `does_bound_a_volume` / `does_self_intersect`), and then executed with
+  **mcut**. A mesh carrying the slivers an earlier mcut boolean leaves behind can be refused there; a
+  refusal skips the whole boolean and falls back to "keep only the positive parts", so the cutter vanishes
+  and no cut is made. (2) `detail_mcut::perform_csg` applied each Difference with
+  `MeshBoolean::mcut::do_boolean(*dst, *src, "A_NOT_B")` and **discarded the outcome**: when mcut finds no
+  fragment for a cut, `do_boolean` keeps the part it could not cut, so the accumulated mesh comes out
+  exactly as it went in - the run reports success, the object is replaced by the result, the negative
+  volume is gone and its cut is missing, with nothing said. That is the same behaviour MB-1 found inside
+  the gizmo, now reported there too.
+- **What was changed.** `MeshBoolean::mcut::do_boolean` now **returns whether it changed the mesh** (the
+  one place that knows; callers that ignore it are unaffected). `csg::DifferenceReport` counts the
+  Difference parts asked for and how many changed nothing, including a Difference dropped because the
+  accumulated mesh or the part's kernel mesh was missing - equally silent before - and
+  `perform_csgmesh_booleans_mcut(range, report)` fills it. `Plater::combine_mesh_fff` passes the report,
+  fills a `Plater::ObjectBooleanReport` for its caller, **tells the user** through the same error channel
+  the failure path uses when a negative volume was not subtracted, and **logs it**
+  (`BOOST_LOG_TRIVIAL(info)`, so it is in `%APPDATA%\OrcaSlicer\log` and in `get_log_tail`). The gate now
+  checks with the kernel that runs (`use_mcut = true`: it keeps the part-is-empty test and drops the two
+  CGAL geometry predicates), and the fallback path logs its reason too. `ObjectList::boolean()` returns
+  that report, and the new MCP tool **`boolean_parts`** runs this exact path (it selects the object in the
+  Object list, which is what `boolean()` reads) and reports objects/volumes/triangles before and after
+  plus `negative_parts` / `negative_parts_not_subtracted` / `boolean_failed` / `message`.
+- **Verification.** Unit: a new case in `tests/libslic3r/test_meshboolean.cpp` builds the part list by
+  hand - a 20 mm cube as Union and a 4 mm cube as Difference - and asserts that a cutter 100 mm away is
+  **counted** (`offered 1`, `not_applied 1`) with the body's volume unchanged, while a cutter centred on
+  the body is applied (`not_applied 0`) and leaves the closed cavity of 7936 mm^3 (20^3 - 4^3).
+  `[MeshBoolean]` is 3 cases / 17 assertions; full `ctest` **2415 passed, 0 failed**. Runtime, over MCP on
+  a **duplicate** of the owner's object: `boolean_parts` gives `triangles_before 29540` (29 284 + the
+  256-triangle pocket) -> `triangles_after 42072`, volumes 2 -> 1, `negative_parts 1`,
+  `negative_parts_not_subtracted 0`, `boolean_failed false` - the same 42072 the gizmo's difference
+  produces, so **the right-click path cuts the hole correctly on the state the owner left behind**. The
+  gate's refusal lines (`check_csgmesh_booleans fails! ...`) appear in none of the recent sessions' logs,
+  so the earlier failure was not reproduced on that state: what is now certain is that if it recurs, it
+  says why - which is what could not be established before, and why the failure read as "it is a union".
+- **Deliberately not done.** *Why* mcut cannot subtract a given cutter (as opposed to reporting it) needs
+  a state that reproduces it; the report and the log now make that a one-line answer instead of a guess.
+  The trade-off accepted with the gate change: a mesh the CGAL predicates would have refused is now
+  handed to mcut, which can throw (caught, fallback + message) or return the source unchanged (now
+  counted) rather than being refused up front.
+- **Branch state**: same branch as MB-1, product commit + `port:` docs commit, patch `76_MB-2.patch`.
+  Not merged, not pushed.
+
