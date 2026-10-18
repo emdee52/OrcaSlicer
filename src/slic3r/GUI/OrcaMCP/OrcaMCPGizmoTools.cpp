@@ -15,6 +15,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
+#include "slic3r/GUI/Gizmos/GLGizmoTabs.hpp" // [ORCAPORT:TB-1]
 #include "slic3r/GUI/Gizmos/GLGizmoMeshBoolean.hpp" // [ORCAPORT:MCP-3]
 #include "slic3r/GUI/Gizmos/GLGizmosCommon.hpp"     // world_to_screen, for pick_at / screen reporting
 #include "slic3r/GUI/GUI_ObjectList.hpp"            // can_mesh_boolean, the toolbar's own gate
@@ -450,6 +451,7 @@ GLGizmosManager::EType gizmo_type_from_name(const std::string &name)
         {"counterbore_bridge", E::CounterboreBridge}, {"hole_walls", E::CounterboreBridge},
         {"holes", E::Holes}, {"edge_dress", E::EdgeDress}, {"edge_chamfer", E::EdgeDress},
         {"extrude", E::Extrude}, {"cavity_fill", E::Extrude}, {"perforation", E::Perforation},
+        {"tabs", E::Tabs}, {"tab", E::Tabs}, // [ORCAPORT:TB-1]
     };
     const auto it = kNames.find(name);
     return it == kNames.end() ? E::Undefined : it->second;
@@ -728,6 +730,104 @@ nlohmann::json mesh_boolean_gizmo_state(GLGizmoMeshBoolean &g, GLCanvas3D *canva
     const nlohmann::json sel = mesh_boolean_selection_json(canvas);
     for (const auto &[k, v] : sel.items())
         result[k] = v;
+    return result;
+}
+
+// [ORCAPORT:TB-1] The Tabs gizmo, opened on demand like the Holes one, and everything the panel can
+// show: the resolved geometry, what the surface under the tab looks like, and what is already there.
+GLGizmoTabs *active_tabs_gizmo(bool open_if_needed, bool *did_open)
+{
+    if (did_open != nullptr)
+        *did_open = false;
+    Plater     *plater = wxGetApp().plater();
+    GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+    if (canvas == nullptr)
+        return nullptr;
+    GLGizmosManager &mgr = canvas->get_gizmos_manager();
+
+    if (open_if_needed && mgr.get_current_type() != GLGizmosManager::EType::Tabs) {
+        Selection &sel = canvas->get_selection();
+        if (!sel.is_single_full_instance() && !plater->model().objects.empty()) {
+            int oid = sel.get_object_idx();
+            if (oid < 0)
+                oid = 0;
+            if (oid >= 0 && oid < int(plater->model().objects.size())) {
+                sel.clear();
+                sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas); // a hand-written selection must refresh the gizmo data
+            }
+        }
+        mgr.open_gizmo(GLGizmosManager::EType::Tabs);
+        canvas->set_as_dirty();
+        canvas->request_extra_frame();
+        if (did_open != nullptr)
+            *did_open = true;
+    }
+
+    if (mgr.get_current_type() != GLGizmosManager::EType::Tabs)
+        return nullptr;
+    return dynamic_cast<GLGizmoTabs *>(mgr.get_current());
+}
+
+nlohmann::json tabs_gizmo_state(GLGizmoTabs &g)
+{
+    const char *shape = "tapered_u";
+    switch (g.get_shape()) {
+    case TabShape::Rect: shape = "rect"; break;
+    case TabShape::Rounded: shape = "rounded"; break;
+    case TabShape::Stadium: shape = "stadium"; break;
+    case TabShape::TaperedU: shape = "tapered_u"; break;
+    case TabShape::Circle: shape = "circle"; break;
+    }
+
+    nlohmann::json tabs = nlohmann::json::array();
+    for (const std::array<double, 3> &c : g.list_tabs())
+        tabs.push_back({{"center", {{"x", c[0]}, {"y", c[1]}, {"z", c[2]}}}});
+
+    nlohmann::json names = nlohmann::json::array();
+    for (int i = 0; i < g.standard_count(); ++i)
+        names.push_back(g.standard_name(i));
+
+    nlohmann::json result = {
+        {"anchored", g.anchor_valid()},
+        {"shape", shape},
+        {"root_w", g.get_root_w()},
+        {"root_len", g.get_root_len()},
+        {"tip_len", g.get_tip_len()},
+        {"taper", g.get_taper()},
+        {"corner_r", g.get_corner_r()},
+        {"hole_offset", g.get_hole_offset()},
+        {"passage", g.get_passage() == TabPassage::Slot ? "slot" : "hole"},
+        {"standard_index", g.get_standard() + 1},
+        {"standard", g.standard_name(g.get_standard() + 1)},
+        {"standards", names},
+        {"diameter", g.get_diameter()},
+        {"tolerance", g.get_tolerance()},
+        {"true_diameter", g.true_diameter()},
+        {"screw_fit", g.get_screw_fit() == ScrewFit::Tap ? "tap" : "free"},
+        {"head", g.get_head() == BoreHead::None          ? "none"
+                 : g.get_head() == BoreHead::SocketHead  ? "socket"
+                 : g.get_head() == BoreHead::ButtonHead  ? "button"
+                                                         : "countersink"},
+        {"head_fit", g.get_head_fit()},
+        {"depth", g.get_depth()},
+        {"through", g.get_through()},
+        {"boss", g.get_boss()},
+        {"boss_d", g.get_boss_d()},
+        {"boss_h", g.get_boss_h()},
+        {"thickness", g.get_thickness()},
+        {"bite", g.get_bite()},
+        {"effective_bite", g.effective_bite()},
+        {"angle", g.get_angle()},
+        // What the surface under the tab looks like, which is what decides the bite and whether the
+        // tab can be added at all.
+        {"coverage", g.coverage()},
+        {"fall_away", g.fall_away()},
+        {"tabs_total", g.tab_count()},
+        {"tabs", tabs},
+    };
+    if (!g.status_why().empty())
+        result["why"] = g.status_why();
     return result;
 }
 
@@ -2022,6 +2122,165 @@ void OrcaMCPServer::register_gizmo_tools()
                     result["opened_now"]    = opened;
                     result["select_object"] = select_object;
                 }
+                return result;
+            });
+        }
+    });
+
+    register_tool(
+        {"tabs_gizmo",
+         "Drive the Tabs gizmo: place a mounting tab on a picked face and add it. The tab is a plate "
+         "lying in that face's plane with a screw passage through it and an optional boss, added as "
+         "ordinary volumes (MODEL_PART plate + boss, NEGATIVE_VOLUME seat and bore), so 'add' is one "
+         "undo. Actions: 'open' (selects the object if needed), 'status', 'anchor' (the click that "
+         "marks the screw: screen_x/screen_y, defaulting to the viewport centre), 'set_shape' "
+         "(rect|rounded|stadium|tapered_u|circle), 'set_root_w', 'set_root_len', 'set_tip_len', "
+         "'set_taper', 'set_corner_r', 'set_passage' (hole|slot), 'set_hole_offset', 'set_standard' "
+         "(0=Custom, else 1-based index into the standards list), 'set_diameter', 'set_tolerance', "
+         "'set_screw_fit' (free|tap), 'set_head' (none|socket|button|countersink), 'set_head_fit', "
+         "'set_depth', 'set_through', 'set_boss', 'set_boss_d', 'set_boss_h', 'set_thickness', "
+         "'set_bite', 'set_angle', 'add' (Add tab), 'remove_at' (right-click removal at "
+         "screen_x/screen_y), 'clear_all', 'refresh', 'close'. "
+         "'status' reports the panel's resolved numbers, the fraction of the tab the face is under "
+         "('coverage'), the bite the surface needs ('bite', which is above the panel's value on a "
+         "curved pick), 'why' when the tab cannot be added, and every tab already on the object.",
+         {{"type", "object"},
+          {"properties",
+           {{"action",
+             {{"type", "string"},
+              {"description",
+               "open | status | anchor | set_shape | set_root_w | set_root_len | set_tip_len | set_taper | "
+               "set_corner_r | set_passage | set_hole_offset | set_standard | set_diameter | set_tolerance | "
+               "set_screw_fit | set_head | set_head_fit | set_depth | set_through | set_boss | set_boss_d | "
+               "set_boss_h | set_thickness | set_bite | set_angle | add | remove_at | clear_all | refresh | close"}}},
+            {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
+            {"screen_x", {{"type", "number"}, {"description", "Canvas X for anchor / remove_at. Defaults to the viewport centre."}}},
+            {"screen_y", {{"type", "number"}, {"description", "Canvas Y for anchor / remove_at. Defaults to the viewport centre."}}},
+            {"shape", {{"type", "string"}, {"description", "rect | rounded | stadium | tapered_u | circle, for action=set_shape."}}},
+            {"passage", {{"type", "string"}, {"description", "hole | slot, for action=set_passage."}}},
+            {"head", {{"type", "string"}, {"description", "none | socket | button | countersink, for action=set_head."}}},
+            {"screw_fit", {{"type", "string"}, {"description", "free | tap, for action=set_screw_fit."}}},
+            {"value", {{"type", "number"},
+                       {"description", "The number for set_root_w / set_root_len / set_tip_len / set_taper / "
+                                       "set_corner_r / set_hole_offset / set_diameter / set_tolerance / set_head_fit / "
+                                       "set_depth / set_boss_d / set_boss_h / set_thickness / set_bite / set_angle (mm, or degrees "
+                                       "for the taper and the angle)."}}},
+            {"on", {{"type", "boolean"}, {"description", "For action=set_through / set_boss."}}},
+            {"standard_index", {{"type", "integer"}, {"description", "0=Custom, else 1-based standard index, for action=set_standard."}}}}},
+          {"required", {"action"}}},
+        [](const nlohmann::json &params) -> nlohmann::json {
+            const std::string action = params.value("action", std::string("status"));
+            return run_on_main_thread([action, params]() -> nlohmann::json {
+                Plater     *plater = wxGetApp().plater();
+                GLCanvas3D *canvas = plater != nullptr ? plater->get_view3D_canvas3D() : nullptr;
+                if (canvas == nullptr)
+                    return {{"status", "error"}, {"error", "No 3D canvas"}};
+
+                if (action == "close") {
+                    canvas->reset_all_gizmos();
+                    canvas->set_as_dirty();
+                    return {{"status", "ok"}, {"open", false}, {"action", action}};
+                }
+
+                if (params.contains("object_id")) {
+                    const int oid = params["object_id"].get<int>();
+                    if (oid < 0 || oid >= int(plater->model().objects.size()))
+                        return {{"status", "error"}, {"error", "Invalid object_id"}};
+                    Selection &sel = canvas->get_selection();
+                    sel.clear();
+                    sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas); // a hand-written selection must refresh the gizmo data
+                }
+
+                bool          opened = false;
+                GLGizmoTabs  *g      = active_tabs_gizmo(action == "open", &opened);
+                if (g == nullptr)
+                    return {{"status", "error"},
+                            {"open", false},
+                            {"error", "The Tabs gizmo is not open: select a single object first"}};
+
+                const double v = params.value("value", 0.);
+                if (action == "anchor" || action == "remove_at") {
+                    const Vec2d p = params.contains("screen_x") && params.contains("screen_y")
+                                        ? Vec2d(params["screen_x"].get<double>(), params["screen_y"].get<double>())
+                                        : Vec2d(0.5 * canvas->get_canvas_size().get_width(),
+                                                0.5 * canvas->get_canvas_size().get_height());
+                    const bool ok = action == "anchor" ? g->anchor_at(p) : g->remove_at(p);
+                    canvas->set_as_dirty();
+                    canvas->request_extra_frame();
+                    nlohmann::json result = tabs_gizmo_state(*g);
+                    result["status"]      = ok ? "ok" : "no_hit";
+                    result["action"]      = action;
+                    result["screen"]      = {{"x", p.x()}, {"y", p.y()}};
+                    return result;
+                }
+
+                if (action == "set_shape") {
+                    const std::string s = params.value("shape", std::string("tapered_u"));
+                    if (s == "rect") g->set_shape(TabShape::Rect);
+                    else if (s == "rounded") g->set_shape(TabShape::Rounded);
+                    else if (s == "stadium") g->set_shape(TabShape::Stadium);
+                    else if (s == "tapered_u") g->set_shape(TabShape::TaperedU);
+                    else if (s == "circle") g->set_shape(TabShape::Circle);
+                    else return {{"status", "error"}, {"error", "Unknown shape: " + s}};
+                } else if (action == "set_passage") {
+                    const std::string s = params.value("passage", std::string("hole"));
+                    if (s == "hole") g->set_passage(TabPassage::Hole);
+                    else if (s == "slot") g->set_passage(TabPassage::Slot);
+                    else return {{"status", "error"}, {"error", "Unknown passage: " + s}};
+                } else if (action == "set_screw_fit") {
+                    const std::string s = params.value("screw_fit", std::string("free"));
+                    if (s == "free") g->set_screw_fit(ScrewFit::Free);
+                    else if (s == "tap") g->set_screw_fit(ScrewFit::Tap);
+                    else return {{"status", "error"}, {"error", "Unknown screw_fit: " + s}};
+                } else if (action == "set_head") {
+                    const std::string s = params.value("head", std::string("none"));
+                    if (s == "none") g->set_head(BoreHead::None);
+                    else if (s == "socket") g->set_head(BoreHead::SocketHead);
+                    else if (s == "button") g->set_head(BoreHead::ButtonHead);
+                    else if (s == "countersink") g->set_head(BoreHead::Countersink);
+                    else return {{"status", "error"}, {"error", "Unknown head: " + s}};
+                } else if (action == "set_root_w") g->set_root_w(v);
+                else if (action == "set_root_len") g->set_root_len(v);
+                else if (action == "set_tip_len") g->set_tip_len(v);
+                else if (action == "set_taper") g->set_taper(v);
+                else if (action == "set_corner_r") g->set_corner_r(v);
+                else if (action == "set_hole_offset") g->set_hole_offset(v);
+                else if (action == "set_standard") g->set_standard(params.value("standard_index", 0));
+                else if (action == "set_diameter") g->set_diameter(v);
+                else if (action == "set_tolerance") g->set_tolerance(v);
+                else if (action == "set_head_fit") g->set_head_fit(v);
+                else if (action == "set_depth") g->set_depth(v);
+                else if (action == "set_through") g->set_through(params.value("on", true));
+                else if (action == "set_boss") g->set_boss(params.value("on", true));
+                else if (action == "set_boss_d") g->set_boss_d(v);
+                else if (action == "set_boss_h") g->set_boss_h(v);
+                else if (action == "set_thickness") g->set_thickness(v);
+                else if (action == "set_bite") g->set_bite(v);
+                else if (action == "set_angle") g->set_angle(v);
+                else if (action == "clear_all") g->clear_all();
+                else if (action == "refresh") g->refresh();
+                else if (action == "add") {
+                    const bool added = g->commit();
+                    canvas->set_as_dirty();
+                    canvas->request_extra_frame();
+                    nlohmann::json result = tabs_gizmo_state(*g);
+                    result["status"]      = added ? "ok" : "refused";
+                    result["action"]      = action;
+                    result["added"]       = added;
+                    return result;
+                } else if (action != "status" && action != "open") {
+                    return {{"status", "error"}, {"error", "Unknown action: " + action}};
+                }
+
+                canvas->set_as_dirty();
+                canvas->request_extra_frame();
+                nlohmann::json result = tabs_gizmo_state(*g);
+                result["status"] = "ok";
+                result["open"]   = true;
+                result["action"] = action;
+                if (action == "open")
+                    result["opened_now"] = opened;
                 return result;
             });
         }

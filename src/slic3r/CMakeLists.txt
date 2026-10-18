@@ -207,6 +207,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoExtrude.hpp
     GUI/Gizmos/GLGizmoPerforation.cpp
     GUI/Gizmos/GLGizmoPerforation.hpp
+    GUI/Gizmos/GLGizmoTabs.cpp
+    GUI/Gizmos/GLGizmoTabs.hpp
     GUI/Gizmos/GLGizmoMeasure.cpp
     GUI/Gizmos/GLGizmoMeasure.hpp
     GUI/Gizmos/GLGizmoMeshBoolean.cpp

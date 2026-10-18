@@ -1672,6 +1672,122 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': ['target_color'],
                   'type': 'object'},
   'name': 'suggest_color_mix'},
+ {'description': 'Drive the Tabs gizmo: place a mounting tab on a picked face '
+                 "and add it. The tab is a plate lying in that face's plane "
+                 'with a screw passage through it and an optional boss, added '
+                 'as ordinary volumes (MODEL_PART plate + boss, '
+                 "NEGATIVE_VOLUME seat and bore), so 'add' is one undo. "
+                 "Actions: 'open' (selects the object if needed), 'status', "
+                 "'anchor' (the click that marks the screw: screen_x/screen_y, "
+                 "defaulting to the viewport centre), 'set_shape' "
+                 "(rect|rounded|stadium|tapered_u|circle), 'set_root_w', "
+                 "'set_root_len', 'set_tip_len', 'set_taper', 'set_corner_r', "
+                 "'set_passage' (hole|slot), 'set_hole_offset', 'set_standard' "
+                 '(0=Custom, else 1-based index into the standards list), '
+                 "'set_diameter', 'set_tolerance', 'set_screw_fit' (free|tap), "
+                 "'set_head' (none|socket|button|countersink), 'set_head_fit', "
+                 "'set_depth', 'set_through', 'set_boss', 'set_boss_d', "
+                 "'set_boss_h', 'set_thickness', 'set_bite', 'set_angle', "
+                 "'add' (Add tab), 'remove_at' (right-click removal at "
+                 "screen_x/screen_y), 'clear_all', 'refresh', 'close'. "
+                 "'status' reports the panel's resolved numbers, the fraction "
+                 "of the tab the face is under ('coverage'), the bite the "
+                 "surface needs ('bite', which is above the panel's value on a "
+                 "curved pick), 'why' when the tab cannot be added, and every "
+                 'tab already on the object.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'action': {'description': 'open | status | '
+                                                           'anchor | set_shape '
+                                                           '| set_root_w | '
+                                                           'set_root_len | '
+                                                           'set_tip_len | '
+                                                           'set_taper | '
+                                                           'set_corner_r | '
+                                                           'set_passage | '
+                                                           'set_hole_offset | '
+                                                           'set_standard | '
+                                                           'set_diameter | '
+                                                           'set_tolerance | '
+                                                           'set_screw_fit | '
+                                                           'set_head | '
+                                                           'set_head_fit | '
+                                                           'set_depth | '
+                                                           'set_through | '
+                                                           'set_boss | '
+                                                           'set_boss_d | '
+                                                           'set_boss_h | '
+                                                           'set_thickness | '
+                                                           'set_bite | '
+                                                           'set_angle | add | '
+                                                           'remove_at | '
+                                                           'clear_all | '
+                                                           'refresh | close',
+                                            'type': 'string'},
+                                 'head': {'description': 'none | socket | '
+                                                         'button | '
+                                                         'countersink, for '
+                                                         'action=set_head.',
+                                          'type': 'string'},
+                                 'object_id': {'description': 'Object to '
+                                                              'select before '
+                                                              'opening.',
+                                               'type': 'integer'},
+                                 'on': {'description': 'For action=set_through '
+                                                       '/ set_boss.',
+                                        'type': 'boolean'},
+                                 'passage': {'description': 'hole | slot, for '
+                                                            'action=set_passage.',
+                                             'type': 'string'},
+                                 'screen_x': {'description': 'Canvas X for '
+                                                             'anchor / '
+                                                             'remove_at. '
+                                                             'Defaults to the '
+                                                             'viewport centre.',
+                                              'type': 'number'},
+                                 'screen_y': {'description': 'Canvas Y for '
+                                                             'anchor / '
+                                                             'remove_at. '
+                                                             'Defaults to the '
+                                                             'viewport centre.',
+                                              'type': 'number'},
+                                 'screw_fit': {'description': 'free | tap, for '
+                                                              'action=set_screw_fit.',
+                                               'type': 'string'},
+                                 'shape': {'description': 'rect | rounded | '
+                                                          'stadium | tapered_u '
+                                                          '| circle, for '
+                                                          'action=set_shape.',
+                                           'type': 'string'},
+                                 'standard_index': {'description': '0=Custom, '
+                                                                   'else '
+                                                                   '1-based '
+                                                                   'standard '
+                                                                   'index, for '
+                                                                   'action=set_standard.',
+                                                    'type': 'integer'},
+                                 'value': {'description': 'The number for '
+                                                          'set_root_w / '
+                                                          'set_root_len / '
+                                                          'set_tip_len / '
+                                                          'set_taper / '
+                                                          'set_corner_r / '
+                                                          'set_hole_offset / '
+                                                          'set_diameter / '
+                                                          'set_tolerance / '
+                                                          'set_head_fit / '
+                                                          'set_depth / '
+                                                          'set_boss_d / '
+                                                          'set_boss_h / '
+                                                          'set_thickness / '
+                                                          'set_bite / '
+                                                          'set_angle (mm, or '
+                                                          'degrees for the '
+                                                          'taper and the '
+                                                          'angle).',
+                                           'type': 'number'}},
+                  'required': ['action'],
+                  'type': 'object'},
+  'name': 'tabs_gizmo'},
  {'description': 'Batch transform multiple objects.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'transforms': {'description': 'Transform '

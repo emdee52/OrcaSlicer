@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <!-- Tabs: a part face with a mounting ear off its edge, carrying the screw's clearance hole.
+       Base = the face, accent = the tab and its passage. -->
+  <path d="M5.5 6 H24.5 A1.5 1.5 0 0 1 26 7.5 V32.5 A1.5 1.5 0 0 1 24.5 34 H5.5 A1.5 1.5 0 0 1 4 32.5 V7.5 A1.5 1.5 0 0 1 5.5 6 Z" style="fill:none;stroke:#2b3436;stroke-width:1.3"/>
+  <path d="M24 13.5 H31 A6.5 6.5 0 0 1 31 26.5 H24 Z" style="fill:none;stroke:#009688;stroke-width:1.5;stroke-linejoin:round"/>
+  <circle cx="31" cy="20" r="2.6" style="fill:none;stroke:#009688;stroke-width:1.5"/>
+</svg>

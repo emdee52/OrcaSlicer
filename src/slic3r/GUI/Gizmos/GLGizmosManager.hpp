@@ -109,6 +109,7 @@ public:
         EdgeDress, // [ORCAPORT:EF-1] chamfer / fillet a straight mesh edge
         Extrude, // [ORCAPORT:HF-3] turn a picked flat face into a solid, or fill a cavity
         Perforation, // [ORCAPORT:PP-1] stamp a perforation pattern into a planar face
+        Tabs, // [ORCAPORT:TB-1] a mounting tab on a picked face: screw passage plus an optional boss
         //SlaSupports,
         // BBS
         //FaceRecognition,
