@@ -99,7 +99,12 @@ public:
     double true_diameter() const;
 
     // --- actions ---
-    bool anchor_at(const Vec2d& screen_pos); // a click: put the passage under the cursor
+    // A click: the first one PICKS the face under the cursor (green highlight, nothing placed), and the
+    // next one on that same face PLACES the tab's passage where it landed. A click on another face
+    // moves the pick instead of placing, so an anchor can only ever be a point on the picked face.
+    bool click_at(const Vec2d& screen_pos);
+    bool pick_face_at(const Vec2d& screen_pos); // just the pick, for a caller that wants it alone
+    bool anchor_at(const Vec2d& screen_pos);    // place on the picked face (false when not on it)
     void clear_anchor();
     bool commit();          // Add tab
     bool remove_hovered();  // right-click a tab already added
@@ -109,6 +114,8 @@ public:
 
     // --- readouts, for the panel and for the MCP tools ---
     bool          anchor_valid() const { return m_pick.valid; }
+    bool          face_picked() const { return m_face.valid; }
+    int           face_region_facets() const { return int(m_face.region.size()); }
     int           tab_count() const;
     double        coverage() const { return m_probe.coverage; }
     double        fall_away() const { return m_probe.fall_away; }
@@ -141,6 +148,16 @@ private:
         Vec3d              hit_obj{ Vec3d::Zero() }; // object space
     };
 
+    // The face the user PICKED, which is what a tab may be placed on. It is highlighted green, and the
+    // tab's anchor is only ever a point on it.
+    struct Face
+    {
+        bool               valid{ false };
+        const ModelVolume* mv{ nullptr };
+        int                facet{ -1 };
+        std::vector<int>   region; // its coplanar facets, which is what the highlight and the test use
+    };
+
     // The anchored placement: what the frame is built from, plus the object units the panel's mm are
     // converted into.
     struct Pick
@@ -161,10 +178,18 @@ private:
 
     void        update_hover(const Vec2d& screen_pos);
     void        clear_hover();
+    // The face pick: `pick_face` takes it from a hover, `on_picked_face` is the test a placement has to
+    // pass, and `clear_face` drops it.
+    void        pick_face(const Hover& h);
+    void        clear_face();
+    bool        on_picked_face(const Hover& h) const;
     // Where the tab goes, from the picked face, the click and the angle (libslic3r/TabShapes). The
     // frame's +z is the plate's normal, so `wall` says whether the plate is parallel to the bed.
     // `out_bite` receives the bite the plate itself carries (see the note in the implementation).
     TabFrame    frame(double* out_bite = nullptr) const;
+    // The same frame for an arbitrary point, which is how the ghost follows the cursor across the
+    // picked face before it is placed.
+    TabFrame    frame_at(const ModelVolume* mv, int facet, const Vec3d& click_obj, double* out_bite) const;
     Transform3d frame_to_volume(const ModelVolume* mv) const;     // ... and -> that volume's mesh
 
     // The spec in object units, with the weld the surface needs and the bore's depth resolved. `why`
@@ -192,6 +217,7 @@ private:
     const HoleStandard* screw_standard() const; // nullptr for the Custom entry
 
     Hover m_hover;
+    Face  m_face;
     Pick  m_pick;
 
     TabTip     m_tip{ TabTip::Round };
@@ -216,11 +242,15 @@ private:
     double          m_probe_time{ 0. }; // throttles the probe while a slider is dragged
 
     // Per-facet normals and neighbours of the hovered volume, for the face highlight. Shared with the
-    // Cut and Holes gizmos' face picking (GLGizmosCommon).
+    // Cut and Holes gizmos' face picking (GLGizmosCommon). Two caches: the hover and the picked face can
+    // be on different volumes, and one cache would then rebuild on every frame.
     FaceRegionCache m_face_cache;
+    FaceRegionCache m_pick_cache;
 
-    // Preview overlays, in the fork's colours: teal surface, orange proposal, green added, red cut.
+    // Preview overlays, in the fork's colours: teal surface, green picked face, orange proposal, green
+    // added, red cut.
     PickingModel m_preview_face;
+    PickingModel m_preview_picked;
     PickingModel m_preview_tab;
     PickingModel m_preview_added;
     PickingModel m_preview_cut;

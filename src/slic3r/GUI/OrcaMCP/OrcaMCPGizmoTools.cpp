@@ -781,6 +781,9 @@ nlohmann::json tabs_gizmo_state(GLGizmoTabs &g)
 
     nlohmann::json result = {
         {"anchored", g.anchor_valid()},
+        // The face pick: a tab is only ever placed on the face 'pick_face' took.
+        {"face_picked", g.face_picked()},
+        {"face_region_facets", g.face_region_facets()},
         // Placement: a wall click gives a plate parallel to the bed (the frame's +z is the bed's up),
         // a face within 25 degrees of horizontal keeps the plate in that face's own plane. `axis` is
         // the frame's +x: the direction the tab reaches out in.
@@ -2144,10 +2147,10 @@ void OrcaMCPServer::register_gizmo_tools()
            {{"action",
              {{"type", "string"},
               {"description",
-               "open | status | anchor | set_shape | set_root_w | set_root_len | set_tip_len | set_taper | "
-               "set_corner_r | set_passage | set_hole_offset | set_standard | set_diameter | set_tolerance | "
-               "set_screw_fit | set_head | set_head_fit | set_depth | set_through | set_boss | set_boss_d | "
-               "set_boss_h | set_thickness | set_bite | set_angle | add | remove_at | clear_all | refresh | close"}}},
+               "open | status | pick_face | anchor | set_tip | set_root_w | set_length | set_taper | set_passage | "
+               "set_hole_offset | set_standard | set_diameter | set_tolerance | "
+               "set_screw_fit | set_head | set_head_fit | set_boss | set_boss_d | "
+               "set_boss_h | set_thickness | set_angle | add | remove_at | clear_all | refresh | close"}}},
             {"object_id", {{"type", "integer"}, {"description", "Object to select before opening."}}},
             {"screen_x", {{"type", "number"}, {"description", "Canvas X for anchor / remove_at. Defaults to the viewport centre."}}},
             {"screen_y", {{"type", "number"}, {"description", "Canvas Y for anchor / remove_at. Defaults to the viewport centre."}}},
@@ -2195,12 +2198,14 @@ void OrcaMCPServer::register_gizmo_tools()
                             {"error", "The Tabs gizmo is not open: select a single object first"}};
 
                 const double v = params.value("value", 0.);
-                if (action == "anchor" || action == "remove_at") {
+                if (action == "pick_face" || action == "anchor" || action == "remove_at") {
                     const Vec2d p = params.contains("screen_x") && params.contains("screen_y")
                                         ? Vec2d(params["screen_x"].get<double>(), params["screen_y"].get<double>())
                                         : Vec2d(0.5 * canvas->get_canvas_size().get_width(),
                                                 0.5 * canvas->get_canvas_size().get_height());
-                    const bool ok = action == "anchor" ? g->anchor_at(p) : g->remove_at(p);
+                    const bool ok = action == "pick_face" ? g->pick_face_at(p)
+                                    : action == "anchor"  ? g->anchor_at(p)
+                                                          : g->remove_at(p);
                     canvas->set_as_dirty();
                     canvas->request_extra_frame();
                     nlohmann::json result = tabs_gizmo_state(*g);

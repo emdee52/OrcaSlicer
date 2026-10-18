@@ -45,6 +45,7 @@ constexpr const char *TAB_HOLE_NAME = "TabHole";
 // add or cut, and what has already been added / removed. A tab has no separate "picked face" colour -
 // the anchor is a point, not a face, and what it picks is the tab the orange mesh already shows.
 const ColorRGBA FACE_COLOR     = gizmo_surface_colour();
+const ColorRGBA PICKED_FACE_COLOR = gizmo_picked_colour();
 const ColorRGBA PROPOSED_COLOR = gizmo_proposed_colour();
 const ColorRGBA ADDED_COLOR    = gizmo_added_colour();
 const ColorRGBA CUT_COLOR      = gizmo_cut_colour();
@@ -257,7 +258,14 @@ void GLGizmoTabs::update_hover(const Vec2d &screen_pos)
 // something.
 TabFrame GLGizmoTabs::frame(double *out_bite) const
 {
-    if (!m_pick.valid) {
+    if (!m_pick.valid)
+        return frame_at(nullptr, -1, Vec3d::Zero(), out_bite);
+    return frame_at(m_pick.mv, m_pick.facet, m_pick.click_obj, out_bite);
+}
+
+TabFrame GLGizmoTabs::frame_at(const ModelVolume *mv, int facet, const Vec3d &click_obj, double *out_bite) const
+{
+    if (mv == nullptr || facet < 0) {
         if (out_bite != nullptr)
             *out_bite = WELD_MM;
         return TabFrame();
@@ -266,15 +274,15 @@ TabFrame GLGizmoTabs::frame(double *out_bite) const
     const double root_obj = std::clamp(m_hole_offset, hole_offset_min(), hole_offset_max()) * k;
     const double weld_obj = std::clamp(m_effective_weld, WELD_MM, CURVE_DROP_MAX) * k;
 
-    const TabFrame probe = tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, 0., m_angle);
+    const Vec3d normal = facet_normal_in_world(mv->mesh().its, facet, mv->get_matrix()).normalized();
+    const TabFrame probe = tab_frame(normal, click_obj, object_centre(), root_obj, 0., m_angle);
     // Which side the weld goes in: on a wall the plate enters the face SIDEWAYS (tab_frame's origin
     // carries it, and the plate must not also sink below the click or a foot would sit on nothing); on
     // a face the plate lies in, the plate itself is pushed in along its own normal. Doing both would
     // embed it twice.
     if (out_bite != nullptr)
         *out_bite = probe.wall ? 0.05 : weld_obj;
-    return probe.wall ? tab_frame(m_pick.normal_obj, m_pick.click_obj, object_centre(), root_obj, weld_obj, m_angle)
-                      : probe;
+    return probe.wall ? tab_frame(normal, click_obj, object_centre(), root_obj, weld_obj, m_angle) : probe;
 }
 
 Transform3d GLGizmoTabs::frame_to_volume(const ModelVolume *mv) const
@@ -283,11 +291,67 @@ Transform3d GLGizmoTabs::frame_to_volume(const ModelVolume *mv) const
     return mv == nullptr ? f : mv->get_matrix().inverse() * f;
 }
 
-bool GLGizmoTabs::anchor_at(const Vec2d &screen_pos)
+void GLGizmoTabs::pick_face(const Hover &h)
+{
+    Face f;
+    f.valid  = true;
+    f.mv     = h.mv;
+    f.facet  = h.facet;
+    f.region = coplanar_region(h.mv, size_t(h.facet), m_pick_cache);
+    m_face   = std::move(f);
+    m_preview_dirty = true;
+}
+
+void GLGizmoTabs::clear_face()
+{
+    if (!m_face.valid)
+        return;
+    m_face = Face();
+    m_preview_dirty = true;
+}
+
+// Whether the cursor is on the face that was picked: the same volume, and a facet of the same coplanar
+// region (a flat face is several triangles, so the facet alone is not a stable test).
+bool GLGizmoTabs::on_picked_face(const Hover &h) const
+{
+    return m_face.valid && h.valid && h.mv == m_face.mv && region_has_facet(m_face.region, h.facet);
+}
+
+bool GLGizmoTabs::pick_face_at(const Vec2d &screen_pos)
 {
     update_hover(screen_pos);
     if (!m_hover.valid || m_hover.mv == nullptr || m_hover.facet < 0)
         return false;
+    pick_face(m_hover);
+    m_parent.set_as_dirty();
+    return true;
+}
+
+// One click: the first one picks the face under the cursor, the next one ON that face places the
+// passage. A click on another face moves the pick, so an anchor is only ever on the picked face.
+bool GLGizmoTabs::click_at(const Vec2d &screen_pos)
+{
+    update_hover(screen_pos);
+    if (!m_hover.valid || m_hover.mv == nullptr || m_hover.facet < 0) {
+        clear_anchor();
+        clear_face();
+        m_parent.set_as_dirty();
+        return false;
+    }
+    if (!on_picked_face(m_hover)) {
+        clear_anchor();
+        pick_face(m_hover);
+        m_parent.set_as_dirty();
+        return true;
+    }
+    return anchor_at(screen_pos);
+}
+
+bool GLGizmoTabs::anchor_at(const Vec2d &screen_pos)
+{
+    update_hover(screen_pos);
+    if (!on_picked_face(m_hover))
+        return false; // the tab may only be placed on the face that was picked
 
     Vec3d n = facet_normal_in_world(m_hover.mv->mesh().its, m_hover.facet, m_hover.mv->get_matrix());
     if (!n.allFinite() || n.norm() < 1e-9)
@@ -522,6 +586,7 @@ void GLGizmoTabs::rebuild_preview()
 {
     m_preview_dirty = false;
     m_preview_face.reset();
+    m_preview_picked.reset();
     m_preview_tab.reset();
     m_preview_added.reset();
     m_preview_cut.reset();
@@ -531,9 +596,23 @@ void GLGizmoTabs::rebuild_preview()
     if (mo == nullptr)
         return;
 
-    // The face under the cursor, in the fork's teal: the surface the tab would sit on, lifted a hair
-    // so it does not z-fight with itself.
-    if (m_hover.valid && m_hover.mv != nullptr && m_hover.facet >= 0) {
+    // The PICKED face in the fork's green: it is what a tab may be placed on, and it stays lit until
+    // another face is clicked.
+    if (m_face.valid && m_face.mv != nullptr) {
+        indexed_triangle_set patch = build_coplanar_patch(m_face.mv, m_face.region, m_pick_cache, 0.021f);
+        if (!patch.indices.empty()) {
+            const Transform3d m = m_face.mv->get_matrix();
+            if (!m.isApprox(Transform3d::Identity()))
+                for (stl_vertex &p : patch.vertices)
+                    p = (m * p.cast<double>()).cast<float>();
+            m_preview_picked.model.init_from(patch);
+            m_preview_picked.model.set_color(PICKED_FACE_COLOR);
+        }
+    }
+
+    // The face under the cursor, in the fork's teal - skipped while it IS the picked face, where the
+    // green already says everything and the two would only muddy each other.
+    if (m_hover.valid && m_hover.mv != nullptr && m_hover.facet >= 0 && !on_picked_face(m_hover)) {
         const std::vector<int> region = coplanar_region(m_hover.mv, size_t(m_hover.facet), m_face_cache);
         indexed_triangle_set   patch  = build_coplanar_patch(m_hover.mv, region, m_face_cache, 0.02f);
         if (!patch.indices.empty()) {
@@ -549,13 +628,21 @@ void GLGizmoTabs::rebuild_preview()
     // What the current values would add, in the fork's orange: the plate and its boss, and the screw
     // they are cut by (both go in one overlay - the cutter is inside the plate, and one colour is what
     // "this is the geometry the panel would make" means).
-    if (m_pick.valid) {
-        std::string    why;
-        const TabSpec  spec  = build_spec(&why);
-        const TabScrew screw = build_screw(spec);
+    // The proposed tab: at the anchored point once it is placed, and otherwise following the cursor
+    // across the picked face - the same frame either way, so the ghost is exactly what a click makes.
+    const bool ghost_at_cursor = !m_pick.valid && on_picked_face(m_hover);
+    if (m_pick.valid || ghost_at_cursor) {
+        std::string why;
+        // The probe's reading belongs to the ANCHORED placement; a cursor ghost is drawn from the last
+        // one, which is what makes a slider drag cheap.
+        const TabFrame  ghost = ghost_at_cursor
+                                    ? frame_at(m_hover.mv, m_hover.facet, m_hover.hit_obj, nullptr)
+                                    : frame(nullptr);
+        const TabSpec   spec  = build_spec(&why);
+        const TabScrew  screw = build_screw(spec);
         // A wall tab's plate hangs beside the face and the probe does not measure it (its root is welded
         // by construction), so neither the coverage nor the curl rule can apply there.
-        const bool wall = frame(nullptr).wall;
+        const bool wall = ghost.wall;
         if (!why.empty())
             m_why = why;
         else if (!wall && m_probe.coverage < COVERAGE_REFUSE)
@@ -565,12 +652,12 @@ void GLGizmoTabs::rebuild_preview()
         else if (!wall && m_effective_weld > CURVE_DROP_MAX)
             m_why = _u8L("The face curves away too fast for a tab this size: shorten it, or pick a flatter one.");
 
-        indexed_triangle_set ghost = make_tab_plate(spec);
-        its_merge(ghost, make_tab_boss(spec));
-        its_merge(ghost, make_tab_screw(spec, screw));
-        if (!ghost.indices.empty()) {
-            its_transform(ghost, frame(nullptr).to_obj);
-            m_preview_tab.model.init_from(ghost);
+        indexed_triangle_set ghost_its = make_tab_plate(spec);
+        its_merge(ghost_its, make_tab_boss(spec));
+        its_merge(ghost_its, make_tab_screw(spec, screw));
+        if (!ghost_its.indices.empty()) {
+            its_transform(ghost_its, ghost.to_obj);
+            m_preview_tab.model.init_from(ghost_its);
             m_preview_tab.model.set_color(PROPOSED_COLOR);
         }
     }
@@ -989,6 +1076,7 @@ void GLGizmoTabs::on_set_state()
         m_parent.set_as_dirty();
     } else {
         clear_anchor();
+        clear_face();
         clear_hover();
     }
 }
@@ -1019,6 +1107,10 @@ void GLGizmoTabs::data_changed(bool /*is_serializing*/)
         // but it does not survive the volume it pointed at going away.
         if (m_pick.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_pick.mv) == mo->volumes.end())
             clear_anchor();
+        if (m_face.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_face.mv) == mo->volumes.end()) {
+            clear_face();
+            clear_anchor();
+        }
         m_parent.set_as_dirty();
     }
 }
@@ -1280,9 +1372,12 @@ void GLGizmoTabs::on_render_input_window(float x, float y, float bottom_limit)
     // The state line: where the tab stands, what it is over, and anything that stops it.
     if (!m_why.empty())
         gizmo_hint(m_why.c_str(), GizmoCol::Warn);
+    else if (!m_face.valid)
+        gizmo_hint(_u8L("Click a face to pick it. Then click anywhere on that face to place the tab.")
+                       .c_str());
     else if (!m_pick.valid)
-        gizmo_hint(_u8L("Click a face to place the tab. On a wall the click is where its root attaches; on a "
-                        "flat face it marks the screw.")
+        gizmo_hint(_u8L("Face picked. Click on it to place the tab: on a wall the click is where its root "
+                        "attaches, on a flat face it marks the screw.")
                        .c_str());
     else {
         const int         pct  = int(m_probe.coverage * 100. + 0.5);
@@ -1342,9 +1437,10 @@ bool GLGizmoTabs::on_mouse(const wxMouseEvent &mouse_event)
 
     if (!mouse_event.LeftUp())
         return false;
-    // A click anchors the screw. Clicking off the object falls through to the canvas, and clicking a
-    // face again moves the tab.
-    if (!anchor_at(m_parent.get_local_mouse_position()))
+    // One click picks the face, the next one ON it places the tab; a click on another face moves the
+    // pick, and a click off the object drops both. `click_at` tells the two apart and returns whether
+    // anything happened, so a click on empty space still falls through to the canvas.
+    if (!click_at(m_parent.get_local_mouse_position()))
         return false;
     m_parent.request_extra_frame();
     return true;
