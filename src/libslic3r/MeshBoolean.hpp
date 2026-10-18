@@ -116,7 +116,11 @@ TriangleMesh mcut_to_triangle_mesh(const McutMesh &mcutmesh);
 bool do_boolean_single(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts);
 // do boolean of mesh with multiple volumes and save result to srcMesh
 // Both srcMesh and cutMesh may have multiple volumes.
-void do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
+// [ORCAPORT:MB-2] Returns whether the boolean CHANGED srcMesh. It is false when mcut produced no
+// resulting fragment: do_boolean keeps the part it could not cut, so srcMesh comes out exactly as it
+// went in. That is the "the negative part did nothing and vanished" case, until now indistinguishable
+// from a success.
+bool do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
 
 
 // do boolean and convert result to TriangleMesh

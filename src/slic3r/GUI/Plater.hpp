@@ -592,7 +592,24 @@ public:
     // open and written on publish or on loading a published 3MF
     bool get_pending_published(std::vector<std::string>& out_keys, std::vector<Slic3r::PublishedMaterialEntry>& out_material) const;
     void set_pending_published(const std::vector<std::string>& published_keys, const std::vector<Slic3r::PublishedMaterialEntry>& material_keys);
-    static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func = {});
+    // [ORCAPORT:MB-2] What an object's own boolean did with its NEGATIVE volumes. `combine_mesh_fff`
+    // is the whole-object boolean behind the context menu's "Mesh boolean"; a negative volume the kernel
+    // could not subtract leaves the mesh without its cut, and until now that was indistinguishable from
+    // a successful run. A caller that cares (the MCP tool that runs this path) reads this instead of
+    // guessing from triangle counts.
+    struct ObjectBooleanReport {
+        int         negative_parts{ 0 };   // negative volumes handed to the kernel
+        int         not_subtracted{ 0 };   // ...of those, how many it could not subtract: no cut was made
+        bool        failed{ false };       // the boolean did not run at all (pre-flight or kernel failure)
+        std::string message;               // the user-facing reason, empty when everything was applied
+    };
+    static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id,
+                                         std::function<void(const std::string&)> notify_func = {},
+                                         ObjectBooleanReport *out_report = nullptr);
+    // [ORCAPORT:MB-2] Where the object context menu's "Mesh boolean" leaves its outcome, for a caller that
+    // cannot get a return value from ObjectList::boolean() - the MCP tool that runs the same path.
+    void set_last_object_boolean_report(const ObjectBooleanReport &report) { m_last_object_boolean_report = report; }
+    const ObjectBooleanReport &last_object_boolean_report() const { return m_last_object_boolean_report; }
     void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false, FileType file_type = FT_STL);
     //BBS: remove amf
     //void export_amf();
@@ -1111,6 +1128,8 @@ private:
     int m_check_status = 0; // 0 not check, 1 check success, 2 check failed
     bool m_b_plate_toolbar_image_dirty{ true };
     unsigned m_plate_toolbar_image_version{ 0 };
+    // [ORCAPORT:MB-2] The outcome of the last object's own boolean - see the accessors above.
+    ObjectBooleanReport m_last_object_boolean_report;
 
     void suppress_snapshots();
     void allow_snapshots();

@@ -80,6 +80,27 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'auto_orient'},
+ {'description': "Run the object's own Mesh boolean in one shot: union every "
+                 'model part and subtract every NEGATIVE volume, replacing the '
+                 'object with the result - the same operation as the Mesh '
+                 'boolean item in the object context menu. Reports '
+                 'objects/volumes/triangles before and after, and the '
+                 "boolean's own outcome: negative_parts (negative volumes "
+                 'handed to the kernel), negative_parts_not_subtracted (how '
+                 'many of them it could not subtract, so that cut is missing '
+                 'and the object holds the union of the model parts), '
+                 'boolean_failed and message. The same message is in the app '
+                 'log - get_log_tail.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'object_id': {'description': 'Object index '
+                                                              '(0-based). It '
+                                                              'must have more '
+                                                              'than one '
+                                                              'volume.',
+                                               'type': 'integer'}},
+                  'required': ['object_id'],
+                  'type': 'object'},
+  'name': 'boolean_parts'},
  {'description': 'Remove Variable Layer Height, revert to fixed.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'include_preview': {'description': 'Include a '
@@ -994,7 +1015,12 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                  "(union|difference|intersection), 'set_delete_input' (bool), "
                  "'pick_source', 'pick_tool', 'probe_pick', 'run' (set the "
                  'mode, pick both volumes by index and apply, in one '
-                 "callback), 'apply', 'close'.",
+                 "callback), 'apply', 'close'. A NEGATIVE volume is a cutter, "
+                 'so a pick naming one always lands in the tool slot whatever '
+                 "slot was asked for. 'run' and 'apply' report "
+                 'performed/no_op/triangles_in/triangles_out next to the '
+                 'volume counts: no_op means the kernel handed the source back '
+                 'unchanged, which cuts nothing and still consumes the tool.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'action': {'description': 'open | status | '
                                                            'set_operation | '

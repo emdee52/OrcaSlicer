@@ -133,6 +133,21 @@ nlohmann::json find_holes_json(int object_id, bool include_vertical)
     };
 }
 
+// [ORCAPORT:MB-1] After any hand-written Selection change, refresh the gizmos' common data.
+//
+// Setting a selection by hand bypasses the canvas path that calls GLGizmosManager::update_data()
+// (GLCanvas3D does it after a real click; GizmoObjectManipulation.cpp:639 does it after the same kind of
+// hand-written change). Without it a gizmo that is already open keeps working against the PREVIOUS
+// object: SelectionInfo and the raycaster still point at it, so a pick that names a volume by index
+// resolves against the old volume list and the operation lands on the wrong object - while every report
+// in these tools reads the canvas selection and therefore names the new one. That is how a scripted
+// Mesh boolean on a duplicate came to modify the original.
+void refresh_gizmo_data(GLCanvas3D *canvas)
+{
+    if (canvas != nullptr)
+        canvas->get_gizmos_manager().update_data();
+}
+
 GLGizmoHoles *active_holes_gizmo(bool open_if_needed)
 {
     Plater     *plater = wxGetApp().plater();
@@ -150,6 +165,7 @@ GLGizmoHoles *active_holes_gizmo(bool open_if_needed)
             if (oid >= 0 && oid < int(plater->model().objects.size())) {
                 sel.clear();
                 sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
             }
         }
         mgr.open_gizmo(GLGizmosManager::EType::Holes);
@@ -280,6 +296,7 @@ GLGizmoCut3D *active_cut_gizmo(bool open_if_needed)
             if (oid >= 0 && oid < int(plater->model().objects.size())) {
                 sel.clear();
                 sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
             }
         }
         mgr.open_gizmo(GLGizmosManager::EType::Cut);
@@ -310,6 +327,7 @@ GLGizmoEdgeDress *active_edge_dress_gizmo(bool open_if_needed)
             if (oid >= 0 && oid < int(plater->model().objects.size())) {
                 sel.clear();
                 sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
             }
         }
         mgr.open_gizmo(GLGizmosManager::EType::EdgeDress);
@@ -340,6 +358,7 @@ GLGizmoExtrude *active_extrude_gizmo(bool open_if_needed)
             if (oid >= 0 && oid < int(plater->model().objects.size())) {
                 sel.clear();
                 sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
             }
         }
         mgr.open_gizmo(GLGizmosManager::EType::Extrude);
@@ -455,6 +474,7 @@ void select_object_for_gizmo(int object_id)
     if (oid >= 0 && oid < int(plater->model().objects.size())) {
         sel.clear();
         sel.add_object(unsigned(oid), true);
+        refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
     }
 }
 
@@ -604,6 +624,7 @@ GLGizmoMeshBoolean *active_mesh_boolean_gizmo(bool open_if_needed, bool select_o
             if (oid >= 0 && oid < int(plater->model().objects.size())) {
                 sel.clear();
                 sel.add_object(unsigned(oid), true);
+                refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
             }
         }
         const bool opened = mgr.open_gizmo(GLGizmosManager::EType::MeshBoolean);
@@ -793,6 +814,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 GLGizmoHoles *g = active_holes_gizmo(action == "open");
@@ -956,6 +978,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 GLGizmosManager &mgr = canvas->get_gizmos_manager();
@@ -966,6 +989,7 @@ void OrcaMCPServer::register_gizmo_tools()
                         if (oid < 0) oid = 0;
                         sel.clear();
                         sel.add_object(unsigned(oid), true);
+                        refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                     }
                     mgr.open_gizmo(GLGizmosManager::EType::Perforation);
                     canvas->set_as_dirty();
@@ -1146,6 +1170,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 GLGizmoCut3D *g = active_cut_gizmo(action == "open");
@@ -1309,6 +1334,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 GLGizmoEdgeDress *g = active_edge_dress_gizmo(action == "open");
@@ -1500,6 +1526,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 GLGizmoExtrude *g = active_extrude_gizmo(action == "open");
@@ -1804,7 +1831,11 @@ void OrcaMCPServer::register_gizmo_tools()
          "selection to test the gate), 'status', 'set_operation' "
          "(union|difference|intersection), 'set_delete_input' (bool), 'pick_source', 'pick_tool', "
          "'probe_pick', 'run' (set the mode, pick both volumes by index and apply, in one callback), "
-         "'apply', 'close'.",
+         "'apply', 'close'. "
+         "A NEGATIVE volume is a cutter, so a pick naming one always lands in the tool slot whatever slot "
+         "was asked for. 'run' and 'apply' report performed/no_op/triangles_in/triangles_out next to the "
+         "volume counts: no_op means the kernel handed the source back unchanged, which cuts nothing and "
+         "still consumes the tool.",
          {{"type", "object"},
           {"properties",
            {{"action",
@@ -1845,6 +1876,7 @@ void OrcaMCPServer::register_gizmo_tools()
                     Selection &sel = canvas->get_selection();
                     sel.clear();
                     sel.add_object(unsigned(oid), true);
+                    refresh_gizmo_data(canvas);   // [ORCAPORT:MB-1] a hand-written selection must refresh the gizmo data
                 }
 
                 bool                opened        = false;
@@ -1933,48 +1965,50 @@ void OrcaMCPServer::register_gizmo_tools()
                     if (!g->pick_volume_index(params["tool_index"].get<int>(), true))
                         return {{"status", "error"}, {"error", "Bad tool_index"}};
 
-                    const Selection   &sel = canvas->get_selection();
-                    const int          oi  = sel.get_object_idx();
-                    const ModelObject *mo  = (oi >= 0 && oi < int(plater->model().objects.size()))
-                                                 ? plater->model().objects[oi]
-                                                 : nullptr;
-                    const int  before_volumes = mo != nullptr ? int(mo->volumes.size()) : -1;
-                    const bool applied        = g->perform_operation();
+                    const bool applied = g->perform_operation();
+                    const GLGizmoMeshBoolean::Outcome &out = g->last_outcome();
 
                     nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
                     result["status"]         = "ok";
                     result["open"]           = true;
                     result["action"]         = action;
                     result["applied"]        = applied;
-                    result["before_volumes"] = before_volumes;
-                    result["after_volumes"]  = mo != nullptr ? int(mo->volumes.size()) : -1;
-                    if (!applied)
-                        result["warning"] = "make_boolean produced no result (MCUT errors are in the app log)";
+                    // [ORCAPORT:MB-1] What the kernel actually did. `applied` alone cannot tell a real
+                    // boolean from one that handed the source back unchanged - which is the case that
+                    // reads as "nothing happened and something vanished" in the viewport.
+                    result["performed"]      = out.performed;
+                    result["no_op"]          = out.no_op;
+                    result["triangles_in"]   = out.triangles_in;
+                    result["triangles_out"]  = out.triangles_out;
+                    result["before_volumes"] = out.volumes_before;
+                    result["after_volumes"]  = out.volumes_after;
+                    if (!out.message.empty())
+                        result["warning"] = out.message;
                     return result;
                 } else if (action == "apply") {
                     if (g->get_src_volume() == nullptr || g->get_tool_volume() == nullptr)
                         return {{"status", "error"}, {"error", "Pick a source and a tool volume first"}};
 
-                    const Selection   &sel = canvas->get_selection();
-                    const int          oi  = sel.get_object_idx();
-                    const ModelObject *mo  = (oi >= 0 && oi < int(plater->model().objects.size()))
-                                                 ? plater->model().objects[oi]
-                                                 : nullptr;
-                    const int before_volumes = mo != nullptr ? int(mo->volumes.size()) : -1;
-                    const int src_triangles  = int(g->get_src_volume()->mesh().its.indices.size());
-
                     const bool applied = g->perform_operation();
+                    const GLGizmoMeshBoolean::Outcome &out = g->last_outcome();
 
                     nlohmann::json result = mesh_boolean_gizmo_state(*g, canvas);
-                    result["status"]              = "ok";
-                    result["open"]                = true;
-                    result["action"]              = action;
-                    result["applied"]             = applied;
-                    result["before_volumes"]      = before_volumes;
-                    result["after_volumes"]       = mo != nullptr ? int(mo->volumes.size()) : -1;
-                    result["src_triangles_before"] = src_triangles;
-                    if (!applied)
-                        result["warning"] = "make_boolean produced no result (MCUT errors are in the app log)";
+                    result["status"]               = "ok";
+                    result["open"]                 = true;
+                    result["action"]               = action;
+                    result["applied"]              = applied;
+                    // [ORCAPORT:MB-1] As in 'run': the outcome, not just the return value. The source
+                    // volume may have been consumed, so the triangle count is the one recorded before
+                    // the call rather than a read of the (now maybe deleted) volume.
+                    result["performed"]            = out.performed;
+                    result["no_op"]                = out.no_op;
+                    result["triangles_in"]         = out.triangles_in;
+                    result["triangles_out"]        = out.triangles_out;
+                    result["before_volumes"]       = out.volumes_before;
+                    result["after_volumes"]        = out.volumes_after;
+                    result["src_triangles_before"] = out.triangles_in;
+                    if (!out.message.empty())
+                        result["warning"] = out.message;
                     return result;
                 } else if (action != "status" && action != "open") {
                     return {{"status", "error"}, {"error", "Unknown action: " + action}};

@@ -2038,3 +2038,144 @@ match the cut at the parallel opposite edge. It was the phase, not the clipping.
   commit. No `tools_schema.py` regen: nothing about the tool's schema changed. Merged with the rest as
   `23e8ec3f98`.
 
+## 40. MB-1 - a cutter can only be the tool, and the mode follows the picks (branch `port/MB-1`)
+
+The owner, on a real project (`meshbooleantest.3mf`): perforation, mesh boolean, several edge chamfers,
+mesh boolean again, then a hole added with **Place hole on face**, then "tried to mesh boolean through the
+top of the perforated square and it doesn't mesh boolean and **makes the circle just vanish**".
+
+**Measured on that object** - two volumes, an unnamed `part` (29 284 triangles) and `FacePocket#1`
+**negative** (256), both closed:
+
+| operation | result |
+|---|---|
+| Difference, source = the part, tool = the hole | hole cut: 29 284 -> **42 072** triangles, cutter consumed with Delete input - what the owner wanted |
+| Difference, source = the hole, tool = the part (reversed) | the cutter is **replaced by its own leftovers outside the part**: 256 -> **12 796** triangles, renamed `FacePocket#1 - difference`, still `negative`; part untouched -> "no boolean, the circle vanished" |
+| Union (the mode the gizmo opens in) | one volume, **43 786** triangles, cutter consumed, no hole - also "the circle vanished" |
+
+And a raycast sweep over the visible circle, with the gizmo's own `probe_pick`, shows the first cause:
+
+```
+   ..PPPPPPKKPPPPP..     P = the ray reaches the part
+   ..PPPPPPKPPPPPP..     K = the ray reaches the cutter (3 px at most)
+```
+
+**Place hole on face** makes the cutter protrude 0.5 mm above the top face, so from any off-axis view the
+part's top surface occludes it: the cutter is a 2-3 pixel target and ordinary clicking selects the part for
+both slots. Three causes, in order of weight: the cutter is nearly unclickable; the mode opens as **Union**
+while only Difference relabels the slots, so nothing says the *first* pick is the volume that survives; and
+`generate_new_volume()` inherits the **source's** type and name and replaces the source, so a reversed
+difference leaves a near-invisible negative leftover and reports nothing.
+
+- **A. The slot follows the volume type.** `assign_pick()`: a `NEGATIVE` volume is a cutter by construction
+  (Holes, Edge dress, Perforations and Extrude all author their tool that way), so it goes to the **tool**
+  slot whichever slot was asked for; a `MODEL_PART` still goes where it was asked (a part may be the tool -
+  "cut this wall with that block"). A redirected pick does not advance the selecting state, because it did
+  not fill the source slot: the operation is still owed a source. Both entry points (the interactive click
+  and `pick_volume_index()` for MCP) go through it, so a mouse and a script behave identically, and the
+  reversed difference can no longer be expressed at all.
+- **B. The mode follows the picks.** With a cutter in the tool slot the mode becomes **Difference**, unless
+  the user has chosen one themselves (`m_operation_chosen`, set by the three tabs / `set_operation()`,
+  reset when the gizmo opens and when the object changes). Union was only ever the mode the gizmo happens
+  to open in - it is not a decision, and it is meaningless for a cutter.
+- **C. The outcome is recorded and reported.** `perform_operation()` fills an `Outcome` (`performed`,
+  `no_op`, `triangles_in/out`, `volumes_before/after`, `message`) that MCP `run` and `apply` report.
+  `no_op` is the case the kernel produces when a boolean has no resulting fragment: `do_boolean()` keeps
+  the part it could not cut, `make_boolean()` hands it back as a valid result, and the gizmo then replaces
+  the source with a copy of itself and consumes the tool - "nothing happened and something vanished",
+  reported as success. It is detected exactly (same triangle count and volume; the kept part is the
+  source's own mesh copied through mcut) and raises the same warning a failure does. The refused and
+  no-op paths now report the volume counts unchanged instead of 0, and `apply` no longer reads the source
+  volume *after* the operation, which may have been consumed.
+- **E. `on_set_state()` no longer shadows its own members.** Upstream writes `bool m_diff_delete_input =
+  false;` inside the function - a local copy, so the Delete input checkbox never reset and carried over
+  from the previous operation. The intent is now implemented, and the new mode flag and outcome reset with
+  it.
+- **F. (found while diagnosing, and not part of the reported bug) MCP tools must refresh the gizmo data
+  after a hand-written selection.** Setting a `Selection` by hand bypasses the canvas path that calls
+  `GLGizmosManager::update_data()` (`GLCanvas3D` does it after a real click; `GizmoObjectManipulation.cpp`
+  line 639 after the same kind of hand-written change). Without it a gizmo that is already open keeps
+  working against the **previous** object - `SelectionInfo` and the raycaster still point at it, so a pick
+  that names a volume by index resolves against the old volume list and the operation lands on the wrong
+  object, while every report in those tools reads the canvas selection and names the new one. That is how a
+  scripted Mesh boolean on a duplicate came to modify the original: the owner's live object was damaged
+  during diagnosis and restored by reloading the saved project (verified: one object, part 29 284 +
+  `FacePocket#1` 256). `refresh_gizmo_data()` now runs at **13** sites in `OrcaMCPGizmoTools.cpp`, one per
+  hand-written selection.
+- **Deliberately not done.** (1) Letting the UI pick a volume no ray reaches (the Object List's selected
+  volume as the pick) - the MCP surface can pick by index, the panel cannot, which is why a buried cutter is
+  unpickable; that is the follow-up with the most value. (2) Making "Place hole on face" protrude further so
+  its cutter is a bigger click target.
+- **Verification.** Build clean (`build_win.bat -s --tests`, then an incremental `-s --no-configure` for the
+  reporting fix). No unit test: this is gizmo behaviour, and the suites do not cover the panel. Runtime over
+  MCP, **on a duplicate clone with `object_id` on every call**:
+  - `pick_source` naming the cutter -> the reported mode becomes **difference** and the pick lands in the
+    tool slot; `pick_source` naming the part fills the source. (The status report prints the picks under
+    its own keys, so the proof is the run below.)
+  - one `run {difference, source 0, tool 1}` -> `performed true`, `no_op false`, `triangles_in 29284`,
+    `triangles_out 42072`, volumes 2 -> 1, and the clone's only volume is `Cube - difference` with the hole;
+    **the owner's object 0 was untouched** (29 284 + 256) - which also proves F.
+  - the reversed call `run {source 1, tool 0}` is now **refused** (`applied false`, `performed false`,
+    warning "Pick a source volume and a tool volume", nothing consumed) instead of replacing the cutter with
+    a 12 796-triangle leftover.
+  - **Not exercised**: the `no_op` branch itself. It needs a Difference whose tool misses the source, and
+    there is no per-volume move over MCP (`transform_objects` is object-level) and no fixture for it. Its
+    logic is an exact-copy comparison; the owner's checklist has it.
+- **Branch state**: `port/MB-1`, branched from `port/integration` `40f7e1a70a`. Not merged, not pushed.
+
+## 41. MB-2 - the right-click Mesh boolean: not a union, and no longer silent (same branch `port/MB-1`)
+
+The owner asked: "is the right click mesh boolean a union then? is there no way to make it automatically
+make negatives into differences and positives into unions?" - and reported that it "doesn't actually do
+it" with **no error and no toast**.
+
+- **It is not a union, and it already does what was asked.** `GUI_Factories.cpp` attaches the context-menu
+  item to `obj_list()->boolean()`, which calls `Plater::combine_mesh_fff()`. That builds
+  `csg::model_to_csgmesh(mo, ..., mpartsPositive | mpartsNegative)`, where each volume maps as
+  `vol->is_model_part() ? CSGType::Union : CSGType::Difference` - every model part unioned, every
+  **negative** volume subtracted, in one operation - and then runs the same mcut kernel the gizmo uses.
+  One click, all volumes, type-aware. The gizmo is the *pairwise* tool; this is the one-shot.
+- **Two silent ways for a negative volume to do nothing.** (1) The pre-flight was *stricter than the
+  kernel*: `combine_mesh_fff` gated with `csg::check_csgmesh_booleans(range)`, which defaults to the
+  **CGAL** predicates (empty / `does_bound_a_volume` / `does_self_intersect`), and then executed with
+  **mcut**. A mesh carrying the slivers an earlier mcut boolean leaves behind can be refused there; a
+  refusal skips the whole boolean and falls back to "keep only the positive parts", so the cutter vanishes
+  and no cut is made. (2) `detail_mcut::perform_csg` applied each Difference with
+  `MeshBoolean::mcut::do_boolean(*dst, *src, "A_NOT_B")` and **discarded the outcome**: when mcut finds no
+  fragment for a cut, `do_boolean` keeps the part it could not cut, so the accumulated mesh comes out
+  exactly as it went in - the run reports success, the object is replaced by the result, the negative
+  volume is gone and its cut is missing, with nothing said. That is the same behaviour MB-1 found inside
+  the gizmo, now reported there too.
+- **What was changed.** `MeshBoolean::mcut::do_boolean` now **returns whether it changed the mesh** (the
+  one place that knows; callers that ignore it are unaffected). `csg::DifferenceReport` counts the
+  Difference parts asked for and how many changed nothing, including a Difference dropped because the
+  accumulated mesh or the part's kernel mesh was missing - equally silent before - and
+  `perform_csgmesh_booleans_mcut(range, report)` fills it. `Plater::combine_mesh_fff` passes the report,
+  fills a `Plater::ObjectBooleanReport` for its caller, **tells the user** through the same error channel
+  the failure path uses when a negative volume was not subtracted, and **logs it**
+  (`BOOST_LOG_TRIVIAL(info)`, so it is in `%APPDATA%\OrcaSlicer\log` and in `get_log_tail`). The gate now
+  checks with the kernel that runs (`use_mcut = true`: it keeps the part-is-empty test and drops the two
+  CGAL geometry predicates), and the fallback path logs its reason too. `ObjectList::boolean()` returns
+  that report, and the new MCP tool **`boolean_parts`** runs this exact path (it selects the object in the
+  Object list, which is what `boolean()` reads) and reports objects/volumes/triangles before and after
+  plus `negative_parts` / `negative_parts_not_subtracted` / `boolean_failed` / `message`.
+- **Verification.** Unit: a new case in `tests/libslic3r/test_meshboolean.cpp` builds the part list by
+  hand - a 20 mm cube as Union and a 4 mm cube as Difference - and asserts that a cutter 100 mm away is
+  **counted** (`offered 1`, `not_applied 1`) with the body's volume unchanged, while a cutter centred on
+  the body is applied (`not_applied 0`) and leaves the closed cavity of 7936 mm^3 (20^3 - 4^3).
+  `[MeshBoolean]` is 3 cases / 17 assertions; full `ctest` **2415 passed, 0 failed**. Runtime, over MCP on
+  a **duplicate** of the owner's object: `boolean_parts` gives `triangles_before 29540` (29 284 + the
+  256-triangle pocket) -> `triangles_after 42072`, volumes 2 -> 1, `negative_parts 1`,
+  `negative_parts_not_subtracted 0`, `boolean_failed false` - the same 42072 the gizmo's difference
+  produces, so **the right-click path cuts the hole correctly on the state the owner left behind**. The
+  gate's refusal lines (`check_csgmesh_booleans fails! ...`) appear in none of the recent sessions' logs,
+  so the earlier failure was not reproduced on that state: what is now certain is that if it recurs, it
+  says why - which is what could not be established before, and why the failure read as "it is a union".
+- **Deliberately not done.** *Why* mcut cannot subtract a given cutter (as opposed to reporting it) needs
+  a state that reproduces it; the report and the log now make that a one-line answer instead of a guess.
+  The trade-off accepted with the gate change: a mesh the CGAL predicates would have refused is now
+  handed to mcut, which can throw (caught, fallback + message) or return the source unchanged (now
+  counted) rather than being refused up front.
+- **Branch state**: same branch as MB-1, product commit + `port:` docs commit, patch `76_MB-2.patch`.
+  Not merged, not pushed.
+

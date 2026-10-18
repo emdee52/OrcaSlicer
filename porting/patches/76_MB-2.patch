@@ -1,0 +1,416 @@
+diff --git a/src/libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp b/src/libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp
+index 091621ab84..72b0b9785c 100644
+--- a/src/libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp
++++ b/src/libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp
+@@ -19,6 +19,15 @@
+ namespace Slic3r { namespace csg {
+     enum class BooleanFailReason { OK, MeshEmpty, NotBoundAVolume, SelfIntersect, NoIntersection};
+ 
++// [ORCAPORT:MB-2] What a CSG run asked its Difference parts to do, and how many of them the kernel
++// could not do. A negative volume that is not subtracted leaves the mesh without the cut it was there
++// to make, and until now that was indistinguishable from a successful run: no message, no error,
++// nothing to notice (docs/handoff.md section 41).
++struct DifferenceReport {
++    int offered{ 0 };      // Difference parts the part list asked for
++    int not_applied{ 0 };  // ...of those, how many changed the accumulated mesh by nothing
++};
++
+ // This method can be overriden when a specific CSGPart type supports caching
+ // of the voxel grid
+ template<class CSGPartT>
+@@ -120,23 +129,36 @@ namespace detail_mcut {
+ 
+     using MeshBoolean::mcut::McutMeshPtr;
+ 
+-    inline void perform_csg(CSGType op, McutMeshPtr& dst, McutMeshPtr& src)
++    inline void perform_csg(CSGType op, McutMeshPtr& dst, McutMeshPtr& src, DifferenceReport *rep = nullptr)
+     {
++        if (rep != nullptr && op == CSGType::Difference)
++            ++rep->offered;
++
+         if (!dst && op == CSGType::Union && src) {
+             dst = std::move(src);
+             return;
+         }
+ 
+-        if (!dst || !src)
++        if (!dst || !src) {
++            // Nothing to apply to, or a part whose mesh the kernel never got (triangle_mesh_to_mcut
++            // returns null on failure): the operation is dropped. Silent before [ORCAPORT:MB-2].
++            if (rep != nullptr && op == CSGType::Difference)
++                ++rep->not_applied;
+             return;
++        }
+ 
+         switch (op) {
+         case CSGType::Union:
+             MeshBoolean::mcut::do_boolean(*dst, *src,"UNION");
+             break;
+-        case CSGType::Difference:
+-            MeshBoolean::mcut::do_boolean(*dst, *src,"A_NOT_B");
++        case CSGType::Difference: {
++            // [ORCAPORT:MB-2] mcut hands the source back untouched when a difference has no resulting
++            // fragment: do_boolean keeps the part it could not cut and says so through its return value,
++            // which is exactly the "no cut, no error, nothing to notice" case.
++            if (!MeshBoolean::mcut::do_boolean(*dst, *src,"A_NOT_B") && rep != nullptr)
++                ++rep->not_applied;
+             break;
++        }
+         case CSGType::Intersection:
+             MeshBoolean::mcut::do_boolean(*dst, *src,"INTERSECTION");
+             break;
+@@ -213,7 +235,8 @@ void perform_csgmesh_booleans_cgal(MeshBoolean::cgal::CGALMeshPtr &cgalm,
+ // Process the sequence of CSG parts with mcut.
+ template<class It>
+ void perform_csgmesh_booleans_mcut(MeshBoolean::mcut::McutMeshPtr& mcutm,
+-    const Range<It>& csgrange)
++    const Range<It>& csgrange,
++    DifferenceReport *difference_report = nullptr)
+ {
+     using MeshBoolean::mcut::McutMesh;
+     using MeshBoolean::mcut::McutMeshPtr;
+@@ -246,14 +269,14 @@ void perform_csgmesh_booleans_mcut(MeshBoolean::mcut::McutMeshPtr& mcutm,
+ 
+         Frame* top = &opstack.top();
+ 
+-        perform_csg(get_operation(csgpart), top->mcutptr, mcutptr);
++        perform_csg(get_operation(csgpart), top->mcutptr, mcutptr, difference_report);
+ 
+         if (get_stack_operation(csgpart) == CSGStackOp::Pop) {
+             McutMeshPtr src = std::move(top->mcutptr);
+             auto popop = opstack.top().op;
+             opstack.pop();
+             McutMeshPtr& dst = opstack.top().mcutptr;
+-            perform_csg(popop, dst, src);
++            perform_csg(popop, dst, src, difference_report);
+         }
+     }
+ 
+@@ -374,11 +397,12 @@ MeshBoolean::cgal::CGALMeshPtr perform_csgmesh_booleans(const Range<It> &csgpart
+ }
+ 
+ template<class It>
+-MeshBoolean::mcut::McutMeshPtr  perform_csgmesh_booleans_mcut(const Range<It>& csgparts)
++MeshBoolean::mcut::McutMeshPtr  perform_csgmesh_booleans_mcut(const Range<It>& csgparts,
++                                                             DifferenceReport *difference_report = nullptr)
+ {
+     auto ret = MeshBoolean::mcut::triangle_mesh_to_mcut(indexed_triangle_set{});
+     if (ret)
+-        perform_csgmesh_booleans_mcut(ret, csgparts);
++        perform_csgmesh_booleans_mcut(ret, csgparts, difference_report);
+     return ret;
+ }
+ 
+diff --git a/src/libslic3r/MeshBoolean.cpp b/src/libslic3r/MeshBoolean.cpp
+index 074eff3121..95311d69bd 100644
+--- a/src/libslic3r/MeshBoolean.cpp
++++ b/src/libslic3r/MeshBoolean.cpp
+@@ -939,8 +939,17 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
+     return true;
+ }
+ 
+-void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
++bool do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
+ {
++    // [ORCAPORT:MB-2] Whether the source came out different from how it went in - see the note on the
++    // declaration. Every early return below means "nothing changed".
++    const size_t vertices_before = srcMesh.vertexCoordsArray.size();
++    const size_t faces_before    = srcMesh.faceIndicesArray.size();
++    auto         changed         = [&srcMesh, vertices_before, faces_before]() {
++        return srcMesh.vertexCoordsArray.size() != vertices_before ||
++               srcMesh.faceIndicesArray.size() != faces_before;
++    };
++
+     TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
+     std::vector<indexed_triangle_set> src_parts = its_split(tri_src.its);
+ 
+@@ -949,9 +958,9 @@ void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& b
+ 
+     if (src_parts.empty() && boolean_opts == "UNION") {
+         srcMesh = cutMesh;
+-        return;
++        return true;
+     }
+-    if(cut_parts.empty()) return;
++    if(cut_parts.empty()) return false;
+ 
+     // when src mesh has multiple connected components, mcut refuses to work.
+     // But we can force it to work by spliting the src mesh into disconnected components,
+@@ -1003,6 +1012,7 @@ void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& b
+         }
+     }
+     srcMesh = *triangle_mesh_to_mcut(all_its);
++    return changed();
+ }
+ 
+ void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts)
+diff --git a/src/libslic3r/MeshBoolean.hpp b/src/libslic3r/MeshBoolean.hpp
+index b229a4e724..c71ad77794 100644
+--- a/src/libslic3r/MeshBoolean.hpp
++++ b/src/libslic3r/MeshBoolean.hpp
+@@ -116,7 +116,11 @@ TriangleMesh mcut_to_triangle_mesh(const McutMesh &mcutmesh);
+ bool do_boolean_single(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts);
+ // do boolean of mesh with multiple volumes and save result to srcMesh
+ // Both srcMesh and cutMesh may have multiple volumes.
+-void do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
++// [ORCAPORT:MB-2] Returns whether the boolean CHANGED srcMesh. It is false when mcut produced no
++// resulting fragment: do_boolean keeps the part it could not cut, so srcMesh comes out exactly as it
++// went in. That is the "the negative part did nothing and vanished" case, until now indistinguishable
++// from a success.
++bool do_boolean(McutMesh &srcMesh, const McutMesh &cutMesh, const std::string &boolean_opts);
+ 
+ 
+ // do boolean and convert result to TriangleMesh
+diff --git a/src/slic3r/GUI/GUI_ObjectList.cpp b/src/slic3r/GUI/GUI_ObjectList.cpp
+index e7d1041cb6..f8025c47dd 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.cpp
++++ b/src/slic3r/GUI/GUI_ObjectList.cpp
+@@ -3403,6 +3403,11 @@ void ObjectList::boolean()
+ 
+     ModelObject* object = (*m_objects)[obj_idxs.front()];
+ 
++    // [ORCAPORT:MB-2] What the boolean did with the object's negative volumes. It is handed to the plater
++    // so a caller that cannot get a return value (the MCP tool that runs this very path) can report a
++    // negative part the kernel could not subtract instead of leaving a silent no-op.
++    Plater::ObjectBooleanReport report;
++
+     const bool keep_painting = wxGetApp().app_config->get_bool("keep_painting");
+     std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
+     if (keep_painting) {
+@@ -3418,7 +3423,7 @@ void ObjectList::boolean()
+         }
+     }
+ 
+-    TriangleMesh mesh = Plater::combine_mesh_fff(*object, -1, [](const std::string& msg) {return wxGetApp().notification_manager()->push_plater_error_notification(msg); });
++    TriangleMesh mesh = Plater::combine_mesh_fff(*object, -1, [](const std::string& msg) {return wxGetApp().notification_manager()->push_plater_error_notification(msg); }, &report);
+ 
+     // add mesh to model as a new object, keep the original object's name and config
+     Model* model = object->get_model();
+@@ -3468,6 +3473,9 @@ void ObjectList::boolean()
+     add_object_to_list(m_objects->size() - 1);
+     select_item(m_objects_model->GetItemById(m_objects->size() - 1));
+     update_selections_on_canvas();
++
++    // [ORCAPORT:MB-2] Leave the outcome where a caller without a return value can read it.
++    wxGetApp().plater()->set_last_object_boolean_report(report);
+ }
+ 
+ wxDataViewItem ObjectList::add_layer_root_item(const wxDataViewItem obj_item)
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+index fe406746fa..9a837489cb 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+@@ -3812,6 +3812,103 @@ void OrcaMCPServer::register_builtin_tools()
+     });
+ 
+     // flatten_object - Lay object flat on its best face
++    // boolean_parts - the object context menu's "Mesh boolean", over MCP. [ORCAPORT:MB-2]
++    // It runs the same action the menu item runs (ObjectList::boolean()), so a script can exercise the
++    // whole-object path the gizmo does not cover: every model part is unioned and every NEGATIVE volume
++    // is subtracted in one operation. Reports the object's triangles before and after and what is left,
++    // so a boolean that cut nothing is visible; the reason a negative volume could not be subtracted is
++    // in the app log (see get_log_tail).
++    register_tool({
++        "boolean_parts",
++        "Run the object's own Mesh boolean in one shot: union every model part and subtract every "
++        "NEGATIVE volume, replacing the object with the result - the same operation as the Mesh boolean "
++        "item in the object context menu. Reports objects/volumes/triangles before and after, and the "
++        "boolean's own outcome: negative_parts (negative volumes handed to the kernel), "
++        "negative_parts_not_subtracted (how many of them it could not subtract, so that cut is missing "
++        "and the object holds the union of the model parts), boolean_failed and message. The same "
++        "message is in the app log - get_log_tail.",
++        {
++            {"type", "object"},
++            {"properties", {
++                {"object_id", {
++                    {"type", "integer"},
++                    {"description", "Object index (0-based). It must have more than one volume."}
++                }}
++            }},
++            {"required", {"object_id"}}
++        },
++        [](const nlohmann::json& params) -> nlohmann::json {
++            const int object_id = params["object_id"];
++            return run_on_main_thread([object_id]() -> nlohmann::json {
++                Plater *plater = wxGetApp().plater();
++                ObjectList *obj_list = wxGetApp().obj_list();
++                if (plater == nullptr || obj_list == nullptr)
++                    return {{"status", "error"}, {"error", "No plater or object list"}};
++                Model &model = plater->model();
++                if (object_id < 0 || object_id >= int(model.objects.size()))
++                    return {{"status", "error"}, {"error", "Invalid object_id"}};
++
++                ModelObject *mo = model.objects[object_id];
++                const int volumes_before = int(mo->volumes.size());
++                int       triangles_before = 0;
++                int       negatives_before = 0;
++                for (const ModelVolume *v : mo->volumes) {
++                    if (v == nullptr)
++                        continue;
++                    triangles_before += int(v->mesh().its.indices.size());
++                    if (v->is_negative_volume())
++                        ++negatives_before;
++                }
++
++                // Selecting the object in the list is what the menu item relies on: boolean() reads the
++                // list selection, not the canvas one.
++                obj_list->select_item(ObjectVolumeID{mo, nullptr});
++                if (!obj_list->can_mesh_boolean())
++                    return {{"status", "error"},
++                            {"error", "Mesh boolean needs an object with more than one volume"},
++                            {"volume_count", volumes_before}};
++
++                const int objects_before = int(model.objects.size());
++                obj_list->boolean();
++                plater->update();
++                const Plater::ObjectBooleanReport report = plater->last_object_boolean_report();
++
++                // The object was replaced by a new one holding the result; report by difference, and
++                // report the boolean's own outcome (which is exact) rather than a guess from counts.
++                nlohmann::json out = {{"status", "ok"},
++                                      {"objects_before", objects_before},
++                                      {"objects_after", int(model.objects.size())},
++                                      {"source_object_id", object_id},
++                                      {"volumes_before", volumes_before},
++                                      {"negatives_before", negatives_before},
++                                      {"triangles_before", triangles_before},
++                                      {"negative_parts", report.negative_parts},
++                                      {"negative_parts_not_subtracted", report.not_subtracted},
++                                      {"boolean_failed", report.failed}};
++                if (!report.message.empty())
++                    out["message"] = report.message;
++                if (report.not_subtracted > 0)
++                    out["warning"] = "A negative part could not be subtracted: the mesh came out without "
++                                     "that cut. The object now holds the union of the model parts.";
++                if (!model.objects.empty()) {
++                    const ModelObject *result = model.objects.back();
++                    int triangles_after = 0, volumes_after = 0;
++                    for (const ModelVolume *v : result->volumes) {
++                        if (v == nullptr)
++                            continue;
++                        triangles_after += int(v->mesh().its.indices.size());
++                        ++volumes_after;
++                    }
++                    out["result_object_id"] = int(model.objects.size()) - 1;
++                    out["result_name"]      = result->name;
++                    out["volumes_after"]    = volumes_after;
++                    out["triangles_after"]  = triangles_after;
++                }
++                return out;
++            });
++        }
++    });
++
+     register_tool({
+         "flatten_object",
+         "Automatically orient an object to lay flat on its best face for printing",
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index fa43792005..79a2adb7cd 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -20201,9 +20201,11 @@ bool Plater::check_printer_initialized(MachineObject *obj, bool only_warning, bo
+ }
+ 
+ // Following lambda generates a combined mesh for export with normals pointing outwards.
+-TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func)
++TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func, ObjectBooleanReport *out_report)
+ {
+     TriangleMesh mesh;
++    if (out_report != nullptr)
++        *out_report = ObjectBooleanReport();
+ 
+     std::vector<csg::CSGPart> csgmesh;
+     csgmesh.reserve(2 * mo.volumes.size());
+@@ -20212,7 +20214,13 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
+         
+     std::string fail_msg = _u8L("Unable to perform boolean operation on model meshes. "
+         "Only positive parts will be kept. You may fix the meshes and try again.");
+-    if (auto fail_reason_name = csg::check_csgmesh_booleans(Range{ std::begin(csgmesh), std::end(csgmesh) }); std::get<0>(fail_reason_name) != csg::BooleanFailReason::OK) {
++    // [ORCAPORT:MB-2] Check with the kernel that will actually run. This used the default (CGAL)
++    // predicates - empty, does_bound_a_volume, does_self_intersect - which are stricter than mcut: a
++    // mesh carrying the slivers an earlier mcut boolean leaves behind was refused here, the operation
++    // was skipped, and only the positive parts were kept, so a negative volume "did nothing and
++    // vanished" while the gizmo cut the very same pair with mcut. The mcut check keeps the
++    // part-is-empty test and drops the two CGAL geometry predicates.
++    if (auto fail_reason_name = csg::check_csgmesh_booleans(Range{ std::begin(csgmesh), std::end(csgmesh) }, /*use_mcut=*/true); std::get<0>(fail_reason_name) != csg::BooleanFailReason::OK) {
+         std::string name = std::get<1>(fail_reason_name);
+         std::map<csg::BooleanFailReason, std::string> fail_reasons = {
+             {csg::BooleanFailReason::OK, "OK"},
+@@ -20224,8 +20232,25 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
+     }
+     else {
+         try {
+-            MeshBoolean::mcut::McutMeshPtr meshPtr = csg::perform_csgmesh_booleans_mcut(Range{ std::begin(csgmesh), std::end(csgmesh) });
++            csg::DifferenceReport difference_report;
++            MeshBoolean::mcut::McutMeshPtr meshPtr = csg::perform_csgmesh_booleans_mcut(Range{ std::begin(csgmesh), std::end(csgmesh) }, &difference_report);
+             mesh = MeshBoolean::mcut::mcut_to_triangle_mesh(*meshPtr);
++            if (out_report != nullptr) {
++                out_report->negative_parts  = difference_report.offered;
++                out_report->not_subtracted  = difference_report.not_applied;
++            }
++            // [ORCAPORT:MB-2] A negative volume the kernel could not subtract used to leave the mesh
++            // without its cut and say nothing at all; that is the silent failure this reports.
++            if (!mesh.empty() && difference_report.not_applied > 0) {
++                const std::string msg = Slic3r::format(
++                    _u8L("%1% negative part(s) could not be subtracted: the boolean returned the mesh unchanged, so those cuts are missing. Move the part so it overlaps the model and try again."),
++                    difference_report.not_applied);
++                BOOST_LOG_TRIVIAL(info) << "combine_mesh_fff: " << msg;
++                if (out_report != nullptr)
++                    out_report->message = msg;
++                if (notify_func)
++                    notify_func(msg);
++            }
+         }
+         catch (...) {}
+ #if 0
+@@ -20241,6 +20266,11 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
+     }
+ 
+     if (mesh.empty()) {
++        BOOST_LOG_TRIVIAL(info) << "combine_mesh_fff: boolean failed, keeping only the positive parts. " << fail_msg;
++        if (out_report != nullptr) {
++            out_report->failed  = true;
++            out_report->message = fail_msg;
++        }
+         if (notify_func)
+             notify_func(fail_msg);
+ 
+diff --git a/src/slic3r/GUI/Plater.hpp b/src/slic3r/GUI/Plater.hpp
+index 0d49ccb771..d34e53f6f0 100644
+--- a/src/slic3r/GUI/Plater.hpp
++++ b/src/slic3r/GUI/Plater.hpp
+@@ -592,7 +592,24 @@ public:
+     // open and written on publish or on loading a published 3MF
+     bool get_pending_published(std::vector<std::string>& out_keys, std::vector<Slic3r::PublishedMaterialEntry>& out_material) const;
+     void set_pending_published(const std::vector<std::string>& published_keys, const std::vector<Slic3r::PublishedMaterialEntry>& material_keys);
+-    static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func = {});
++    // [ORCAPORT:MB-2] What an object's own boolean did with its NEGATIVE volumes. `combine_mesh_fff`
++    // is the whole-object boolean behind the context menu's "Mesh boolean"; a negative volume the kernel
++    // could not subtract leaves the mesh without its cut, and until now that was indistinguishable from
++    // a successful run. A caller that cares (the MCP tool that runs this path) reads this instead of
++    // guessing from triangle counts.
++    struct ObjectBooleanReport {
++        int         negative_parts{ 0 };   // negative volumes handed to the kernel
++        int         not_subtracted{ 0 };   // ...of those, how many it could not subtract: no cut was made
++        bool        failed{ false };       // the boolean did not run at all (pre-flight or kernel failure)
++        std::string message;               // the user-facing reason, empty when everything was applied
++    };
++    static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id,
++                                         std::function<void(const std::string&)> notify_func = {},
++                                         ObjectBooleanReport *out_report = nullptr);
++    // [ORCAPORT:MB-2] Where the object context menu's "Mesh boolean" leaves its outcome, for a caller that
++    // cannot get a return value from ObjectList::boolean() - the MCP tool that runs the same path.
++    void set_last_object_boolean_report(const ObjectBooleanReport &report) { m_last_object_boolean_report = report; }
++    const ObjectBooleanReport &last_object_boolean_report() const { return m_last_object_boolean_report; }
+     void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false, FileType file_type = FT_STL);
+     //BBS: remove amf
+     //void export_amf();
+@@ -1111,6 +1128,8 @@ private:
+     int m_check_status = 0; // 0 not check, 1 check success, 2 check failed
+     bool m_b_plate_toolbar_image_dirty{ true };
+     unsigned m_plate_toolbar_image_version{ 0 };
++    // [ORCAPORT:MB-2] The outcome of the last object's own boolean - see the accessors above.
++    ObjectBooleanReport m_last_object_boolean_report;
+ 
+     void suppress_snapshots();
+     void allow_snapshots();

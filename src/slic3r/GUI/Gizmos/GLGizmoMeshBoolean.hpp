@@ -58,14 +58,13 @@ public:
     // directly, which is the only way to pick one that no camera ray reaches (a cutter buried inside
     // the part). perform_operation() is the same code the Difference/Union/Intersection buttons run.
     bool pick_at(const Vec2d &mouse_position, bool as_tool);
-    bool pick_volume_index(int volume_idx, bool as_tool);
-    bool perform_operation();
+    bool pick_volume_index(int volume_idx, bool as_tool);    bool perform_operation();
     // The closest volume under a screen point, by the same raycast gizmo_event() uses. Bounded by
     // both arrays, and the count of raycasters is exposed: the raycasters and mo->volumes disagreeing
     // after a volume-list change is the suspected cause of a pick that misses (docs/handoff.md 37).
     int raycast_volume(const Vec2d &mouse_position) const;
     int get_raycaster_count() const;
-    void set_operation(MeshBooleanOperation op) { m_operation_mode = op; }
+    void set_operation(MeshBooleanOperation op) { m_operation_mode = op; m_operation_chosen = true; }
     MeshBooleanOperation get_operation() const { return m_operation_mode; }
     void set_delete_input(bool v) { m_diff_delete_input = v; m_inter_delete_input = v; }
     bool get_delete_input() const { return m_diff_delete_input; }
@@ -73,6 +72,20 @@ public:
     const ModelVolume *get_tool_volume() const { return m_tool.mv; }
     int get_src_index() const { return m_src.volume_idx; }
     int get_tool_index() const { return m_tool.volume_idx; }
+
+    // [ORCAPORT:MB-1] What the last perform_operation() actually did. Without it "the kernel returned
+    // the source unchanged" and "the kernel returned nothing" are indistinguishable from a real
+    // boolean in the viewport - which is how an operation that cut nothing read as a success.
+    struct Outcome {
+        bool        performed{ false };
+        bool        no_op{ false };   // the kernel handed the source back: nothing was cut
+        int         triangles_in{ 0 };
+        int         triangles_out{ 0 };
+        int         volumes_before{ 0 };
+        int         volumes_after{ 0 };
+        std::string message;          // why it failed, or why it was a no-op
+    };
+    const Outcome &last_outcome() const { return m_outcome; }
     void set_src_volume(ModelVolume* mv) { 
         m_src.mv = mv;
         if (m_src.mv == m_tool.mv)
@@ -115,6 +128,15 @@ private:
     bool m_inter_delete_input = false;
     VolumeInfo m_src;
     VolumeInfo m_tool;
+    // [ORCAPORT:MB-1] True once the user has picked an operation themselves. The mode only follows the
+    // picks (a cutter in the tool slot means Difference) while this is false, so an explicit choice is
+    // never overruled.
+    bool m_operation_chosen{ false };
+    Outcome m_outcome;
+
+    // [ORCAPORT:MB-1] Place a pick in the slot it belongs in - see the note in the .cpp: a NEGATIVE
+    // volume is a cutter, so it always goes to the tool slot whichever slot was asked for.
+    void assign_pick(ModelVolume *mv, const Transform3d &trafo, int volume_idx, bool as_tool);
 
     void generate_new_volume(bool delete_input, TriangleMesh& mesh_result, const std::vector<std::optional<TriangleSelector::SavedPainting>>& saved_paintings);
 };

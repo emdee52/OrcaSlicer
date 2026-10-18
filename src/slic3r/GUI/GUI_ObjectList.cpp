@@ -3403,6 +3403,11 @@ void ObjectList::boolean()
 
     ModelObject* object = (*m_objects)[obj_idxs.front()];
 
+    // [ORCAPORT:MB-2] What the boolean did with the object's negative volumes. It is handed to the plater
+    // so a caller that cannot get a return value (the MCP tool that runs this very path) can report a
+    // negative part the kernel could not subtract instead of leaving a silent no-op.
+    Plater::ObjectBooleanReport report;
+
     const bool keep_painting = wxGetApp().app_config->get_bool("keep_painting");
     std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
     if (keep_painting) {
@@ -3418,7 +3423,7 @@ void ObjectList::boolean()
         }
     }
 
-    TriangleMesh mesh = Plater::combine_mesh_fff(*object, -1, [](const std::string& msg) {return wxGetApp().notification_manager()->push_plater_error_notification(msg); });
+    TriangleMesh mesh = Plater::combine_mesh_fff(*object, -1, [](const std::string& msg) {return wxGetApp().notification_manager()->push_plater_error_notification(msg); }, &report);
 
     // add mesh to model as a new object, keep the original object's name and config
     Model* model = object->get_model();
@@ -3468,6 +3473,9 @@ void ObjectList::boolean()
     add_object_to_list(m_objects->size() - 1);
     select_item(m_objects_model->GetItemById(m_objects->size() - 1));
     update_selections_on_canvas();
+
+    // [ORCAPORT:MB-2] Leave the outcome where a caller without a return value can read it.
+    wxGetApp().plater()->set_last_object_boolean_report(report);
 }
 
 wxDataViewItem ObjectList::add_layer_root_item(const wxDataViewItem obj_item)

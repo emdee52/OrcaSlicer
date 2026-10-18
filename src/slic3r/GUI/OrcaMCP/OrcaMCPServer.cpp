@@ -3812,6 +3812,103 @@ void OrcaMCPServer::register_builtin_tools()
     });
 
     // flatten_object - Lay object flat on its best face
+    // boolean_parts - the object context menu's "Mesh boolean", over MCP. [ORCAPORT:MB-2]
+    // It runs the same action the menu item runs (ObjectList::boolean()), so a script can exercise the
+    // whole-object path the gizmo does not cover: every model part is unioned and every NEGATIVE volume
+    // is subtracted in one operation. Reports the object's triangles before and after and what is left,
+    // so a boolean that cut nothing is visible; the reason a negative volume could not be subtracted is
+    // in the app log (see get_log_tail).
+    register_tool({
+        "boolean_parts",
+        "Run the object's own Mesh boolean in one shot: union every model part and subtract every "
+        "NEGATIVE volume, replacing the object with the result - the same operation as the Mesh boolean "
+        "item in the object context menu. Reports objects/volumes/triangles before and after, and the "
+        "boolean's own outcome: negative_parts (negative volumes handed to the kernel), "
+        "negative_parts_not_subtracted (how many of them it could not subtract, so that cut is missing "
+        "and the object holds the union of the model parts), boolean_failed and message. The same "
+        "message is in the app log - get_log_tail.",
+        {
+            {"type", "object"},
+            {"properties", {
+                {"object_id", {
+                    {"type", "integer"},
+                    {"description", "Object index (0-based). It must have more than one volume."}
+                }}
+            }},
+            {"required", {"object_id"}}
+        },
+        [](const nlohmann::json& params) -> nlohmann::json {
+            const int object_id = params["object_id"];
+            return run_on_main_thread([object_id]() -> nlohmann::json {
+                Plater *plater = wxGetApp().plater();
+                ObjectList *obj_list = wxGetApp().obj_list();
+                if (plater == nullptr || obj_list == nullptr)
+                    return {{"status", "error"}, {"error", "No plater or object list"}};
+                Model &model = plater->model();
+                if (object_id < 0 || object_id >= int(model.objects.size()))
+                    return {{"status", "error"}, {"error", "Invalid object_id"}};
+
+                ModelObject *mo = model.objects[object_id];
+                const int volumes_before = int(mo->volumes.size());
+                int       triangles_before = 0;
+                int       negatives_before = 0;
+                for (const ModelVolume *v : mo->volumes) {
+                    if (v == nullptr)
+                        continue;
+                    triangles_before += int(v->mesh().its.indices.size());
+                    if (v->is_negative_volume())
+                        ++negatives_before;
+                }
+
+                // Selecting the object in the list is what the menu item relies on: boolean() reads the
+                // list selection, not the canvas one.
+                obj_list->select_item(ObjectVolumeID{mo, nullptr});
+                if (!obj_list->can_mesh_boolean())
+                    return {{"status", "error"},
+                            {"error", "Mesh boolean needs an object with more than one volume"},
+                            {"volume_count", volumes_before}};
+
+                const int objects_before = int(model.objects.size());
+                obj_list->boolean();
+                plater->update();
+                const Plater::ObjectBooleanReport report = plater->last_object_boolean_report();
+
+                // The object was replaced by a new one holding the result; report by difference, and
+                // report the boolean's own outcome (which is exact) rather than a guess from counts.
+                nlohmann::json out = {{"status", "ok"},
+                                      {"objects_before", objects_before},
+                                      {"objects_after", int(model.objects.size())},
+                                      {"source_object_id", object_id},
+                                      {"volumes_before", volumes_before},
+                                      {"negatives_before", negatives_before},
+                                      {"triangles_before", triangles_before},
+                                      {"negative_parts", report.negative_parts},
+                                      {"negative_parts_not_subtracted", report.not_subtracted},
+                                      {"boolean_failed", report.failed}};
+                if (!report.message.empty())
+                    out["message"] = report.message;
+                if (report.not_subtracted > 0)
+                    out["warning"] = "A negative part could not be subtracted: the mesh came out without "
+                                     "that cut. The object now holds the union of the model parts.";
+                if (!model.objects.empty()) {
+                    const ModelObject *result = model.objects.back();
+                    int triangles_after = 0, volumes_after = 0;
+                    for (const ModelVolume *v : result->volumes) {
+                        if (v == nullptr)
+                            continue;
+                        triangles_after += int(v->mesh().its.indices.size());
+                        ++volumes_after;
+                    }
+                    out["result_object_id"] = int(model.objects.size()) - 1;
+                    out["result_name"]      = result->name;
+                    out["volumes_after"]    = volumes_after;
+                    out["triangles_after"]  = triangles_after;
+                }
+                return out;
+            });
+        }
+    });
+
     register_tool({
         "flatten_object",
         "Automatically orient an object to lay flat on its best face for printing",
