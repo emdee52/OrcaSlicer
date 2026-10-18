@@ -261,6 +261,13 @@ std::vector<Vec2d> fillet_rim_profile(double r, double size, int segments)
 
 } // namespace
 
+double hole_cutter_entry_margin(double bore_d)
+{
+    // At least 0.2 mm, and 10% of the bore beyond that so a large pocket is not left with a razor
+    // edge either: a 3.4 mm screw bore asks for 0.34 mm.
+    return std::max(0.2, 0.1 * std::max(0., bore_d));
+}
+
 indexed_triangle_set its_make_bore(double diameter, double depth, const Vec3d &axis, const Vec3d &entry, int segments)
 {
     if (diameter <= 0. || depth <= 0.)
@@ -272,39 +279,52 @@ indexed_triangle_set its_make_bore(double diameter, double depth, const Vec3d &a
 }
 
 indexed_triangle_set its_make_counterbore(double clearance_d, double cbore_d, double cbore_depth,
-                                          double depth, const Vec3d &axis, const Vec3d &entry, int segments)
+                                          double depth, const Vec3d &axis, const Vec3d &entry,
+                                          double out_margin, int segments)
 {
     if (clearance_d <= 0. || depth <= 0.)
         return {};
-    const int            n     = std::max(segments, 8);
-    const double         fa    = 2. * PI / n;
-    indexed_triangle_set bore  = its_make_cylinder(clearance_d * 0.5, depth, fa);
+    const int    n   = std::max(segments, 8);
+    const double fa  = 2. * PI / n;
+    const double out = std::max(0., out_margin);
+
+    // Both barrels grow by `out` as the entrance moves out, so the shoulder and the far end stay
+    // exactly where `cbore_depth` and `depth` put them.
+    indexed_triangle_set bore  = its_make_cylinder(clearance_d * 0.5, depth + out, fa);
     if (cbore_d > clearance_d && cbore_depth > 0.) {
-        indexed_triangle_set cbore = its_make_cylinder(cbore_d * 0.5, cbore_depth, fa);
+        indexed_triangle_set cbore = its_make_cylinder(cbore_d * 0.5, cbore_depth + out, fa);
         its_merge(bore, cbore);
     }
-    place_on_axis(bore, axis, entry);
+    const Vec3d a = axis.normalized();
+    place_on_axis(bore, a, entry - a * out);
     return bore;
 }
 
 indexed_triangle_set its_make_countersink(double clearance_d, double csink_d, double csink_angle,
-                                          double depth, const Vec3d &axis, const Vec3d &entry, int segments)
+                                          double depth, const Vec3d &axis, const Vec3d &entry,
+                                          double out_margin, int segments)
 {
     if (clearance_d <= 0. || depth <= 0.)
         return {};
-    const int    n  = std::max(segments, 8);
-    const double fa = 2. * PI / n;
+    const int    n   = std::max(segments, 8);
+    const double fa  = 2. * PI / n;
+    const double out = std::max(0., out_margin);
 
-    indexed_triangle_set its = its_make_cylinder(clearance_d * 0.5, depth, fa);
+    indexed_triangle_set its = its_make_cylinder(clearance_d * 0.5, depth + out, fa);
     if (csink_d > clearance_d) {
         const double half = std::max(1., std::min(csink_angle, 179.)) * 0.5 * PI / 180.;
-        const double cs   = (csink_d - clearance_d) * 0.5 / std::tan(half); // cone height
+        // Extended along its own surface: reaching `out` further out at the same angle widens the
+        // cone's mouth by out / tan(half), which keeps the diameter it cuts at the entry plane
+        // exactly csink_d instead of shrinking it.
+        const double csink_d_out = csink_d + 2. * out / std::tan(half);
+        const double cs          = (csink_d_out - clearance_d) * 0.5 / std::tan(half); // cone height
         if (cs > 0.) {
-            indexed_triangle_set cone = make_frustum_solid(csink_d * 0.5, clearance_d * 0.5, cs, n);
+            indexed_triangle_set cone = make_frustum_solid(csink_d_out * 0.5, clearance_d * 0.5, cs, n);
             its_merge(its, cone);
         }
     }
-    place_on_axis(its, axis, entry);
+    const Vec3d a = axis.normalized();
+    place_on_axis(its, a, entry - a * out);
     return its;
 }
 

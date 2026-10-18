@@ -203,6 +203,56 @@ TEST_CASE("A countersink widens the entrance to the sink diameter", "[HoleShapes
     CHECK_THAT(bb.max.z(), WithinAbs(10., 1e-3));
 }
 
+TEST_CASE("A counterbore's entrance cap starts outside the entry it is given", "[HoleShapes]")
+{
+    // [ORCAPORT:ME-3] A cap lying in the entry plane is coplanar with the face the hole opens
+    // through, and a mesh boolean answers that with a zero-thickness skin across the recess (see the
+    // [MeshBoolean] cases). `out_margin` is how the Holes tool asks a head shape for the offset: the
+    // cap moves out, everything the cutter removes below the entry plane stays where it was.
+    const double out = hole_cutter_entry_margin(3.4);
+    CHECK_THAT(out, WithinAbs(0.34, 1e-9));
+
+    const indexed_triangle_set cbore = its_make_counterbore(3.4, 6., 3., 10., Vec3d::UnitZ(), Vec3d::Zero(), out);
+    REQUIRE_FALSE(cbore.empty());
+
+    const BoundingBoxf3 bb = bounding_box(cbore);
+    CHECK_THAT(bb.min.z(), WithinAbs(-out, 1e-4)); // the entrance cap moved out ...
+    CHECK_THAT(bb.max.z(), WithinAbs(10., 1e-4));  // ... and the far end did not
+    CHECK_THAT(bb.min.x(), WithinAbs(-3., 1e-3));  // the head is still the head
+
+    // A ray up the counterbore's own wall finds the shoulder at cbore_depth, measured from the entry
+    // plane, so the head sits exactly as deep as it did without the margin.
+    const AABBMesh probe(cbore);
+    double         shoulder = -1e30;
+    for (const AABBMesh::hit_result &hit : probe.query_ray_hits(Vec3d(2.4, 0., -1.), Vec3d::UnitZ()))
+        if (hit.is_hit())
+            shoulder = std::max(shoulder, -1. + hit.distance());
+    CHECK_THAT(shoulder, WithinAbs(3., 1e-4));
+}
+
+TEST_CASE("A countersink keeps the diameter it cuts at the entry plane", "[HoleShapes]")
+{
+    // [ORCAPORT:ME-3] The cone is extended along its own surface as the entrance cap moves out, so
+    // the margin cannot make the sink narrower than the head it is there for.
+    const double outs[] = {0., hole_cutter_entry_margin(3.4), 1.5};
+    for (const double out : outs) {
+        DYNAMIC_SECTION("entry margin " << out << " mm")
+        {
+            const indexed_triangle_set csink =
+                its_make_countersink(3.4, 6.3, 90., 10., Vec3d::UnitZ(), Vec3d::Zero(), out);
+            REQUIRE_FALSE(csink.empty());
+
+            // Half-width across the entry plane: the cone's own wall, twice.
+            const AABBMesh probe(csink);
+            double         half_width = 0.;
+            for (const AABBMesh::hit_result &hit : probe.query_ray_hits(Vec3d(-10., 0., 0.), Vec3d::UnitX()))
+                if (hit.is_hit())
+                    half_width = std::max(half_width, -10. + hit.distance());
+            CHECK_THAT(half_width, WithinAbs(3.15, 1e-3));
+        }
+    }
+}
+
 TEST_CASE("A tube is an annulus with a bore", "[HoleShapes]")
 {
     const indexed_triangle_set tube = its_make_tube(6., 4., 5., Vec3d::UnitZ(), Vec3d::Zero());

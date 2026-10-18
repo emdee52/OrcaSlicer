@@ -447,15 +447,24 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
         if (d <= 0. || depth <= 0.)
             return {};
 
+        // [ORCAPORT:ME-3] A head whose entrance cap lands exactly IN the part's face is a coplanar
+        // pair for the boolean, which answers it with a zero-thickness skin across the recess: the
+        // slicer discards the sheet, so the print has the head, while the mesh and the view say the
+        // surface is still solid. PP-4 cured exactly this for a hole placed on a face; a screw head is
+        // wider than the bore, so a DETECTED hole's head is exposed as well (its cap ring covers the
+        // face around the hole), and this pass covers both. The head shapes keep the geometry they cut
+        // where `depth` and the head depth put it - only the cap moves out. Only a screw head uses it.
+        const double head_out = hole_cutter_entry_margin(d);
+
         if (m_category == HoleCategory::Screw && s != nullptr) {
             if (m_head == BoreHead::SocketHead && s->socket_d > d)
-                its = its_make_counterbore(d, s->socket_d, s->socket_k + sink, depth, dir_w, entry_w);
+                its = its_make_counterbore(d, s->socket_d, s->socket_k + sink, depth, dir_w, entry_w, head_out);
             else if (m_head == BoreHead::ButtonHead && s->button_d > d)
-                its = its_make_counterbore(d, s->button_d, s->button_k + sink, depth, dir_w, entry_w);
+                its = its_make_counterbore(d, s->button_d, s->button_k + sink, depth, dir_w, entry_w, head_out);
             // A sunk countersunk head only deepens the cone's top: the entry stays at the surface and
             // the cone grows by 2*sink in diameter at the same angle, so the head sits `sink` lower.
             else if (m_head == BoreHead::Countersink && s->csink_d > d)
-                its = its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir_w, entry_w);
+                its = its_make_countersink(d, s->csink_d + 2.0 * sink, s->csink_angle, depth, dir_w, entry_w, head_out);
         }
         // [ORCAPORT:PP-4] A screw teardrop is a SUPERSET of the round bore (a round tunnel with a sloped
         // roof), so it IS the shaft's cross-section - it must not be merged INTO a round bore as well.
@@ -488,8 +497,10 @@ indexed_triangle_set GLGizmoHoles::bore_negative_mesh(const DetectedHole &h) con
                 // ⚠️ The head's teardrop is still MERGED into the stepped bore rather than replacing the
                 // head's own section, so a head teardrop keeps one extra overlapping shell over the head
                 // (PP-4 fixes the shaft, which is the common case). Doing the head properly needs a
-                // stepped section builder, not a merge.
-                indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k, m_angle_deg, dir_w, entry_w, Vec3d::UnitZ());
+                // stepped section builder, not a merge. Its cap needs the same treatment as the head's
+                // (ME-3): a prism does not taper, so the extra length only reaches further into the air.
+                indexed_triangle_set head = its_make_teardrop_prism(0.5 * head_d, head_k + head_out, m_angle_deg,
+                                                                    dir_w, entry_w - dir_w * head_out, Vec3d::UnitZ());
                 if (!head.indices.empty())
                     its_merge(its, head);
             }
@@ -963,7 +974,8 @@ DetectedHole GLGizmoHoles::face_hole(const Vec3d &hit_world, const Vec3d &outwar
     // coplanar pair to leave a sliver on - the "the hole is through, but there is still a skin on one
     // side" that shows up in an exported mesh while the slicer silently discards it. The overshoot is
     // invisible: a negative volume is intersected with the part at slice time either way.
-    const double entry    = std::max(0.2, 0.1 * d_obj);
+    // [ORCAPORT:ME-3] The same margin the head shapes ask for, in this object-space frame.
+    const double entry    = hole_cutter_entry_margin(bore_diameter()) / scale;
     const Vec3d  entry_pt = hit_world - dir * entry;
 
     DetectedHole h;
