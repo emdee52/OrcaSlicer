@@ -1,16 +1,22 @@
-# PP-6 — Perforations: Lines up to 90°, and a preview that follows the sliders
+# PP-6 — Perforations: Lines up to 90°, a live preview, grooves for Grid, and a depth you pick
 
-Status: **implemented, build clean, tests green** (ctest 2411/2411). Product commit on `port/PP-6`,
+Status: **implemented, build clean, tests green** (ctest 2413/2413). Product commits on `port/PP-6`,
 docs+patch in the follow-up `port:` commit. Not merged and not pushed.
 
 ## What it is
 
-Two follow-ups on the Perforations gizmo (PP-1/PP-2), asked for by the user after living with it:
+Five changes to the Perforations gizmo (PP-1/PP-2), asked for by the user after living with it:
 
 1. **Lines gets 0..90°**, so the single slot family can be turned all the way to vertical. The other
    three patterns keep their ranges.
 2. **The yellow proposal updates while a slider is dragged**, instead of only when the mouse is
    released (spacing, hole width, boundary and angle).
+3. **An angle the new pattern cannot express goes back to 0** when the pattern is switched, instead of
+   being left in place for a pattern that cannot show it.
+4. **Grid is always cut as grooves** (`invert` on), and the Invert row is not offered for it: with it
+   off, the holes leave floating squares of material the slicer cannot print.
+5. **"To": pick a second, parallel face** that the pattern stops on, instead of the first surface the
+   depth probe finds - so a pattern can cross a void and stop on a chosen far wall.
 
 ## 1. Lines turns through the full quarter
 
@@ -72,16 +78,73 @@ bites) a drag updates at a few frames per second. That is inherent to rebuilding
 throttle would not change it, so none was added (user decision). A frame-time guard on `m_pick_dirty`
 is the upgrade path if it ever matters.
 
+## 3. An angle the new pattern cannot express goes back to 0
+
+`perforation_angle_for_kind(kind, angle_deg)` in `PerforationPattern.hpp` is the one rule: in range it
+is **kept** (so switching to the wider pattern never disturbs a value Grid was using), out of range it
+is 0. It runs in two places:
+
+- the panel's pattern row, when the clicked pattern differs from the current one;
+- the MCP `set_params`, applied **after every field**, so the order of a request cannot matter and an
+  `angle` sent in the same call as `pattern` is not immune.
+
+That last part was a real bug the MCP run caught in the first cut of the rule: it reset the angle only
+when the kind struck it as changed, so `{pattern: grid, angle: 80}` sailed through and left grid at 80°
+- exactly the state this rule exists to remove (the response said `"angle": 80.0`). Worth saying plainly:
+no in-range Grid angle reproduces an 80° grid (Grid at 80° is the family pair {80°, 170°}, i.e.
+{80°, -10°}; the in-range mirror is 10°), so any rule moves something. The point is that the number in
+the field and the picture on the face agree afterwards.
+
+## 4. Grid is always cut as grooves
+
+With `invert` off, the two crossing families subtracted as *holes* leave the material between the
+crossings as squares that touch nothing - floating regions the slicer cannot print, and the opposite of
+what a user who picks Grid wants. `make_perforation_pattern()` now forces `invert || kind == Grid` **in
+the builder**, which is the one place every caller routes through: neither the panel nor the MCP tool nor
+a test can ask for the island version. On top of that the Invert row is not drawn for Grid, and both the
+panel's pattern row and `set_params` set the flag so the state on screen says what is cut.
+
+This changed an existing contract, so an existing assertion had to flip: the first case in
+`test_perforationpattern.cpp` asserted `grid.front().holes.size() > 1` (the lattice-with-holes reading).
+It now asserts the complement's several contours, and the dedicated case pins the property that matters -
+what is left standing is ONE connected region.
+
+## 5. "To": a second face decides the depth
+
+Gizmo state, not a `PerforationParams` value: a target is a face reference, not a number, so it has its
+own pick actions over MCP and is not part of `set_params`.
+
+- **The row.** `To` with a `Pick face` button, drawn only once a face is picked (no dead control, and no
+  `ImGui::BeginDisabled` - this tree's ImGui does not have it). Armed, the same button reads `Cancel`; a
+  target set, it reads `Clear`. Where the exact size of "stop on the face" is read: the hint line at the
+  bottom, which switches from the static depth sentence to "The pattern stops on the picked face: N mm
+  deep".
+- **The pick.** The same `raycast_object_face` the first pick uses, with the same exclusion of this
+  tool's own negatives. Accepted only when the target is **parallel** (`|n·n_to| >= 0.99`) and **behind**
+  the picked face (projection along `-n` strictly negative); otherwise an amber warning in the panel and
+  an error over MCP (`gizmo_target_refusal()` maps one enum to both audiences).
+- **The distance** is the plane-to-plane projection in object space, so the target's lateral offset does
+  not matter. **The cut ends `PP_TARGET_OVERSHOOT = 0.2` mm past the face** - stopping exactly on it
+  would make the prism's cap coplanar with a real surface, the sliver PP-4 taught us to avoid, and a
+  fifth of a millimetre is under one extrusion width (200000 units at the slicer's 1e-6 mm resolution).
+- **It is drawn** in the picked green: the two green patches are the two ends of the hole path.
+- **It does not outlive the pick**: dropped with the pick, when the volume-list change removes its
+  volume, and when the tool closes.
+- **A right click while armed cancels the mode** instead of committing a pattern - the gesture that
+  commits should not cut while the user is aiming at a face.
+- **MCP**: `pick_to` (screen_x/screen_y, or the viewport centre), `clear_to`, and `to_valid` /
+  `to_distance` in every report.
+
 ## Files
 
 | Kind | Path |
 |------|------|
-| Core | `src/libslic3r/PerforationPattern.hpp` (the two constants + the angle comment) |
+| Core | `src/libslic3r/PerforationPattern.{hpp,cpp}` (the two constants, the angle + kind rules, the forced Grid invert) |
 | Gizmo | `src/slic3r/GUI/Gizmos/GLGizmoPerforation.{hpp,cpp}` |
-| MCP | `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp` (`angle` description) |
+| MCP | `src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp` (`angle` description, `pick_to`/`clear_to`, `to_valid`/`to_distance`, the two rules) |
 | Test | `tests/libslic3r/test_perforationpattern.cpp` |
 
-Marker: `[ORCAPORT:PP-6]` at the four sites.
+Marker: `[ORCAPORT:PP-6]` at the sites listed by `grep -n "ORCAPORT:PP-6"`.
 
 ## Verification
 
@@ -92,16 +155,40 @@ Marker: `[ORCAPORT:PP-6]` at the four sites.
   Not asserted: equal area between 0° and 90°. On that rectangle the two happen to agree
   (6 rows x 100 mm = 10 columns x 60 mm = 600 mm of slot), but that is the numbers lining up, not a
   property of the pattern - the strip phase differs between the two axes.
-- Run: `[PerforationPattern]` 7 cases / 422 assertions, all passed (6 cases before this change).
-  Full suite `ctest --test-dir build/tests -C Release`: **2411 passed, 0 failed**, seven
-  `RequiresApp`/plugin cases skipped as usual. Build: `build_win.bat -s --tests`, 7m42s, the four
-  touched translation units compiled (log lines for `PerforationPattern.cpp`, `GLGizmoPerforation.cpp`,
-  `OrcaMCPGizmoTools.cpp`, `test_perforationpattern.cpp`).
-- Manual (user, in the app): open Perforations on a flat face, pick it, and check
-  (a) the Angle slider's right end reaches 90 and a Lines pattern goes vertical as it does;
-  (b) with a face picked, dragging Spacing / Hole width / Boundary / Angle moves the yellow proposal
-  under the cursor, releasing nothing needed. Screenshots via the `ui_screenshot` tool (UI-2) if a
-  before/after is wanted.
+- Run: `[PerforationPattern]` **9 cases / 434 assertions**, all passed (6 before this batch). Full suite
+  `ctest --test-dir build/tests -C Release`: **2413 passed, 0 failed**, seven `RequiresApp`/plugin cases
+  skipped as usual. Builds: `build_win.bat -s --tests` (the four touched TUs compiled), then an
+  incremental `-s --no-configure` after the MCP rule fix below.
+- New cases:
+  - **Grid grooves**: a Grid asked for with `invert = false` leaves **one** connected region standing
+    (`diff_ex(inset, pattern).size() == 1`) and is area-identical to the explicit grooves call - the
+    floating-square property, stated as the thing that matters.
+  - **The angle rule**: 80 → 0 on Grid, 30 and 45 kept, Grid → Lines kept, 120 → 0, and the isotropic
+    patterns carry the pair bound.
+  - The pre-existing Grid assertion in the same file (`grid.front().holes.size() > 1`) had to **flip** to
+    the new contract - it was written against the holes reading.
+- Runtime over MCP on the 20 mm cube (Release, `ORCA_EXT_MCP=1`): `open` → honeycomb/0/off; `pick_at` at
+  the viewport centre → `pick_valid` true; `{pattern: grid, angle: 80}` → angle **0**, `invert` **true**;
+  `{pattern: lines, angle: 60}` → 60 kept; `{pattern: grid}` alone → 0 again; `pick_to` on the same face
+  → refused, "The target face has to be behind the picked one"; `create` → `applied_count` 1;
+  `slice_all` → `idle` with only the two pre-existing warnings (objects too close, `precise wall`
+  ignored).
+- **NOT reached over MCP: the accepted target path.** Three attempts, three dead ends, all geometry:
+  a 20 mm cube is convex and symmetric, so its far face is always occluded and a 180° rotation maps it
+  onto the near one; `rotate_object` / `mirror_object` leave face 1's object-space normal pointing away
+  from the model, so nothing is "behind" it any more; and the tool list has no camera control to look at
+  the far side. A concave fixture (a pocket whose floor is a second visible parallel face) is what the
+  check needs and `tests/data` has none. **Manual protocol for the user**: pick a flat face, orbit until
+  a parallel face behind it is visible, press `Pick face` and click it, check the distance in the hint
+  line against the wall thickness you know, then Perforate - and check that the cut reaches that face
+  and not the first void. Two variants worth doing: a target that stops the cut *earlier* than the probe
+  would have (a shorter hole), and a `Clear` that puts the depth back on the probe.
+- Manual (user, in the app), the rest: (a) the Angle slider's right end reaches 90 and a Lines pattern
+  goes vertical as it does; (b) switching Lines(80°) → Grid drops the angle to 0, and Grid shows no
+  Invert row; (c) with a face picked, dragging Spacing / Hole width / Boundary / Angle moves the yellow
+  proposal under the cursor, releasing nothing needed. Screenshots via the `ui_screenshot` tool (UI-2)
+  if a before/after is wanted.
+
 
 ## Also in this batch
 

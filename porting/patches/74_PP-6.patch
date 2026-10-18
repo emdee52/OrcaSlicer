@@ -1,8 +1,27 @@
+diff --git a/src/libslic3r/PerforationPattern.cpp b/src/libslic3r/PerforationPattern.cpp
+index acb04d2852..2ef4ba18d9 100644
+--- a/src/libslic3r/PerforationPattern.cpp
++++ b/src/libslic3r/PerforationPattern.cpp
+@@ -179,7 +179,13 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
+     if (holes.empty())
+         return {};
+ 
+-    return params.invert ? diff_ex(inset, holes) : holes;
++    // [ORCAPORT:PP-6] A grid is grooves, always. Subtracting the two crossing families as holes leaves
++    // the material between the crossings as squares that touch nothing - floating regions the slicer
++    // cannot print, and the only thing a user who picks Grid ever wants is the lattice standing.
++    // Forced HERE so no caller (the panel, the MCP tool, a test) can ask for the island version; the
++    // panel does not even offer the switch for Grid.
++    const bool invert = params.invert || params.kind == PerforationKind::Grid;
++    return invert ? diff_ex(inset, holes) : holes;
+ }
+ 
+ indexed_triangle_set extrude_perforation_pattern(const ExPolygons &polys, const Vec3d &origin,
 diff --git a/src/libslic3r/PerforationPattern.hpp b/src/libslic3r/PerforationPattern.hpp
-index 8bb6760596..6d886d9767 100644
+index 8bb6760596..de624dc12a 100644
 --- a/src/libslic3r/PerforationPattern.hpp
 +++ b/src/libslic3r/PerforationPattern.hpp
-@@ -19,7 +19,7 @@ enum class PerforationKind : int {
+@@ -19,11 +19,11 @@ enum class PerforationKind : int {
  
  struct PerforationParams {
      PerforationKind kind{PerforationKind::Honeycomb};
@@ -11,7 +30,12 @@ index 8bb6760596..6d886d9767 100644
      double spacing{6.0};    // hole / slot centre-to-centre distance, mm
      double width{2.0};      // hole / slot width, mm
      double margin{2.0};     // boundary inset from the face outline, mm
-@@ -32,10 +32,17 @@ struct PerforationParams {
+-    bool   invert{false};   // true: subtract the material between the holes
++    bool   invert{false};   // true: subtract the material between the holes (Grid is always inverted)
+ };
+ 
+ // Wall below which adjacent holes are considered too close, in mm. Advisory only: the UI warns
+@@ -32,10 +32,36 @@ struct PerforationParams {
  // is the geometry, merged or not.
  inline constexpr double PERFORATION_MIN_WALL = 1.0;
  
@@ -28,14 +52,279 @@ index 8bb6760596..6d886d9767 100644
 +// to vertical; 90..180 would be the mirrored half, so the range stops at the vertical.
 +inline constexpr double PERFORATION_MAX_ANGLE_LINES_DEG = 90.0;
 +
++// The largest angle `kind` can express: 0..90 for the single family, 0..45 for the pair. Honeycomb and
++// circles are isotropic and ignore the angle; the bound is still defined for them so callers do not
++// have to special-case them.
++inline constexpr double perforation_max_angle_deg(PerforationKind kind)
++{
++    return kind == PerforationKind::Lines ? PERFORATION_MAX_ANGLE_LINES_DEG : PERFORATION_MAX_ANGLE_DEG;
++}
++
++// [ORCAPORT:PP-6] The angle to carry over when the pattern is switched to `kind`. An angle the new
++// kind cannot express would leave the panel's slider pinned at its maximum while the pattern went on
++// using the old value - what a user reads as "the angle stuck", and what used to hand Grid a 80-degree
++// angle it cannot express. Out of range it goes back to 0; in range it is kept, so switching to the
++// wider pattern (Lines) never touches a value Grid was using. Only a pattern change resets it: typing
++// or dragging a value never does, which is the rule the panel states.
++inline constexpr double perforation_angle_for_kind(PerforationKind kind, double angle_deg)
++{
++    return angle_deg > perforation_max_angle_deg(kind) ? 0.0 : angle_deg;
++}
++
  // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
  // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
  // empty. The result never has overlapping polygons.
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-index 050542a2ad..1ef139b60b 100644
+index 050542a2ad..404af361dc 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.cpp
-@@ -626,10 +626,12 @@ void GLGizmoPerforation::on_render()
+@@ -13,6 +13,7 @@
+ #include "slic3r/GUI/ImGuiWrapper.hpp"
+ #include "slic3r/GUI/Shortcuts.hpp"
+ #include "slic3r/GUI/Plater.hpp"
++#include "slic3r/GUI/format.hpp" // [ORCAPORT:PP-6] GUI::format for the translated To hint
+ 
+ #include <glad/gl.h>
+ 
+@@ -38,6 +39,13 @@ const char *const PERFORATION_NAME = "Perforation";
+ // are built on the same two.
+ constexpr float PP_PI_F = 3.14159265358979323846f;
+ 
++// [ORCAPORT:PP-6] How far past the "To" face the pattern carries, in mm. The pattern has to reach the
++// face and stop there, but a cap exactly coplanar with it slices as a zero-thickness sliver (the PP-4
++// lesson), so it goes slightly past. A fifth of a millimetre is under one extrusion width - it prints
++// as nothing where the face is the far side of the part, and as a dimple well under a layer where
++// there is material behind it - and it is 200000 units at the slicer's 1e-6 mm resolution.
++constexpr double PP_TARGET_OVERSHOOT = 0.2;
++
+ // Lines - three parallel slots.
+ void pp_lines(ImDrawList *dl, const ImVec2 &p, float s, ImU32 col)
+ {
+@@ -143,8 +151,17 @@ bool GLGizmoPerforation::on_init()
+     m_desc["angle"]      = _L("Angle");
+     m_desc["invert"]     = _L("Invert (grooves)");
+     m_desc["depth_hint"] = _L("Depth follows the face to the first surface behind it.");
++    m_desc["to"]         = _L("To");
++    m_desc["to_pick"]    = _L("Pick face");
++    m_desc["to_cancel"]  = _L("Cancel");
++    m_desc["to_clear"]   = _L("Clear");
++    m_desc["to_tip"]     = _L("Stops the pattern on a second face instead of at the first surface behind this one. "
++                              "Pick a face parallel to the picked one; note it has to be visible, so orbit to it.");
++    m_desc["to_noface"]  = _L("No face under the cursor.");
++    m_desc["to_parallel"] = _L("The target face is not parallel to the picked face.");
++    m_desc["to_behind"]  = _L("The target face has to be behind the picked one.");
+     m_desc["click_hint"] = _L("Click a flat face to pick it, adjust the pattern, then press Perforate (or right-click).");
+-    m_desc["drop_hint"]  = _L("Esc drops the pick.");
++    m_desc["drop_hint"]  = _L("Esc closes the tool and drops the pick.");
+     m_desc["perforate"]  = _L("Perforate");
+     m_desc["applied"]    = _L("Perforated");
+     m_desc["forbidden"]  = _L("Only flat faces can be perforated.");
+@@ -174,7 +191,8 @@ void GLGizmoPerforation::on_set_state()
+     } else {
+         clear_hover();
+         // The pick goes with the panel: leaving it set would resurrect a green face and a yellow
+-        // pattern the next time the tool opens, on a mesh that may have been edited meanwhile.
++        // pattern the next time the tool opens, on a mesh that may have been edited meanwhile. The
++        // [ORCAPORT:PP-6] To target and the armed pick mode go with it.
+         clear_pick();
+     }
+ }
+@@ -199,6 +217,9 @@ void GLGizmoPerforation::data_changed(bool /*is_serializing*/)
+         // it does NOT survive is the volume it pointed at going away.
+         if (m_pick.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_pick.mv) == mo->volumes.end())
+             clear_pick();
++        // [ORCAPORT:PP-6] The same rule for the To target, which is the second half of a pair.
++        if (m_target.valid && std::find(mo->volumes.begin(), mo->volumes.end(), m_target.mv) == mo->volumes.end())
++            clear_target();
+         m_parent.set_as_dirty();
+     }
+ }
+@@ -357,6 +378,8 @@ void GLGizmoPerforation::pick_at(const Vec2d &screen_pos)
+ 
+ void GLGizmoPerforation::clear_pick()
+ {
++    // [ORCAPORT:PP-6] The target is measured from the picked face, so it cannot outlive it.
++    clear_target();
+     if (! m_pick.valid && ! m_face_picked.is_initialized() && ! m_pattern_proposed.is_initialized())
+         return;
+     m_pick       = Pick();
+@@ -395,6 +418,118 @@ bool GLGizmoPerforation::apply_at(const Vec2d &screen_pos)
+     return m_pick.valid && create_from_pick();
+ }
+ 
++// [ORCAPORT:PP-6] The "To" pick: a second face the pattern stops on. Accepted only when it is
++// PARALLEL to the picked face (the hole path has one axis) and BEHIND it (this tool cuts inward
++// only); anything else sets a reason the panel shows and leaves the previous target alone.
++void GLGizmoPerforation::pick_target_at(const Vec2d &screen_pos)
++{
++    m_target_why = TargetWhy::None;
++    if (! m_pick.valid || m_pick.mv == nullptr) {
++        m_target_why    = TargetWhy::NoFace;
++        m_pick_target   = false;
++        return;
++    }
++
++    const ModelObject *mo = model_object();
++    if (mo == nullptr)
++        return;
++
++    const ClippingPlane *clipping = nullptr;
++    if (auto oc = m_c->object_clipper())
++        clipping = oc->get_clipping_plane();
++
++    const GLVolume    *volume = nullptr;
++    const ModelVolume *mv     = nullptr;
++    size_t             facet  = 0;
++    Vec3d              hit    = Vec3d::Zero();
++    // The tool's own negatives are picked through, exactly as the first pick does it.
++    const auto not_ours = [](const ModelVolume *v) { return v == nullptr || v->name != PERFORATION_NAME; };
++    if (! raycast_object_face(screen_pos, m_parent.get_selection(), mo, clipping, volume, mv, facet, hit, not_ours)) {
++        m_target_why = TargetWhy::NoFace;
++        return;
++    }
++
++    const Vec3d n = facet_normal_in_world(m_pick.mv->mesh().its, m_pick.facet, m_pick.mv->get_matrix()).normalized();
++    if (! n.allFinite() || n.norm() < 1e-9) {
++        m_target_why = TargetWhy::NoFace;
++        return;
++    }
++    const Vec3d n_to = facet_normal_in_world(mv->mesh().its, int(facet), mv->get_matrix()).normalized();
++    if (! n_to.allFinite() || std::abs(n.dot(n_to)) < 0.99) {
++        m_target_why = TargetWhy::NotParallel;
++        return;
++    }
++
++    // Both points in object space: the picked face is planar, so projecting the target's hit point
++    // onto its normal gives the plane-to-plane distance, whatever the target's lateral offset.
++    const Vec3d  hit_obj = instance_matrix().inverse() * hit;
++    const double distance = -(hit_obj - m_pick.hit_obj).dot(n);
++    if (distance < 0.05) {
++        m_target_why = TargetWhy::NotBehind;
++        return;
++    }
++
++    m_target       = Target{ true, mv, int(facet), distance };
++    m_pick_target  = false;
++    m_pick_dirty   = true;  // the depth changed: the proposal is built from it
++    m_show_proposal = true;
++    rebuild_target_highlight();
++    m_parent.set_as_dirty();
++}
++
++void GLGizmoPerforation::clear_target()
++{
++    m_pick_target = false;
++    m_target_why  = TargetWhy::None;
++    if (! m_target.valid && ! m_face_target.is_initialized())
++        return;
++    m_target = Target();
++    m_face_target.reset();
++    m_pick_dirty    = true;  // back to the depth probe
++    m_show_proposal = true;
++    m_parent.set_as_dirty();
++}
++
++// The target face, in the picked colour: the two green patches are the two ends of the hole path.
++void GLGizmoPerforation::rebuild_target_highlight()
++{
++    m_face_target.reset();
++    if (! m_target.valid || m_target.mv == nullptr)
++        return;
++    const std::vector<int> region = coplanar_region(m_target.mv, size_t(m_target.facet), m_face_cache);
++    if (region.empty())
++        return;
++    const indexed_triangle_set patch = build_coplanar_patch(m_target.mv, region, m_face_cache, 0.05f);
++    if (patch.indices.empty())
++        return;
++    m_face_target.init_from(patch);
++    m_face_target.set_color(gizmo_picked_colour());
++}
++
++// [ORCAPORT:PP-6] Why a target pick was refused, as text for the MCP tool. The panel maps the same
++// enum to translated msgids, so neither side parses the other's strings.
++const char *GLGizmoPerforation::gizmo_target_refusal() const
++{
++    switch (m_target_why) {
++    case TargetWhy::None:        return "";
++    case TargetWhy::NoFace:      return "No face under the screen point (pick the face the pattern reaches, and orbit to it if it is not visible)";
++    case TargetWhy::NotParallel: return "The target face is not parallel to the picked face";
++    case TargetWhy::NotBehind:   return "The target face has to be behind the picked one";
++    }
++    return "";
++}
++
++bool GLGizmoPerforation::gizmo_pick_target_at(const Vec2d &screen_pos)
++{
++    pick_target_at(screen_pos);
++    return m_target.valid && m_target_why == TargetWhy::None;
++}
++
++void GLGizmoPerforation::gizmo_clear_target()
++{
++    clear_target();
++}
++
+ // The picked face as a clean 2D polygon in the face plane: the coplanar region's triangles,
+ // projected onto the plane and unioned. The plane origin is `origin_obj` (object space).
+ ExPolygons GLGizmoPerforation::face_domain(const ModelVolume *mv, size_t facet, const Vec3d &normal_obj,
+@@ -446,7 +581,13 @@ bool GLGizmoPerforation::build_pattern_at(const Vec3d &hit_obj, const ModelVolum
+     // (a hollow shell) or the far side of the object (solid). Fall back to the whole object.
+     double z_out = 0.5;
+     double z_in  = -m_params.margin - 5.;
+-    if (!m_merged_its.indices.empty()) {
++    // [ORCAPORT:PP-6] With a To target the depth is not probed at all: it is the distance to the face
++    // the user picked, plus the small overshoot that keeps the cut from ending coplanar with it. This
++    // is what lets a pattern cross a void and stop on a chosen far wall instead of the first one the
++    // ray happens to find.
++    if (m_target.valid) {
++        z_in = -(m_target.distance + PP_TARGET_OVERSHOOT);
++    } else if (!m_merged_its.indices.empty()) {
+         const AABBMesh mesh(m_merged_its);
+         const Vec3d    start = hit_obj - n * 1e-3;
+         double         depth = 0.;
+@@ -521,6 +662,10 @@ void GLGizmoPerforation::update_hover()
+ void GLGizmoPerforation::set_params(const PerforationParams &p)
+ {
+     m_params         = p;
++    // [ORCAPORT:PP-6] Grid is grooves in the geometry (see make_perforation_pattern), so the state the
++    // panel and the MCP report read says so too instead of disagreeing with what is cut.
++    if (m_params.kind == PerforationKind::Grid)
++        m_params.invert = true;
+     m_pick_dirty     = true; // the proposal is built from the values
+     m_show_proposal  = true; // ...and a new set of values is not what was applied
+     m_parent.set_as_dirty();
+@@ -602,6 +747,15 @@ bool GLGizmoPerforation::on_mouse(const wxMouseEvent &mouse_event)
+     // Perforate button. Esc is what drops the pick. A right-click with nothing picked is left to the
+     // canvas.
+     if (mouse_event.RightDown()) {
++        // [ORCAPORT:PP-6] A right click while the To pick is armed puts the button back instead of
++        // committing: an armed pick is a mode, and the same gesture that commits a pattern should not
++        // cut one while the user is aiming at a face.
++        if (m_pick_target) {
++            m_pick_target = false;
++            m_target_why  = TargetWhy::None;
++            m_parent.set_as_dirty();
++            return true;
++        }
+         if (! m_pick.valid)
+             return false;
+         create_from_pick();
+@@ -610,6 +764,14 @@ bool GLGizmoPerforation::on_mouse(const wxMouseEvent &mouse_event)
+     }
+     if (! mouse_event.LeftDown())
+         return false;
++    // [ORCAPORT:PP-6] Armed: the click belongs to the target face and must not re-pick the face the
++    // pattern is anchored to. Swallowed either way, so a click on empty space does not fall through
++    // to the canvas and drop the selection under the tool.
++    if (m_pick_target) {
++        pick_target_at(m_parent.get_local_mouse_position());
++        m_parent.request_extra_frame();
++        return true;
++    }
+     // A click PICKS the face; nothing is cut until Perforate or a right-click. Swallow the click only
+     // when it landed on a face, so a click on empty space still falls through to the canvas.
+     pick_at(m_parent.get_local_mouse_position());
+@@ -626,10 +788,12 @@ void GLGizmoPerforation::on_render()
      }
      update_hover();
  
@@ -52,7 +341,20 @@ index 050542a2ad..1ef139b60b 100644
          rebuild_proposed_pattern();
          m_pick_dirty = false;
      }
-@@ -730,7 +732,11 @@ void GLGizmoPerforation::render_panel_body()
+@@ -661,6 +825,12 @@ void GLGizmoPerforation::on_render()
+         shader->set_uniform("view_model_matrix", view * instance_matrix() * m_pick.mv->get_matrix());
+         m_face_picked.render();
+     }
++    // [ORCAPORT:PP-6] The To face is drawn like the picked one (same colour, same kind of patch): it is
++    // the second end of the path the pattern cuts.
++    if (m_target.valid && m_target.mv != nullptr && m_face_target.is_initialized()) {
++        shader->set_uniform("view_model_matrix", view * instance_matrix() * m_target.mv->get_matrix());
++        m_face_target.render();
++    }
+     if (m_pattern_proposed.is_initialized()) {
+         // The patterns are object-space prisms, like the negative volumes they become.
+         shader->set_uniform("view_model_matrix", view * instance_matrix());
+@@ -730,7 +900,10 @@ void GLGizmoPerforation::render_panel_body()
      constexpr double SPACING_MIN = 1.0,  SPACING_MAX = 25.0;
      constexpr double WIDTH_MIN   = 0.2,  WIDTH_MAX   = 10.0;
      constexpr double MARGIN_MIN  = 1.0,  MARGIN_MAX  = 25.0;
@@ -60,12 +362,119 @@ index 050542a2ad..1ef139b60b 100644
 +    constexpr double ANGLE_MIN   = 0.0;
 +    // [ORCAPORT:PP-6] A single family (Lines) gets the full quarter, horizontal -> vertical; Grid keeps
 +    // 0..45 because its own 90-degree cross already covers the rest (see PerforationPattern.hpp).
-+    const double     ANGLE_MAX   = m_params.kind == PerforationKind::Lines ? PERFORATION_MAX_ANGLE_LINES_DEG
-+                                                                          : PERFORATION_MAX_ANGLE_DEG;
++    const double     ANGLE_MAX   = perforation_max_angle_deg(m_params.kind);
  
      // Pattern: the four choices as icons with the name on hover (section 28 records the icon button
      // standard). Drawn without a caption, like the Extrude panel's own mode row.
-@@ -828,14 +834,10 @@ void GLGizmoPerforation::render_panel_body()
+@@ -744,8 +917,19 @@ void GLGizmoPerforation::render_panel_body()
+             if (i > 0)
+                 ImGui::SameLine(0.f, ImGui::GetStyle().ItemSpacing.x);
+             if (gizmo_icon_toggle(names[i], int(m_params.kind) == i, names[i], drawers[i])) {
+-                m_params.kind = PerforationKind(i);
+-                m_pick_dirty  = true;
++                const PerforationKind kind = PerforationKind(i);
++                if (kind != m_params.kind) {
++                    // [ORCAPORT:PP-6] An angle the new pattern cannot express would leave the slider
++                    // pinned at its maximum while the geometry kept the old value, so it goes to 0.
++                    // Switch to the wider pattern and the value in range is kept.
++                    m_params.angle_deg = perforation_angle_for_kind(kind, m_params.angle_deg);
++                    m_params.kind      = kind;
++                }
++                // [ORCAPORT:PP-6] Grid is grooves in the geometry, so the panel state says so (the
++                // builder forces it too, which is what a script or a test would hit).
++                if (m_params.kind == PerforationKind::Grid)
++                    m_params.invert = true;
++                m_pick_dirty       = true;
+             }
+         }
+     }
+@@ -756,7 +940,7 @@ void GLGizmoPerforation::render_panel_body()
+     // captions actually drawn in the column: measuring one of them is how "Hole width" ended up
+     // clipped to "Hole wi".
+     float label_w = 0.f;
+-    for (const char *key : {"spacing", "width", "boundary", "angle"})
++    for (const char *key : {"spacing", "width", "boundary", "angle", "to"})
+         label_w = std::max(label_w, ImGui::CalcTextSize(m_desc.at(key).utf8_str().data()).x);
+     label_w += ImGui::GetStyle().ItemSpacing.x * 0.5f;
+ 
+@@ -795,11 +979,48 @@ void GLGizmoPerforation::render_panel_body()
+         }
+     }
+ 
+-    bool invert = m_params.invert;
+-    if (gizmo_row_switch("##invert", m_desc.at("invert").utf8_str().data(), &invert,
+-                         _u8L("Cuts raised ridges instead of holes.").c_str())) {
+-        m_params.invert = invert;
+-        m_pick_dirty    = true;
++    // [ORCAPORT:PP-6] The optional second face the pattern stops on. The caption sits in the same
++    // label column as the rows above and the control is a plain button: there either is a target face
++    // or there is not, so a slider would invent a range the geometry does not have. Drawn only once
++    // there is a face to measure from, so the panel never offers a control that cannot work.
++    if (m_pick.valid) {
++        const float col = ImGui::GetCursorPosX() + label_w;
++        ImGui::AlignTextToFramePadding();
++        ImGui::PushStyleColor(ImGuiCol_Text, gizmo_col(GizmoCol::TextDim));
++        ImGui::TextUnformatted(m_desc.at("to").utf8_str().data());
++        ImGui::PopStyleColor();
++        if (ImGui::IsItemHovered())
++            ImGui::SetTooltip("%s", m_desc.at("to_tip").utf8_str().data());
++        ImGui::SameLine(col);
++        // The label is copied: .utf8_str() hands out a temporary buffer that only lives to the end of
++        // the statement, and this one is used in the next one.
++        const std::string label =
++            (m_pick_target ? m_desc.at("to_cancel") : m_target.valid ? m_desc.at("to_clear") : m_desc.at("to_pick"))
++                .utf8_str()
++                .data();
++        if (ImGui::Button(label.c_str())) {
++            if (m_pick_target) {
++                m_pick_target = false;   // armed: the same button puts it back
++                m_target_why  = TargetWhy::None;
++            } else if (m_target.valid) {
++                clear_target();
++            } else {
++                m_pick_target = true;
++                m_target_why  = TargetWhy::None;
++            }
++            m_parent.set_as_dirty();
++        }
++    }
++
++    // [ORCAPORT:PP-6] Invert is Grid's own behaviour and is forced on in the geometry (see
++    // make_perforation_pattern), so the row is not offered for it: the switch could only lie.
++    if (m_params.kind != PerforationKind::Grid) {
++        bool invert = m_params.invert;
++        if (gizmo_row_switch("##invert", m_desc.at("invert").utf8_str().data(), &invert,
++                             _u8L("Cuts raised ridges instead of holes.").c_str())) {
++            m_params.invert = invert;
++            m_pick_dirty    = true;
++        }
+     }
+ 
+     ImGui::Separator();
+@@ -816,7 +1037,21 @@ void GLGizmoPerforation::render_panel_body()
+         const wxString applied = wxString::Format("%s: %d", m_desc.at("applied").c_str(), gizmo_applied_count());
+         m_imgui->text(applied);
+     }
+-    gizmo_hint(m_desc.at("depth_hint").utf8_str().data());
++    // [ORCAPORT:PP-6] With a To target the depth does not follow the probe, so the hint that says it
++    // does is replaced rather than left standing.
++    if (m_target.valid)
++        gizmo_hint(GUI::format(_L("The pattern stops on the picked face: %1% mm deep."), m_target.distance).c_str());
++    else
++        gizmo_hint(m_desc.at("depth_hint").utf8_str().data());
++
++    // [ORCAPORT:PP-6] Why a target pick was refused. The same meaning reaches MCP as plain text
++    // (gizmo_target_refusal()), so this enum is the only place that has to know both.
++    switch (m_target_why) {
++    case TargetWhy::None:        break;
++    case TargetWhy::NoFace:      gizmo_hint(m_desc.at("to_noface").utf8_str().data(),   GizmoCol::Warn); break;
++    case TargetWhy::NotParallel: gizmo_hint(m_desc.at("to_parallel").utf8_str().data(), GizmoCol::Warn); break;
++    case TargetWhy::NotBehind:   gizmo_hint(m_desc.at("to_behind").utf8_str().data(),   GizmoCol::Warn); break;
++    }
+ 
+     // Advisory only: the geometry uses the width exactly as set. Amber is reserved for "something
+     // is off" and nothing else in this panel uses it (section 28). Both notices describe the face the
+@@ -828,14 +1063,10 @@ void GLGizmoPerforation::render_panel_body()
      if (show_horizontal)
          gizmo_hint(m_desc.at("horizontal").utf8_str().data(), GizmoCol::Warn);
  
@@ -85,15 +494,81 @@ index 050542a2ad..1ef139b60b 100644
      // A changed value (or pattern) is no longer what the last Cut applied, so the proposal comes back.
      if (m_params.kind != before.kind || m_params.invert != before.invert || m_params.spacing != before.spacing ||
 diff --git a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
-index bbd49eb586..781b4990b2 100644
+index bbd49eb586..bb608e8d78 100644
 --- a/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
 +++ b/src/slic3r/GUI/Gizmos/GLGizmoPerforation.hpp
-@@ -103,8 +103,10 @@ private:
+@@ -49,6 +49,14 @@ public:
+     bool gizmo_apply_at(const Vec2d& screen_pos);
+     // Faces under `screen_pos`: facet index, coplanar-region size and world normal.
+     bool gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal);
++    // [ORCAPORT:PP-6] The optional second face the pattern stops on ("To").
++    bool gizmo_pick_target_at(const Vec2d& screen_pos);
++    void gizmo_clear_target();
++    bool gizmo_target_valid() const { return m_target.valid; }
++    // Distance from the picked face to the target face, along the picked face's normal, in mm.
++    double gizmo_target_distance() const { return m_target.distance; }
++    // Empty when the last target pick was accepted; otherwise why it was refused.
++    const char* gizmo_target_refusal() const;
+ 
+ protected:
+     bool on_init() override;
+@@ -73,8 +81,9 @@ private:
+     ExPolygons face_domain(const ModelVolume* mv, size_t facet, const Vec3d& normal_obj, const Vec3d& origin_obj);
+     bool build_pattern_at(const Vec3d& hit_obj, const ModelVolume* mv, size_t facet,
+                           ExPolygons& pattern, indexed_triangle_set& prism);
+-    // [ORCAPORT:PP-2] The four overlays. The first two are patches on the surface; the last two are
++    // [ORCAPORT:PP-2] The overlays. The first two are patches on the surface; the last two are
+     // object-space prisms: the proposed pattern (what the values would cut) and every committed one.
++    // [ORCAPORT:PP-6] The To face is a third patch, in the picked colour.
+     void rebuild_hover_highlight();
+     void rebuild_picked_highlight();
+     void rebuild_proposed_pattern();
+@@ -84,6 +93,11 @@ private:
+     bool create_from_pick();
+     bool apply_at(const Vec2d& screen_pos);   // kept for the MCP alias: pick, then commit
+     void add_pattern_volume(const indexed_triangle_set& prism);
++    // [ORCAPORT:PP-6] The "To" target: a second face, parallel to the picked one, that decides how
++    // deep the pattern goes instead of the depth probe's first surface.
++    void pick_target_at(const Vec2d& screen_pos);
++    void clear_target();
++    void rebuild_target_highlight();
+ 
+     // [ORCAPORT:PP-2] The picked face. The pattern is anchored where the user clicked and only the
+     // panel's values move it, so the anchor is cached here instead of being recomputed from the
+@@ -97,14 +111,38 @@ private:
+         bool               horizontal{ false };
+     };
+ 
++    // [ORCAPORT:PP-6] The target face. Gizmo state, not a PerforationParams value: it is a face
++    // reference, not a number, so the MCP tool reaches it with its own pick action rather than through
++    // set_params, the same way the picked face does.
++    struct Target
++    {
++        bool               valid{ false };
++        const ModelVolume* mv{ nullptr };
++        int                facet{ -1 };
++        double             distance{ 0. };  // picked face -> this face, along the picked normal, in mm
++    };
++
++    // Why the last target pick was refused. The panel turns it into a translated warning, the MCP tool
++    // into plain text, so neither has to parse the other's strings.
++    enum class TargetWhy { None, NoFace, NotParallel, NotBehind };
++
+     PerforationParams    m_params;
+     GLModel              m_face_highlight;     // the surface under the cursor (teal)
+     GLModel              m_face_picked;        // the picked surface (green)
      GLModel              m_pattern_proposed;   // the pattern the current values would cut (yellow)
      GLModel              m_patterns_applied;   // every committed perforation (red)
++    GLModel              m_face_target;        // the "To" face, in the picked colour
      Pick                 m_pick;
 -    // The proposed pattern is rebuilt only when it can have changed: a new pick, a value change, or
 -    // the release of the slider that set it. One mesh per hole is not something to build every frame.
++    Target               m_target;
++    TargetWhy            m_target_why{ TargetWhy::None };
++    // True while the panel's Pick face button is armed: the next left click sets the target face
++    // instead of re-picking the one the pattern is anchored to. The panel button (or a right click,
++    // or closing the tool) disarms it.
++    bool                 m_pick_target{ false };
 +    // The proposed pattern is rebuilt whenever this is set: a new pick, or a value change. [ORCAPORT:PP-6]
 +    // A slider sets it on every frame it changes, so the preview follows a drag live. One mesh per hole
 +    // is not free, so a tiny spacing on a large face rebuilds slowly - the builder's own MAX_FEATURES cap
@@ -101,7 +576,7 @@ index bbd49eb586..781b4990b2 100644
      bool                 m_pick_dirty{ true };
      // False while the proposal IS what was just cut: the red applied overlay already marks that area,
      // and yellow over red reads as neither colour. Any value change (or a new pick) brings it back.
-@@ -117,9 +119,6 @@ private:
+@@ -117,9 +155,6 @@ private:
      FaceRegionCache      m_face_cache;
      indexed_triangle_set m_merged_its;
      bool                 m_merged_dirty{ true };
@@ -112,11 +587,23 @@ index bbd49eb586..781b4990b2 100644
      const ModelObject*   m_old_model_object{ nullptr };
      std::map<std::string, wxString> m_desc;
 diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
-index 673e7209b7..cfb380b032 100644
+index 673e7209b7..a828856884 100644
 --- a/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
 +++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPGizmoTools.cpp
-@@ -922,7 +922,7 @@ void OrcaMCPServer::register_gizmo_tools()
-                 {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
+@@ -915,20 +915,23 @@ void OrcaMCPServer::register_gizmo_tools()
+         "invert), 'hover_face' (report the facet and coplanar-region size under screen_x/screen_y), "
+         "'pick_at' (pick the face under screen_x/screen_y, or the viewport centre), 'create' (cut the "
+         "current pattern into the picked face), 'clear_pick', 'apply' (pick + create in one call, the "
+-        "old auto-apply behaviour), 'close'.",
++        "old auto-apply behaviour), 'pick_to' (pick a second, parallel face the pattern stops on "
++        "instead of the first surface behind it; reports to_valid/to_distance), 'clear_to', 'close'. "
++        "Notes: a grid is always cut as grooves (invert is forced), and switching to a pattern that "
++        "cannot express the current angle resets it to 0 (an `angle` sent in the same call included).",
+         {
+             {"type", "object"},
+             {"properties", {
+-                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
++                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | pick_to | clear_to | close"}}},
                  {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                  {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
 -                {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees."}}},
@@ -124,3 +611,61 @@ index 673e7209b7..cfb380b032 100644
                  {"spacing", {{"type", "number"}, {"description", "Hole / slot centre-to-centre spacing, mm."}}},
                  {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
                  {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},
+                 {"invert", {{"type", "boolean"}, {"description", "Subtract the material between holes (grooves)."}}},
+-                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / pick_at / apply. Defaults to the viewport centre."}}},
+-                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / pick_at / apply."}}}
++                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / pick_at / pick_to / apply. Defaults to the viewport centre."}}},
++                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / pick_at / pick_to / apply."}}}
+             }},
+             {"required", {"action"}}
+         },
+@@ -989,6 +992,15 @@ void OrcaMCPServer::register_gizmo_tools()
+                 if (params.contains("width"))    { p.width     = params["width"].get<double>();    params_changed = true; }
+                 if (params.contains("boundary")) { p.margin    = params["boundary"].get<double>(); params_changed = true; }
+                 if (params.contains("invert"))   { p.invert    = params["invert"].get<bool>();     params_changed = true; }
++                // [ORCAPORT:PP-6] The panel's two rules, over MCP, applied at the END so the order of
++                // the request's fields cannot matter: a grid is always cut as grooves, and after a
++                // pattern change the angle is always one the new pattern can express. An `angle` in
++                // the same call is deliberately not immune - it would leave a state (grid at 80) the
++                // panel cannot show or reproduce, which is the bug this rule exists to remove.
++                if (params.contains("pattern"))
++                    p.angle_deg = perforation_angle_for_kind(p.kind, p.angle_deg);
++                if (p.kind == PerforationKind::Grid)
++                    p.invert = true;
+                 if (params_changed)
+                     g->set_params(p);
+ 
+@@ -1003,7 +1015,9 @@ void OrcaMCPServer::register_gizmo_tools()
+                         {"width", q.width}, {"boundary", q.margin}, {"invert", q.invert},
+                         // [ORCAPORT:PP-2] The pick is part of the state now: nothing is cut until
+                         // 'create', so a script has to be able to see whether a face is picked.
+-                        {"pick_valid", g->gizmo_pick_valid()}, {"applied_count", g->gizmo_applied_count()}};
++                        {"pick_valid", g->gizmo_pick_valid()}, {"applied_count", g->gizmo_applied_count()},
++                        // [ORCAPORT:PP-6] ...and so is the To face the pattern stops on.
++                        {"to_valid", g->gizmo_target_valid()}, {"to_distance", g->gizmo_target_distance()}};
+                 };
+ 
+                 if (action == "set_params" || action == "status" || action == "open")
+@@ -1042,6 +1056,22 @@ void OrcaMCPServer::register_gizmo_tools()
+                         return {{"status", "error"}, {"error", "No perforable face under the screen point"}};
+                     return report(action);
+                 }
++                // [ORCAPORT:PP-6] The To face: the second, parallel face the pattern stops on instead
++                // of the first surface the depth probe finds.
++                if (action == "pick_to") {
++                    if (!g->gizmo_pick_valid())
++                        return {{"status", "error"}, {"error", "No face is picked: pass action=pick_at first"}};
++                    if (!g->gizmo_pick_target_at(screen)) {
++                        const char *why = g->gizmo_target_refusal();
++                        return {{"status", "error"},
++                                {"error", std::string("Target face refused: ") + (*why != '\0' ? why : "unknown reason")}};
++                    }
++                    return report(action);
++                }
++                if (action == "clear_to") {
++                    g->gizmo_clear_target();
++                    return report(action);
++                }
+                 if (action == "apply") {
+                     if (!g->gizmo_apply_at(screen))
+                         return {{"status", "error"}, {"error", "No perfomable face under the screen point"}};
