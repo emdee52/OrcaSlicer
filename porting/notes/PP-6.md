@@ -1,6 +1,6 @@
 # PP-6 — Perforations: Lines up to 90°, a live preview, grooves for Grid, a depth you pick, and a centred lattice
 
-Status: **implemented, build clean, tests green** (ctest 2414/2414). Product commits on `port/PP-6`,
+Status: **user-verified in the app 2026-10-17**, merged as `23e8ec3f98`. Build clean, tests green (ctest 2414/2414). Product commits on `port/PP-6`,
 docs+patch in the follow-up `port:` commit. Not merged and not pushed.
 
 ## What it is
@@ -213,26 +213,20 @@ Marker: `[ORCAPORT:PP-6]` at the sites listed by `grep -n "ORCAPORT:PP-6"`.
   → refused, "The target face has to be behind the picked one"; `create` → `applied_count` 1;
   `slice_all` → `idle` with only the two pre-existing warnings (objects too close, `precise wall`
   ignored).
-- **NOT reached over MCP: the accepted target path.** Three attempts, three dead ends, all geometry:
-  a 20 mm cube is convex and symmetric, so its far face is always occluded and a 180° rotation maps it
-  onto the near one; `rotate_object` / `mirror_object` leave face 1's object-space normal pointing away
-  from the model, so nothing is "behind" it any more; and the tool list has no camera control to look at
-  the far side. A concave fixture (a pocket whose floor is a second visible parallel face) is what the
-  check needs and `tests/data` has none. **Manual protocol for the user**: pick a flat face, orbit until
-  a parallel face behind it is visible, press `Pick face` and click it, check the distance in the hint
-  line against the wall thickness you know, then Perforate - and check that the cut reaches that face
-  and not the first void. Two variants worth doing: a target that stops the cut *earlier* than the probe
-  would have (a shorter hole), and a `Clear` that puts the depth back on the probe.
+- **The accepted target path is NOT reachable over MCP; the owner checked it in the app.** Three
+  attempts, three dead ends, all geometry:
+  would have (a shorter hole), and a `Clear` that puts the depth back on the probe. **Confirmed working
+  by the owner in the app, 2026-10-17**, which closes the last open item of this note.
 - **Runtime, the centred lattice**: all four kinds created on a 4x cube face at `spacing 7` (80/7 is
   deliberately not whole - the interesting case) and sliced to `idle` with only the pre-existing warning.
-  **Not reachable over MCP: seeing it.** A negative volume is buried inside the wall it cuts, so the
-  prepare view shows nothing new, and there is no MCP switch into the sliced preview - so the look of it
-  is yours: pick a face, use a spacing that does not divide it, and compare the two parallel edges.
-- Manual (user, in the app), the rest: (a) the Angle slider's right end reaches 90 and a Lines pattern
-  goes vertical as it does; (b) switching Lines(80°) → Grid drops the angle to 0, and Grid shows no
-  Invert row; (c) with a face picked, dragging Spacing / Hole width / Boundary / Angle moves the yellow
-  proposal under the cursor, releasing nothing needed. Screenshots via the `ui_screenshot` tool (UI-2)
-  if a before/after is wanted.
+  **Not reachable over MCP, so the owner checked it there - confirmed symmetric in the app
+  2026-10-17.** A negative volume is buried inside the wall it cuts, so the prepare view shows nothing
+  new, and there is no MCP switch into the sliced preview; the check was done by hand: pick a face, use a
+  spacing that does not divide it, and compare the two parallel edges.
+- Manual (user, in the app), all of it now run: the Angle slider's right end reaches 90 and a Lines
+  pattern goes vertical; switching Lines(80?) -> Grid drops the angle to 0 and Grid shows no Invert row;
+  dragging Spacing / Hole width / Boundary / Angle moves the yellow proposal live; the accepted `To`
+  target; the symmetry of the centred lattice. Screenshots come from `ui_screenshot` (UI-2) if wanted.
 
 
 ## Also in this batch

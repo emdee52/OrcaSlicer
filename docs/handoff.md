@@ -1963,15 +1963,15 @@ regeneration MCP-3's own note asked for.
   what the first cut of the MCP rule got wrong, see below); `pick_to` on the same face → refused with
   "The target face has to be behind the picked one"; `create` → `applied_count` 1; `slice_all` →
   `idle` with only the two pre-existing warnings (objects too close, `precise wall` ignored).
-- **What the MCP run could NOT reach**: the *accepted* target path. Three attempts, three dead ends,
-  all geometry rather than code: a 20 mm cube is convex and symmetric, so the far face is always
-  occluded and a 180° rotation maps it onto the near one; `rotate_object` or `mirror_object` leave
-  face 1's object-space normal pointing away from the model, so nothing is "behind" it any more; and
-  there is no MCP camera control to view the far side (the tool list has no view/orbit entry). A
-  concave fixture - a pocket whose floor is a second visible parallel face - is what the check needs,
-  and `tests/data` has none. The positive path is therefore in the manual checklist in
-  `notes/PP-6.md`: pick a face, orbit to a parallel face behind it, *Pick face*, take the distance
-  reading, Perforate.
+- **What the MCP run could NOT reach - and the owner then checked it in the app**: the *accepted*
+  target path. Three attempts over MCP, three dead ends, all geometry rather than code: a 20 mm cube is
+  convex and symmetric, so the far face is always occluded and a 180 degree rotation maps it onto the
+  near one; `rotate_object` or `mirror_object` leave face 1's object-space normal pointing away from the
+  model, so nothing is behind it any more; and there is no MCP camera control to view the far side (the
+  tool list has no view/orbit entry). A concave fixture - a pocket whose floor is a second visible
+  parallel face - is what the check needs, and `tests/data` has none. It was therefore left on the manual
+  checklist, and the owner worked through it: pick a face, orbit to a parallel face behind it, *Pick
+  face*, read the distance, Perforate - **confirmed working 2026-10-17**.
 - **One real bug this run caught**, in the first cut of the MCP rule: it reset the angle only when the
   kind *changed*, so `{pattern: grid, angle: 80}` in one call slipped through and produced exactly the
   grid-at-80 state the rule exists to prevent (the response said so: `"angle": 80.0`). The rule now runs
@@ -1989,7 +1989,8 @@ regeneration MCP-3's own note asked for.
 - **Branch state**: **merged** into `port/integration` as **`23e8ec3f98`** (user-tested 2026-10-17) and
   pushed. `port/PP-6` held six commits (the angle + live preview; the angle reset / Grid grooves / To;
   two `tools_schema.py` regenerations; two `port:` docs+patch commits) and its merge tree is
-  byte-identical to the branch that was built and tested.
+  byte-identical to the branch that was built and tested. Everything in this section and the next is now
+  user-verified in the app.
 
 ## 39. PP-6b - the pattern is anchored at the centre of the face (same branch `port/PP-6`)
 
@@ -2028,10 +2029,11 @@ match the cut at the parallel opposite edge. It was the phase, not the clipping.
   474 assertions**; full `ctest` **2414 passed, 0 failed**. Runtime over MCP: all four kinds created on a
   4x cube face at `spacing 7` (80/7 is deliberately not whole) and sliced to `idle` with only the
   pre-existing `precise wall` warning.
-- **Not reachable over MCP**: seeing the pattern in the app. A negative volume is buried inside the wall
-  it cuts, so the prepare view shows nothing new, and there is no MCP switch into the sliced preview. The
-  eyeball check is in `notes/PP-6.md`: pick a face, use a spacing that does not divide it, and compare the
-  two parallel edges.
+- **Not reachable over MCP, checked by the owner instead**: seeing the pattern in the app. A negative
+  volume is buried inside the wall it cuts, so the prepare view shows nothing new, and there is no MCP
+  switch into the sliced preview. The eyeball check was left on the manual checklist - pick a face, use a
+  spacing that does not divide it, compare the two parallel edges - and the owner ran it:
+  **confirmed symmetric in the app 2026-10-17**.
 - **Branch state**: same branch as section 38, one more product commit, docs and patch in the `port:`
   commit. No `tools_schema.py` regen: nothing about the tool's schema changed. Merged with the rest as
   `23e8ec3f98`.
