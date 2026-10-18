@@ -67,6 +67,7 @@ Alt-drag snap (SNAP-8) is the newest of them.
 | `port/SNAP-8` | merged | Alt-drag object-to-object point snap (see section 21) |
 | `port/MV-1` | merged (`f6f42220e1`) | Move gizmo: axes align to a picked flat face |
 | `port/MV-2` | merged (`56b5a6acba`) | Move pivot sticks to face coordinates; Alt lands it on another object (section 26) |
+| `port/TB-1` | **awaiting the owner's test** | Tabs gizmo: a mounting tab on a picked face (section 43) |
 
 ME-1 commits: `3166fa8d39` (detector + shaper + tests), `72eccfdba9` (teardrop gizmo),
 `9b68a49315` (MCP `find_holes`, nested-hole fix, partial-bridge pass later removed),
@@ -2239,4 +2240,93 @@ scope: screw heads only.
   pushed: `port/ME-3` off `port/integration` `2fa3fb01f3`, a product + tests commit and two `port:` docs
   commits, patch `77_ME-3.patch`, and the merge tree is byte-identical to the branch that was built and
   tested (the follow-up patch-encoding commit touches `porting/` only).
+
+---
+
+## 43. TB-1 - the Tabs gizmo: a mounting tab on a picked face (branch `port/TB-1`)
+
+**New work, not a port.** The owner asked for a tool that creates a mounting tab as such: pick a flat
+face, align the tab on it, choose the screw from the Holes tool's own definitions, make the head into a
+boss or not, and pick a tab shape - with "free create" on a curved face left to the user to align. The
+plan (with a UI mockup the owner approved before the panel was written) went through three rounds of
+questions; the answers are the decisions below.
+
+- **What a tab is.** Two `ModelVolume`s, no boolean and no CAD: a `MODEL_PART` plate (plus its boss as
+  a second positive) and a `NEGATIVE_VOLUME` seat and bore. The slice unions the positives and subtracts
+  the negative, and the context menu's Mesh boolean bakes the same three (`ModelToCSGMesh` already
+  unions `is_model_part()` and subtracts `is_negative_volume()`), so `Bake` needed no new code.
+- **The decisions the owner made.** Orientation **A**: the plate lies in the picked face's plane with the
+  screw along its normal (a mounting ear: on a bottom face it lies flat and overhangs, on a side wall it
+  is the same figure turned 90 degrees). **Ephemeral**: no per-volume config key, so no `PrintConfig` /
+  `Preset` registration and no `.3mf` surface - after a reload a tab is a plain part + negative volume
+  (they are named `Tab#N` / `TabBoss#N` / `TabHole#N` so the object list reads and a later session can
+  find them by prefix). **Screws only** (no nut / insert / magnet pocket). **One parametric outline, not
+  a shape menu**, plus a slot flag. Defaults for the owner's own use - a free hole into a heat-set
+  insert, plastic or wood: fit **Free**, socket-head counterbore, sink 0, depth **through the stack**,
+  boss **off** for Free and **on** with a suggested height for Tap. `Add tab` is the commit, so one
+  press is one tab.
+- **The geometry** (`libslic3r/TabShapes.{hpp,cpp}`, P1 `a5a39044f2`, 14 cases / 165 assertions). One
+  frame: `+x` outward, `+z` out of the surface, the passage at the ORIGIN. The flank runs at exactly
+  `taper_deg` and the tip is a circle tangent to it, radius solved from the taper
+  (`R = ((root_w/2)cos a - (root_len+tip_len) sin a) / (1 - sin a)`), so `a = 0` is a stadium and the
+  tip width answers to the taper; the tests measure the flank angle and the tangency **off the shipped
+  contour**. The minimum-material rules (2 mm around the passage, and behind, ahead of and beside it)
+  only ever GROW the tab and report it; two invariants come straight from bugs this tree has already
+  paid for - the plate reaches `bite` **below** the surface and the boss reaches it below the **plate's
+  top** (never flush: a solid ending flush is a zero-thickness contact, the mirror of ME-3's cutter
+  overshoot), and the screw cutter is entered **above** the tab's top through `hole_cutter_entry_margin()`
+  so a seat cannot be skinned over. `tab_probe_surface()` measures the mesh under the footprint.
+- **The tool** (`GLGizmoTabs`, P2/P3 `ff6d2c8ef7`). Hover shows the tab, a click anchors the screw, the
+  panel dials it in, `Add tab` commits; right-click removes the tab under the cursor, or commits an
+  anchored one (PP-4's convention). The placement raycast picks **through** the tabs and the removal
+  raycast accepts **only** them. The preview is the PP-2 scheme with the surface measured: teal for the
+  coplanar face under the cursor, the whole proposed tab (plate + boss + cutter) in **one** orange mesh,
+  committed tabs green with their cut red, and no ghosting of the object (a tab is a small local
+  overlay). The probe refuses a tab the face is not under (< 30 % coverage, warned below 60 %), raises
+  the bite by the surface's own fall-away so a curved pick still welds (refused past 3 mm), and is
+  throttled to one probe per 100 ms while a slider is dragged - forced fresh on an anchor, a shape change
+  and `Add tab`. The panel is the approved mockup, with the Holes tool's own screw rows (same standards
+  table, `Free|Tap`, same counterbore / countersink seats), the boss sized to the head and given the
+  thread's height for a tap, and the boss / screw section gone in Slot mode (a slot IS the passage).
+  `tabs_gizmo` (29 actions) is the MCP surface, `tools_schema.py` regenerated (79 tools).
+- **Found by the owner testing the built app**, and it was a modelling error, not a tweak: a side-face
+  click put the plate **in the wall's own plane** (a vertical slab with a horizontal screw). A mounting
+  tab on a wall is a **foot that stands out sideways and is screwed down from above**. The rule is now
+  `TabShapes::tab_frame` (libslic3r, so it is testable): on a wall the plate's normal is the **bed's up**,
+  the frame's `+x` is the face's normal projected into the bed's plane, the **root edge is placed on the
+  face** with its `bite` welded sideways into it, and the screw sits `root_len` out from it - so on a wall
+  the click marks where the root attaches, while on a flat face it still marks the screw. A face within
+  25 degrees of horizontal keeps the plate in its own plane (a foot under the part). Two things followed:
+  the probe measures the **root band** now (a tab is meant to reach past the material) and is skipped for
+  a wall, where it reported 0 % and the refusal - which did not know about walls - would have refused
+  **every** wall tab; and `through` on a tab hanging in the air falls back to the tab's own thickness.
+- **Also found by looking at the real panel**, not by a test: Stadium and Tapered U drew the **same**
+  glyph (both presets have a round tip); the glyph's tip half width now follows the preset's own taper.
+- **Verified**: build clean (`ALL_BUILD`, Release, no warnings in the new files); `libslic3r`
+  **1574/1574** via ctest (17 `[TabShapes]` cases / 183 assertions, three of them pinning the placement
+  rule above); and the tool driven end to end through the MCP endpoint on a 20 mm cube - `open` ->
+  `anchor` (a side click now reports `wall: true` with the frame's x `(0, -1, 0)`, i.e. straight out of
+  the wall and parallel to the bed) -> `set_boss on` -> `add`, after which the object carries **`Tab#1`
+  (MODEL_PART)**, **`TabBoss#1` (MODEL_PART)** and **`TabHole#1` (NEGATIVE_VOLUME)`** and measures
+  **20 x 35.7973 x 20 mm / 8493.1 mm3** - 15.8 mm out of the wall, which is exactly `root_len 6 - weld
+  0.2 + tip_len 10`. **Not verified**: the slice of the assembled model (the export call was cancelled) -
+  ordinary volume slicing, but the claim is the owner's check, not a result here.
+- **P6, after the owner used it** (`973f7ac491`): the shape menu is gone (`Tip: Round | Flat`; the
+  presets, the Circle tip and the drawn glyphs are deleted), no corner radius anywhere (his call: a root
+  radius only weakens the bond), `Length` + `Hole offset` replace Root length + Tip length + the moving
+  offset (the hole slides inside the tab, the slider's bounds come from Length), the weld is a constant
+  (1 mm - the slicer unions per layer, so a root that only touches the face is a pinch vertex there),
+  Through is the behaviour with Depth deleted (the bore stops at the tab's far face + the ME-3 overshoot,
+  so the merged-mesh march and `rebuild_merged()` are gone), and the Head row shows only the styles the
+  standard carries (none -> no row).
+- **P7, on his ask**: the click is two steps - the first PICKS the face (green highlight over its
+  coplanar region) and the next one ON it places the passage, with `anchor_at()` refusing any point not
+  on the picked face; a click on another face moves the pick and a click off the object drops both.
+  `pick_face` joins the MCP surface.
+- **Branch state**: `port/TB-1` off `port/integration` `2706b1a6db`, eight commits (P1 geometry + tests,
+  P2/P3 gizmo + MCP, P5 the placement rule, P4 docs + patch `78_TB-1.patch`), pushed. **Not merged**:
+  awaiting the owner's test in the app (MERGE_POLICY). Deliberately not in v1: a nut / insert pocket on
+  the tab's free side, two bore diameters in one stack (clearance + pilot), several tabs per placement,
+  snapping the passage to a detected hole, a root taper or gusset, a tilt off the bed (the Angle turns
+  about the plate's normal only), and persistence.
 

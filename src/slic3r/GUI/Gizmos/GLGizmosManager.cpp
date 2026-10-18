@@ -23,6 +23,7 @@
 #include "slic3r/GUI/Gizmos/GLGizmoEdgeDress.hpp" // [ORCAPORT:EF-1]
 #include "slic3r/GUI/Gizmos/GLGizmoExtrude.hpp" // [ORCAPORT:HF-3]
 #include "slic3r/GUI/Gizmos/GLGizmoPerforation.hpp" // [ORCAPORT:PP-1]
+#include "slic3r/GUI/Gizmos/GLGizmoTabs.hpp" // [ORCAPORT:TB-1]
 #include "slic3r/GUI/Gizmos/GLGizmoBrimEars.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoAlignStack.hpp" // [ORCAPORT:AS-2]
 #include "slic3r/GUI/Gizmos/GLGizmoSupportZones.hpp" // [ORCAPORT:SU-5]
@@ -130,6 +131,7 @@ static bool is_orcaport_gizmo(GLGizmosManager::EType type)
     case GLGizmosManager::EdgeDress:
     case GLGizmosManager::Extrude:
     case GLGizmosManager::Perforation:
+    case GLGizmosManager::Tabs:
         return true;
     default:
         return false;
@@ -283,6 +285,9 @@ void GLGizmosManager::switch_gizmos_icon_filename()
         case (EType::Perforation): // [ORCAPORT:PP-1]
             gizmo->set_icon_filename(m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg");
             break;
+        case (EType::Tabs): // [ORCAPORT:TB-1]
+            gizmo->set_icon_filename(m_is_dark ? "toolbar_tabs_dark.svg" : "toolbar_tabs.svg");
+            break;
         }
 
     }
@@ -335,6 +340,7 @@ bool GLGizmosManager::init()
     m_gizmos.emplace_back(new GLGizmoEdgeDress(m_parent, m_is_dark ? "toolbar_edge_dress_dark.svg" : "toolbar_edge_dress.svg", EType::EdgeDress)); // [ORCAPORT:EF-1]
     m_gizmos.emplace_back(new GLGizmoExtrude(m_parent, m_is_dark ? "toolbar_cavity_fill_dark.svg" : "toolbar_cavity_fill.svg", EType::Extrude)); // [ORCAPORT:HF-3]
     m_gizmos.emplace_back(new GLGizmoPerforation(m_parent, m_is_dark ? "toolbar_perforation_dark.svg" : "toolbar_perforation.svg", EType::Perforation)); // [ORCAPORT:PP-1]
+    m_gizmos.emplace_back(new GLGizmoTabs(m_parent, m_is_dark ? "toolbar_tabs_dark.svg" : "toolbar_tabs.svg", EType::Tabs)); // [ORCAPORT:TB-1]
     //m_gizmos.emplace_back(new GLGizmoSlaSupports(m_parent, "sla_supports.svg", sprite_id++));
     //m_gizmos.emplace_back(new GLGizmoFaceDetector(m_parent, "face recognition.svg", sprite_id++));
     //m_gizmos.emplace_back(new GLGizmoHollow(m_parent, "hollow.svg", sprite_id++));

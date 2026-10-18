@@ -338,6 +338,8 @@ src/slic3r/GUI/Gizmos/GLGizmoEmboss.hpp
 src/slic3r/GUI/Gizmos/GLGizmoTextureDisplacement.cpp
 src/slic3r/GUI/Gizmos/GLGizmoTextureDisplacement.hpp
 src/slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp
+src/slic3r/GUI/Gizmos/GLGizmoTabs.cpp
+src/slic3r/GUI/Gizmos/GLGizmoTabs.hpp
 src/slic3r/GUI/Jobs/SLAImportDialog.hpp
 src/slic3r/GUI/Jobs/TextureDisplacementBakeJob.cpp
 src/slic3r/GUI/Jobs/TextureDisplacementDebugJob.cpp

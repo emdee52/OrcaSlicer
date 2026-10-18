@@ -353,6 +353,9 @@ set(lisbslic3r_sources
     HoleShapes.hpp
     HoleStandards.cpp
     HoleStandards.hpp
+    # [ORCAPORT:TB-1] mounting-tab geometry
+    TabShapes.cpp
+    TabShapes.hpp
     IMEXArrange.cpp
     IMEXArrange.hpp
     IMEXHelpers.cpp
