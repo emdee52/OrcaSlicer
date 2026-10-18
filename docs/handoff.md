@@ -2182,3 +2182,59 @@ it" with **no error and no toast**.
 - **Branch state**: same branch as MB-1, product commit + `port:` docs commit, patch `76_MB-2.patch`.
   Merged with MB-1 as `e673b82a9d` (user-tested 2026-10-17) and pushed.
 
+## 42. ME-3 - a screw head's cutter starts outside the face, so a mesh boolean cannot skin the recess (branch `port/ME-3`)
+
+The owner, in the Holes tool: **Bore**, Screw category, a **head** (socket), applied to a **detected**
+hole, then **Mesh boolean** - *"it still shows a surface as still being solid but it does make the hole
+with a screw head when you slice it"*. Detected hole, **Place hole on face** to be covered as well;
+scope: screw heads only.
+
+- **What it is.** A **zero-thickness skin across the whole counterbore**, coplanar with the face. The
+  slicer throws a sheet with no volume away, so the print has the head while the mesh and the 3D view say
+  the surface is still solid. Reproduced against the kernel the gizmo uses (`mcut::make_boolean(...,
+  "A_NOT_B")`), a 20x20x10 plate, a 6 mm socket counterbore 3 mm deep, entrance on the face (z = 10), a
+  ray straight down: with the cap **in** the face both the axis and r = 2.4 meet material at **10.0**;
+  with the cap **0.34 mm outside** they meet the bore's floor at **4.0** and the head's shoulder at
+  **7.0**. `10.0` is the sheet.
+- **Why a detected hole is exposed.** `feature_frame()` starts the cutter at the end of the detected
+  wall, which the detector puts on real mesh vertices - i.e. **in the surface plane**. A plain re-bore
+  only has its cap disc inside the hole's existing void there; a **head is wider than the hole**, so its
+  cap ring covers the face around it. Coplanar pair, sheet. The countersink is the same (its cone's wide
+  cap is at the entry plane). PP-4 had already cured this for a hole **placed** on a face and for a
+  through teardrop; the screw heads were the gap, on **both** paths.
+- **What was changed.** `hole_cutter_entry_margin(bore_d)` (PP-4's `max(0.2, 0.1*d)`, world mm) is now
+  one helper shared by `face_hole()` and `bore_negative_mesh()`. `its_make_counterbore()` and
+  `its_make_countersink()` take an optional `out_margin` (default 0) that puts the entrance cap that much
+  further out than `entry` while **everything the shape removes below the entry plane keeps the geometry
+  `depth` / `cbore_depth` / `csink_d` describe** - the countersink's cone is extended along its own
+  surface (widened by `out / tan(half)`), so it still cuts `csink_d` at the entry plane; without that the
+  margin would have narrowed an M3's sink by 0.68 mm. `bore_negative_mesh()` asks for it for Socket,
+  Button and Sink heads and for the optional head teardrop prism (a prism does not taper, so only its cap
+  moves). No option, no config key, no `.3mf` migration: an applied hole keeps its volume, a hole applied
+  as a plain negative volume is unchanged, since the extra cutter is outside the part - the one ceiling,
+  shared with PP-4's own placed-path margin, is that the cutter reaches `max(0.2, 0.1*d)` beyond the
+  mouth, so a wall of the same object within that distance across the mouth is in range.
+- **Verification.** Unit: the two `[MeshBoolean]` cases above (the reproduction, and the clean cut with
+  `hole_cutter_entry_margin(3.4)` = 0.34), plus two `[HoleShapes]` cases - the counterbore's cap moves
+  out while its bbox far end, head radius and shoulder at `cbore_depth` do not, and a countersink's
+  half-width across the entry plane stays 3.15 for `out` = 0, 0.34, 1.5. `[HoleShapes]` 28 cases / 155
+  assertions, `[MeshBoolean]` 5 / 23, `[HoleDetector]` 9 / 25, full `libslic3r` **1557 cases / 103 266
+  assertions, 0 failed**; the slicer builds clean. Runtime over MCP, on a generated washer fixture (a
+  *detected* 3.4 mm hole): the created `HolePocket#0` (2 patches) exports as z in [-4.000, **3.340**]
+  with the face at 3.000, and after Mesh boolean (difference, Delete input) rays from above find
+  **nothing** at r = 0 (open through), -0.000 at r = 2.4 (the shoulder, 3 mm under the face) and
+  3.000 / -3.000 at r = 5 - **no skin**; the same for a pocket **placed** on the face (whose cutter
+  carries both its own 0.34 and this one, both in air); and a countersink's mouth is still the standard's
+  6.0 mm at the entry plane. All results `open_edges: 0`.
+- **Deliberately not taken.** The same exposure on a plain screw bore with **no** head, the nut / magnet
+  pockets, a **blind** teardrop and the rim ring (owner's scope: just screw heads - each is the same
+  couple of lines). The counterbore is still two overlapping shells merged into one volume; harmless here
+  (`do_boolean` splits the tool per component) but a stepped section builder is still the right follow-up
+  for the head teardrop. And two **pre-existing** placed-path seat errors were left exactly as they were:
+  a placed counterbore's shoulder sits one PP-4 margin (0.34 mm) deeper than `socket_k`, and a placed
+  countersink's mouth is 0.68 mm narrower than `csink_d` at the face - both because a head is measured
+  from the offset entry instead of from the face, which needs the entry-to-surface distance carried into
+  the shape builder. The detected path, the one reported, lands both exactly.
+- **Branch state**: `port/ME-3` off `port/integration` `2fa3fb01f3`, product + tests commit then a
+  `port:` docs commit, patch `77_ME-3.patch`. **Not merged, not pushed** - awaiting the owner's test.
+

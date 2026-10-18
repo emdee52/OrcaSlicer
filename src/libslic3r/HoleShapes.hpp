@@ -43,20 +43,35 @@ indexed_triangle_set its_make_teardrop_for_hole(const DetectedHole &hole, double
 // axis) growing in the +axis direction. They are rotationally symmetric, so no up direction is
 // needed. Use them as negative volumes (bores) or, for the tube, a positive volume.
 
+// How far a hole cutter's entrance cap has to start outside the material the hole opens through.
+// A cap lying exactly IN a face is a coplanar pair for a mesh boolean, and the sheet it leaves
+// across the hole is invisible to the slicer while it reads as "the surface is still solid" in the
+// mesh and in the view. Scales with the bore so a large pocket is not left with a razor edge either.
+// World mm.
+double hole_cutter_entry_margin(double bore_d);
+
 // Straight cylindrical bore.
 indexed_triangle_set its_make_bore(double diameter, double depth,
                                    const Vec3d &axis, const Vec3d &entry,
                                    int segments = HOLE_SHAPE_SEGMENTS);
 
 // Clearance bore with a counterbore (larger cylindrical recess) at the entrance.
+// `out_margin` moves the entrance cap that far further out than `entry` (see
+// `hole_cutter_entry_margin()`); everything the shape removes below the `entry` plane keeps exactly
+// the geometry `depth` and `cbore_depth` describe, so the recess does not move. A cutter whose cap
+// lands in a face is coplanar with it, and a mesh boolean answers that with a zero-thickness skin.
 indexed_triangle_set its_make_counterbore(double clearance_d, double cbore_d, double cbore_depth,
                                           double depth, const Vec3d &axis, const Vec3d &entry,
+                                          double out_margin = 0.,
                                           int segments = HOLE_SHAPE_SEGMENTS);
 
 // Clearance bore with a countersink at the entrance. The sink depth is derived from
 // `csink_angle` (included angle, degrees) so the cone meets the clearance diameter.
+// `out_margin` as above: the cone is extended along its own surface, so the diameter it cuts at the
+// `entry` plane is exactly `csink_d` however far out the cap is put.
 indexed_triangle_set its_make_countersink(double clearance_d, double csink_d, double csink_angle,
                                           double depth, const Vec3d &axis, const Vec3d &entry,
+                                          double out_margin = 0.,
                                           int segments = HOLE_SHAPE_SEGMENTS);
 
 // Positive annulus (tube): fills the gap between an existing `outer_d` wall and a new

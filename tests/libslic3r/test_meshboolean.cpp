@@ -5,11 +5,52 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <libslic3r/TriangleMesh.hpp>
 #include <libslic3r/MeshBoolean.hpp>
+#include <libslic3r/AABBMesh.hpp>
+#include <libslic3r/HoleShapes.hpp>
 #include <libslic3r/CSGMesh/CSGMesh.hpp>
 #include <libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp>
+#include <limits>
+#include <utility>
 #include <vector>
 
 using namespace Slic3r;
+using Catch::Matchers::WithinAbs;
+
+namespace {
+
+// The material a mesh shows along -Z at (x, 10): where a ray from above first enters it and where it
+// last leaves it, so a covering face shows up as a high value of the second.
+std::pair<double, double> z_span(const indexed_triangle_set &its, double x)
+{
+    const Vec3d                             origin(x, 10., 15.);
+    const std::vector<AABBMesh::hit_result> hits = AABBMesh(its).query_ray_hits(origin, -Vec3d::UnitZ());
+    double                                  lo = std::numeric_limits<double>::max();
+    double                                  hi = -std::numeric_limits<double>::max();
+    for (const AABBMesh::hit_result &h : hits) {
+        if (!h.is_hit())
+            continue;
+        const double z = origin.z() - h.distance();
+        lo             = std::min(lo, z);
+        hi             = std::max(hi, z);
+    }
+    return {lo, hi};
+}
+
+// A 20x20x10 plate (x, y in [0, 20], z in [0, 10]) with one counterbore cut into its top face: a
+// 3.4 mm clearance bore 6 mm deep (floor at z = 4) with a 6 mm socket-head counterbore 3 mm deep
+// (shoulder at z = 7). The entrance is on the top face, as a detected hole's is, and `out_margin` is
+// what the Holes gizmo asks a screw head for.
+std::vector<TriangleMesh> cut_counterbore(double out_margin)
+{
+    TriangleMesh body = make_cube(20., 20., 10.);
+    TriangleMesh tool;
+    tool.its = its_make_counterbore(3.4, 6., 3., 6., -Vec3d::UnitZ(), Vec3d(10., 10., 10.), out_margin);
+    std::vector<TriangleMesh> result;
+    MeshBoolean::mcut::make_boolean(body, tool, result, "A_NOT_B");
+    return result;
+}
+
+} // namespace
 
 TEST_CASE("CGAL and TriangleMesh conversions", "[MeshBoolean]") {
     TriangleMesh sphere = make_sphere(1.);
@@ -106,4 +147,33 @@ TEST_CASE("A CSG difference the kernel cannot apply is counted, not dropped in s
     // 20^3 - 4^3 = 7936: the 4 mm cube sits inside the body, so the result is a closed cavity.
     TriangleMesh here_result = MeshBoolean::mcut::mcut_to_triangle_mesh(*here_mesh);
     REQUIRE_THAT(double(here_result.volume()), Catch::Matchers::WithinRel(7936., 1e-2));
+}
+
+TEST_CASE("A counterbore whose entrance cap is in the face comes out covered by a skin", "[MeshBoolean]")
+{
+    // [ORCAPORT:ME-3] This is mcut's answer to a cutter's entrance cap lying exactly IN the part's
+    // face: a coplanar pair, which it resolves into a zero-thickness sheet across the whole recess.
+    // The sheet is invisible to the slicer - so the print has the counterbore - while the mesh and the
+    // 3D view say the surface is still solid. It is why the Holes gizmo asks every screw head for an
+    // entrance margin (see the case below); if mcut ever stops doing this, that margin stops being
+    // load-bearing and this case is the one to drop.
+    const std::vector<TriangleMesh> result = cut_counterbore(0.);
+    REQUIRE(result.size() == 1);
+
+    // A ray from above meets the top face over the recess instead of the bore's floor and the
+    // counterbore's shoulder.
+    CHECK_THAT(z_span(result.front().its, 10.).second, WithinAbs(10., 1e-3));
+    CHECK_THAT(z_span(result.front().its, 12.4).second, WithinAbs(10., 1e-3));
+}
+
+TEST_CASE("A counterbore whose entrance cap is outside the face cuts the recess cleanly", "[MeshBoolean]")
+{
+    // [ORCAPORT:ME-3] The same cutter with the entrance margin the Holes gizmo asks a screw head for:
+    // nothing is coplanar, and the recess comes out open - the bore's floor and the counterbore's
+    // shoulder are what a ray from above meets.
+    const std::vector<TriangleMesh> result = cut_counterbore(hole_cutter_entry_margin(3.4));
+    REQUIRE(result.size() == 1);
+
+    CHECK_THAT(z_span(result.front().its, 10.).second, WithinAbs(4., 1e-3));
+    CHECK_THAT(z_span(result.front().its, 12.4).second, WithinAbs(7., 1e-3));
 }
