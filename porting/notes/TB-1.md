@@ -1,9 +1,10 @@
 # TB-1 — Mounting tabs: a plate on a picked face, with a screw passage and an optional boss
 
-Status: **in progress on `port/TB-1`** off `port/integration` `2706b1a6db`. P1 (the geometry, with
-tests) is **landed and verified** — `a5a39044f2`, build clean, `libslic3r` 1571/1571 via ctest. P2
-(gizmo), P3 (MCP) and the patch are not written yet; this note is updated as they land. Nothing is
-merged until the owner has tested the built app.
+Status: **code-complete on `port/TB-1`** off `port/integration` `2706b1a6db`, **not merged**: it is the
+owner's to test in the app (MERGE_POLICY). P1 (the geometry, with tests) is `a5a39044f2`; P2 and P3
+(the gizmo and its MCP tool) are `ff6d2c8ef7`; P4 (this note, the manifest row, the handoff section and
+patch `78_TB-1.patch`) follows. Build clean (`ALL_BUILD`, Release), `libslic3r` **1571/1571** via ctest,
+and the tool driven end to end through the MCP endpoint on a 20 mm cube (see below).
 
 Not a port. No Neotko or preFlight source: this is new work on the fork's own feature loop
 (`FEATURE_AGENT.md`), and it is the only ID in `manifest.tsv` with no `fork_sha`.
@@ -106,13 +107,105 @@ material and the second to auto-bite on a curved pick (a flat plate on a 5 mm cy
 Whole suite: `ctest --test-dir build/tests/libslic3r -C Release` — **1571/1571**, 0 failed.
 (The `libslic3r` suite was 1557 cases before ME-3's 14.)
 
+## P2 — the tool (`GLGizmoTabs.{hpp,cpp}`)
+
+**The frame.** `+x` outward along the tab, `+y` the width, `+z` out of the surface, the passage at the
+ORIGIN - so the click marks the screw and every length is measured from it. It comes from the picked
+facet's normal, a tangent (the world axis least parallel to it, projected) and the panel's angle. The
+panel's mm are divided by `object_scale()` before `TabShapes` sees them, so one unit is decided in one
+place; the geometry is built in the frame and transformed to object space by `frame_to_obj()`, which is
+what the volumes are added in (identity volume matrix, the convention the Holes and Extrude gizmos use).
+
+**The default angle** points away from the object's own centre, projected into the face plane: a
+mounting tab hangs off the nearest edge, and that is the one default that makes the first click usually
+right. On a symmetric object (the test cube) the anchor lands on the centre and the projection is
+degenerate - it then reads 90 degrees, which is harmless and is why the panel's slider is there.
+
+**Three volumes per tab, one id.** `Tab#N` and `TabBoss#N` as `MODEL_PART`, `TabHole#N` as
+`NEGATIVE_VOLUME`. The slice unions the first two and subtracts the third, and the context menu's Mesh
+boolean bakes the same three (`ModelToCSGMesh`), so there is no boolean in this tool. `is_tab_volume()`
+matches any of the three prefixes, which is how the right-click removal, the applied preview and
+`Clear all` find a whole tab. One `take_snapshot` per Add tab\*, so one undo removes the tab.
+
+\* `Plater::TakeSnapshot` for the removals, `plater->take_snapshot()` for the add - the same split the
+Extrude gizmo uses.
+
+**Right-click** removes the tab under the cursor, and otherwise commits an anchored tab (PP-4's
+"right-click confirms"). The two are distinguished by the raycast: the placement hover picks *through*
+the tabs (a committed tab must not stop the next one being placed beside it), while the removal raycast
+accepts *only* them. That is why `remove_at(screen_pos)` exists next to `remove_hovered()`.
+
+**The preview** is the fork's PP-2 scheme with the surface measured, not guessed: teal for the
+coplanar face under the cursor (`coplanar_region` + `build_coplanar_patch`, the Cut and Holes face
+picking), then the whole proposed tab - plate, boss and cutter in ONE orange mesh, because a tab is one
+thing to the eye and the cutter is inside it - and every tab already on the object with its parts in
+green and its cut in red. There is deliberately no "picked face" colour: the anchor is a point, not a
+face, and what it picks is the tab the orange mesh already shows. The object is NOT ghosted (unlike the
+Extrude gizmo's whole-face work): a tab is a small local overlay and the part has to stay readable.
+
+**The probe decides two things.** `tab_probe_surface()` gives the coverage - a tab the face is not
+under is REFUSED (below 30 %) and warned about below 60 % - and the fall-away, which raises the bite
+above the panel's value (`max(bite, fall_away + 0.2 mm)`) so a curved pick still welds; past 3 mm the
+face is too curved for the footprint and the tab is refused with that reason. The probe is the only
+O(mesh) work the panel does, so it is throttled to one per 100 ms while a slider is dragged and forced
+fresh on an anchor, a shape change and `Add tab` - the one place that must not act on a stale reading.
+
+**The panel** is the owner's approved mockup: five shape presets as glyph toggles (the presets only
+write fields - `tab_apply_shape` is the single definition), the two lengths and the taper with the
+*resolved* tip width and flank angle on the hint line, `Passage Hole|Slot`, and the Holes tool's own
+screw rows: the same standards table, `Free|Tap`, the same counterbore/countersink seats, with the boss
+sized to the head (`head_d + 2 x 2 mm`) and given the thread's height for a tap. The boss rows and the
+whole screw section disappear in Slot mode, because a slot IS the passage. `Head` has no caption: four
+names plus the label column do not fit the 380 px panel, which is the same compromise the Holes panel
+records. A seat deeper than the plate is called out in amber (it opens through the tab's underside).
+`Add tab` is drawn only once there is an anchor: it is not an action while there is nothing to add.
+
+**Registration**: `GLGizmosManager::EType::Tabs` (after Perforation, `is_orcaport_gizmo`, the icon
+switch), `Shortcut::GizmoTabs` on bare `V` (every other bare letter is taken: the port's are K/J/X/G/Z,
+upstream's A-Z others, and I/O are the canvas zoom), `toolbar_tabs.svg` + `_dark.svg`,
+`localization/i18n/list.txt`, `src/slic3r/CMakeLists.txt`.
+
+## P3 — MCP
+
+`tabs_gizmo`, 29 actions, plus the state it reports: every resolved number, the coverage, the effective
+bite, `why` when a tab cannot be added, and every tab already placed (its centroid in object space).
+`scripts/tools_schema.py` regenerated (79 tools). Note the trap MCP-3 recorded: the opencode client
+caches its tool list at session start, so a tool added since is reachable only by talking to
+`http://localhost:13618/mcp` directly - which is how the runtime check below was made.
+
+## Verification (P2/P3)
+
+Build: `cmake --build build --config Release --target ALL_BUILD` - clean, no warnings in the new files.
+
+Runtime through the endpoint, on `tests/data/20mm_cube.obj` loaded into a fresh instance:
+
+| step | evidence |
+|---|---|
+| `tabs_gizmo open` | `open: true`, `opened_now: true`; the panel's defaults report as `shape tapered_u`, `standard M3` (index 4), `diameter 3.4`, `head socket`, `screw_fit free`, `thickness 3`, `bite 0.6` |
+| `anchor` (viewport centre) | `anchored: true`, `coverage 1.000`, `fall_away 2.9e-06` on a flat face, so `effective_bite` stayed at the panel's 0.6 |
+| `set_boss on` | the boss sized itself to the head: `boss_d 9.5` (M3 socket 5.5 + 2 x 2), `boss_h 3.0` |
+| `add` | `added: true`; the object then carries `20mm_cube.obj`, **`Tab#1` (type 0 = MODEL_PART)**, **`TabBoss#1` (type 0)** and **`TabHole#1` (type 1 = NEGATIVE_VOLUME)** - the three volumes, exactly as designed |
+| the tab's placement | centroid `(0.0003, -11.2001, 0.9812)` in object space: the cube is 20 mm on a side about the origin, so the anchor took a side face and the plate's centroid sits 1.2 mm out of it (0.6 of bite in, 3.0 of thickness out) - a mounting ear on a wall, which is the same figure as a bottom-face tab turned 90 degrees |
+| `ui_screenshot` (`gizmo`) | the real panel: the five glyphs with Tapered U selected, "Tapered U, 8.9 mm tip, 12 deg flanks" - the panel's own numbers agreeing with `tab_outline()` - and every row the mockup showed |
+
+**Found by looking at the real panel** (not by a test): Stadium and Tapered U drew the *same* glyph,
+because both presets have a round tip; the glyph's tip half width now follows the preset's own taper,
+so a stadium (parallel flanks) and a tapered U differ. Fixed in `ff6d2c8ef7`.
+
+**What was NOT verified**: the slice of the assembled model. The volumes are ordinary
+`MODEL_PART`/`NEGATIVE_VOLUME`s and the union/subtract at slice time is pre-existing OrcaSlicer
+behaviour, but the export step did not finish in this session (the owner cancelled the export call), so
+"slices into a tab with a screw hole" is the owner's check, not a claim here.
+
 ## Still to do
 
-- **P2** `GLGizmoTabs.{hpp,cpp}` + registration (`GLGizmosManager` EType + construction + the icon
-  pair, `Shortcuts.hpp`, `localization/i18n/list.txt`). The panel is being shown to the owner as a
-  mockup before it is written.
-- **P3** the MCP control surface in `OrcaMCPGizmoTools.cpp` + `tools_schema.py` regeneration.
-- **P4** `78_TB-1.patch`, the handoff section, and the manifest row's status.
+- **The owner's test** in the app: place a tab on a real part, dial it, `Add tab`, and slice it. Nothing
+  merges into `port/integration` before that (MERGE_POLICY).
+- Not part of v1, in the order they would be felt: a nut / heat-set insert pocket on a tab's free side
+  (they are `HoleShapes` builders and an entry side away); a clearance bore in the tab with a smaller
+  pilot in the host, i.e. two diameters in one stack; several tabs in one placement (a row, a mirror);
+  snapping the passage to a detected hole's axis or a negative volume's centre (`HoleDetector`, and
+  `GLGizmoAlignStack::detect_feature_centers`); a root taper or gusset for the bending load.
 
 Deliberately not in v1: one hole per tab (its position offsettable along the tab); one bore diameter
 for the whole stack (no clearance + pilot pair); no nut / insert pocket; no root taper or gusset; no
