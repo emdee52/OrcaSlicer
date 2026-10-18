@@ -915,11 +915,14 @@ void OrcaMCPServer::register_gizmo_tools()
         "invert), 'hover_face' (report the facet and coplanar-region size under screen_x/screen_y), "
         "'pick_at' (pick the face under screen_x/screen_y, or the viewport centre), 'create' (cut the "
         "current pattern into the picked face), 'clear_pick', 'apply' (pick + create in one call, the "
-        "old auto-apply behaviour), 'close'.",
+        "old auto-apply behaviour), 'pick_to' (pick a second, parallel face the pattern stops on "
+        "instead of the first surface behind it; reports to_valid/to_distance), 'clear_to', 'close'. "
+        "Notes: a grid is always cut as grooves (invert is forced), and switching to a pattern that "
+        "cannot express the current angle resets it to 0 (an `angle` sent in the same call included).",
         {
             {"type", "object"},
             {"properties", {
-                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | close"}}},
+                {"action", {{"type", "string"}, {"description", "open | status | set_params | hover_face | pick_at | create | clear_pick | apply | pick_to | clear_to | close"}}},
                 {"object_id", {{"type", "integer"}, {"description", "Object to select when opening."}}},
                 {"pattern", {{"type", "string"}, {"description", "lines | grid | honeycomb | circles"}}},
                 {"angle", {{"type", "number"}, {"description", "In-plane pattern angle, degrees: 0-90 for lines, 0-45 for grid. Honeycomb and circles are isotropic and ignore it."}}},
@@ -927,8 +930,8 @@ void OrcaMCPServer::register_gizmo_tools()
                 {"width", {{"type", "number"}, {"description", "Hole / slot width, mm."}}},
                 {"boundary", {{"type", "number"}, {"description", "Boundary inset from the face outline, mm."}}},
                 {"invert", {{"type", "boolean"}, {"description", "Subtract the material between holes (grooves)."}}},
-                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / pick_at / apply. Defaults to the viewport centre."}}},
-                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / pick_at / apply."}}}
+                {"screen_x", {{"type", "number"}, {"description", "Canvas X for hover_face / pick_at / pick_to / apply. Defaults to the viewport centre."}}},
+                {"screen_y", {{"type", "number"}, {"description", "Canvas Y for hover_face / pick_at / pick_to / apply."}}}
             }},
             {"required", {"action"}}
         },
@@ -989,6 +992,15 @@ void OrcaMCPServer::register_gizmo_tools()
                 if (params.contains("width"))    { p.width     = params["width"].get<double>();    params_changed = true; }
                 if (params.contains("boundary")) { p.margin    = params["boundary"].get<double>(); params_changed = true; }
                 if (params.contains("invert"))   { p.invert    = params["invert"].get<bool>();     params_changed = true; }
+                // [ORCAPORT:PP-6] The panel's two rules, over MCP, applied at the END so the order of
+                // the request's fields cannot matter: a grid is always cut as grooves, and after a
+                // pattern change the angle is always one the new pattern can express. An `angle` in
+                // the same call is deliberately not immune - it would leave a state (grid at 80) the
+                // panel cannot show or reproduce, which is the bug this rule exists to remove.
+                if (params.contains("pattern"))
+                    p.angle_deg = perforation_angle_for_kind(p.kind, p.angle_deg);
+                if (p.kind == PerforationKind::Grid)
+                    p.invert = true;
                 if (params_changed)
                     g->set_params(p);
 
@@ -1003,7 +1015,9 @@ void OrcaMCPServer::register_gizmo_tools()
                         {"width", q.width}, {"boundary", q.margin}, {"invert", q.invert},
                         // [ORCAPORT:PP-2] The pick is part of the state now: nothing is cut until
                         // 'create', so a script has to be able to see whether a face is picked.
-                        {"pick_valid", g->gizmo_pick_valid()}, {"applied_count", g->gizmo_applied_count()}};
+                        {"pick_valid", g->gizmo_pick_valid()}, {"applied_count", g->gizmo_applied_count()},
+                        // [ORCAPORT:PP-6] ...and so is the To face the pattern stops on.
+                        {"to_valid", g->gizmo_target_valid()}, {"to_distance", g->gizmo_target_distance()}};
                 };
 
                 if (action == "set_params" || action == "status" || action == "open")
@@ -1040,6 +1054,22 @@ void OrcaMCPServer::register_gizmo_tools()
                 if (action == "pick_at") {
                     if (!g->gizmo_pick_at(screen))
                         return {{"status", "error"}, {"error", "No perforable face under the screen point"}};
+                    return report(action);
+                }
+                // [ORCAPORT:PP-6] The To face: the second, parallel face the pattern stops on instead
+                // of the first surface the depth probe finds.
+                if (action == "pick_to") {
+                    if (!g->gizmo_pick_valid())
+                        return {{"status", "error"}, {"error", "No face is picked: pass action=pick_at first"}};
+                    if (!g->gizmo_pick_target_at(screen)) {
+                        const char *why = g->gizmo_target_refusal();
+                        return {{"status", "error"},
+                                {"error", std::string("Target face refused: ") + (*why != '\0' ? why : "unknown reason")}};
+                    }
+                    return report(action);
+                }
+                if (action == "clear_to") {
+                    g->gizmo_clear_target();
                     return report(action);
                 }
                 if (action == "apply") {

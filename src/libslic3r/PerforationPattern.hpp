@@ -23,7 +23,7 @@ struct PerforationParams {
     double spacing{6.0};    // hole / slot centre-to-centre distance, mm
     double width{2.0};      // hole / slot width, mm
     double margin{2.0};     // boundary inset from the face outline, mm
-    bool   invert{false};   // true: subtract the material between the holes
+    bool   invert{false};   // true: subtract the material between the holes (Grid is always inverted)
 };
 
 // Wall below which adjacent holes are considered too close, in mm. Advisory only: the UI warns
@@ -42,6 +42,25 @@ inline constexpr double PERFORATION_MAX_ANGLE_DEG = 45.0;
 // and on an asymmetric face that is different geometry. 0..90 is what turns the family from horizontal
 // to vertical; 90..180 would be the mirrored half, so the range stops at the vertical.
 inline constexpr double PERFORATION_MAX_ANGLE_LINES_DEG = 90.0;
+
+// The largest angle `kind` can express: 0..90 for the single family, 0..45 for the pair. Honeycomb and
+// circles are isotropic and ignore the angle; the bound is still defined for them so callers do not
+// have to special-case them.
+inline constexpr double perforation_max_angle_deg(PerforationKind kind)
+{
+    return kind == PerforationKind::Lines ? PERFORATION_MAX_ANGLE_LINES_DEG : PERFORATION_MAX_ANGLE_DEG;
+}
+
+// [ORCAPORT:PP-6] The angle to carry over when the pattern is switched to `kind`. An angle the new
+// kind cannot express would leave the panel's slider pinned at its maximum while the pattern went on
+// using the old value - what a user reads as "the angle stuck", and what used to hand Grid a 80-degree
+// angle it cannot express. Out of range it goes back to 0; in range it is kept, so switching to the
+// wider pattern (Lines) never touches a value Grid was using. Only a pattern change resets it: typing
+// or dragging a value never does, which is the rule the panel states.
+inline constexpr double perforation_angle_for_kind(PerforationKind kind, double angle_deg)
+{
+    return angle_deg > perforation_max_angle_deg(kind) ? 0.0 : angle_deg;
+}
 
 // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is

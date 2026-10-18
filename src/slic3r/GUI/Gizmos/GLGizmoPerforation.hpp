@@ -49,6 +49,14 @@ public:
     bool gizmo_apply_at(const Vec2d& screen_pos);
     // Faces under `screen_pos`: facet index, coplanar-region size and world normal.
     bool gizmo_face_info_at(const Vec2d& screen_pos, int& facet, int& region_facets, Vec3d& normal);
+    // [ORCAPORT:PP-6] The optional second face the pattern stops on ("To").
+    bool gizmo_pick_target_at(const Vec2d& screen_pos);
+    void gizmo_clear_target();
+    bool gizmo_target_valid() const { return m_target.valid; }
+    // Distance from the picked face to the target face, along the picked face's normal, in mm.
+    double gizmo_target_distance() const { return m_target.distance; }
+    // Empty when the last target pick was accepted; otherwise why it was refused.
+    const char* gizmo_target_refusal() const;
 
 protected:
     bool on_init() override;
@@ -73,8 +81,9 @@ private:
     ExPolygons face_domain(const ModelVolume* mv, size_t facet, const Vec3d& normal_obj, const Vec3d& origin_obj);
     bool build_pattern_at(const Vec3d& hit_obj, const ModelVolume* mv, size_t facet,
                           ExPolygons& pattern, indexed_triangle_set& prism);
-    // [ORCAPORT:PP-2] The four overlays. The first two are patches on the surface; the last two are
+    // [ORCAPORT:PP-2] The overlays. The first two are patches on the surface; the last two are
     // object-space prisms: the proposed pattern (what the values would cut) and every committed one.
+    // [ORCAPORT:PP-6] The To face is a third patch, in the picked colour.
     void rebuild_hover_highlight();
     void rebuild_picked_highlight();
     void rebuild_proposed_pattern();
@@ -84,6 +93,11 @@ private:
     bool create_from_pick();
     bool apply_at(const Vec2d& screen_pos);   // kept for the MCP alias: pick, then commit
     void add_pattern_volume(const indexed_triangle_set& prism);
+    // [ORCAPORT:PP-6] The "To" target: a second face, parallel to the picked one, that decides how
+    // deep the pattern goes instead of the depth probe's first surface.
+    void pick_target_at(const Vec2d& screen_pos);
+    void clear_target();
+    void rebuild_target_highlight();
 
     // [ORCAPORT:PP-2] The picked face. The pattern is anchored where the user clicked and only the
     // panel's values move it, so the anchor is cached here instead of being recomputed from the
@@ -97,12 +111,34 @@ private:
         bool               horizontal{ false };
     };
 
+    // [ORCAPORT:PP-6] The target face. Gizmo state, not a PerforationParams value: it is a face
+    // reference, not a number, so the MCP tool reaches it with its own pick action rather than through
+    // set_params, the same way the picked face does.
+    struct Target
+    {
+        bool               valid{ false };
+        const ModelVolume* mv{ nullptr };
+        int                facet{ -1 };
+        double             distance{ 0. };  // picked face -> this face, along the picked normal, in mm
+    };
+
+    // Why the last target pick was refused. The panel turns it into a translated warning, the MCP tool
+    // into plain text, so neither has to parse the other's strings.
+    enum class TargetWhy { None, NoFace, NotParallel, NotBehind };
+
     PerforationParams    m_params;
     GLModel              m_face_highlight;     // the surface under the cursor (teal)
     GLModel              m_face_picked;        // the picked surface (green)
     GLModel              m_pattern_proposed;   // the pattern the current values would cut (yellow)
     GLModel              m_patterns_applied;   // every committed perforation (red)
+    GLModel              m_face_target;        // the "To" face, in the picked colour
     Pick                 m_pick;
+    Target               m_target;
+    TargetWhy            m_target_why{ TargetWhy::None };
+    // True while the panel's Pick face button is armed: the next left click sets the target face
+    // instead of re-picking the one the pattern is anchored to. The panel button (or a right click,
+    // or closing the tool) disarms it.
+    bool                 m_pick_target{ false };
     // The proposed pattern is rebuilt whenever this is set: a new pick, or a value change. [ORCAPORT:PP-6]
     // A slider sets it on every frame it changes, so the preview follows a drag live. One mesh per hole
     // is not free, so a tiny spacing on a large face rebuilds slowly - the builder's own MAX_FEATURES cap

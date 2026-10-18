@@ -45,12 +45,13 @@ TEST_CASE("A valid width keeps the holes discrete", "[PerforationPattern]")
             REQUIRE(area_mm2(ExPolygons{e}) < 0.5 * area_mm2(rectangle_domain()));
     }
 
-    // Grid is a single connected lattice by construction (the two families cross), so the check
-    // is that it is a perforated lattice - it has holes - rather than one solid slab.
+    // Grid is ALWAYS cut as grooves ([ORCAPORT:PP-6], see the dedicated case below), so what it
+    // subtracts is the complement of the lattice - the boundary band plus the squares between the
+    // crossings, several contours rather than one connected slab.
     const ExPolygons grid = make_perforation_pattern(
         rectangle_domain(), {PerforationKind::Grid, 0., 12., 2., 2., false});
     REQUIRE(!grid.empty());
-    REQUIRE(grid.front().holes.size() > 1);
+    REQUIRE(grid.size() > 1);
 }
 
 TEST_CASE("Lines turn through the full quarter, 0 to 90 degrees", "[PerforationPattern]")
@@ -75,9 +76,58 @@ TEST_CASE("Lines turn through the full quarter, 0 to 90 degrees", "[PerforationP
     }
 }
 
-TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")
+TEST_CASE("A grid is cut as grooves even when holes are asked for", "[PerforationPattern]")
 {
-    // No silent shrink: width is not corrected. Two parallel slots at spacing 6 with width 6
+    // [ORCAPORT:PP-6] A grid subtracted as two crossing families of HOLES leaves the material between
+    // the crossings as squares that touch nothing - floating regions the slicer cannot print, which is
+    // what the panel used to be able to ask for. The builder forces the complement (grooves), so no
+    // caller can produce that, and the property that says it worked is that what is left standing is
+    // ONE connected region.
+    const ExPolygons domain = rectangle_domain();
+    const ExPolygons inset  = offset_ex(domain, -scale_(2.));
+
+    PerforationParams params;
+    params.kind    = PerforationKind::Grid;
+    params.spacing = 8.;
+    params.width   = 3.;
+    params.margin  = 2.;
+    params.invert  = false;   // exactly what a caller used to be able to ask for
+
+    const ExPolygons pattern = make_perforation_pattern(domain, params);
+    REQUIRE(!pattern.empty());
+    REQUIRE(diff_ex(inset, pattern).size() == 1);
+
+    // The forced version is the same geometry the explicit grooves flag builds.
+    params.invert = true;
+    const ExPolygons grooves = make_perforation_pattern(domain, params);
+    REQUIRE_THAT(area_mm2(pattern), WithinRel(area_mm2(grooves), 1e-6));
+}
+
+TEST_CASE("An angle the new pattern cannot express goes back to zero", "[PerforationPattern]")
+{
+    // [ORCAPORT:PP-6] The panel's rule, and the one the MCP tool applies: a single family may sit
+    // anywhere in 0..90, a pair only in 0..45 because its own 90-degree cross covers the rest. An
+    // angle the new pattern cannot hold used to stay in place, leaving the slider pinned at its
+    // maximum while the geometry went on using the old value.
+    REQUIRE(perforation_max_angle_deg(PerforationKind::Lines) == 90.);
+    REQUIRE(perforation_max_angle_deg(PerforationKind::Grid) == 45.);
+
+    // Lines -> Grid: 80 does not fit, 30 does, 45 is the boundary and stays.
+    REQUIRE(perforation_angle_for_kind(PerforationKind::Grid, 80.) == 0.);
+    REQUIRE(perforation_angle_for_kind(PerforationKind::Grid, 30.) == 30.);
+    REQUIRE(perforation_angle_for_kind(PerforationKind::Grid, 45.) == 45.);
+    // Grid -> Lines keeps every value Grid could set...
+    REQUIRE(perforation_angle_for_kind(PerforationKind::Lines, 45.) == 45.);
+    // ...and a Lines value beyond its own range does not survive either.
+    REQUIRE(perforation_angle_for_kind(PerforationKind::Lines, 120.) == 0.);
+    // The isotropic patterns ignore the angle; the bound is defined for them so callers need no
+    // special case, and it is the pair bound.
+    REQUIRE(perforation_max_angle_deg(PerforationKind::Honeycomb) == 45.);
+    REQUIRE(perforation_max_angle_deg(PerforationKind::Circles) == 45.);
+}
+
+TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")
+{    // No silent shrink: width is not corrected. Two parallel slots at spacing 6 with width 6
     // merge into one continuous void - the documented outcome the UI warns about.
     const ExPolygons merged = make_perforation_pattern(
         rectangle_domain(), {PerforationKind::Lines, 0., 6., 6., 2., false});

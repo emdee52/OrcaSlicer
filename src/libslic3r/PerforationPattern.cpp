@@ -179,7 +179,13 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
     if (holes.empty())
         return {};
 
-    return params.invert ? diff_ex(inset, holes) : holes;
+    // [ORCAPORT:PP-6] A grid is grooves, always. Subtracting the two crossing families as holes leaves
+    // the material between the crossings as squares that touch nothing - floating regions the slicer
+    // cannot print, and the only thing a user who picks Grid ever wants is the lattice standing.
+    // Forced HERE so no caller (the panel, the MCP tool, a test) can ask for the island version; the
+    // panel does not even offer the switch for Grid.
+    const bool invert = params.invert || params.kind == PerforationKind::Grid;
+    return invert ? diff_ex(inset, holes) : holes;
 }
 
 indexed_triangle_set extrude_perforation_pattern(const ExPolygons &polys, const Vec3d &origin,
