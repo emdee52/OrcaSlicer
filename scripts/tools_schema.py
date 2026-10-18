@@ -1161,14 +1161,21 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                  '(pick the face under screen_x/screen_y, or the viewport '
                  "centre), 'create' (cut the current pattern into the picked "
                  "face), 'clear_pick', 'apply' (pick + create in one call, the "
-                 "old auto-apply behaviour), 'close'.",
+                 "old auto-apply behaviour), 'pick_to' (pick a second, "
+                 'parallel face the pattern stops on instead of the first '
+                 'surface behind it; reports to_valid/to_distance), '
+                 "'clear_to', 'close'. Notes: a grid is always cut as grooves "
+                 '(invert is forced), and switching to a pattern that cannot '
+                 'express the current angle resets it to 0 (an `angle` sent in '
+                 'the same call included).',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'action': {'description': 'open | status | '
                                                            'set_params | '
                                                            'hover_face | '
                                                            'pick_at | create | '
                                                            'clear_pick | apply '
-                                                           '| close',
+                                                           '| pick_to | '
+                                                           'clear_to | close',
                                             'type': 'string'},
                                  'angle': {'description': 'In-plane pattern '
                                                           'angle, degrees: '
@@ -1197,13 +1204,15 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                                              'type': 'string'},
                                  'screen_x': {'description': 'Canvas X for '
                                                              'hover_face / '
-                                                             'pick_at / apply. '
+                                                             'pick_at / '
+                                                             'pick_to / apply. '
                                                              'Defaults to the '
                                                              'viewport centre.',
                                               'type': 'number'},
                                  'screen_y': {'description': 'Canvas Y for '
                                                              'hover_face / '
-                                                             'pick_at / apply.',
+                                                             'pick_at / '
+                                                             'pick_to / apply.',
                                               'type': 'number'},
                                  'spacing': {'description': 'Hole / slot '
                                                             'centre-to-centre '
