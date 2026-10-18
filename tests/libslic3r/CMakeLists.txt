@@ -46,6 +46,7 @@ add_executable(${_TEST_NAME}_tests
     test_holedetector.cpp
     test_holeshapes.cpp
     test_holestandards.cpp
+    test_tabshapes.cpp
     test_perforationpattern.cpp
     test_multimaterial_segmentation.cpp
     test_placeholder_parser.cpp
