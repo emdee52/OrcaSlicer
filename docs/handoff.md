@@ -2311,7 +2311,15 @@ questions; the answers are the decisions below.
   **20 x 35.7973 x 20 mm / 8493.1 mm3** - 15.8 mm out of the wall, which is exactly `root_len 6 - weld
   0.2 + tip_len 10`. **Not verified**: the slice of the assembled model (the export call was cancelled) -
   ordinary volume slicing, but the claim is the owner's check, not a result here.
-- **Branch state**: `port/TB-1` off `port/integration` `2706b1a6db`, four commits (P1 geometry + tests,
+- **P6, after the owner used it** (`973f7ac491`): the shape menu is gone (`Tip: Round | Flat`; the
+  presets, the Circle tip and the drawn glyphs are deleted), no corner radius anywhere (his call: a root
+  radius only weakens the bond), `Length` + `Hole offset` replace Root length + Tip length + the moving
+  offset (the hole slides inside the tab, the slider's bounds come from Length), the weld is a constant
+  (1 mm - the slicer unions per layer, so a root that only touches the face is a pinch vertex there),
+  Through is the behaviour with Depth deleted (the bore stops at the tab's far face + the ME-3 overshoot,
+  so the merged-mesh march and `rebuild_merged()` are gone), and the Head row shows only the styles the
+  standard carries (none -> no row).
+- **Branch state**: `port/TB-1` off `port/integration` `2706b1a6db`, six commits (P1 geometry + tests,
   P2/P3 gizmo + MCP, P5 the placement rule, P4 docs + patch `78_TB-1.patch`), pushed. **Not merged**:
   awaiting the owner's test in the app (MERGE_POLICY). Deliberately not in v1: a nut / insert pocket on
   the tab's free side, two bore diameters in one stack (clearance + pilot), several tabs per placement,
