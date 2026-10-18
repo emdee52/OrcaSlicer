@@ -112,6 +112,10 @@ public:
     double        coverage() const { return m_probe.coverage; }
     double        fall_away() const { return m_probe.fall_away; }
     double        effective_bite() const { return m_effective_bite; }
+    // Where the tab goes: a wall click gives a plate parallel to the bed (its own +z is the bed's up),
+    // a face within 25 degrees of horizontal keeps the plate in that face's plane.
+    bool          frame_is_wall() const { return frame(nullptr).wall; }
+    Vec3d         frame_axis() const { return frame(nullptr).axis; }
     const std::string& status_why() const { return m_why; }
     // The last tab's frame and resolved sizes, so a caller can see where a scripted tab landed.
     std::vector<std::array<double, 3>> list_tabs() const;
@@ -137,17 +141,15 @@ private:
         Vec3d              hit_obj{ Vec3d::Zero() }; // object space
     };
 
-    // The anchored placement: everything the frame needs, and the object units the panel's mm are
+    // The anchored placement: what the frame is built from, plus the object units the panel's mm are
     // converted into.
     struct Pick
     {
         bool               valid{ false };
         const ModelVolume* mv{ nullptr };
         int                facet{ -1 };
-        Vec3d              anchor_obj{ Vec3d::Zero() }; // the passage centre, on the surface
-        Vec3d              normal_obj{ Vec3d::UnitZ() };
-        Vec3d              u_obj{ Vec3d::UnitX() };     // the frame's tangents at angle 0
-        Vec3d              v_obj{ Vec3d::UnitY() };
+        Vec3d              click_obj{ Vec3d::Zero() };  // the point on the face that was clicked
+        Vec3d              normal_obj{ Vec3d::UnitZ() };// the face's outward normal
     };
 
     ModelObject* model_object() const;
@@ -159,9 +161,11 @@ private:
 
     void        update_hover(const Vec2d& screen_pos);
     void        clear_hover();
-    Transform3d frame_to_obj() const;                             // the tab's frame -> object space
+    // Where the tab goes, from the picked face, the click and the angle (libslic3r/TabShapes). The
+    // frame's +z is the plate's normal, so `wall` says whether the plate is parallel to the bed.
+    // `out_bite` receives the bite the plate itself carries (see the note in the implementation).
+    TabFrame    frame(double* out_bite = nullptr) const;
     Transform3d frame_to_volume(const ModelVolume* mv) const;     // ... and -> that volume's mesh
-    double      default_angle() const;                            // outward, toward the nearest edge
 
     // The spec in object units, with the bite the surface needs and the depth resolved. `why` is set
     // when the tab cannot be built at all.

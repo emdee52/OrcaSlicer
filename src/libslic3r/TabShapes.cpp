@@ -363,8 +363,7 @@ TabSurfaceProbe tab_probe_surface(const indexed_triangle_set &its, const Transfo
 }
 
 void tab_apply_shape(TabSpec &spec, TabShape shape)
-{
-    switch (shape) {
+{    switch (shape) {
     case TabShape::Rect:
         spec.tip       = TabTip::Flat;
         spec.taper_deg = 0.;
@@ -387,6 +386,60 @@ void tab_apply_shape(TabSpec &spec, TabShape shape)
         spec.tip = TabTip::Circle;
         break;
     }
+}
+
+// A face this close to horizontal keeps the plate in its own plane: cos(25 degrees). Steeper than
+// that is a wall, and a wall gets a plate parallel to the bed - see the header.
+static constexpr double TAB_HORIZONTAL_COS = 0.9;
+
+TabFrame tab_frame(const Vec3d &face_normal, const Vec3d &click, const Vec3d &centre, double root_len,
+                   double bite, double angle_deg)
+{
+    TabFrame out;
+
+    Vec3d n = face_normal;
+    if (! n.allFinite() || n.norm() < 1e-9)
+        n = Vec3d::UnitZ();
+    n.normalize();
+
+    out.wall = std::abs(n.z()) < TAB_HORIZONTAL_COS;
+    // The plate's own normal: the bed's up on a wall, the face's own normal on a face the plate can
+    // already lie in.
+    const Vec3d z = out.wall ? Vec3d::UnitZ() : n;
+
+    // The outward direction at angle 0: straight out of a wall, and away from the object on a
+    // horizontal face (so the tab hangs off the nearest edge rather than lying in the middle).
+    Vec3d x0;
+    if (out.wall) {
+        x0 = Vec3d(n.x(), n.y(), 0.);
+    } else {
+        x0 = click - centre;
+        x0 -= z * x0.dot(z);
+        if (x0.norm() < 1e-6) {
+            const Vec3d ref = std::abs(z.dot(Vec3d::UnitX())) < 0.9 ? Vec3d::UnitX() : Vec3d::UnitY();
+            x0              = ref - z * ref.dot(z);
+        }
+    }
+    if (! x0.allFinite() || x0.norm() < 1e-9)
+        x0 = z.unitOrthogonal();
+    x0.normalize();
+    const Vec3d y0 = z.cross(x0).normalized();
+
+    const double a = angle_deg * PI / 180.;
+    const Vec3d  x = x0 * std::cos(a) + y0 * std::sin(a);
+    const Vec3d  y = -x0 * std::sin(a) + y0 * std::cos(a);
+
+    out.axis   = x;
+    out.to_obj = Transform3d::Identity();
+    out.to_obj.linear().col(0) = x;
+    out.to_obj.linear().col(1) = y;
+    out.to_obj.linear().col(2) = z;
+    // The screw sits `root_len` out from the root of a wall (on a face the plate lies in, the click IS
+    // the screw), and the whole plate is pushed `bite` INTO the face - which on a wall is sideways,
+    // and is what welds the root edge to it.
+    const Vec3d root_shift = out.wall ? Vec3d(x * root_len) : Vec3d::Zero();
+    out.to_obj.translation() = click + root_shift - n * bite;
+    return out;
 }
 
 } // namespace Slic3r

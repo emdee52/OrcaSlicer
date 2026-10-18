@@ -127,6 +127,25 @@ TabSurfaceProbe tab_probe_surface(const indexed_triangle_set &its, const Transfo
 //   Circle    a round pad centred on the passage
 void tab_apply_shape(TabSpec &spec, TabShape shape);
 
+// --- Placement ------------------------------------------------------------------------------------
+// A tab is a MOUNTING tab, so it is placed PARALLEL TO THE BED with its ROOT attached to the face that
+// was clicked: on a wall that is a foot standing out sideways, screwed down from above, not a plate
+// lying in the wall's own plane (the first cut got that wrong and it read as a slab stuck to the part).
+//
+// `face_normal` is the picked facet's normal (out of the material, unit), `click` the picked point and
+// `centre` the object's own centre, all in object space; `root_len` / `bite` are in object units. A
+// face within ~25 degrees of horizontal keeps the plate in its own plane, which is the same thing for
+// a bottom or top face and is what a foot under a part wants; anything steeper is a WALL and gets a
+// plate parallel to the bed, with its root edge on the face and the screw `root_len` out from it.
+struct TabFrame
+{
+    Transform3d to_obj;     // the tab's frame -> object space: +x outward, +z the plate's normal
+    bool        wall{false};// the face was treated as a wall (the plate is parallel to the bed)
+    Vec3d       axis{ Vec3d::UnitX() }; // the frame's +x (for the panel's readout)
+};
+TabFrame tab_frame(const Vec3d &face_normal, const Vec3d &click, const Vec3d &centre, double root_len,
+                   double bite, double angle_deg);
+
 } // namespace Slic3r
 
 #endif // libslic3r_TabShapes_hpp_

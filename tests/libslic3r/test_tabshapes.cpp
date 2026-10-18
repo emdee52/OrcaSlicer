@@ -399,6 +399,75 @@ TEST_CASE("A tab baked onto a cube bores a clean through hole", "[TabShapes]")
     CHECK_THAT(surface_z(baked, 10., 2.), WithinAbs(10., 1e-3));
 }
 
+TEST_CASE("A tab on a wall lies parallel to the bed with its root on the face", "[TabShapes]")
+{
+    // The rule the first cut got wrong: a mounting tab on a wall is a FOOT that stands out sideways
+    // and is screwed down from above, not a plate lying in the wall's own plane.
+    const Vec3d wall_normal(-1., 0., 0.); // a wall at x = 0, its material at x > 0
+    const Vec3d click(0., 0., 5.);
+    const Vec3d centre(10., 10., 5.);
+    constexpr double root_len = 6., bite = 0.6, thickness = 3.;
+
+    const TabFrame f = tab_frame(wall_normal, click, centre, root_len, bite, 0.);
+    CHECK(f.wall);
+
+    // The plate's own normal is the bed's up, so the tab prints flat and the screw goes down.
+    const Vec3d z = f.to_obj.linear().col(2);
+    CHECK_THAT(z.z(), WithinAbs(1., 1e-9));
+    // Straight out of the wall.
+    const Vec3d x = f.to_obj.linear().col(0);
+    CHECK_THAT(x.x(), WithinAbs(-1., 1e-9));
+
+    // The screw sits root_len out from the face...
+    CHECK_THAT(f.to_obj.translation().x(), WithinAbs(-(root_len - bite), 1e-9));
+    // ... and the outline's root edge lands bite INSIDE it, which is the weld.
+    CHECK(f.to_obj.translation().x() - root_len * x.x() > 0.);
+
+    // Both as a solid: a slab whose z extent is its thickness (parallel to the bed), reaching the wall.
+    TabSpec s = tab_12deg();
+    s.root_len = root_len;
+    s.tip_len  = 8.;
+    s.thickness = thickness;
+    s.bite      = bite;
+    indexed_triangle_set plate = make_tab_plate(s);
+    its_transform(plate, f.to_obj);
+    const BoundingBoxf3 bb = bounding_box(plate);
+    CHECK_THAT(bb.max.z() - bb.min.z(), WithinAbs(thickness + bite, 0.02));
+    CHECK_THAT(bb.min.z(), WithinAbs(click.z() - bite, 0.02)); // its underside sits at the click
+    CHECK(bb.max.x() > 0.);                                    // the root's weld reaches into the wall
+    CHECK(bb.min.x() < -(root_len + 6.));                      // and the tab stands out of it
+    CHECK(bb.max.y() > bb.max.x() + 4.);                       // the width runs along the wall
+}
+
+TEST_CASE("A tab on a face within 25 degrees of horizontal lies in that face", "[TabShapes]")
+{
+    // A bottom face: the plate lies in the face's plane, which is horizontal anyway - a foot under the
+    // part, welded by the bite and walking out from under it.
+    const Vec3d click(10., 10., 5.);
+    const TabFrame f = tab_frame(-Vec3d::UnitZ(), click, Vec3d(10., 10., 5.), 6., 0.6, 0.);
+    CHECK_FALSE(f.wall);
+    CHECK_THAT(f.to_obj.linear().col(2).z(), WithinAbs(-1., 1e-9)); // the face's own normal
+    CHECK_THAT(f.to_obj.translation().z(), WithinAbs(click.z() + 0.6, 1e-9)); // pushed into the material
+
+    // 25 degrees off horizontal is still the plate's own plane; 45 is a wall.
+    CHECK_FALSE(tab_frame(Vec3d(0.42, 0., -0.91), click, click, 6., 0.6, 0.).wall);
+    CHECK(tab_frame(Vec3d(-0.71, 0., -0.71), click, click, 6., 0.6, 0.).wall);
+}
+
+TEST_CASE("A wall tab's angle turns it about the bed, not the wall", "[TabShapes]")
+{
+    const Vec3d wall_normal(-1., 0., 0.);
+    const Vec3d click(0., 0., 5.);
+
+    const TabFrame a0 = tab_frame(wall_normal, click, Vec3d(10., 10., 5.), 6., 0.6, 0.);
+    const TabFrame a90 = tab_frame(wall_normal, click, Vec3d(10., 10., 5.), 6., 0.6, 90.);
+
+    // 90 degrees about the plate's own normal takes it along the wall, still parallel to the bed.
+    CHECK_THAT(std::abs(a90.to_obj.linear().col(0).y()), WithinAbs(1., 1e-9));
+    CHECK_THAT(a90.to_obj.linear().col(2).z(), WithinAbs(1., 1e-9));
+    CHECK_THAT(a90.to_obj.linear().col(0).dot(a0.to_obj.linear().col(0)), WithinAbs(0., 1e-9));
+}
+
 TEST_CASE("A probe measures what is under a footprint", "[TabShapes]")
 {
     const TabSpec s = tab_12deg();

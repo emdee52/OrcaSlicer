@@ -790,6 +790,8 @@ nlohmann::json tabs_gizmo_state(GLGizmoTabs &g)
 
     nlohmann::json result = {
         {"anchored", g.anchor_valid()},
+        {"wall", g.frame_is_wall()},
+        {"axis", vec3_json(g.frame_axis())},
         {"shape", shape},
         {"root_w", g.get_root_w()},
         {"root_len", g.get_root_len()},
