@@ -2235,6 +2235,8 @@ scope: screw heads only.
   countersink's mouth is 0.68 mm narrower than `csink_d` at the face - both because a head is measured
   from the offset entry instead of from the face, which needs the entry-to-surface distance carried into
   the shape builder. The detected path, the one reported, lands both exactly.
-- **Branch state**: `port/ME-3` off `port/integration` `2fa3fb01f3`, product + tests commit then a
-  `port:` docs commit, patch `77_ME-3.patch`. **Not merged, not pushed** - awaiting the owner's test.
+- **Branch state**: **merged** into `port/integration` as **`22e322b2de`** (user-tested 2026-10-17) and
+  pushed: `port/ME-3` off `port/integration` `2fa3fb01f3`, a product + tests commit and two `port:` docs
+  commits, patch `77_ME-3.patch`, and the merge tree is byte-identical to the branch that was built and
+  tested (the follow-up patch-encoding commit touches `porting/` only).
 

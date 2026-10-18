@@ -24,20 +24,27 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`e673b82a9d`** "Merge port/MB-1: a cutter can only be the
-  tool, and the object's own Mesh boolean reports what it could not subtract" - the Mesh boolean batch
-  (sections 40 and 41 of `docs/handoff.md`; `porting/notes/MB-1.md`, `notes/MB-2.md`), user-tested
-  2026-10-17. **MB-1**: in the gizmo a NEGATIVE volume is a cutter, so a pick naming one always lands in
-  the tool slot and the mode follows the picks; `perform_operation()` records and reports an `Outcome`
-  (`no_op` is the kernel handing the source back unchanged), and the 13 MCP tools that set a Selection by
-  hand now refresh the gizmo data, which is what made a scripted boolean on a duplicate modify the
-  original while this was being diagnosed. **MB-2**: the context menu's Mesh boolean is *not* a union - it
-  already unions the model parts and subtracts the negative volumes through `csg::model_to_csgmesh` - but
-  it stayed silent when a negative volume could not be subtracted; `mcut::do_boolean` now returns whether
-  it changed the mesh, `csg::DifferenceReport` counts what was not applied, `combine_mesh_fff` notifies and
-  logs it, its pre-flight now checks with the kernel that runs instead of CGAL, and the new MCP tool
-  `boolean_parts` runs the whole-object path at last (78 tools). Merged from `port/MB-1`, branched from
-  `40f7e1a70a`, and the merge tree is byte-identical to the branch that was built and tested. Before it:
+- Latest integration commit at handoff: **`22e322b2de`** "Merge port/ME-3: a screw head's cutter
+  starts outside the face, so a mesh boolean cannot skin the recess" - section 42 of `docs/handoff.md`;
+  `porting/notes/ME-3.md`; user-tested 2026-10-17. In the Holes tool a screw head's entrance cap landed
+  exactly in the part's face: a coplanar pair, which mcut answers with a zero-thickness sheet across the
+  whole recess - the slicer discards it, so the print had the counterbore while the mesh and the 3D view
+  said the surface was still solid. A head is wider than the hole, so a **detected** hole's head ring
+  covered the face around it on top of that; PP-4 had cured the coplanar cap only for a hole **placed**
+  on a face and for a through teardrop. `hole_cutter_entry_margin()` is now one helper shared by
+  `face_hole()` and `bore_negative_mesh()`, and `its_make_counterbore()` / `its_make_countersink()` take
+  an `out_margin` that puts the cap that much further out while everything the shape cuts below the entry
+  plane keeps the geometry `depth` / `cbore_depth` / `csink_d` describe - the countersink's cone is
+  extended along its own surface, so it still cuts `csink_d` at the entry plane. Socket, Button and Sink
+  heads and the optional head teardrop all take it; no option, no key, no `.3mf` migration. Merged from
+  `port/ME-3`, branched from `2fa3fb01f3`, and the merge tree is byte-identical to the branch that was
+  built and tested (the one follow-up, patch `77_ME-3.patch` rewritten from PowerShell's UTF-16 to a
+  readable LF diff, touches `porting/` only). Before it: **`e673b82a9d`** "Merge port/MB-1: a cutter can
+  only be the tool, and the object's own Mesh boolean reports what it could not subtract" - the Mesh
+  boolean batch (sections 40 and 41; `notes/MB-1.md`, `notes/MB-2.md`), user-tested 2026-10-17: a
+  NEGATIVE volume always lands in the gizmo's tool slot and the mode follows the picks, `mcut::do_boolean`
+  reports whether it changed the mesh so a Difference that was not applied is counted and told to the
+  user, and the MCP tool `boolean_parts` runs the whole-object path (78 tools). Before it:
   **`23e8ec3f98`** "Merge port/PP-6: 90-degree Lines, a live proposal, always-groove Grid, a picked depth,
   and a centred lattice" - eight changes on the Perforations gizmo the owner asked for after living with
   PP-1/PP-2 (sections 38 and 39 of `docs/handoff.md`; `porting/notes/PP-6.md`), user-tested 2026-10-17,

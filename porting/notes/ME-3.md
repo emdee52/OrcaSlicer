@@ -1,7 +1,8 @@
 # ME-3 — a screw head's cutter starts outside the face, so a mesh boolean cannot skin the recess
 
-Status: **implemented, build clean, unit- and runtime-verified** (see Verification). Branch `port/ME-3`
-off `port/integration` `2fa3fb01f3`. Not merged and not pushed.
+Status: **merged** into `port/integration` as **`22e322b2de`** (user-tested 2026-10-17) and pushed; the
+merge tree is byte-identical to the branch that was built and tested. Branch `port/ME-3` off
+`port/integration` `2fa3fb01f3`.
 
 ## What was reported
 
@@ -136,5 +137,7 @@ All three exported results had `open_edges: 0`.
 
 ## Branch state
 
-`port/ME-3` off `port/integration` `2fa3fb01f3`: product + tests commit, then a `port:` docs commit
-(this note, the manifest row, handoff section 42, patch `77_ME-3.patch`). Not merged, not pushed.
+`port/ME-3` off `port/integration` `2fa3fb01f3`: product + tests commit, then two `port:` docs commits
+(this note, the manifest row, handoff section 42, patch `77_ME-3.patch`, and the patch rewritten from
+PowerShell's UTF-16 to a readable LF diff). **Merged** into `port/integration` as **`22e322b2de`**
+(user-tested 2026-10-17) and pushed.
