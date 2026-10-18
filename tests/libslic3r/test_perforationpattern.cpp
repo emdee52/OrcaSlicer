@@ -18,6 +18,8 @@ ExPolygons rectangle_domain()
     return ExPolygons{r};
 }
 
+constexpr double PP_PI = 3.14159265358979323846;
+
 // Area of scaled ExPolygons, in mm^2.
 double area_mm2(const ExPolygons &polys)
 {
@@ -124,6 +126,62 @@ TEST_CASE("An angle the new pattern cannot express goes back to zero", "[Perfora
     // special case, and it is the pair bound.
     REQUIRE(perforation_max_angle_deg(PerforationKind::Honeycomb) == 45.);
     REQUIRE(perforation_max_angle_deg(PerforationKind::Circles) == 45.);
+}
+
+TEST_CASE("A pattern is symmetric about the centre of the face", "[PerforationPattern]")
+{
+    // [ORCAPORT:PP-6] The lattice is anchored at the centre of the inset face, not at a corner of its
+    // bounding box. A corner phase is a function of where the bounding box starts, so on a face that is
+    // not a whole number of pitches across (this one is 96 x 56 mm inset against a 6 mm pitch) one edge
+    // is cut differently from the parallel one. Centre-anchored, a 180-degree turn about the centre
+    // leaves the pattern unchanged, and that is the property that makes the two edges match.
+    const ExPolygons  domain = rectangle_domain();
+    const ExPolygons  inset  = offset_ex(domain, -scale_(2.));
+    REQUIRE(area_mm2(inset) > 0.);
+    // A uniform margin leaves the inset symmetric about the face centre, so anchoring the lattice on
+    // the inset's centre puts it on the FACE centre - which is the point the user is looking at.
+    const BoundingBox db = get_extents(domain);
+    const BoundingBox ib = get_extents(inset);
+    const Point face_centre(db.min.x() + (db.max.x() - db.min.x()) / 2,
+                            db.min.y() + (db.max.y() - db.min.y()) / 2);
+    const Point inset_centre(ib.min.x() + (ib.max.x() - ib.min.x()) / 2,
+                             ib.min.y() + (ib.max.y() - ib.min.y()) / 2);
+    REQUIRE(inset_centre == face_centre);
+
+    const PerforationKind kinds[] = {PerforationKind::Lines, PerforationKind::Grid,
+                                     PerforationKind::Honeycomb, PerforationKind::Circles};
+    for (const PerforationKind kind : kinds) {
+        // The in-plane angle only moves the two families; honeycomb and circles are isotropic.
+        const bool   angular = (kind == PerforationKind::Lines || kind == PerforationKind::Grid);
+        const double angles[] = {0., 30.};
+        for (const double angle : angles) {
+            if (angle != 0. && !angular)
+                continue;
+            for (const bool invert : {false, true}) {
+                PerforationParams p;
+                p.kind      = kind;
+                p.angle_deg = angle;
+                p.spacing   = 6.;
+                p.width     = 2.;
+                p.margin    = 2.;
+                p.invert    = invert;
+
+                const ExPolygons pattern = make_perforation_pattern(domain, p);
+                REQUIRE(!pattern.empty());
+
+                ExPolygons turned = pattern;
+                for (ExPolygon &e : turned)
+                    e.rotate(PP_PI, face_centre);
+
+                // A phase that is not centred leaves whole features of residual here, so a tolerance of
+                // a thousandth of the pattern is plenty - the rotation itself only rounds to the
+                // scaled unit.
+                const double area = area_mm2(pattern);
+                REQUIRE(area_mm2(diff_ex(pattern, turned)) < 1e-3 * area);
+                REQUIRE(area_mm2(diff_ex(turned, pattern)) < 1e-3 * area);
+            }
+        }
+    }
 }
 
 TEST_CASE("The pattern uses the width as given, even when holes merge", "[PerforationPattern]")

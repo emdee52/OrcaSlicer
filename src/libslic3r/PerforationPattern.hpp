@@ -62,6 +62,14 @@ inline constexpr double perforation_angle_for_kind(PerforationKind kind, double 
     return angle_deg > perforation_max_angle_deg(kind) ? 0.0 : angle_deg;
 }
 
+// [ORCAPORT:PP-6] The lattice is anchored at the CENTRE of the domain (the inset face), never at a
+// corner of its bounding box: features sit at `centre + k * pitch`, with a whole cell on the centre and
+// the stagger decided by the row index, so a symmetric face gets a symmetric pattern and the two
+// parallel edges are cut identically. A corner phase is a function of where the bounding box happens to
+// start, which left the two edges disagreeing whenever the face was not a whole number of pitches
+// across. The lattice is still clipped to the domain, so a partial feature at the edge is normal, and
+// `spacing` is always the pitch the user set - the phase never enters it.
+
 // The 2D solid to subtract, in the face plane's scaled coordinates. `domain` is the face
 // outline (outer contour plus holes). Returns empty when the inset domain or the pattern is
 // empty. The result never has overlapping polygons.
