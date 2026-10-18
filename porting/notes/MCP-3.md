@@ -61,3 +61,18 @@ Over MCP on the Release build: open with the natural selection, per-volume diagn
 box + perforation cutter (first and second boolean), `probe_pick` scanning for a cutter pixel, and
 the two-bug reproductions. No unit test — it is a GUI-driving tool; the geometry it exposed is
 covered by PP-5's tests.
+
+## The static list, regenerated (2026-10-17, PP-6 batch)
+
+`scripts/tools_schema.py` held **63** tools while the live server served **77**. Regenerated against
+the Release build launched with `ORCA_EXT_MCP=1`: `python scripts/regen_tools_schema.py` ->
+`wrote 77 tools`. The 14 that were missing from every client that started while the app was down:
+`cut_gizmo`, `edge_dress_gizmo`, `extrude_gizmo`, `find_holes`, `get_app_preferences`, `get_log_tail`,
+`get_object_features`, `get_suppressed_dialogs`, `holes_gizmo`, `list_orcaext_keys`,
+`mesh_boolean_gizmo`, `perforation_gizmo`, `set_app_preference`, `ui_screenshot`. Proof of provenance:
+`perforation_gizmo`'s `angle` description in the regenerated file is the one PP-6 added.
+
+Trap: the endpoint listens a couple of minutes AFTER the window appears (measured ~2 min; the app is
+logging all the while). A 60 s poll built on `Invoke-WebRequest` with a 3 s timeout reports it as "not
+running" - poll with `curl`/`urllib` and a longer budget, and check `netstat -ano | findstr 13618`
+before believing the app refused to start.

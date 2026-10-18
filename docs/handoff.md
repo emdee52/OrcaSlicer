@@ -1869,3 +1869,168 @@ cmake -B build -DBUILD_TESTS=OFF      # put the tree back the way the build scri
 - **Merged** into `port/integration` as `21aa42f159` (user-tested 2026-10-17). Three product
   commits (`ee9e313d1f` MCP-3, `8f69ee6840` teardrop, `a1aeb336af` boolean) plus the `port:` docs
   commit; `port/PP-5-fixes` is pushed. Section 37 is closed.
+
+
+## 38. PP-6 - Perforations: the angle that would not let go, grooves for Grid, and a depth you pick (branch `port/PP-6`)
+
+Five follow-ups on Perforations the owner asked for after living with PP-1/PP-2, plus the MCP schema
+regeneration MCP-3's own note asked for.
+
+- **Lines turns through the full quarter.** The panel's angle bound was a single shared constant,
+  `PERFORATION_MAX_ANGLE_DEG = 45`, used in exactly one place. The reasoning behind the 45 (a family
+  plus its 90-degree cross covers every orientation) is true for a **pair** and false for a **single
+  family**: Grid at θ and at 90-θ is the same pair mirrored, but Lines at 100° is not Lines at 80° - it
+  is that family mirrored, which is different geometry on an asymmetric face. So 45° was only ever the
+  diagonal and **vertical lines were unreachable**. `PERFORATION_MAX_ANGLE_LINES_DEG = 90.0` now sits
+  beside it, the header comment says which bound belongs to which pattern, and `render_panel_body()`
+  picks `ANGLE_MAX` from the current kind. Nothing in the generator changed - `line_family()` rotates
+  the domain by `-theta` and always accepted any angle, so this was a UI bound, not a geometry limit.
+- **An angle the new pattern cannot express goes back to 0.** This is the bug the owner reported:
+  switching Lines → Grid with the angle over 45 left the old value in place, so the slider sat pinned
+  at its maximum while the geometry went on using 80°. `perforation_angle_for_kind(kind, angle)` is the
+  one rule - in range it is **kept** (so switching to the wider pattern never disturbs a value Grid was
+  using), out of range it is 0 - and it runs on the panel's pattern row and in the MCP `set_params`,
+  where it is applied after every field so the order of a request cannot matter. An `angle` sent in the
+  same call as `pattern` is deliberately **not** immune: grid-at-80 is a state the panel cannot show,
+  and it is exactly the state this rule exists to remove. Worth stating plainly: no in-range Grid angle
+  reproduces an 80° grid anyway (Grid at 80° is the family pair {80°, 170°}, i.e. {80°, -10°}; the
+  in-range mirror is 10°), so something had to move whatever the rule: the point is that the number
+  and the picture agree afterwards.
+- **Grid is always cut as grooves.** With `invert` off, the two crossing families subtracted as *holes*
+  leave the material between the crossings as squares that touch nothing - floating regions the slicer
+  cannot print. That is the only thing a user who picks Grid ever wants the complement of, so
+  `make_perforation_pattern()` now forces
+  `invert || kind == Grid` **in the builder** - one place every caller routes through, so neither the
+  panel nor the MCP tool nor a test can ask for the island version - the Invert row is not drawn for
+  Grid, and both the panel's pattern row and `set_params` set the flag so the state on screen matches
+  what is cut. The curve's cost is that the row disappears when Grid is selected; the panel is
+  auto-sized, so it just gets shorter.
+- **"To": a second face decides the depth.** The depth probe stops at the first surface behind the
+  picked face, which is right for a wall and wrong when the pattern has to cross a void or stop on a
+  chosen far wall. The panel now has a **To** row: `Pick face` arms a pick, the next left click sets a
+  target face, and the pattern stops there. The target is accepted only when it is **parallel**
+  (`|n·n_to| >= 0.99`) and **behind** the picked face (plane projection < 0); anything else sets a
+  reason that the panel shows as an amber warning and the MCP tool returns as text
+  (`gizmo_target_refusal()` maps one enum to both, so neither side parses the other's strings). The
+  distance is the plane-to-plane projection in object space, so the target's lateral offset does not
+  matter. The cut ends `PP_TARGET_OVERSHOOT = 0.2` mm **past** that face: stopping exactly on it would
+  put the prism's cap coplanar with a real surface, which is the sliver PP-4 taught us to avoid, and a
+  fifth of a millimetre is under one extrusion width (200000 units at the slicer's 1e-6 mm
+  resolution). The target face is drawn in the picked green - the two green patches are the two ends of
+  the hole path - and it is dropped with the pick, on a volume-list change that removes its volume, and
+  when the tool closes, because it is measured from the picked face and cannot outlive it. Two things
+  the panel does that a click cannot undo: a right click while the pick is armed *cancels* it instead
+  of committing a pattern, and the row is drawn only once there is a picked face to measure from (no
+  dead control, and no `ImGui::BeginDisabled`, which this tree's ImGui does not have).
+- **The proposal follows a drag.** `on_render()` rebuilt the yellow pattern only when
+  `! m_editing && m_pick_dirty`, where `m_editing` latched `ImGui::IsAnyItemActive()` and re-armed the
+  flag when the item went inactive - so the highlight only caught up when the mouse was released. The
+  sliders already set `m_pick_dirty` on **every** frame whose value changed, so the gate was the whole
+  delay. Its stated reason died with the cursor-following hover ghost that PP-2 replaced with a
+  preview anchored to a cached pick; `GLGizmoExtrude` has rebuilt its own preview live
+  (`m_preview_dirty`, no gate) since it was written. The gate and the `m_editing` member are gone.
+- **Cost, accepted, no throttle** (owner's call): a rebuild is the whole pipeline - coplanar-region
+  union, Clipper union of the pattern, triangulation, the PP-5 weld, then `GLModel::reset()` + a VBO
+  upload. At the extremes the UI allows (spacing 1 mm on a large face) that is a few frames per second
+  during the drag, and no throttle changes that: it is the mesh rebuild, not the frame rate. The
+  builder's own `MAX_FEATURES = 20000` is what bounds it; a frame-time guard on `m_pick_dirty` is the
+  upgrade path if it ever bites.
+- **The MCP `angle` description** now carries both ranges, since that string is what a client shows
+  the model: "0-90 for lines, 0-45 for grid. Honeycomb and circles are isotropic and ignore it." The
+  tool also reports `to_valid` / `to_distance` on every call, and 'pick_to' / 'clear_to' join its
+  actions.
+- **Verification.** `build_win.bat -s --tests` green, then an incremental `-s --no-configure` after the
+  one fix below; the touched translation units are in both logs. `[PerforationPattern]` is **9 cases /
+  434 assertions**:
+  - the new orientation case (0° slots wider than tall, 90° slots taller than wide - that is what
+    "vertical lines" means, and it fails on the old bound, a 45° slot being a near-square diagonal).
+    Not asserted on purpose: equal area between 0° and 90°. On that rectangle the two happen to agree
+    (6 rows x 100 mm = 10 columns x 60 mm = 600 mm of slot) but that is the numbers lining up, not a
+    property - the strip phase differs between the two axes.
+  - the grid case: a Grid asked for with `invert = false` leaves **one** connected region standing
+    (`diff_ex(inset, pattern).size() == 1`) and is area-identical to the explicit grooves call. The
+    pre-existing case in the same file asserted the *opposite* contract (`grid.front().holes.size() >
+    1`, the lattice-with-holes reading) and was updated with it - the one assertion this batch had to
+    flip rather than add.
+  - the angle rule: 80 → 0 on Grid, 30 and 45 kept, Grid → Lines kept, 120 → 0, and the isotropic
+    patterns carry the pair bound.
+  - Full `ctest --test-dir build/tests -C Release`: **2413 passed, 0 failed** (2411 before + the two new
+    cases; seven `RequiresApp`/plugin cases skipped as usual).
+- **Runtime, over MCP** on the 20 mm cube (Release build, `ORCA_EXT_MCP=1`): `open` → honeycomb/0/off;
+  `pick_at` at the viewport centre → `pick_valid` true; `set_params {pattern: grid, angle: 80}` → the
+  angle comes back **0** and `invert` **true**; `{pattern: lines, angle: 60}` → 60 kept; `{pattern:
+  grid}` alone → 0 again (the reset works from a stale value, not only from a same-call one - which is
+  what the first cut of the MCP rule got wrong, see below); `pick_to` on the same face → refused with
+  "The target face has to be behind the picked one"; `create` → `applied_count` 1; `slice_all` →
+  `idle` with only the two pre-existing warnings (objects too close, `precise wall` ignored).
+- **What the MCP run could NOT reach**: the *accepted* target path. Three attempts, three dead ends,
+  all geometry rather than code: a 20 mm cube is convex and symmetric, so the far face is always
+  occluded and a 180° rotation maps it onto the near one; `rotate_object` or `mirror_object` leave
+  face 1's object-space normal pointing away from the model, so nothing is "behind" it any more; and
+  there is no MCP camera control to view the far side (the tool list has no view/orbit entry). A
+  concave fixture - a pocket whose floor is a second visible parallel face - is what the check needs,
+  and `tests/data` has none. The positive path is therefore in the manual checklist in
+  `notes/PP-6.md`: pick a face, orbit to a parallel face behind it, *Pick face*, take the distance
+  reading, Perforate.
+- **One real bug this run caught**, in the first cut of the MCP rule: it reset the angle only when the
+  kind *changed*, so `{pattern: grid, angle: 80}` in one call slipped through and produced exactly the
+  grid-at-80 state the rule exists to prevent (the response said so: `"angle": 80.0`). The rule now runs
+  after every field with `pattern` present, whichever order they arrive in.
+- **Also in this batch: `scripts/tools_schema.py` regenerated.** The static list the bridge serves
+  when the app is not reachable had **63** of the server's tools; the live server now reports **77**,
+  the 14 new ones being `cut_gizmo`, `edge_dress_gizmo`, `extrude_gizmo`, `find_holes`,
+  `get_app_preferences`, `get_log_tail`, `get_object_features`, `get_suppressed_dialogs`,
+  `holes_gizmo`, `list_orcaext_keys`, `mesh_boolean_gizmo`, `perforation_gizmo`,
+  `set_app_preference` and `ui_screenshot`. Regenerated against a build started with `ORCA_EXT_MCP=1`,
+  and the file proves which binary produced it: `perforation_gizmo`'s `angle` description is the new
+  one. Trap for the next time: the endpoint took about two minutes after launch before it accepted a
+  request, so a regen that gives up after 60 s gets a false "not running" (the listener is up but
+  `Invoke-WebRequest` times out); poll with `curl`/`urllib` and a longer budget.
+- **Branch state**: `port/PP-6`, branched from `port/integration` `d324e81f3c`. Product commits (the
+  angle + live preview, then the angle reset / Grid grooves / To), a `tools_schema.py` commit, then the
+  `port:` docs+patch commit. Not merged and not pushed - the merge is the owner's gate.
+
+## 39. PP-6b - the pattern is anchored at the centre of the face (same branch `port/PP-6`)
+
+The owner's report: with a spacing that does not divide the face, the cut at one boundary edge does not
+match the cut at the parallel opposite edge. It was the phase, not the clipping.
+
+- **What it was.** Three loops anchored the lattice on the bounding box's minimum corner: `line_family`
+  laid its first strip at `y0 + spacing/2` and stepped by `spacing`; `honeycomb` and `circles` started a
+  row at `bbox.min - dy` and drove the stagger from a *counter* that began at that corner. The phase was
+  therefore f(`bbox.min`, `spacing`), so the leftover at one end of the face was unrelated to the
+  leftover at the other, and the lattice was not symmetric about the face centre at all.
+- **The fix.** Every index now runs symmetrically about the centre (`-n .. n`, with
+  `n = ceil(farthest extent / pitch)`), features sit at `centre + k*pitch`, and the stagger follows the
+  ROW INDEX's parity instead of a counter - so the mirror of every strip or cell about either centre axis
+  is another strip or cell, in the negative half too (the parity of a negative index is its own, two's
+  complement). Index ranges are built symmetric by construction rather than from the two ends, because a
+  range derived from both ends can add one strip on one side in a sub-unit parity case. **Lines is
+  included** and Grid inherits it twice over, being two `line_family` calls.
+- **Why not the other ways out.** Deriving the spacing from the face would change a value the user set,
+  against the tool's own rule ("the geometry uses exactly what is set; the UI never clamps one value
+  against another"), and it cannot work for the staggered lattices at all: their row pitch is
+  `spacing * sqrt(3)/2`, irrational against the column pitch, so no spacing puts a whole number of
+  features across both axes. A button or a mode would add a second code path for a state that is never
+  better than the centred one - the corner phase is not aligned to anything meaningful. Anchoring on the
+  clicked point instead of the centre (the pattern's origin is already there) only matches the two edges
+  if the click happens to be dead centre, so it does not solve the report.
+- **What did not change.** The two `spacing` `width` `boundary` `angle` inputs, the margin, the clipping,
+  the price of the extrusion, and the partial feature at the edge: a boundary still cuts through a cell,
+  which the owner accepted. Nothing about the face is recomputed, and `spacing` is still exactly the
+  pitch the user typed - only the phase moved. Each loop now places up to one extra feature beyond each
+  edge (clipped by the intersection), and the `MAX_FEATURES = 20000` guard is untouched.
+- **Verification.** A new symmetry case: a 180-degree turn about the **face** centre leaves the pattern
+  unchanged, for all four kinds, `invert` both ways, and the angle both 0 and 30 where the angle applies;
+  it also asserts that the inset's centre equals the face centre, which is what a uniform margin gives
+  and which is why anchoring on the inset lands on the face. `[PerforationPattern]` is now **10 cases /
+  474 assertions**; full `ctest` **2414 passed, 0 failed**. Runtime over MCP: all four kinds created on a
+  4x cube face at `spacing 7` (80/7 is deliberately not whole) and sliced to `idle` with only the
+  pre-existing `precise wall` warning.
+- **Not reachable over MCP**: seeing the pattern in the app. A negative volume is buried inside the wall
+  it cuts, so the prepare view shows nothing new, and there is no MCP switch into the sliced preview. The
+  eyeball check is in `notes/PP-6.md`: pick a face, use a spacing that does not divide it, and compare the
+  two parallel edges.
+- **Branch state**: same branch as section 38, one more product commit, docs and patch in the `port:`
+  commit. No `tools_schema.py` regen: nothing about the tool's schema changed.
+

@@ -43,10 +43,23 @@ ExPolygons line_family(const ExPolygons &domain, double theta, double spacing_mm
     const coord_t x1 = bbox.max.x() + sp;
     const coord_t y0 = bbox.min.y();
     const coord_t y1 = bbox.max.y();
+    // [ORCAPORT:PP-6] The strips are laid from the CENTRE of the domain outwards, at
+    // `cy + k * spacing`, not from a corner of the bounding box. A corner phase is f(bbox.min,
+    // spacing), so on a face that is not a whole number of pitches across, the two parallel edges are
+    // cut differently - the lattice does not even mirror about the centre. From the centre it does, so
+    // the top and bottom edges are cut identically. A partial slot at the edge is expected: the phase
+    // is the centre, the pitch is the spacing, and nothing about the face is changed to fit.
+    const coord_t cy = y0 + (y1 - y0) / 2;
+    // Lay out to the farthest edge on either side, so the index range is symmetric about `cy` by
+    // construction and the mirror of every strip is a strip (a symmetric phase computed from the two
+    // ends can otherwise add one strip on one side in a sub-unit parity case). The strips beyond the
+    // domain are clipped away by the intersection below.
+    const coord_t n = coord_t(std::ceil(double(std::max(cy - y0, y1 - cy)) / double(sp)));
 
     Polygons strips;
     int guard = 0;
-    for (coord_t y = y0 + sp / 2; y <= y1 && guard < MAX_FEATURES; y += sp, ++guard) {
+    for (coord_t k = -n; k <= n && guard < MAX_FEATURES; ++k, ++guard) {
+        const coord_t y = cy + k * sp;
         Polygon r;
         r.points = {Point(x0, y - w / 2), Point(x1, y - w / 2), Point(x1, y + w / 2), Point(x0, y + w / 2)};
         strips.emplace_back(std::move(r));
@@ -81,18 +94,28 @@ ExPolygons honeycomb(const ExPolygons &domain, double spacing_mm, double width_m
         return {};
 
     const BoundingBox bbox = get_extents(domain);
-    const double    x0     = bbox.min.x() - dx;
-    const double    x1     = bbox.max.x() + dx;
-    const double    y0     = bbox.min.y() - dy;
-    const double    y1     = bbox.max.y() + dy;
+    // [ORCAPORT:PP-6] Centre-anchored, like line_family(): a cell sits exactly on the centre of the
+    // domain, and the stagger follows the ROW INDEX's parity instead of a counter running from the
+    // corner, so the mirror of every cell about either centre axis is also a cell (the parity of a
+    // negative index is its own, two's complement). That is what makes the two parallel edges match.
+    const double cx   = 0.5 * (bbox.min.x() + bbox.max.x());
+    const double cy   = 0.5 * (bbox.min.y() + bbox.max.y());
+    const double x_lo = bbox.min.x() - dx, x_hi = bbox.max.x() + dx;
+    const double y_lo = bbox.min.y() - dy, y_hi = bbox.max.y() + dy;
+
+    // Row and column indices both run symmetrically about the centre (see the note above), so the
+    // mirror of every cell is a cell - including the staggered rows, whose parity is the index's own.
+    const coord_t n_rows = coord_t(std::ceil(std::max(cy - y_lo, y_hi - cy) / dy));
 
     Polygons cells;
     int      guard = 0;
-    int      row   = 0;
-    for (double y = y0; y <= y1 && guard < MAX_FEATURES; y += dy, ++row) {
-        const double xoff = (row & 1) ? dx * 0.5 : 0.;
-        for (double x = x0 + xoff; x <= x1 && guard < MAX_FEATURES; x += dx, ++guard)
-            cells.emplace_back(make_hexagon(coord_t(std::lround(x)), coord_t(std::lround(y)), r));
+    for (coord_t j = -n_rows; j <= n_rows && guard < MAX_FEATURES; ++j) {
+        const double y    = cy + double(j) * dy;
+        const double xoff = (j & 1) ? dx * 0.5 : 0.;
+        const coord_t n_cols = coord_t(std::ceil(std::max(cx + xoff - x_lo, x_hi - cx - xoff) / dx));
+        for (coord_t i = -n_cols; i <= n_cols && guard < MAX_FEATURES; ++i, ++guard)
+            cells.emplace_back(make_hexagon(coord_t(std::lround(cx + xoff + double(i) * dx)),
+                                            coord_t(std::lround(y)), r));
     }
     if (cells.empty())
         return {};
@@ -111,23 +134,29 @@ ExPolygons circles(const ExPolygons &domain, double spacing_mm, double width_mm)
         return {};
 
     const BoundingBox bbox = get_extents(domain);
-    const double    x0     = bbox.min.x() - dx;
-    const double    x1     = bbox.max.x() + dx;
-    const double    y0     = bbox.min.y() - dy;
-    const double    y1     = bbox.max.y() + dy;
+    // [ORCAPORT:PP-6] Centre-anchored and staggered by row index, exactly as honeycomb() is.
+    const double cx   = 0.5 * (bbox.min.x() + bbox.max.x());
+    const double cy   = 0.5 * (bbox.min.y() + bbox.max.y());
+    const double x_lo = bbox.min.x() - dx, x_hi = bbox.max.x() + dx;
+    const double y_lo = bbox.min.y() - dy, y_hi = bbox.max.y() + dy;
+
+    // Row and column indices both run symmetrically about the centre, exactly as honeycomb() does.
+    const coord_t n_rows = coord_t(std::ceil(std::max(cy - y_lo, y_hi - cy) / dy));
 
     Polygons cells;
     int      guard = 0;
-    int      row   = 0;
-    for (double y = y0; y <= y1 && guard < MAX_FEATURES; y += dy, ++row) {
-        const double xoff = (row & 1) ? dx * 0.5 : 0.;
-        for (double x = x0 + xoff; x <= x1 && guard < MAX_FEATURES; x += dx, ++guard) {
+    for (coord_t j = -n_rows; j <= n_rows && guard < MAX_FEATURES; ++j) {
+        const double y    = cy + double(j) * dy;
+        const double xoff = (j & 1) ? dx * 0.5 : 0.;
+        const coord_t n_cols = coord_t(std::ceil(std::max(cx + xoff - x_lo, x_hi - cx - xoff) / dx));
+        for (coord_t i = -n_cols; i <= n_cols && guard < MAX_FEATURES; ++i, ++guard) {
             Polygon c;
             const int seg = 24;
+            const double x0 = cx + xoff + double(i) * dx;
             c.points.reserve(seg);
             for (int k = 0; k < seg; ++k) {
                 const double a = 2. * PI * k / seg;
-                c.points.emplace_back(coord_t(std::lround(x + r * std::cos(a))),
+                c.points.emplace_back(coord_t(std::lround(x0 + r * std::cos(a))),
                                       coord_t(std::lround(y + r * std::sin(a))));
             }
             cells.emplace_back(std::move(c));
@@ -179,7 +208,13 @@ ExPolygons make_perforation_pattern(const ExPolygons &domain, const PerforationP
     if (holes.empty())
         return {};
 
-    return params.invert ? diff_ex(inset, holes) : holes;
+    // [ORCAPORT:PP-6] A grid is grooves, always. Subtracting the two crossing families as holes leaves
+    // the material between the crossings as squares that touch nothing - floating regions the slicer
+    // cannot print, and the only thing a user who picks Grid ever wants is the lattice standing.
+    // Forced HERE so no caller (the panel, the MCP tool, a test) can ask for the island version; the
+    // panel does not even offer the switch for Grid.
+    const bool invert = params.invert || params.kind == PerforationKind::Grid;
+    return invert ? diff_ex(inset, holes) : holes;
 }
 
 indexed_triangle_set extrude_perforation_pattern(const ExPolygons &polys, const Vec3d &origin,
