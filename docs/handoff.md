@@ -2121,7 +2121,10 @@ difference leaves a near-invisible negative leftover and reports nothing.
   - **Not exercised**: the `no_op` branch itself. It needs a Difference whose tool misses the source, and
     there is no per-volume move over MCP (`transform_objects` is object-level) and no fixture for it. Its
     logic is an exact-copy comparison; the owner's checklist has it.
-- **Branch state**: `port/MB-1`, branched from `port/integration` `40f7e1a70a`. Not merged, not pushed.
+- **Branch state**: **merged** into `port/integration` as **`e673b82a9d`** (user-tested 2026-10-17) and
+  pushed: `port/MB-1` held two product commits (MB-1, then MB-2), two `port:` docs commits and the
+  `tools_schema.py` regeneration, and its merge tree is byte-identical to the branch that was built and
+  tested. The owner tested MB-1 and MB-2 together in one build, as the branch model intends.
 
 ## 41. MB-2 - the right-click Mesh boolean: not a union, and no longer silent (same branch `port/MB-1`)
 
@@ -2177,5 +2180,5 @@ it" with **no error and no toast**.
   handed to mcut, which can throw (caught, fallback + message) or return the source unchanged (now
   counted) rather than being refused up front.
 - **Branch state**: same branch as MB-1, product commit + `port:` docs commit, patch `76_MB-2.patch`.
-  Not merged, not pushed.
+  Merged with MB-1 as `e673b82a9d` (user-tested 2026-10-17) and pushed.
 

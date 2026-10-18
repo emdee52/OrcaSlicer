@@ -24,15 +24,24 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`23e8ec3f98`** "Merge port/PP-6: 90-degree Lines, a live
-  proposal, always-groove Grid, a picked depth, and a centred lattice" - eight changes on the
-  Perforations gizmo the owner asked for after living with PP-1/PP-2 (sections 38 and 39 of
-  `docs/handoff.md`; `porting/notes/PP-6.md`), user-tested 2026-10-17, plus the `tools_schema.py`
-  regeneration MCP-3's note asked for (the static list a client sees while the app is down now carries
-  all **77** tools, not 63). Merged from `port/PP-6`, branched from `d324e81f3c`, and the merge tree is
-  byte-identical to the branch that was built and tested. The owner then tested it in the app and
-  confirmed the lot, including the two items no MCP path reaches - the accepted `To` target and the look
-  of the centred lattice - so nothing about PP-6 is left pending. Before it: **`21aa42f159`** "Merge port/PP-5-fixes: the teardrop detector
+- Latest integration commit at handoff: **`e673b82a9d`** "Merge port/MB-1: a cutter can only be the
+  tool, and the object's own Mesh boolean reports what it could not subtract" - the Mesh boolean batch
+  (sections 40 and 41 of `docs/handoff.md`; `porting/notes/MB-1.md`, `notes/MB-2.md`), user-tested
+  2026-10-17. **MB-1**: in the gizmo a NEGATIVE volume is a cutter, so a pick naming one always lands in
+  the tool slot and the mode follows the picks; `perform_operation()` records and reports an `Outcome`
+  (`no_op` is the kernel handing the source back unchanged), and the 13 MCP tools that set a Selection by
+  hand now refresh the gizmo data, which is what made a scripted boolean on a duplicate modify the
+  original while this was being diagnosed. **MB-2**: the context menu's Mesh boolean is *not* a union - it
+  already unions the model parts and subtracts the negative volumes through `csg::model_to_csgmesh` - but
+  it stayed silent when a negative volume could not be subtracted; `mcut::do_boolean` now returns whether
+  it changed the mesh, `csg::DifferenceReport` counts what was not applied, `combine_mesh_fff` notifies and
+  logs it, its pre-flight now checks with the kernel that runs instead of CGAL, and the new MCP tool
+  `boolean_parts` runs the whole-object path at last (78 tools). Merged from `port/MB-1`, branched from
+  `40f7e1a70a`, and the merge tree is byte-identical to the branch that was built and tested. Before it:
+  **`23e8ec3f98`** "Merge port/PP-6: 90-degree Lines, a live proposal, always-groove Grid, a picked depth,
+  and a centred lattice" - eight changes on the Perforations gizmo the owner asked for after living with
+  PP-1/PP-2 (sections 38 and 39 of `docs/handoff.md`; `porting/notes/PP-6.md`), user-tested 2026-10-17,
+  plus the `tools_schema.py` regeneration MCP-3's note asked for, all user-verified. Before it: **`21aa42f159`** "Merge port/PP-5-fixes: the teardrop detector
   banded on vertices and the perforation prism welded" - it closes the two open bugs of the 2026-10-17
   batch (EF-1b, HF-4..HF-7, PP-2..PP-5; sections 29-37 of `docs/handoff.md`), all user-tested, and adds
   MCP-3 (`mesh_boolean_gizmo`; see `porting/notes/MCP-3.md`). Before it: **`8b0ffc1c83`** "port: record
