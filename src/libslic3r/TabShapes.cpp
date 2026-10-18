@@ -110,9 +110,9 @@ TabOutline tab_outline(const TabSpec &spec_in)
         out.clamped = true;
     }
 
-    // 60 degrees is already a tab cut away to nothing; beyond it the minimum-material rule below
+    // 30 degrees is already a tab cut away to nothing; beyond it the minimum-material rule below
     // would answer a steeper flank by growing the root without bound.
-    double a_deg = std::clamp(s.taper_deg, 0., 60.);
+    double a_deg = std::clamp(s.taper_deg, 0., 30.);
     double L     = s.root_len + s.tip_len;
 
     // A straight tip has to keep an edge to cut, so the taper is bounded by it.

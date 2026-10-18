@@ -53,7 +53,7 @@ const ColorRGBA CUT_COLOR      = gizmo_cut_colour();
 // The panel's ranges, in world mm (degrees for the two angles).
 constexpr double ROOT_W_MIN = 3., ROOT_W_MAX = 80.;
 constexpr double LENGTH_MIN = 3., LENGTH_MAX = 80.;
-constexpr double TAPER_MIN = 0., TAPER_MAX = 60.;
+constexpr double TAPER_MIN = 0., TAPER_MAX = 30.;
 constexpr double HEAD_FIT_MIN = -0.4, HEAD_FIT_MAX = 0.;
 constexpr double BOSS_D_MIN = 2., BOSS_D_MAX = 60.;
 constexpr double BOSS_H_MIN = 0., BOSS_H_MAX = 40.;
