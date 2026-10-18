@@ -80,6 +80,10 @@ different and consistently a world-space margin; the placed cut is unchanged.
 
 No new option, no config key, no `.3mf` migration: an already-applied hole keeps its volume, and a hole
 applied as a plain negative volume (no boolean) is unchanged — the extra cutter is outside the part.
+The one ceiling this shares with PP-4's own placed-path margin: the cutter now reaches up to
+`max(0.2, 0.1*d)` beyond the mouth, so a wall of the *same object* standing within that distance across
+the mouth is in its reach, for the slice-time subtraction as well as for a boolean. On the runtime
+fixture that reach is the 0.34 mm of air above the face; nothing else in the part is.
 
 ## Verification
 

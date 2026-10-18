@@ -2211,7 +2211,9 @@ scope: screw heads only.
   margin would have narrowed an M3's sink by 0.68 mm. `bore_negative_mesh()` asks for it for Socket,
   Button and Sink heads and for the optional head teardrop prism (a prism does not taper, so only its cap
   moves). No option, no config key, no `.3mf` migration: an applied hole keeps its volume, a hole applied
-  as a plain negative volume is unchanged, since the extra cutter is outside the part.
+  as a plain negative volume is unchanged, since the extra cutter is outside the part - the one ceiling,
+  shared with PP-4's own placed-path margin, is that the cutter reaches `max(0.2, 0.1*d)` beyond the
+  mouth, so a wall of the same object within that distance across the mouth is in range.
 - **Verification.** Unit: the two `[MeshBoolean]` cases above (the reproduction, and the clean cut with
   `hole_cutter_entry_margin(3.4)` = 0.34), plus two `[HoleShapes]` cases - the counterbore's cap moves
   out while its bbox far end, head radius and shoulder at `cbore_depth` do not, and a countersink's
