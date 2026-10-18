@@ -1986,9 +1986,10 @@ regeneration MCP-3's own note asked for.
   one. Trap for the next time: the endpoint took about two minutes after launch before it accepted a
   request, so a regen that gives up after 60 s gets a false "not running" (the listener is up but
   `Invoke-WebRequest` times out); poll with `curl`/`urllib` and a longer budget.
-- **Branch state**: `port/PP-6`, branched from `port/integration` `d324e81f3c`. Product commits (the
-  angle + live preview, then the angle reset / Grid grooves / To), a `tools_schema.py` commit, then the
-  `port:` docs+patch commit. Not merged and not pushed - the merge is the owner's gate.
+- **Branch state**: **merged** into `port/integration` as **`23e8ec3f98`** (user-tested 2026-10-17) and
+  pushed. `port/PP-6` held six commits (the angle + live preview; the angle reset / Grid grooves / To;
+  two `tools_schema.py` regenerations; two `port:` docs+patch commits) and its merge tree is
+  byte-identical to the branch that was built and tested.
 
 ## 39. PP-6b - the pattern is anchored at the centre of the face (same branch `port/PP-6`)
 
@@ -2032,5 +2033,6 @@ match the cut at the parallel opposite edge. It was the phase, not the clipping.
   eyeball check is in `notes/PP-6.md`: pick a face, use a spacing that does not divide it, and compare the
   two parallel edges.
 - **Branch state**: same branch as section 38, one more product commit, docs and patch in the `port:`
-  commit. No `tools_schema.py` regen: nothing about the tool's schema changed.
+  commit. No `tools_schema.py` regen: nothing about the tool's schema changed. Merged with the rest as
+  `23e8ec3f98`.
 

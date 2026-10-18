@@ -24,7 +24,15 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`21aa42f159`** "Merge port/PP-5-fixes: the teardrop detector
+- Latest integration commit at handoff: **`23e8ec3f98`** "Merge port/PP-6: 90-degree Lines, a live
+  proposal, always-groove Grid, a picked depth, and a centred lattice" - eight changes on the
+  Perforations gizmo the owner asked for after living with PP-1/PP-2 (sections 38 and 39 of
+  `docs/handoff.md`; `porting/notes/PP-6.md`), user-tested 2026-10-17, plus the `tools_schema.py`
+  regeneration MCP-3's note asked for (the static list a client sees while the app is down now carries
+  all **77** tools, not 63). Merged from `port/PP-6`, branched from `d324e81f3c`, and the merge tree is
+  byte-identical to the branch that was built and tested. Two items on the owner's manual checklist are
+  still open in the app (both unreachable over MCP): the accepted `To` target path, and the look of the
+  centred lattice. Before it: **`21aa42f159`** "Merge port/PP-5-fixes: the teardrop detector
   banded on vertices and the perforation prism welded" - it closes the two open bugs of the 2026-10-17
   batch (EF-1b, HF-4..HF-7, PP-2..PP-5; sections 29-37 of `docs/handoff.md`), all user-tested, and adds
   MCP-3 (`mesh_boolean_gizmo`; see `porting/notes/MCP-3.md`). Before it: **`8b0ffc1c83`** "port: record
