@@ -939,8 +939,17 @@ bool do_boolean_single(McutMesh &srcMesh, const McutMesh &cutMesh, const std::st
     return true;
 }
 
-void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
+bool do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& boolean_opts)
 {
+    // [ORCAPORT:MB-2] Whether the source came out different from how it went in - see the note on the
+    // declaration. Every early return below means "nothing changed".
+    const size_t vertices_before = srcMesh.vertexCoordsArray.size();
+    const size_t faces_before    = srcMesh.faceIndicesArray.size();
+    auto         changed         = [&srcMesh, vertices_before, faces_before]() {
+        return srcMesh.vertexCoordsArray.size() != vertices_before ||
+               srcMesh.faceIndicesArray.size() != faces_before;
+    };
+
     TriangleMesh tri_src = mcut_to_triangle_mesh(srcMesh);
     std::vector<indexed_triangle_set> src_parts = its_split(tri_src.its);
 
@@ -949,9 +958,9 @@ void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& b
 
     if (src_parts.empty() && boolean_opts == "UNION") {
         srcMesh = cutMesh;
-        return;
+        return true;
     }
-    if(cut_parts.empty()) return;
+    if(cut_parts.empty()) return false;
 
     // when src mesh has multiple connected components, mcut refuses to work.
     // But we can force it to work by spliting the src mesh into disconnected components,
@@ -1003,6 +1012,7 @@ void do_boolean(McutMesh& srcMesh, const McutMesh& cutMesh, const std::string& b
         }
     }
     srcMesh = *triangle_mesh_to_mcut(all_its);
+    return changed();
 }
 
 void make_boolean(const TriangleMesh &src_mesh, const TriangleMesh &cut_mesh, std::vector<TriangleMesh> &dst_mesh, const std::string &boolean_opts)

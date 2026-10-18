@@ -20201,9 +20201,11 @@ bool Plater::check_printer_initialized(MachineObject *obj, bool only_warning, bo
 }
 
 // Following lambda generates a combined mesh for export with normals pointing outwards.
-TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func)
+TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func, ObjectBooleanReport *out_report)
 {
     TriangleMesh mesh;
+    if (out_report != nullptr)
+        *out_report = ObjectBooleanReport();
 
     std::vector<csg::CSGPart> csgmesh;
     csgmesh.reserve(2 * mo.volumes.size());
@@ -20212,7 +20214,13 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
         
     std::string fail_msg = _u8L("Unable to perform boolean operation on model meshes. "
         "Only positive parts will be kept. You may fix the meshes and try again.");
-    if (auto fail_reason_name = csg::check_csgmesh_booleans(Range{ std::begin(csgmesh), std::end(csgmesh) }); std::get<0>(fail_reason_name) != csg::BooleanFailReason::OK) {
+    // [ORCAPORT:MB-2] Check with the kernel that will actually run. This used the default (CGAL)
+    // predicates - empty, does_bound_a_volume, does_self_intersect - which are stricter than mcut: a
+    // mesh carrying the slivers an earlier mcut boolean leaves behind was refused here, the operation
+    // was skipped, and only the positive parts were kept, so a negative volume "did nothing and
+    // vanished" while the gizmo cut the very same pair with mcut. The mcut check keeps the
+    // part-is-empty test and drops the two CGAL geometry predicates.
+    if (auto fail_reason_name = csg::check_csgmesh_booleans(Range{ std::begin(csgmesh), std::end(csgmesh) }, /*use_mcut=*/true); std::get<0>(fail_reason_name) != csg::BooleanFailReason::OK) {
         std::string name = std::get<1>(fail_reason_name);
         std::map<csg::BooleanFailReason, std::string> fail_reasons = {
             {csg::BooleanFailReason::OK, "OK"},
@@ -20224,8 +20232,25 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
     }
     else {
         try {
-            MeshBoolean::mcut::McutMeshPtr meshPtr = csg::perform_csgmesh_booleans_mcut(Range{ std::begin(csgmesh), std::end(csgmesh) });
+            csg::DifferenceReport difference_report;
+            MeshBoolean::mcut::McutMeshPtr meshPtr = csg::perform_csgmesh_booleans_mcut(Range{ std::begin(csgmesh), std::end(csgmesh) }, &difference_report);
             mesh = MeshBoolean::mcut::mcut_to_triangle_mesh(*meshPtr);
+            if (out_report != nullptr) {
+                out_report->negative_parts  = difference_report.offered;
+                out_report->not_subtracted  = difference_report.not_applied;
+            }
+            // [ORCAPORT:MB-2] A negative volume the kernel could not subtract used to leave the mesh
+            // without its cut and say nothing at all; that is the silent failure this reports.
+            if (!mesh.empty() && difference_report.not_applied > 0) {
+                const std::string msg = Slic3r::format(
+                    _u8L("%1% negative part(s) could not be subtracted: the boolean returned the mesh unchanged, so those cuts are missing. Move the part so it overlaps the model and try again."),
+                    difference_report.not_applied);
+                BOOST_LOG_TRIVIAL(info) << "combine_mesh_fff: " << msg;
+                if (out_report != nullptr)
+                    out_report->message = msg;
+                if (notify_func)
+                    notify_func(msg);
+            }
         }
         catch (...) {}
 #if 0
@@ -20241,6 +20266,11 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
     }
 
     if (mesh.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "combine_mesh_fff: boolean failed, keeping only the positive parts. " << fail_msg;
+        if (out_report != nullptr) {
+            out_report->failed  = true;
+            out_report->message = fail_msg;
+        }
         if (notify_func)
             notify_func(fail_msg);
 

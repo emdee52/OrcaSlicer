@@ -19,6 +19,15 @@
 namespace Slic3r { namespace csg {
     enum class BooleanFailReason { OK, MeshEmpty, NotBoundAVolume, SelfIntersect, NoIntersection};
 
+// [ORCAPORT:MB-2] What a CSG run asked its Difference parts to do, and how many of them the kernel
+// could not do. A negative volume that is not subtracted leaves the mesh without the cut it was there
+// to make, and until now that was indistinguishable from a successful run: no message, no error,
+// nothing to notice (docs/handoff.md section 41).
+struct DifferenceReport {
+    int offered{ 0 };      // Difference parts the part list asked for
+    int not_applied{ 0 };  // ...of those, how many changed the accumulated mesh by nothing
+};
+
 // This method can be overriden when a specific CSGPart type supports caching
 // of the voxel grid
 template<class CSGPartT>
@@ -120,23 +129,36 @@ namespace detail_mcut {
 
     using MeshBoolean::mcut::McutMeshPtr;
 
-    inline void perform_csg(CSGType op, McutMeshPtr& dst, McutMeshPtr& src)
+    inline void perform_csg(CSGType op, McutMeshPtr& dst, McutMeshPtr& src, DifferenceReport *rep = nullptr)
     {
+        if (rep != nullptr && op == CSGType::Difference)
+            ++rep->offered;
+
         if (!dst && op == CSGType::Union && src) {
             dst = std::move(src);
             return;
         }
 
-        if (!dst || !src)
+        if (!dst || !src) {
+            // Nothing to apply to, or a part whose mesh the kernel never got (triangle_mesh_to_mcut
+            // returns null on failure): the operation is dropped. Silent before [ORCAPORT:MB-2].
+            if (rep != nullptr && op == CSGType::Difference)
+                ++rep->not_applied;
             return;
+        }
 
         switch (op) {
         case CSGType::Union:
             MeshBoolean::mcut::do_boolean(*dst, *src,"UNION");
             break;
-        case CSGType::Difference:
-            MeshBoolean::mcut::do_boolean(*dst, *src,"A_NOT_B");
+        case CSGType::Difference: {
+            // [ORCAPORT:MB-2] mcut hands the source back untouched when a difference has no resulting
+            // fragment: do_boolean keeps the part it could not cut and says so through its return value,
+            // which is exactly the "no cut, no error, nothing to notice" case.
+            if (!MeshBoolean::mcut::do_boolean(*dst, *src,"A_NOT_B") && rep != nullptr)
+                ++rep->not_applied;
             break;
+        }
         case CSGType::Intersection:
             MeshBoolean::mcut::do_boolean(*dst, *src,"INTERSECTION");
             break;
@@ -213,7 +235,8 @@ void perform_csgmesh_booleans_cgal(MeshBoolean::cgal::CGALMeshPtr &cgalm,
 // Process the sequence of CSG parts with mcut.
 template<class It>
 void perform_csgmesh_booleans_mcut(MeshBoolean::mcut::McutMeshPtr& mcutm,
-    const Range<It>& csgrange)
+    const Range<It>& csgrange,
+    DifferenceReport *difference_report = nullptr)
 {
     using MeshBoolean::mcut::McutMesh;
     using MeshBoolean::mcut::McutMeshPtr;
@@ -246,14 +269,14 @@ void perform_csgmesh_booleans_mcut(MeshBoolean::mcut::McutMeshPtr& mcutm,
 
         Frame* top = &opstack.top();
 
-        perform_csg(get_operation(csgpart), top->mcutptr, mcutptr);
+        perform_csg(get_operation(csgpart), top->mcutptr, mcutptr, difference_report);
 
         if (get_stack_operation(csgpart) == CSGStackOp::Pop) {
             McutMeshPtr src = std::move(top->mcutptr);
             auto popop = opstack.top().op;
             opstack.pop();
             McutMeshPtr& dst = opstack.top().mcutptr;
-            perform_csg(popop, dst, src);
+            perform_csg(popop, dst, src, difference_report);
         }
     }
 
@@ -374,11 +397,12 @@ MeshBoolean::cgal::CGALMeshPtr perform_csgmesh_booleans(const Range<It> &csgpart
 }
 
 template<class It>
-MeshBoolean::mcut::McutMeshPtr  perform_csgmesh_booleans_mcut(const Range<It>& csgparts)
+MeshBoolean::mcut::McutMeshPtr  perform_csgmesh_booleans_mcut(const Range<It>& csgparts,
+                                                             DifferenceReport *difference_report = nullptr)
 {
     auto ret = MeshBoolean::mcut::triangle_mesh_to_mcut(indexed_triangle_set{});
     if (ret)
-        perform_csgmesh_booleans_mcut(ret, csgparts);
+        perform_csgmesh_booleans_mcut(ret, csgparts, difference_report);
     return ret;
 }
 
