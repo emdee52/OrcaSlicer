@@ -1153,6 +1153,7 @@ void GLGizmoTabs::on_render()
     // Paint order matters: the depth test is off here, so later draws win. The surface underneath,
     // what the values would make, then every tab already placed.
     m_preview_face.model.render(shader);
+    m_preview_picked.model.render(shader);
     m_preview_added.model.render(shader);
     m_preview_cut.model.render(shader);
     m_preview_tab.model.render(shader);
