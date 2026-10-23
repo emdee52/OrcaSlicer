@@ -27,6 +27,8 @@ inline const std::set<std::string> project_keys = {
     "filament_colour", "filament_map", "filament_map_mode", "filament_nozzle_map", "filament_volume_map",
     "flush_volumes_matrix", "flush_volumes_vector", "flush_multiplier", "flush_multiplier_fast", "prime_volume_mode",
     "wipe_tower_x", "wipe_tower_y",
+    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction, set from the upload dialog
+    "initial_layer_bottom_surface_flow_delta",
     "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
     "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
 };

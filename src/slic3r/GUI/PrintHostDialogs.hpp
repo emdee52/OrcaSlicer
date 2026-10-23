@@ -47,6 +47,8 @@ public:
     bool switch_to_device_tab() const {return m_switch_to_device_tab;}
     // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
     int bed_temp_offset() const { return m_bed_temp_offset; }
+    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = unchanged
+    double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
 
     virtual void EndModal(int ret) override;
     virtual void init();
@@ -77,6 +79,17 @@ protected:
     void                   set_bed_temp_offset(int offset);
     void                   update_bed_temp_status();
     // [ORCAPORT:BT-1] END
+
+    // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Same plumbing as the
+    // bed-temperature offset above: written to the project config by the caller, applied at G-code
+    // export.
+    double                 m_first_layer_flow_delta {0.};
+    double                 m_first_layer_flow_base {1.};
+    wxStaticText*          m_first_layer_flow_status {nullptr};
+    std::vector<RadioBox*> m_first_layer_flow_radios;
+    void                   set_first_layer_flow_delta(double delta);
+    void                   update_first_layer_flow_status();
+    // [ORCAPORT:BF-1] END
 };
 
 

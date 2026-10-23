@@ -84,6 +84,7 @@
 #include "PartPlate.hpp"
 #include "Widgets/RadioBox.hpp"
 #include "libslic3r/OrcaExt/BedTempOverride.hpp"
+#include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -101,6 +102,10 @@ namespace {
 
 // [ORCAPORT:BT-1] the six mutually exclusive bed-temperature offsets offered in the upload dialog
 const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
+
+// [ORCAPORT:BF-1] the mutually exclusive first-layer bottom-surface flow reductions offered in the
+// upload dialog; 0 means "use the profile's value"
+const std::array<double, 5> kFirstLayerFlowDeltas {-20., -15., -10., -5., 0.};
 
 wxColour contrasting_text_color(const wxColour& background)
 {
@@ -518,6 +523,31 @@ void PrintHostSendDialog::update_bed_temp_status()
 }
 // [ORCAPORT:BT-1] END
 
+// [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row helpers
+void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
+{
+    m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(delta);
+    for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
+        m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
+    update_first_layer_flow_status();
+}
+
+void PrintHostSendDialog::update_first_layer_flow_status()
+{
+    if (m_first_layer_flow_status == nullptr)
+        return;
+
+    // The profile's own bottom surface flow ratio is the reference, so the readout shows what the
+    // G-code will actually use instead of only the delta.
+    const double effective = OrcaExt::first_layer_bottom_effective_flow(m_first_layer_flow_base, m_first_layer_flow_delta);
+    wxString     text      = m_first_layer_flow_delta == 0.
+        ? wxString::Format(_L("First layer flow: %.2f (profile)"), m_first_layer_flow_base)
+        : wxString::Format(_L("First layer flow: %.2f -> %.2f (%d%%)"), m_first_layer_flow_base, effective, (int) m_first_layer_flow_delta);
+    m_first_layer_flow_status->SetLabel(text);
+    m_first_layer_flow_status->GetParent()->Layout();
+}
+// [ORCAPORT:BF-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -650,6 +680,60 @@ void PrintHostSendDialog::init()
         update_bed_temp_status();
     }
     // [ORCAPORT:BT-1] END
+
+    // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Like the bed
+    // temperature offset above, the value is applied when the G-code is exported, so choosing one
+    // changes the first layer without re-slicing and without touching a preset.
+    {
+        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+        m_first_layer_flow_base      = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
+
+        if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
+            m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
+
+        auto* row     = new wxBoxSizer(wxHORIZONTAL);
+        auto* caption = new wxStaticText(this, wxID_ANY, _L("First layer flow"), wxDefaultPosition, wxDefaultSize, 0);
+        caption->SetFont(::Label::Body_13);
+        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        // The reduction covers the first layer's bottom surface infill, not its walls, so the
+        // caption alone must not be read as "every extrusion on layer 1".
+        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected."));
+        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
+        // plate's already-exported G-code, so keep the control discoverable but disabled.
+        const ConfigOptionBool* use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
+        const bool              supported   = use_3mf_opt == nullptr || !use_3mf_opt->value;
+        for (double delta : kFirstLayerFlowDeltas) {
+            auto* radio = new RadioBox(this);
+            radio->SetValue(delta == m_first_layer_flow_delta);
+            if (supported)
+                radio->Bind(wxEVT_LEFT_DOWN, [this, delta](wxMouseEvent&) { set_first_layer_flow_delta(delta); });
+            else {
+                radio->Disable();
+                radio->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
+            }
+            row->Add(radio, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+            auto* text = new wxStaticText(this, wxID_ANY, wxString::Format("%d%%", (int) delta), wxDefaultPosition, wxDefaultSize, 0);
+            text->SetFont(::Label::Body_13);
+            text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+            row->Add(text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+            row->AddSpacer(FromDIP(6));
+            m_first_layer_flow_radios.push_back(radio);
+        }
+        content_sizer->Add(row);
+
+        auto* status_row          = new wxBoxSizer(wxHORIZONTAL);
+        m_first_layer_flow_status = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
+        m_first_layer_flow_status->SetFont(::Label::Body_13);
+        m_first_layer_flow_status->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        status_row->Add(m_first_layer_flow_status, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(status_row);
+        content_sizer->AddSpacer(VERT_SPACING);
+        update_first_layer_flow_status();
+    }
+    // [ORCAPORT:BF-1] END
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);

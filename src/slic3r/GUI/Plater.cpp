@@ -21384,6 +21384,17 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
             p->partplate_list.invalidate_bed_temp_textures();
             p->view3D->get_canvas3d()->set_as_dirty();
         }
+        // [ORCAPORT:BF-1] same plumbing for the first-layer bottom-surface flow reduction: a
+        // project-config write, and the key is in the G-code-export-only invalidation bucket, so the
+        // export below regenerates the G-code with the new first-layer flow and keeps the slice.
+        {
+            const double        first_layer_flow_delta = pDlg->first_layer_flow_delta();
+            DynamicPrintConfig& project_config         = wxGetApp().preset_bundle->project_config;
+            if (ConfigOptionFloat* opt = project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
+                opt->value = first_layer_flow_delta;
+            else
+                project_config.set_key_value("initial_layer_bottom_surface_flow_delta", new ConfigOptionFloat(first_layer_flow_delta));
+        }
         // PrintHostUpload upload_data;
         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
         upload_job.upload_data.upload_path = pDlg->filename();
