@@ -244,8 +244,6 @@ set(SLIC3R_GUI_SOURCES
     GUI/OrcaExt/GravitySnap.hpp
     GUI/OrcaExt/ObjectSnap.cpp
     GUI/OrcaExt/ObjectSnap.hpp
-    GUI/OrcaExt/PreviewClipController.cpp
-    GUI/OrcaExt/PreviewClipController.hpp
     GUI/GLModel.cpp
     GUI/GLModel.hpp
     GUI/GLSelectionRectangle.cpp

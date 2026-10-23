@@ -28,7 +28,6 @@
 
 #include <string>
 #include <optional>
-#include <limits> // [ORCAPORT:PF-6]
 
 namespace libvgcode {
 
@@ -210,11 +209,6 @@ public:
 
     size_t get_used_cpu_memory() const;
     size_t get_used_gpu_memory() const;
-
-    // [ORCAPORT:PF-6] BEGIN - clipping plane for the Preview clipping feature
-    void set_clipping_plane(float nx, float ny, float nz, float offset);
-    void reset_clipping_plane();
-    // [ORCAPORT:PF-6] END
 
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
     Vec3 get_cog_marker_position() const { return m_cog_marker.get_position(); }

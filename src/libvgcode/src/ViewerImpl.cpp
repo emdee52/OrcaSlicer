@@ -839,8 +839,7 @@ void ViewerImpl::init(const std::string& opengl_context_version)
            m_uni_options_positions_tex_id != -1 &&
            m_uni_options_height_width_angle_tex_id != -1 &&
            m_uni_options_colors_tex_id != -1 &&
-           m_uni_options_segment_index_tex_id != -1 &&
-           m_uni_options_clipping_plane_id != -1); // [ORCAPORT:PF-6]
+           m_uni_options_segment_index_tex_id != -1);
 
     m_option_template.init(16);
 
@@ -1884,18 +1883,6 @@ size_t ViewerImpl::get_used_gpu_memory() const
 #endif // ENABLE_OPENGL_ES
     return ret;
 }
-
-// [ORCAPORT:PF-6] BEGIN - clipping plane for the Preview clipping feature
-void ViewerImpl::set_clipping_plane(float nx, float ny, float nz, float offset)
-{
-    m_clipping_plane = { nx, ny, nz, offset };
-}
-
-void ViewerImpl::reset_clipping_plane()
-{
-    m_clipping_plane = { 0.0f, 0.0f, 1.0f, std::numeric_limits<float>::max() };
-}
-// [ORCAPORT:PF-6] END
 
 static bool is_visible(const PathVertex& v, const Settings& settings)
 {

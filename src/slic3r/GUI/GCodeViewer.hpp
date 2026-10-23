@@ -12,8 +12,6 @@
 #include <boost/iostreams/device/mapped_file.hpp>
 
 #include "LibVGCode/LibVGCodeWrapper.hpp"
-// [ORCAPORT:PF-6]
-#include "OrcaExt/PreviewClipController.hpp"
 // needed for tech VGCODE_ENABLE_COG_AND_TOOL_MARKERS
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Color.hpp"
@@ -29,7 +27,6 @@
 #include <array>
 #include <cstdint>
 #include <float.h>
-#include <optional>
 #include <set>
 #include "slic3r/GUI/MeshUtils.hpp"
 #include <string>
@@ -376,10 +373,6 @@ mutable bool m_no_render_path { false };
     std::array<float, 4> m_clipping_plane{ 0.0f, 0.0f, 0.0f, 1.0f };
     bool m_loaded_as_preview{ false };
 
-    // [ORCAPORT:PF-6] preview clipping plane
-    OrcaExt::Gui::PreviewClipController    m_preview_clip_controller;
-    std::optional<std::array<double, 4>>   m_preview_clipping_plane;
-
 public:
     GCodeViewer();
     ~GCodeViewer();
@@ -435,18 +428,6 @@ public:
     const BoundingBoxf3& get_paths_bounding_box() const { return m_paths_bounding_box; }
     const BoundingBoxf3& get_max_bounding_box() const { return m_max_bounding_box; }
     const BoundingBoxf3& get_shell_bounding_box() const { return m_shell_bounding_box; }
-    // [ORCAPORT:PF-6] BEGIN - preview clipping plane support
-    OrcaExt::Gui::PreviewClipController&       get_preview_clip_controller() { return m_preview_clip_controller; }
-    const OrcaExt::Gui::PreviewClipController& get_preview_clip_controller() const { return m_preview_clip_controller; }
-
-    GLVolumeCollection& get_shells_volumes() { return m_shells.volumes; }
-    bool                are_shells_visible() const { return m_shells.visible; }
-    void                set_shells_visible(bool visible) { m_shells.visible = visible; }
-    libvgcode::Viewer&  get_libvgcode_viewer() { return m_viewer; }
-
-    void set_preview_clipping_plane(const std::array<double, 4>& plane) { m_preview_clipping_plane = plane; }
-    void reset_preview_clipping_plane() { m_preview_clipping_plane.reset(); }
-    // [ORCAPORT:PF-6] END
     std::vector<double> get_layers_zs() const {
         // Belt printers: the layer Z the slider labels and the colour-change ticks
         // use is the layer's print Z (see load_as_gcode), not a toolpath height.
