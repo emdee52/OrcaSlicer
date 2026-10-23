@@ -70,7 +70,7 @@ Legend: **Status** = stable / experimental / WIP per the changelog.
 | Beam/multi-material interlocking (`Feature/Interlocking/InterlockingGenerator`) | Orca **already has** the Cura-derived beam interlock (`interlocking_beam*`) - **different** from PF-9. |
 | Stability / "support needed" analysis | Orca `Support/SupportSpotsGenerator.*`. |
 | 2-opt / travel ordering | Orca `GCode/OrderingStrategies.cpp` (2-opt, serpentine infill ordering). |
-| Clipping (gizmo) | Orca has a gizmo clipping plane; PF-6 is the *Preview right-click* UX. |
+| Clipping (gizmo) | Orca has a gizmo clipping plane; PF-6 is the *Preview right-click* UX. **PF-6 was ported and then dropped (2026-10-23):** Orca's own section view already cuts the toolpaths and the model shells in Preview, so do not re-select it. |
 | Per-filament pressure advance | Orca already supports it. |
 | Align to Face gizmo | Orca assemble/align + the Align&Stack we ported (`AS-2`). |
 | OrcaSlicer profile import | N/A (we are Orca). |

@@ -119,7 +119,7 @@ port intent onto Orca's pipelines.
 | PF-3 | Auto Speed | excluded (user) | - | - |
 | PF-4 | Width Control | excluded (user) | - | - |
 | PF-5 | Max Commands Per Second | excluded (user) | - | - |
-| PF-6 | Preview Clipping Plane | ported | notes/PF-6.md | 17_PF-6.patch |
+| PF-6 | Preview Clipping Plane | dropped (upstream section view) | notes/PF-6.md | - |
 | PF-7 | Manual fan controls | excluded (user) | - | - |
 | PF-8 | Serpentine | excluded (user) | - | - |
 | PF-9 | Interlocking perimeters (native re-impl) | ported (user-verified) | notes/PF-9.md | 18_PF-9.patch |
@@ -255,8 +255,9 @@ build-plate-only tree fallback, has a min-overhang-area cut, per-type checkboxes
 swatches, a remap-types panel and a grouped layout; multi-pass supports avoid each other via a
 per-pass occupancy channel. **PF-10 Baobab was abandoned by user decision**
 (attempted across 4 rounds, then fully removed: code, keys, paint row, `port/PF-10` branch). Do not
-re-attempt unless the user asks. PF-3/4/5/7/8 were excluded; PF-6 and PF-9 are ported
-(PF-9 runtime-verified).
+re-attempt unless the user asks. PF-3/4/5/7/8 were excluded; PF-6 was ported and then
+**removed** on 2026-10-23 in favour of upstream's section view (see `notes/PF-6.md`); PF-9 is
+ported (runtime-verified).
 
 One ID per branch (`port/PF-<n>`), product commit then a separate `port:` docs+patch commit, push,
 `--no-ff` merge into `port/integration`, push. Don't merge an incomplete feature.
@@ -393,8 +394,8 @@ Kill a running slicer before rebuilding (it holds the DLL -> `LNK1104`):
 
 ## Built but not runtime/print-verified (user should test)
 
-Every ported feature compiles and links. Runtime/visual-verified by the user so far: PQ-1, PF-1,
-PF-6 and PF-9 (PF-9 after several geometry fixes). Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1
+Every ported feature compiles and links. Runtime/visual-verified by the user so far: PQ-1, PF-1, PF-9
+(and PF-6, which has since been removed). Pending: MT-1/MT-2, PQ-2, MT-4 F1/F2/F3, AS-1
 (the plate-column toggle is user-verified; the free-Z drag/stay-off-bed protocol in
 `notes/AS-1.md` is not), AS-2, AS-3, SU-1/SU-4/SU-5/SU-6, PQ-3, SU-4b (both sides), PF-2a (Smart
 bridging) and PF-2b (paint smart/partial). Protocols are in each `notes/<ID>.md`.

@@ -75,6 +75,8 @@ brace balance):
   upstream's uniforms upload, and the port's shell clipping (`gouraud_light_clip` shaders,
   `GCodeViewer::m_preview_clipping_plane`) is untouched. PF-6's controller keeps working with
   no source change.
+  **Superseded 2026-10-23:** PF-6 was removed entirely (see `notes/PF-6.md`), including that
+  4-float forwarder, so `src/libvgcode` is upstream's again.
 - `PartPlate.{cpp,hpp}` - the port's plate-column icons and upstream's IMEX icon wanted the
   same slots. Upstream's IMEX sub-id 9 and layout slot 6 (single) / 7 (dual) are kept as-is;
   the port's free-Z toggle and Snap & Drag magnet moved up one slot

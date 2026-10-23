@@ -1,5 +1,20 @@
 # PF-6 - Preview Clipping Plane
 
+> **REMOVED 2026-10-23 - do not re-port.** The whole feature was deleted from the tree: the
+> controller, the `gouraud_light_clip` shaders, the GCodeViewer wiring, the Preview right-click
+> entry and every `src/libvgcode` edit. Reason: upstream's own **section view** (PR #15879, doc
+> `docs/HLSD/section-view.md`) already does both halves the user wanted - it cuts the model shells
+> with a filled cap (`GLCanvas3D::_get_volumes_clipping_plane()` +
+> `_render_section_view_caps()`) and the toolpaths (`GCodeViewer::set_clipping_plane(
+> _get_section_view_plane())` -> `libvgcode`'s own clipping plane). Maintaining a second clipping
+> path through the vendored `src/libvgcode` was pure merge cost. `git diff main -- src/libvgcode
+> resources/shaders` is now empty again.
+>
+> Only behaviour given up: PF-6 could scope the cut to a single object; upstream's plane is
+> scene-wide. The user accepted that.
+>
+> Everything below is the original port record, kept for traceability.
+
 Source: preFlight v1.3.0 (`github.com/oozebot/preFlight`), fork sha `f74dc69`.
 Files: `src/slic3r/GUI/preFlight.PreviewClipController.{hpp,cpp}` (~220 lines), plus
 `src/libvgcode` shader/API changes, plus `Plater.cpp` preview right-click menu.

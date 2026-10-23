@@ -477,7 +477,7 @@ NeoArachne and the shared fill/GCode pipelines.
 | PF-3 | Auto Speed | M | notes/PF-3.md |
 | PF-4 | Width Control (max width + warning) | S-M | notes/PF-4.md |
 | PF-5 | Max Commands Per Second | S-M | notes/PF-5.md |
-| PF-6 | Preview Clipping Plane | S-M | notes/PF-6.md |
+| PF-6 | Preview Clipping Plane | dropped (upstream section view) | notes/PF-6.md |
 | PF-7 | Manual fan controls | S-M | notes/PF-7.md |
 | PF-8 | Serpentine | L | notes/PF-8.md |
 | PF-9 | Interlocking perimeters | L | notes/PF-9.md |
@@ -504,11 +504,12 @@ branch (`port/PF-<n>`), commit series and patch, per the standard workflow.
    slowdown are category D (no clean Arachne / flow_ratio mapping) and the width warning was
    skipped with them.
 8. **PF-5 Max Commands Per Second - EXCLUDED.** User decision: preview diagnostic, not worth porting.
-9. **PF-6 Preview Clipping Plane - DONE** (`port/PF-6`, patch `17_PF-6.patch`). GUI-only, no config
-   keys. Required patching the vendored `src/libvgcode` (Viewer clipping API, shaders, cap geometry)
-   so the plane cuts toolpaths **and** shells. Preview canvas had no right-click menu, so the entry
-   is a small local menu (`Plater::priv::on_preview_right_click`). ES shaders intentionally unpatched
-   (matches preFlight). See `notes/PF-6.md`.
+9. **PF-6 Preview Clipping Plane - DROPPED 2026-10-23.** Ported on `port/PF-6` (patch
+   `17_PF-6.patch`, now deleted), then removed wholesale: upstream's section view cuts the model
+   shells (with a filled cap) *and* the toolpaths already, and keeping a second clipping path
+   through the vendored `src/libvgcode` was pure merge cost. Per-object scoping was the only thing
+   it added and the user accepted losing it. `src/libvgcode` and `resources/shaders` are
+   byte-identical to upstream again. See `notes/PF-6.md`.
 10. **PF-7 Manual fan controls - EXCLUDED.** User decision. `fan_spinup_*` overlaps Orca's existing
     `fan_speedup_time`/`fan_speedup_overhangs`/`fan_kickstart` (category A); the per-feature manual
     fan half lands in the bug-prone cooling buffer for modest value.
