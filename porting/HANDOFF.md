@@ -24,17 +24,19 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`18d79a2438`** "Merge port/BF-1: first-layer flow in the
-  send dialog, and the plate picture under the logo" - two user-tested features, 2026-10-23. **BF-1**
-  adds a **First layer flow** row (-20/-15/-10/-5 %; clicking the selected value clears it) to the
-  "Send G-code to printer host" dialog, with -20 % preselected on the three cool plates (Smooth Cool,
-  Textured Cool, Cool Plate SuperTack); the percent scales the bottom surface flow of layer 1 only,
-  via `initial_layer_bottom_surface_flow_delta` + `initial_layer_bottom_surface_flow_auto`
-  (project-level, both in `steps_gcode`, so the export re-runs and the slice is kept). **UI-3** draws
-  the selected plate's picture under the dialog logo at the same 64 px, and moves the
-  `BedType -> bed_*.png` mapping into `src/slic3r/GUI/BedTypeThumbnails.hpp`. Notes `BF-1.md`,
-  `UI-3.md`; patches 79 and 80. libslic3r 1577/1577, fff_print 460/460. Before it: **`01f754c26b`**
-  "port: record the PF-6 removal"; before that **`22e322b2de`** "Merge port/ME-3: a screw head's cutter
+- Latest integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
+  first-layer flow, per plate type, saved on this computer" - user-tested 2026-10-24. **PA-1** replaces
+  BF-1's hardcoded -20 % cool-plate default with a local per-plate-type map (`AppConfig` `[app]
+  first_layer_flow_plates`), edited in the **Plate automation...** popup (plate tiles multi-select,
+  four steps + None + a custom percentage), with the flow row following it while
+  `initial_layer_bottom_surface_flow_auto` is on, **Reset to auto** restoring it, and any click making
+  the value the project's own. Emission is unchanged (layer 1's bottom-surface flow only, no re-slice).
+  The same feature briefly also automated the bed temperature (size matrix, buckets, per-plate
+  offsets); **the user does not want that and it was removed before merge** - do not re-attempt
+  unless asked. Notes `PA-1.md`; patch 81. libslic3r 1579/1579, fff_print 460/460. Before it:
+  **`18d79a2438`** "Merge port/BF-1: first-layer flow in the send dialog, and the plate picture under
+  the logo"; **`29a5f92560`** "port: record the port/BF-1 merge, user-tested"; **`01f754c26b`** "port:
+  record the PF-6 removal"; before that **`22e322b2de`** "Merge port/ME-3: a screw head's cutter
   starts outside the face, so a mesh boolean cannot skin the recess" - section 42 of `docs/handoff.md`;
   `porting/notes/ME-3.md`; user-tested 2026-10-17. In the Holes tool a screw head's entrance cap landed
   exactly in the part's face: a coplanar pair, which mcut answers with a zero-thickness sheet across the
