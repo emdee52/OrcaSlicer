@@ -85,6 +85,7 @@
 #include "Widgets/RadioBox.hpp"
 #include "libslic3r/OrcaExt/BedTempOverride.hpp"
 #include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
+#include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -562,6 +563,15 @@ void PrintHostSendDialog::init()
 
     const AppConfig* app_config = wxGetApp().app_config;
 
+    // [ORCAPORT:UI-3] plate picture under the app logo. Both images are 64 px square sources, so the
+    // two icons match in size and the column keeps its width; a plate with no picture (btDefault)
+    // leaves the dialog exactly as it was.
+    PartPlate*        plate     = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+    const BedType     bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
+    const std::string bed_image = bed_type_thumbnail_name(bed_type);
+    if (!bed_image.empty())
+        set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
+
     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
     label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
 
@@ -628,9 +638,7 @@ void PrintHostSendDialog::init()
     // re-slicing and without touching a preset.
     {
         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
-        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
 
-        const BedType bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
         m_bed_temp_base         = OrcaExt::effective_first_layer_bed_temp(
             preset_bundle->full_config(), bed_type,
             OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
@@ -691,8 +699,6 @@ void PrintHostSendDialog::init()
     // changes the first layer without re-slicing and without touching a preset.
     {
         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
-        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
-        const BedType bed_type      = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
 
         m_first_layer_flow_base = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
 

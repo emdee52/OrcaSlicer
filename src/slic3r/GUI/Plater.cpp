@@ -1,4 +1,5 @@
 #include "Plater.hpp"
+#include "BedTypeThumbnails.hpp" // [ORCAPORT:UI-3]
 #include "../Utils/NetworkAgent.hpp"
 #include "IPrinterAgent.hpp"
 #include "CalibUtils.hpp"
@@ -452,14 +453,6 @@ void Plater::clear_plate_toolbar_image_dirty()
     m_b_plate_toolbar_image_dirty = false;
 }
 
-static std::map<BedType, std::string> bed_type_thumbnails = {
-    {BedType::btPC,        "bed_cool"           },
-    {BedType::btEP,        "bed_engineering"    },
-    {BedType::btPEI,       "bed_high_templ"     },
-    {BedType::btPTE,       "bed_pei"            },
-    {BedType::btPCT,       "bed_pei_cool"       },
-    {BedType::btSuperTack, "bed_cool_supertack" }
-};
 
 enum SlicedInfoIdx
 {
@@ -4211,7 +4204,8 @@ std::string Sidebar::get_cur_select_bed_image()
 {
     auto select_bed_type   = get_cur_select_bed_type();
     //auto series_suffix_str = m_cur_image_bed_type.empty() ? "" : ("_" + m_cur_image_bed_type);
-    auto image_path        = bed_type_thumbnails[select_bed_type];// + series_suffix_str;
+    // [ORCAPORT:UI-3] the mapping lives in BedTypeThumbnails.hpp, shared with the send dialog.
+    auto image_path        = bed_type_thumbnail_name(select_bed_type);// + series_suffix_str;
     return image_path;
 }
 
