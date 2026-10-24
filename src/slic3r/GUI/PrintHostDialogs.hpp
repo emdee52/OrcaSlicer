@@ -111,6 +111,9 @@ protected:
     // on the plate the dialog is uploading.
     OrcaExt::PlateFlowDefaults    m_plate_flow_defaults;
     OrcaExt::PlateBedTempDefaults m_plate_bed_temp_defaults;
+    OrcaExt::PartSizeLimits       m_part_size_limits;
+    std::vector<std::pair<double, double>> m_plate_footprints;
+    double                        m_plate_area_mm2 {0.};
     bool                          m_has_part_bucket {false};
     OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
     void                          open_plate_automation();

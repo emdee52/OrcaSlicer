@@ -50,10 +50,15 @@ private:
     };
 
     void create_plate_tiles(wxSizer *sizer);
+    void create_band_controls(wxSizer *sizer);
     void toggle_tile(size_t index);
     void load_controls_from(BedType bed_type);
     void refresh_tile_values();
     void refresh_flow_controls(double flow_percent);
+    bool read_band_controls(OrcaExt::PartSizeLimits &limits) const;
+    void load_band_controls(const OrcaExt::PartSizeLimits &limits);
+    void refresh_bands_feedback();
+    void save_bands();
     void set_hint(const wxString &text);
     bool read_flow_control(double &flow_percent) const;
     void apply();
@@ -64,6 +69,12 @@ private:
     std::vector<RadioBox *> m_flow_radios;
     TextInput        *m_flow_custom {nullptr};
     std::array<SpinInput *, OrcaExt::kPartSizeBucketCount> m_bucket_inputs {};
+    std::array<TextInput *, 2> m_footprint_inputs {};
+    std::array<TextInput *, 4> m_height_inputs {};
+    wxStaticText     *m_bands_caption {nullptr};
+    wxStaticText     *m_bands_readout {nullptr};
+    std::vector<std::pair<double, double>> m_plate_footprints;
+    double            m_plate_area_mm2 {0.};
     wxStaticText     *m_hint {nullptr};
     std::function<void()> m_on_applied;
 };

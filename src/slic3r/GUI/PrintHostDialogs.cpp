@@ -587,6 +587,7 @@ void PrintHostSendDialog::refresh_plate_automation()
     const AppConfig &config    = *wxGetApp().app_config;
     m_plate_flow_defaults      = load_plate_flow_defaults(config);
     m_plate_bed_temp_defaults  = load_plate_bed_temp_defaults(config);
+    m_part_size_limits         = load_plate_bucket_limits(config);
 
     // Only a row that still follows the automation changes; a value picked by hand belongs to this
     // project and is left alone.
@@ -594,8 +595,13 @@ void PrintHostSendDialog::refresh_plate_automation()
         m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type);
         refresh_first_layer_flow_controls();
     }
-    if (m_bed_temp_auto && m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type)) {
-        m_bed_temp_offset = OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket);
+
+    // The bands may have changed: reclassify the plate and let the status line follow the new bucket.
+    if (m_has_part_bucket)
+        m_part_bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
+    if (m_bed_temp_auto) {
+        if (m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type))
+            m_bed_temp_offset = OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket);
         refresh_bed_temp_controls();
     }
 }
@@ -605,6 +611,9 @@ void PrintHostSendDialog::reset_to_automation()
     const AppConfig &config   = *wxGetApp().app_config;
     m_plate_flow_defaults     = load_plate_flow_defaults(config);
     m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(config);
+    m_part_size_limits        = load_plate_bucket_limits(config);
+    if (m_has_part_bucket)
+        m_part_bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
 
     // Back to the automatic value where the plate type is configured, and to the stock value where it
     // is not. The rows keep their auto flag, so this project follows the automation again.
@@ -643,11 +652,15 @@ void PrintHostSendDialog::init()
     m_bed_type = bed_type;
     m_plate_flow_defaults     = load_plate_flow_defaults(*app_config);
     m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(*app_config);
+    m_part_size_limits        = load_plate_bucket_limits(*app_config);
     m_has_part_bucket         = false;
+    m_plate_footprints.clear();
+    m_plate_area_mm2 = 0.;
     if (plate != nullptr) {
-        const std::vector<std::pair<double, double>> footprints = plate->get_instance_footprints();
-        m_has_part_bucket = !footprints.empty();
-        m_part_bucket     = OrcaExt::plate_part_bucket(footprints, OrcaExt::plate_area_mm2(plate->get_size()));
+        m_plate_footprints = plate->get_instance_footprints();
+        m_plate_area_mm2   = OrcaExt::plate_area_mm2(plate->get_size());
+        m_has_part_bucket  = !m_plate_footprints.empty();
+        m_part_bucket      = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
     }
 
     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));

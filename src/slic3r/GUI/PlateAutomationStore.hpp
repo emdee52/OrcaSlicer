@@ -14,6 +14,8 @@ namespace GUI {
 
 inline constexpr const char *PLATE_FLOW_DEFAULTS_KEY     = "first_layer_flow_plates";
 inline constexpr const char *PLATE_BED_TEMP_DEFAULTS_KEY = "first_layer_bed_temp_buckets";
+// The size-band edges. Also local-only: they are a tuning preference, not project data.
+inline constexpr const char *PLATE_BUCKET_LIMITS_KEY     = "plate_bucket_limits";
 
 inline OrcaExt::PlateFlowDefaults load_plate_flow_defaults(const AppConfig &config)
 {
@@ -33,6 +35,16 @@ inline OrcaExt::PlateBedTempDefaults load_plate_bed_temp_defaults(const AppConfi
 inline void save_plate_bed_temp_defaults(AppConfig &config, const OrcaExt::PlateBedTempDefaults &defaults)
 {
     config.set("app", PLATE_BED_TEMP_DEFAULTS_KEY, OrcaExt::serialize_bed_temp_defaults(defaults));
+}
+
+inline OrcaExt::PartSizeLimits load_plate_bucket_limits(const AppConfig &config)
+{
+    return OrcaExt::parse_part_size_limits(config.get("app", PLATE_BUCKET_LIMITS_KEY));
+}
+
+inline void save_plate_bucket_limits(AppConfig &config, const OrcaExt::PartSizeLimits &limits)
+{
+    config.set("app", PLATE_BUCKET_LIMITS_KEY, OrcaExt::serialize_part_size_limits(limits));
 }
 
 } // namespace GUI

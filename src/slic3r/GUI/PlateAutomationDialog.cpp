@@ -9,6 +9,8 @@
 #include "BedTypeThumbnails.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
+#include "PartPlate.hpp"
+#include "Plater.hpp"
 #include "I18N.hpp"
 #include "PlateAutomationStore.hpp"
 #include "Widgets/Button.hpp"
@@ -33,25 +35,23 @@ const std::array<BedType, 6> kAutomationPlates {btPC, btEP, btPEI, btPTE, btPCT,
 const std::array<double, 5> kFlowChoices {-20., -15., -10., -5., 0.};
 
 // Bucket rows: short name plus a tooltip with the rule that lands a part in it.
-wxString bucket_row_tooltip(int bucket)
-{
-    using B = OrcaExt::PartSizeBucket;
-    switch (bucket) {
-        case int(B::Small):       return _L("Under 3 mm tall at any footprint, or 3-20 mm tall covering less than 3% of the bed.");
-        case int(B::SmallMedium): return _L("3-20 mm tall and covering at least 3% of the bed.");
-        case int(B::Medium):      return _L("20-50 mm tall and covering at most 15% of the bed.");
-        case int(B::MediumLarge): return _L("20-50 mm tall covering more than 15% of the bed, or 50-100 mm tall covering less than 3%.");
-        case int(B::Large):       return _L("50-100 mm tall and covering at least 3% of the bed.");
-        case int(B::Tall):        return _L("100 mm or taller, at any footprint.");
-        default:                  return wxString();
-    }
-}
-
 wxString plate_name(BedType bed_type)
 {
     const ConfigOptionDef *def = print_config_def.get("curr_bed_type");
     const int              idx = int(bed_type) - 1;
     return (def != nullptr && idx >= 0 && idx < int(def->enum_labels.size())) ? from_u8(def->enum_labels[idx]) : _L("Unknown plate");
+}
+
+// The size-band rules spelled out with the current numbers, for the section's tooltip.
+wxString bands_summary(const OrcaExt::PartSizeLimits &limits)
+{
+    auto n = [](double value) { return wxString::Format("%g", value); };
+    return wxString::Format(
+        _L("Bands: under %s mm tall is Small at any footprint. %s-%s mm: Small below %s%% of the bed, otherwise Small-medium. %s-%s mm: Medium, Medium-large above %s%%. %s-%s mm: Medium-large, Large from %s%%. %s mm and up: Tall."),
+        n(limits.h_thin_mm), n(limits.h_thin_mm), n(limits.h_mid_mm), n(limits.fp_small_pct),
+        n(limits.h_mid_mm), n(limits.h_high_mm), n(limits.fp_mid_pct),
+        n(limits.h_high_mm), n(limits.h_tall_mm), n(limits.fp_small_pct),
+        n(limits.h_tall_mm));
 }
 
 } // namespace
@@ -76,6 +76,16 @@ PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type,
 {
     SetFont(wxGetApp().normal_font());
     SetBackgroundColour(*wxWHITE);
+
+    // The plate being uploaded, for the bands readout: its instances stay put while the dialog is
+    // open, so measure them once.
+    m_plate_footprints.clear();
+    m_plate_area_mm2 = 0.;
+    if (wxGetApp().plater() != nullptr)
+        if (PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate()) {
+            m_plate_footprints = plate->get_instance_footprints();
+            m_plate_area_mm2   = OrcaExt::plate_area_mm2(plate->get_size());
+        }
 
     auto *main_sizer = new wxBoxSizer(wxVERTICAL);
 
@@ -137,7 +147,6 @@ PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type,
         auto *label = new wxStaticText(this, wxID_ANY, plate_bucket_short_name(OrcaExt::PartSizeBucket(i)));
         label->SetFont(::Label::Body_13);
         label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-        label->SetToolTip(bucket_row_tooltip(i));
         bucket_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
 
         m_bucket_inputs[i] = new SpinInput(this, wxEmptyString, _L("\u00B0C" /* degC */), wxDefaultPosition,
@@ -146,6 +155,10 @@ PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type,
         bucket_grid->Add(m_bucket_inputs[i], 0, wxALIGN_CENTER_VERTICAL);
     }
     main_sizer->Add(bucket_grid, 0, wxALL, FromDIP(12));
+
+    // Size bands: the six edges behind the buckets, saved locally so they can be tuned without a
+    // rebuild. They apply to every plate type, unlike the offsets above.
+    create_band_controls(main_sizer);
 
     m_hint = new wxStaticText(this, wxID_ANY, wxEmptyString);
     m_hint->SetFont(::Label::Body_12);
@@ -174,6 +187,9 @@ PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type,
     m_focus       = it == kAutomationPlates.end() ? 0 : size_t(it - kAutomationPlates.begin());
     toggle_tile(m_focus);
     refresh_tile_values();
+
+    load_band_controls(load_plate_bucket_limits(*wxGetApp().app_config));
+    refresh_bands_feedback();
 }
 
 void PlateAutomationDialog::create_plate_tiles(wxSizer *sizer)
@@ -203,6 +219,151 @@ void PlateAutomationDialog::create_plate_tiles(wxSizer *sizer)
 
         sizer->Add(cell, 0, wxALIGN_CENTER_HORIZONTAL);
     }
+}
+
+void PlateAutomationDialog::create_band_controls(wxSizer *sizer)
+{
+    m_bands_caption = new wxStaticText(this, wxID_ANY, _L("Size bands (all plates)"));
+    m_bands_caption->SetFont(::Label::Body_13);
+    m_bands_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+    sizer->Add(m_bands_caption, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    auto make_label = [this](wxSizer *row, const wxString &text) {
+        auto *item = new wxStaticText(this, wxID_ANY, text);
+        item->SetFont(::Label::Body_12);
+        item->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        row->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    };
+    auto make_input = [this](const wxString &suffix) {
+        auto *field = new TextInput(this, wxEmptyString, suffix, "", wxDefaultPosition, FromDIP(wxSize(80, 30)), wxTE_CENTRE);
+        // Tuning loop: the readout follows what is typed, before anything is saved.
+        field->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent &event) {
+            refresh_bands_feedback();
+            event.Skip();
+        });
+        return field;
+    };
+
+    auto *footprint_row = new wxBoxSizer(wxHORIZONTAL);
+    make_label(footprint_row, _L("Footprint"));
+    m_footprint_inputs[0] = make_input("%");
+    footprint_row->Add(m_footprint_inputs[0], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    m_footprint_inputs[1] = make_input("%");
+    footprint_row->Add(m_footprint_inputs[1], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    make_label(footprint_row, _L("of the bed"));
+    sizer->Add(footprint_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
+
+    auto *height_row = new wxBoxSizer(wxHORIZONTAL);
+    make_label(height_row, _L("Height"));
+    for (int i = 0; i < int(m_height_inputs.size()); ++i) {
+        m_height_inputs[i] = make_input(wxEmptyString);
+        height_row->Add(m_height_inputs[i], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    }
+    make_label(height_row, _L("mm"));
+    sizer->Add(height_row, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    auto *bands_row = new wxBoxSizer(wxHORIZONTAL);
+    auto *save = new Button(this, _L("Save bands"));
+    save->SetStyle(ButtonStyle::Confirm, ButtonType::Compact);
+    save->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { save_bands(); });
+    bands_row->Add(save, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+    auto *defaults = new Button(this, _L("Defaults"));
+    defaults->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    defaults->SetToolTip(_L("Fill in the built-in bands; press Save bands to keep them."));
+    defaults->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+        load_band_controls(OrcaExt::PartSizeLimits {});
+        refresh_bands_feedback();
+    });
+    bands_row->Add(defaults, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+    sizer->Add(bands_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
+
+    m_bands_readout = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    m_bands_readout->SetFont(::Label::Body_12);
+    m_bands_readout->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+    sizer->Add(m_bands_readout, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+}
+
+bool PlateAutomationDialog::read_band_controls(OrcaExt::PartSizeLimits &limits) const
+{
+    auto number = [](TextInput *input, double &out) {
+        wxString text = input->GetTextCtrl()->GetValue();
+        text.Trim(true).Trim(false);
+        if (text.IsEmpty())
+            return false;
+        double value = 0.;
+        if (! text.ToDouble(&value))
+            return false;
+        out = value;
+        return true;
+    };
+    return number(m_footprint_inputs[0], limits.fp_small_pct)
+        && number(m_footprint_inputs[1], limits.fp_mid_pct)
+        && number(m_height_inputs[0], limits.h_thin_mm)
+        && number(m_height_inputs[1], limits.h_mid_mm)
+        && number(m_height_inputs[2], limits.h_high_mm)
+        && number(m_height_inputs[3], limits.h_tall_mm)
+        && OrcaExt::valid_part_size_limits(limits);
+}
+
+void PlateAutomationDialog::load_band_controls(const OrcaExt::PartSizeLimits &limits)
+{
+    auto set = [](TextInput *input, double value) {
+        input->GetTextCtrl()->ChangeValue(wxString::Format("%g", value));
+    };
+    set(m_footprint_inputs[0], limits.fp_small_pct);
+    set(m_footprint_inputs[1], limits.fp_mid_pct);
+    set(m_height_inputs[0], limits.h_thin_mm);
+    set(m_height_inputs[1], limits.h_mid_mm);
+    set(m_height_inputs[2], limits.h_high_mm);
+    set(m_height_inputs[3], limits.h_tall_mm);
+}
+
+void PlateAutomationDialog::refresh_bands_feedback()
+{
+    OrcaExt::PartSizeLimits limits;
+    const bool              valid = read_band_controls(limits);
+
+    if (m_bands_caption != nullptr)
+        m_bands_caption->SetToolTip(valid ? bands_summary(limits)
+                                          : _L("Footprint bands must increase from 0.1 to 100 %; height bands must increase from 0.1 to 500 mm."));
+
+    if (m_bands_readout == nullptr)
+        return;
+
+    if (! valid) {
+        m_bands_readout->SetLabel(_L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
+        return;
+    }
+    if (m_plate_footprints.empty()) {
+        m_bands_readout->SetLabel(_L("This plate is empty."));
+        return;
+    }
+
+    double           height = 0.;
+    double           pct    = 0.;
+    const auto       bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, limits, &height, &pct);
+    m_bands_readout->SetLabel(wxString::Format(_L("This plate: %.1f mm tall, %.1f%% of the bed -> %s"),
+                                               height, pct, plate_bucket_short_name(bucket)));
+    m_bands_readout->GetParent()->Layout();
+}
+
+void PlateAutomationDialog::save_bands()
+{
+    OrcaExt::PartSizeLimits limits;
+    if (! read_band_controls(limits)) {
+        set_hint(_L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
+        return;
+    }
+
+    AppConfig &config = *wxGetApp().app_config;
+    save_plate_bucket_limits(config, limits);
+    config.save();
+
+    set_hint(_L("Bands saved."));
+    refresh_bands_feedback();
+    if (m_on_applied)
+        m_on_applied();
 }
 
 void PlateAutomationDialog::toggle_tile(size_t index)

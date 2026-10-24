@@ -58,6 +58,87 @@ constexpr double kTallPartHeightMm = 100.0;
 // size): under 3%, 3-15%, over 15%.
 constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
 
+// Editable bands. The six numbers are saved in AppConfig, so they can be tuned at runtime instead of
+// rebuilt; the defaults are the values above. Keep them ascending - valid_part_size_limits() is the
+// gate, and a stored value that fails it falls back to the defaults rather than mis-classifying.
+struct PartSizeLimits {
+    double fp_small_pct {kPartSizeAreaPctCuts[0]};
+    double fp_mid_pct {kPartSizeAreaPctCuts[1]};
+    double h_thin_mm {kThinPartHeightMm};
+    double h_mid_mm {kMidPartHeightMm};
+    double h_high_mm {kHighPartHeightMm};
+    double h_tall_mm {kTallPartHeightMm};
+};
+
+constexpr double kMinFootprintPct = 0.1;
+constexpr double kMaxFootprintPct = 100.0;
+constexpr double kMinHeightMm     = 0.1;
+constexpr double kMaxHeightMm     = 500.0;
+
+inline bool valid_part_size_limits(const PartSizeLimits &limits)
+{
+    if (!(limits.fp_small_pct >= kMinFootprintPct && limits.fp_small_pct < limits.fp_mid_pct
+          && limits.fp_mid_pct <= kMaxFootprintPct))
+        return false;
+    return limits.h_thin_mm >= kMinHeightMm && limits.h_thin_mm < limits.h_mid_mm
+        && limits.h_mid_mm < limits.h_high_mm && limits.h_high_mm < limits.h_tall_mm
+        && limits.h_tall_mm <= kMaxHeightMm;
+}
+
+// "3,15;3,20,50,100" - footprint percentages, then height rows in mm.
+inline std::string serialize_part_size_limits(const PartSizeLimits &limits)
+{
+    auto number = [](double value) {
+        std::string text = std::to_string(value); // 3.000000
+        text.erase(text.find_last_not_of('0') + 1);
+        if (! text.empty() && text.back() == '.')
+            text.pop_back();
+        return text;
+    };
+    return number(limits.fp_small_pct) + "," + number(limits.fp_mid_pct) + ";" + number(limits.h_thin_mm)
+        + "," + number(limits.h_mid_mm) + "," + number(limits.h_high_mm) + "," + number(limits.h_tall_mm);
+}
+
+// Tolerant: anything malformed, out of order or out of range yields the defaults.
+inline PartSizeLimits parse_part_size_limits(const std::string &text)
+{
+    PartSizeLimits limits;
+    const size_t   split = text.find(';');
+    if (split == std::string::npos)
+        return limits;
+
+    auto read_list = [](const std::string &list, std::vector<double> &out) {
+        size_t pos = 0;
+        while (pos <= list.size()) {
+            const size_t      end = list.find(',', pos);
+            const std::string item = list.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            try {
+                out.push_back(std::stod(item));
+            } catch (...) {
+                return;
+            }
+            if (end == std::string::npos)
+                break;
+            pos = end + 1;
+        }
+    };
+
+    std::vector<double> fp;
+    std::vector<double> heights;
+    read_list(text.substr(0, split), fp);
+    read_list(text.substr(split + 1), heights);
+    if (fp.size() != 2 || heights.size() != 4)
+        return limits;
+
+    limits.fp_small_pct = fp[0];
+    limits.fp_mid_pct   = fp[1];
+    limits.h_thin_mm    = heights[0];
+    limits.h_mid_mm     = heights[1];
+    limits.h_high_mm    = heights[2];
+    limits.h_tall_mm    = heights[3];
+    return valid_part_size_limits(limits) ? limits : PartSizeLimits {};
+}
+
 // The bucket a single part falls in.
 //
 //              footprint:  under 3%       3-15%          over 15%
@@ -68,38 +149,48 @@ constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
 //   100 mm and up          Tall           Tall           Tall
 //
 // `bed_area_mm2` is the plate's own area; a plate with no usable area falls back to Medium rather
-// than guessing an extreme.
-inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm)
+// than guessing an extreme. The bands above are the `limits` defaults.
+inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm,
+                                        const PartSizeLimits &limits = PartSizeLimits {})
 {
-    if (height_mm < kThinPartHeightMm)
+    if (height_mm < limits.h_thin_mm)
         return PartSizeBucket::Small;
-    if (height_mm >= kTallPartHeightMm)
+    if (height_mm >= limits.h_tall_mm)
         return PartSizeBucket::Tall;
     if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
         return PartSizeBucket::Medium;
 
     const double pct        = 100. * footprint_mm2 / bed_area_mm2;
-    const bool   small_area = pct < kPartSizeAreaPctCuts[0];
-    const bool   mid_area   = pct <= kPartSizeAreaPctCuts[1];
+    const bool   small_area = pct < limits.fp_small_pct;
+    const bool   mid_area   = pct <= limits.fp_mid_pct;
 
-    if (height_mm < kMidPartHeightMm)
+    if (height_mm < limits.h_mid_mm)
         return small_area ? PartSizeBucket::Small : PartSizeBucket::SmallMedium;
-    if (height_mm < kHighPartHeightMm)
+    if (height_mm < limits.h_high_mm)
         return mid_area ? PartSizeBucket::Medium : PartSizeBucket::MediumLarge;
-    // 50 mm and up: a small footprint is a slender part, which lifts sooner than a broad one.
+    // The top row before Tall: a small footprint is a slender part, which lifts sooner than a broad
+    // one.
     return small_area ? PartSizeBucket::MediumLarge : PartSizeBucket::Large;
 }
 
 // The bucket that decides the plate's bed temperature: the highest any part lands in, because the
 // temperature serves the whole plate. A first-layer test next to a real part gets the real part's
-// bucket, and a big flat patch no longer outvotes a tall one.
-inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2)
+// bucket, and a big flat patch no longer outvotes a tall one. `deciding_*` report the part that set
+// the bucket, for the popup's readout.
+inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2,
+                                        const PartSizeLimits &limits = PartSizeLimits {},
+                                        double *deciding_height_mm = nullptr, double *deciding_pct = nullptr)
 {
     PartSizeBucket bucket = PartSizeBucket::Small;
     for (const auto &[footprint, height] : footprints) {
-        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height);
-        if (int(part) > int(bucket))
+        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height, limits);
+        if (int(part) > int(bucket)) {
             bucket = part;
+            if (deciding_height_mm != nullptr)
+                *deciding_height_mm = height;
+            if (deciding_pct != nullptr)
+                *deciding_pct = bed_area_mm2 > 0. ? 100. * footprint / bed_area_mm2 : 0.;
+        }
     }
     return bucket;
 }

@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace Slic3r;
 using Catch::Matchers::WithinAbs;
@@ -62,6 +64,69 @@ TEST_CASE("Part size buckets follow the height and footprint matrix", "[OrcaPlat
     // automation conservative instead of guessing an extreme.
     CHECK(OrcaExt::classify_part_size(small_cut, 0., 10.) == OrcaExt::PartSizeBucket::Medium);
     CHECK(OrcaExt::classify_part_size(0., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+}
+
+// The six band edges are saved in AppConfig so they can be tuned without a rebuild; anything
+// malformed, out of order or out of range must fall back to the defaults instead of mis-classifying.
+TEST_CASE("Size bands round-trip through the AppConfig string and fall back safely", "[OrcaPlateAutomation]") {
+    OrcaExt::PartSizeLimits defaults;
+    CHECK(OrcaExt::serialize_part_size_limits(defaults) == "3,15;3,20,50,100");
+
+    OrcaExt::PartSizeLimits custom;
+    custom.fp_small_pct = 5.;
+    custom.fp_mid_pct   = 10.;
+    custom.h_thin_mm    = 2.;
+    custom.h_mid_mm     = 10.;
+    custom.h_high_mm    = 30.;
+    custom.h_tall_mm    = 80.;
+    CHECK(OrcaExt::serialize_part_size_limits(custom) == "5,10;2,10,30,80");
+
+    const OrcaExt::PartSizeLimits parsed = OrcaExt::parse_part_size_limits("5,10;2,10,30,80");
+    CHECK_THAT(parsed.fp_small_pct, WithinAbs(5., 1e-9));
+    CHECK_THAT(parsed.fp_mid_pct, WithinAbs(10., 1e-9));
+    CHECK_THAT(parsed.h_thin_mm, WithinAbs(2., 1e-9));
+    CHECK_THAT(parsed.h_mid_mm, WithinAbs(10., 1e-9));
+    CHECK_THAT(parsed.h_high_mm, WithinAbs(30., 1e-9));
+    CHECK_THAT(parsed.h_tall_mm, WithinAbs(80., 1e-9));
+
+    // Non-increasing footprint, non-increasing heights, missing parts, junk, out of range.
+    for (const char *text : {"10,5;2,10,30,80", "5,10;10,2,30,80", "5,10;2,10,30,80,90",
+                             "5,10", "junk", "0.01,10;2,10,30,80", "5,10;2,10,30,600"})
+        CHECK_THAT(OrcaExt::parse_part_size_limits(text).h_thin_mm, WithinAbs(OrcaExt::kThinPartHeightMm, 1e-9));
+}
+
+TEST_CASE("Classification follows custom size bands", "[OrcaPlateAutomation]") {
+    OrcaExt::PartSizeLimits limits;
+    limits.fp_small_pct = 5.;
+    limits.fp_mid_pct   = 10.;
+    limits.h_thin_mm    = 2.;
+    limits.h_mid_mm     = 10.;
+    limits.h_high_mm    = 30.;
+    limits.h_tall_mm    = 80.;
+
+    const double pct4  = kBedArea * 0.04;
+    const double pct6  = kBedArea * 0.06;
+    const double pct11 = kBedArea * 0.11;
+
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, 1.9, limits) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 2., limits) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 2., limits) == OrcaExt::PartSizeBucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 10., limits) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(pct11, kBedArea, 10., limits) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 30., limits) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 30., limits) == OrcaExt::PartSizeBucket::Large);
+    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 80., limits) == OrcaExt::PartSizeBucket::Tall);
+}
+
+// The popup's readout needs the part that decided the bucket, not just the bucket.
+TEST_CASE("The plate's bucket reports the deciding part", "[OrcaPlateAutomation]") {
+    const std::vector<std::pair<double, double>> parts {{kBedArea, 1.}, {kBedArea * 0.05, 60.}};
+    double                                      height = 0.;
+    double                                      pct    = 0.;
+    const auto                                  bucket = OrcaExt::plate_part_bucket(parts, kBedArea, OrcaExt::PartSizeLimits {}, &height, &pct);
+    CHECK(bucket == OrcaExt::PartSizeBucket::Large);
+    CHECK_THAT(height, WithinAbs(60., 1e-9));
+    CHECK_THAT(pct, WithinAbs(5., 1e-9));
 }
 
 // The bed temperature serves the whole plate, so the riskiest part decides: a first-layer test next
