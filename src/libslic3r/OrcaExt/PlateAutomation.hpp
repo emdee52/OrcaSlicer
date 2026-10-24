@@ -33,40 +33,75 @@
 namespace Slic3r {
 namespace OrcaExt {
 
-// Size buckets for the largest part on the plate, smallest first. `Tall` is decided by height alone
-// and wins over the footprint, because a tall thin part warps where a flat one of the same footprint
-// does not.
+// Size buckets, smallest first. Warping is a height problem first and an area problem second: a thin
+// part has no lever arm and no gradient across its thickness, so it never needs bed heat, while a tall
+// part accumulates enough contraction to lift a large footprint. The classifier is therefore a
+// height x footprint matrix, and `Tall` is decided by height alone.
 enum class PartSizeBucket : int {
     Small = 0,
     SmallMedium,
     Medium,
     MediumLarge,
-    LargeFlat,
+    Large,
     Tall,
     Count
 };
 constexpr int kPartSizeBucketCount = int(PartSizeBucket::Count);
 
-// Footprint cut points as a percentage of the plate's area: the band is the first cut the footprint
-// does not exceed, and anything above the last cut is LargeFlat. Percentages rather than mm so the
-// bands travel to another printer's bed size.
-constexpr std::array<double, 4> kPartSizeAreaPctCuts {3.0, 8.0, 15.0, 25.0};
-// A part at least this tall is Tall whatever its footprint is.
+// Height bands, in mm: under kThinPartHeightMm nothing warps; from there to kTallPartHeightMm the
+// footprint bands decide. The 20 and 50 mm edges are the interior rows of the matrix.
+constexpr double kThinPartHeightMm = 3.0;
+constexpr double kMidPartHeightMm  = 20.0;
+constexpr double kHighPartHeightMm = 50.0;
 constexpr double kTallPartHeightMm = 100.0;
+// Footprint columns, as a percentage of the plate's area (percentages so they travel to another bed
+// size): under 3%, 3-15%, over 15%.
+constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
 
-// The band a part falls in. `bed_area_mm2` is the plate's own area; a plate with no usable area
-// falls back to the middle band rather than guessing an extreme.
+// The bucket a single part falls in.
+//
+//              footprint:  under 3%       3-15%          over 15%
+//   under 3 mm             Small          Small          Small
+//   3-20 mm                Small          Small-medium   Small-medium
+//   20-50 mm               Medium         Medium         Medium-large
+//   50-100 mm              Medium-large   Large          Large
+//   100 mm and up          Tall           Tall           Tall
+//
+// `bed_area_mm2` is the plate's own area; a plate with no usable area falls back to Medium rather
+// than guessing an extreme.
 inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm)
 {
+    if (height_mm < kThinPartHeightMm)
+        return PartSizeBucket::Small;
     if (height_mm >= kTallPartHeightMm)
         return PartSizeBucket::Tall;
     if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
         return PartSizeBucket::Medium;
-    const double pct = 100. * footprint_mm2 / bed_area_mm2;
-    for (int i = 0; i < int(kPartSizeAreaPctCuts.size()); ++i)
-        if (pct <= kPartSizeAreaPctCuts[i])
-            return PartSizeBucket(i);
-    return PartSizeBucket::LargeFlat;
+
+    const double pct        = 100. * footprint_mm2 / bed_area_mm2;
+    const bool   small_area = pct < kPartSizeAreaPctCuts[0];
+    const bool   mid_area   = pct <= kPartSizeAreaPctCuts[1];
+
+    if (height_mm < kMidPartHeightMm)
+        return small_area ? PartSizeBucket::Small : PartSizeBucket::SmallMedium;
+    if (height_mm < kHighPartHeightMm)
+        return mid_area ? PartSizeBucket::Medium : PartSizeBucket::MediumLarge;
+    // 50 mm and up: a small footprint is a slender part, which lifts sooner than a broad one.
+    return small_area ? PartSizeBucket::MediumLarge : PartSizeBucket::Large;
+}
+
+// The bucket that decides the plate's bed temperature: the highest any part lands in, because the
+// temperature serves the whole plate. A first-layer test next to a real part gets the real part's
+// bucket, and a big flat patch no longer outvotes a tall one.
+inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2)
+{
+    PartSizeBucket bucket = PartSizeBucket::Small;
+    for (const auto &[footprint, height] : footprints) {
+        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height);
+        if (int(part) > int(bucket))
+            bucket = part;
+    }
+    return bucket;
 }
 
 // Footprint (mm2, from the instance's 2D convex hull) and height (mm, from the instance bounding

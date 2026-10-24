@@ -27,6 +27,10 @@ namespace GUI {
 
 class RadioBox;
 
+// Short, user-facing name of a part size bucket ("Small", "Small-medium", ...). Shared by this
+// dialog's rows and the send dialog's status line so the two can never disagree.
+wxString plate_bucket_short_name(OrcaExt::PartSizeBucket bucket);
+
 class PlateAutomationDialog : public DPIDialog
 {
 public:

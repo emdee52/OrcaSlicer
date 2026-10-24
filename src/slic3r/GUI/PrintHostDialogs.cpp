@@ -527,7 +527,14 @@ void PrintHostSendDialog::update_bed_temp_status()
 
     const int target = OrcaExt::apply_bed_temp_offset(m_bed_temp_base, m_bed_temp_offset);
     wxString  text = wxString::Format("%s: %d%s", m_bed_temp_plate_label, target, from_u8(OrcaExt::bed_temp_unit_utf8()));
-    if (m_bed_temp_offset != 0)
+    // [ORCAPORT:PA-1] say which size bucket picked the offset, so an automatic value is never silent.
+    const bool from_automation = m_bed_temp_auto && m_has_part_bucket
+        && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type);
+    if (from_automation) {
+        const wxString bucket = plate_bucket_short_name(m_part_bucket);
+        text += " " + (m_bed_temp_offset == 0 ? wxString::Format(_L("(%s)"), bucket)
+                                             : wxString::Format(_L("(%+d, %s)"), m_bed_temp_offset, bucket));
+    } else if (m_bed_temp_offset != 0)
         text += wxString::Format(" (%+d)", m_bed_temp_offset);
     m_bed_temp_status->SetLabel(text);
     m_bed_temp_status->GetParent()->Layout();
@@ -592,6 +599,25 @@ void PrintHostSendDialog::refresh_plate_automation()
         refresh_bed_temp_controls();
     }
 }
+
+void PrintHostSendDialog::reset_to_automation()
+{
+    const AppConfig &config   = *wxGetApp().app_config;
+    m_plate_flow_defaults     = load_plate_flow_defaults(config);
+    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(config);
+
+    // Back to the automatic value where the plate type is configured, and to the stock value where it
+    // is not. The rows keep their auto flag, so this project follows the automation again.
+    m_first_layer_flow_auto  = true;
+    m_first_layer_flow_delta = OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)
+        ? OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type) : 0.;
+    refresh_first_layer_flow_controls();
+
+    m_bed_temp_auto   = true;
+    m_bed_temp_offset = (m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type))
+        ? OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket) : 0;
+    refresh_bed_temp_controls();
+}
 // [ORCAPORT:PA-1] END
 
 void PrintHostSendDialog::init()
@@ -612,23 +638,16 @@ void PrintHostSendDialog::init()
     if (!bed_image.empty())
         set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
 
-    // [ORCAPORT:PA-1] the local automation and the class of the largest instance on this plate.
+    // [ORCAPORT:PA-1] the local automation and the class of the plate's parts: the highest bucket any
+    // part lands in decides, because the bed temperature serves the whole plate.
     m_bed_type = bed_type;
     m_plate_flow_defaults     = load_plate_flow_defaults(*app_config);
     m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(*app_config);
     m_has_part_bucket         = false;
     if (plate != nullptr) {
-        double largest_footprint = 0.;
-        double largest_height    = 0.;
-        for (const auto &[footprint, height] : plate->get_instance_footprints())
-            if (footprint > largest_footprint) {
-                largest_footprint = footprint;
-                largest_height    = height;
-            }
-        if (largest_footprint > 0.) {
-            m_has_part_bucket = true;
-            m_part_bucket     = OrcaExt::classify_part_size(largest_footprint, OrcaExt::plate_area_mm2(plate->get_size()), largest_height);
-        }
+        const std::vector<std::pair<double, double>> footprints = plate->get_instance_footprints();
+        m_has_part_bucket = !footprints.empty();
+        m_part_bucket     = OrcaExt::plate_part_bucket(footprints, OrcaExt::plate_area_mm2(plate->get_size()));
     }
 
     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
@@ -831,6 +850,13 @@ void PrintHostSendDialog::init()
         automation->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
         automation->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_plate_automation(); });
         automation_row->Add(automation, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        auto *reset = new Button(this, _L("Reset to auto"));
+        reset->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        reset->SetToolTip(_L("Restore the first layer flow and the bed temperature offset to the automatic values for this plate."));
+        reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { reset_to_automation(); });
+        automation_row->Add(reset, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
         content_sizer->Add(automation_row);
         content_sizer->AddSpacer(VERT_SPACING);
     }

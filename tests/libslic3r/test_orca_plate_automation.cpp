@@ -28,32 +28,58 @@ template<int N> std::array<int, N> offsets(std::initializer_list<int> values)
 
 } // namespace
 
-// The band a part falls in decides which bed-temperature offset the dialog preselects, so the cut
-// points are inclusive at the top of each band and a tall part wins over its footprint.
-TEST_CASE("Part size buckets follow the footprint and the height", "[OrcaPlateAutomation]") {
-    const double cut_small   = kBedArea * OrcaExt::kPartSizeAreaPctCuts[0] / 100.; // 3 %
-    const double cut_smedium = kBedArea * OrcaExt::kPartSizeAreaPctCuts[1] / 100.; // 8 %
-    const double cut_medium  = kBedArea * OrcaExt::kPartSizeAreaPctCuts[2] / 100.; // 15 %
-    const double cut_mlarge  = kBedArea * OrcaExt::kPartSizeAreaPctCuts[3] / 100.; // 25 %
+// Warping is a height problem first and an area problem second: a part under 3 mm tall has no lever
+// arm and no gradient across its thickness, so it never needs bed heat, whatever it covers. Above
+// that, the matrix in classify_part_size decides. Boundaries are inclusive at the top of each band.
+TEST_CASE("Part size buckets follow the height and footprint matrix", "[OrcaPlateAutomation]") {
+    const double small_cut = kBedArea * OrcaExt::kPartSizeAreaPctCuts[0] / 100.;
+    const double mid_cut   = kBedArea * OrcaExt::kPartSizeAreaPctCuts[1] / 100.;
 
-    CHECK(OrcaExt::classify_part_size(cut_small, kBedArea, 10.) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(cut_small + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
-    CHECK(OrcaExt::classify_part_size(cut_smedium, kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
-    CHECK(OrcaExt::classify_part_size(cut_smedium + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(cut_medium, kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(cut_medium + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::MediumLarge);
-    CHECK(OrcaExt::classify_part_size(cut_mlarge, kBedArea, 10.) == OrcaExt::PartSizeBucket::MediumLarge);
-    CHECK(OrcaExt::classify_part_size(cut_mlarge + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::LargeFlat);
+    // Thin gate: a 1-layer test or a full-bed patch under 3 mm is always Small.
+    CHECK(OrcaExt::classify_part_size(100., kBedArea, 0.2) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, 1.) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kThinPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::Small);
 
-    // Height overrides the footprint in both directions: a tall thin part and a tall wide one.
-    CHECK(OrcaExt::classify_part_size(100., kBedArea, OrcaExt::kTallPartHeightMm) == OrcaExt::PartSizeBucket::Tall);
-    CHECK(OrcaExt::classify_part_size(cut_mlarge * 2., kBedArea, OrcaExt::kTallPartHeightMm + 1.) == OrcaExt::PartSizeBucket::Tall);
-    CHECK(OrcaExt::classify_part_size(cut_mlarge * 2., kBedArea, OrcaExt::kTallPartHeightMm - 1.) == OrcaExt::PartSizeBucket::LargeFlat);
+    // 3-20 mm: only a sliver of the bed stays Small.
+    CHECK(OrcaExt::classify_part_size(small_cut - 1., kBedArea, OrcaExt::kThinPartHeightMm) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(small_cut, kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kMidPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::SmallMedium);
+
+    // 20-50 mm: Medium up to 15 % of the bed, Medium-large above it.
+    CHECK(OrcaExt::classify_part_size(small_cut + 1., kBedArea, OrcaExt::kMidPartHeightMm) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(mid_cut, kBedArea, 30.) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(mid_cut + 1., kBedArea, 30.) == OrcaExt::PartSizeBucket::MediumLarge);
+
+    // 50-100 mm: a slender footprint is Medium-large (it lifts sooner), anything wider is Large.
+    CHECK(OrcaExt::classify_part_size(small_cut - 1., kBedArea, OrcaExt::kHighPartHeightMm) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(small_cut + 1., kBedArea, 70.) == OrcaExt::PartSizeBucket::Large);
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kTallPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::Large);
+
+    // Tall wins at 100 mm, whatever the footprint.
+    CHECK(OrcaExt::classify_part_size(10., kBedArea, OrcaExt::kTallPartHeightMm) == OrcaExt::PartSizeBucket::Tall);
 
     // A plate with no usable area, or no part, cannot be classified: the middle band keeps the
     // automation conservative instead of guessing an extreme.
-    CHECK(OrcaExt::classify_part_size(cut_small, 0., 10.) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(small_cut, 0., 10.) == OrcaExt::PartSizeBucket::Medium);
     CHECK(OrcaExt::classify_part_size(0., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+}
+
+// The bed temperature serves the whole plate, so the riskiest part decides: a first-layer test next
+// to a real part takes the real part's bucket, and a tall tower outvotes a large flat patch.
+TEST_CASE("The plate's bucket is the riskiest part on it", "[OrcaPlateAutomation]") {
+    using Bucket = OrcaExt::PartSizeBucket;
+    using Part   = std::pair<double, double>; // footprint, height
+
+    const std::vector<Part> thin_only {{kBedArea, 1.}, {100., 0.2}};
+    CHECK(OrcaExt::plate_part_bucket(thin_only, kBedArea) == Bucket::Small);
+
+    const std::vector<Part> patch_and_medium {{kBedArea, 1.}, {kBedArea * 0.05, 30.}};
+    CHECK(OrcaExt::plate_part_bucket(patch_and_medium, kBedArea) == Bucket::Medium);
+
+    const std::vector<Part> patch_and_tower {{kBedArea, 2.}, {50., 120.}};
+    CHECK(OrcaExt::plate_part_bucket(patch_and_tower, kBedArea) == Bucket::Tall);
+
+    CHECK(OrcaExt::plate_part_bucket({}, kBedArea) == Bucket::Small);
 }
 
 // The footprint must come from the 2D hull: a part turned 45 degrees has up to twice the bounding
@@ -138,6 +164,6 @@ TEST_CASE("Plate bed temperature defaults resolve per plate type and bucket", "[
 
     CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Small) == -15);
     CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Medium) == -5);
-    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::LargeFlat) == 5);
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Large) == 5);
     CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Tall) == 10);
 }

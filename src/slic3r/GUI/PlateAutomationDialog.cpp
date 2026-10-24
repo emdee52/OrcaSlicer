@@ -32,17 +32,18 @@ const std::array<BedType, 6> kAutomationPlates {btPC, btEP, btPEI, btPTE, btPCT,
 // typed into the field.
 const std::array<double, 5> kFlowChoices {-20., -15., -10., -5., 0.};
 
-// Bucket rows: name and the footprint band, in OrcaExt::PartSizeBucket order.
-wxString bucket_row_label(int bucket)
+// Bucket rows: short name plus a tooltip with the rule that lands a part in it.
+wxString bucket_row_tooltip(int bucket)
 {
+    using B = OrcaExt::PartSizeBucket;
     switch (bucket) {
-        case int(OrcaExt::PartSizeBucket::Small):       return _L("Small (up to 3% of the bed)");
-        case int(OrcaExt::PartSizeBucket::SmallMedium): return _L("Small-medium (3-8% of the bed)");
-        case int(OrcaExt::PartSizeBucket::Medium):      return _L("Medium (8-15% of the bed)");
-        case int(OrcaExt::PartSizeBucket::MediumLarge): return _L("Medium-large (15-25% of the bed)");
-        case int(OrcaExt::PartSizeBucket::LargeFlat):   return _L("Large flat (more than 25% of the bed)");
-        case int(OrcaExt::PartSizeBucket::Tall):        return _L("Tall (100 mm or taller)");
-        default:                                        return wxString();
+        case int(B::Small):       return _L("Under 3 mm tall at any footprint, or 3-20 mm tall covering less than 3% of the bed.");
+        case int(B::SmallMedium): return _L("3-20 mm tall and covering at least 3% of the bed.");
+        case int(B::Medium):      return _L("20-50 mm tall and covering at most 15% of the bed.");
+        case int(B::MediumLarge): return _L("20-50 mm tall covering more than 15% of the bed, or 50-100 mm tall covering less than 3%.");
+        case int(B::Large):       return _L("50-100 mm tall and covering at least 3% of the bed.");
+        case int(B::Tall):        return _L("100 mm or taller, at any footprint.");
+        default:                  return wxString();
     }
 }
 
@@ -54,6 +55,20 @@ wxString plate_name(BedType bed_type)
 }
 
 } // namespace
+
+wxString plate_bucket_short_name(OrcaExt::PartSizeBucket bucket)
+{
+    using B = OrcaExt::PartSizeBucket;
+    switch (bucket) {
+        case B::Small:       return _L("Small");
+        case B::SmallMedium: return _L("Small-medium");
+        case B::Medium:      return _L("Medium");
+        case B::MediumLarge: return _L("Medium-large");
+        case B::Large:       return _L("Large");
+        case B::Tall:        return _L("Tall");
+        default:             return wxString();
+    }
+}
 
 PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type, std::function<void()> on_applied)
     : DPIDialog(parent, wxID_ANY, _L("Plate automation"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
@@ -119,9 +134,10 @@ PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type,
 
     auto *bucket_grid = new wxFlexGridSizer(OrcaExt::kPartSizeBucketCount, 2, FromDIP(4), FromDIP(10));
     for (int i = 0; i < OrcaExt::kPartSizeBucketCount; ++i) {
-        auto *label = new wxStaticText(this, wxID_ANY, bucket_row_label(i));
+        auto *label = new wxStaticText(this, wxID_ANY, plate_bucket_short_name(OrcaExt::PartSizeBucket(i)));
         label->SetFont(::Label::Body_13);
         label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        label->SetToolTip(bucket_row_tooltip(i));
         bucket_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
 
         m_bucket_inputs[i] = new SpinInput(this, wxEmptyString, _L("\u00B0C" /* degC */), wxDefaultPosition,

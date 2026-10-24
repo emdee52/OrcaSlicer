@@ -115,6 +115,7 @@ protected:
     OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
     void                          open_plate_automation();
     void                          refresh_plate_automation();
+    void                          reset_to_automation();
 };
 
 
