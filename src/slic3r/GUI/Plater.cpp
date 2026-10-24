@@ -21387,7 +21387,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         // [ORCAPORT:BF-1] same plumbing for the first-layer bottom-surface flow reduction: a
         // project-config write, and the keys are in the G-code-export-only invalidation bucket, so
         // the export below regenerates the G-code with the new first-layer flow and keeps the slice.
-        {
+        // A dialog that never built the row (Flashforge) must not write, or it would reset a choice
+        // made from another send dialog back to the plate default.
+        if (pDlg->has_first_layer_flow_row()) {
             const double        first_layer_flow_delta = pDlg->first_layer_flow_delta();
             const bool          first_layer_flow_auto  = pDlg->first_layer_flow_auto();
             DynamicPrintConfig& project_config         = wxGetApp().preset_bundle->project_config;

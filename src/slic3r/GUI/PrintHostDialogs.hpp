@@ -51,6 +51,9 @@ public:
     double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
     // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
     bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
+    // [ORCAPORT:BF-1] false for a send dialog that never built the row (Flashforge overrides init()),
+    // so its caller must not write the two keys and reset a choice made from another dialog.
+    bool has_first_layer_flow_row() const { return !m_first_layer_flow_radios.empty(); }
 
     virtual void EndModal(int ret) override;
     virtual void init();
