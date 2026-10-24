@@ -102,12 +102,19 @@ protected:
 	Button* get_button(wxWindowID btn_id);
 	void apply_style(long style);
 	void finalize();
+	// [ORCAPORT:UI-3] stack a second bitmap under the logo, in the same left column and at the same
+	// size, so the two read as a pair (the send dialog shows the plate type this way).
+	void set_logo_below_bitmap(const wxBitmap& bitmap);
 
 	wxFont boldfont;
 	wxBoxSizer *content_sizer;
 	wxBoxSizer *btn_sizer;
 	wxBoxSizer *m_dsa_sizer;
 	wxStaticBitmap *logo;
+	// [ORCAPORT:UI-3] the logo's own column; it is a single-child sizer unless a dialog adds a
+	// bitmap below, in which case the column grows but its width (and the button indent) is unchanged.
+	wxBoxSizer     *m_logo_column {nullptr};
+	wxStaticBitmap *m_logo_below {nullptr};
     MsgButtonsHash  m_buttons;
 	CheckBox* m_checkbox_dsa{nullptr};
     wxString  m_forward_str;

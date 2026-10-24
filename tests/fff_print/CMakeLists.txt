@@ -18,6 +18,7 @@ add_executable(${_TEST_NAME}_tests
 	test_imex_slice_offset.cpp
 	test_model.cpp
 	test_multifilament.cpp
+	test_orca_first_layer_flow.cpp
 	test_perforation.cpp
 	test_perimeters.cpp
 	# Seam geometry and pipeline regressions share the existing Print fixtures.

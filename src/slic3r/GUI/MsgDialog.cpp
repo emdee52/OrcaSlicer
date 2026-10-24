@@ -88,8 +88,12 @@ MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &he
 	rightsizer->Add(content_sizer, 1, wxEXPAND | wxRIGHT, FromDIP(10));
 
 	logo = new wxStaticBitmap(this, wxID_ANY, bitmap.IsOk() ? bitmap : wxNullBitmap);
+    // [ORCAPORT:UI-3] the logo sits in its own column so a dialog can stack a same-size bitmap under
+    // it; with only the logo inside this is the same single item the sizer had before.
+    m_logo_column = new wxBoxSizer(wxVERTICAL);
+    m_logo_column->Add(logo, 0, 0);
     topsizer->Add(LOGO_SPACING, 0, 0, wxEXPAND, 0);
-	topsizer->Add(logo, 0, wxTOP, BORDER);
+	topsizer->Add(m_logo_column, 0, wxTOP, BORDER);
     topsizer->Add(LOGO_GAP, 0, 0, wxEXPAND, 0);
 	topsizer->Add(rightsizer, 1, wxTOP | wxEXPAND, BORDER);
 
@@ -132,6 +136,19 @@ int MsgDialog::ShowModal()
 }
 // [ORCAPORT:MCP-1] END
 
+
+// [ORCAPORT:UI-3] BEGIN - second bitmap under the logo
+void MsgDialog::set_logo_below_bitmap(const wxBitmap &bitmap)
+{
+    if (!bitmap.IsOk())
+        return;
+    if (m_logo_below == nullptr) {
+        m_logo_below = new wxStaticBitmap(this, wxID_ANY, bitmap);
+        m_logo_column->Add(m_logo_below, 0, wxTOP, FromDIP(6));
+    } else
+        m_logo_below->SetBitmap(bitmap);
+}
+// [ORCAPORT:UI-3] END
 
 void MsgDialog::show_dsa_button(wxString const &title)
 {

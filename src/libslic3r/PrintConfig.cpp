@@ -14,6 +14,8 @@
 #include "format.hpp"
 // [ORCAPORT:BT-1] bed-temperature offset bounds
 #include "OrcaExt/BedTempOverride.hpp"
+// [ORCAPORT:BF-1] first-layer bottom-surface flow reduction bounds
+#include "OrcaExt/FirstLayerFlow.hpp"
 
 #include "GCode/Thumbnails.hpp"
 #include <numeric>
@@ -1469,6 +1471,27 @@ void PrintConfigDef::init_fff_params()
     def->min = OrcaExt::kBedTempOffsetMin;
     def->max = OrcaExt::kBedTempOffsetMax;
     def->set_default_value(new ConfigOptionInt(0));
+
+    // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction, set from the upload
+    // dialog and kept in the project config (PresetBundle::s_project_options) so it never dirties a
+    // preset. Applied at G-code export time only, so changing it re-exports the G-code without
+    // re-slicing.
+    def = this->add("initial_layer_bottom_surface_flow_delta", coFloat);
+    def->label = L("First layer flow");
+    def->tooltip = L("Percent reduction of the bottom surface flow ratio on the first layer, applied when the G-code is exported. Set from the upload dialog to lower the first layer flow for a plate without re-slicing; saved with the project.");
+    def->mode = comAdvanced;
+    def->min = OrcaExt::kFirstLayerFlowDeltaMin;
+    def->max = OrcaExt::kFirstLayerFlowDeltaMax;
+    def->set_default_value(new ConfigOptionFloat(0));
+
+    // [ORCAPORT:BF-1] whether the upload dialog preselects the reduction for the plate type. It is
+    // a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct from
+    // "the user never chose" (auto on) and a cleared choice does not come back on reopen.
+    def = this->add("initial_layer_bottom_surface_flow_auto", coBool);
+    def->label = L("First layer flow follows the plate");
+    def->tooltip = L("Preselect the first-layer flow reduction for the plate type in the upload dialog: 20% for the cool plates, none for the others. Choosing or clearing a value in the dialog turns this off.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
 
     // Orca: allow profile maker to set default bed type in machine profile
     // This option won't be shown in the UI

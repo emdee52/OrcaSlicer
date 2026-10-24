@@ -1,0 +1,181 @@
+diff --git a/src/slic3r/GUI/BedTypeThumbnails.hpp b/src/slic3r/GUI/BedTypeThumbnails.hpp
+new file mode 100644
+index 0000000000..31e218dc1d
+--- /dev/null
++++ b/src/slic3r/GUI/BedTypeThumbnails.hpp
+@@ -0,0 +1,31 @@
++// [ORCAPORT FILE] BedTypeThumbnails - the plate picture for a bed type
++// Source: original (design in porting/notes/UI-3.md)
++//
++// One place for the BedType -> resources/images/bed_*.png mapping, shared by the send dialog's plate
++// thumbnail and the side panel's plate picker, so a new plate type cannot drift between them.
++#pragma once
++
++#include <string>
++
++#include "libslic3r/PrintConfig.hpp"
++
++namespace Slic3r {
++namespace GUI {
++
++// Image resource name (no extension) for `bed_type`'s plate picture; empty when the type has none
++// (btDefault/unset). create_scaled_bitmap throws on an empty name, so callers must check.
++inline std::string bed_type_thumbnail_name(BedType bed_type)
++{
++    switch (bed_type) {
++        case btPC:        return "bed_cool";
++        case btEP:        return "bed_engineering";
++        case btPEI:       return "bed_high_templ";
++        case btPTE:       return "bed_pei";
++        case btPCT:       return "bed_pei_cool";
++        case btSuperTack: return "bed_cool_supertack";
++        default:          return {};
++    }
++}
++
++} // namespace GUI
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/MsgDialog.cpp b/src/slic3r/GUI/MsgDialog.cpp
+index 1b81285081..c76f1c9a40 100644
+--- a/src/slic3r/GUI/MsgDialog.cpp
++++ b/src/slic3r/GUI/MsgDialog.cpp
+@@ -88,8 +88,12 @@ MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &he
+ 	rightsizer->Add(content_sizer, 1, wxEXPAND | wxRIGHT, FromDIP(10));
+ 
+ 	logo = new wxStaticBitmap(this, wxID_ANY, bitmap.IsOk() ? bitmap : wxNullBitmap);
++    // [ORCAPORT:UI-3] the logo sits in its own column so a dialog can stack a same-size bitmap under
++    // it; with only the logo inside this is the same single item the sizer had before.
++    m_logo_column = new wxBoxSizer(wxVERTICAL);
++    m_logo_column->Add(logo, 0, 0);
+     topsizer->Add(LOGO_SPACING, 0, 0, wxEXPAND, 0);
+-	topsizer->Add(logo, 0, wxTOP, BORDER);
++	topsizer->Add(m_logo_column, 0, wxTOP, BORDER);
+     topsizer->Add(LOGO_GAP, 0, 0, wxEXPAND, 0);
+ 	topsizer->Add(rightsizer, 1, wxTOP | wxEXPAND, BORDER);
+ 
+@@ -133,6 +137,19 @@ int MsgDialog::ShowModal()
+ // [ORCAPORT:MCP-1] END
+ 
+ 
++// [ORCAPORT:UI-3] BEGIN - second bitmap under the logo
++void MsgDialog::set_logo_below_bitmap(const wxBitmap &bitmap)
++{
++    if (!bitmap.IsOk())
++        return;
++    if (m_logo_below == nullptr) {
++        m_logo_below = new wxStaticBitmap(this, wxID_ANY, bitmap);
++        m_logo_column->Add(m_logo_below, 0, wxTOP, FromDIP(6));
++    } else
++        m_logo_below->SetBitmap(bitmap);
++}
++// [ORCAPORT:UI-3] END
++
+ void MsgDialog::show_dsa_button(wxString const &title)
+ {
+     m_checkbox_dsa = new CheckBox(this);
+diff --git a/src/slic3r/GUI/MsgDialog.hpp b/src/slic3r/GUI/MsgDialog.hpp
+index 199b4686ec..c0574df462 100644
+--- a/src/slic3r/GUI/MsgDialog.hpp
++++ b/src/slic3r/GUI/MsgDialog.hpp
+@@ -102,12 +102,19 @@ protected:
+ 	Button* get_button(wxWindowID btn_id);
+ 	void apply_style(long style);
+ 	void finalize();
++	// [ORCAPORT:UI-3] stack a second bitmap under the logo, in the same left column and at the same
++	// size, so the two read as a pair (the send dialog shows the plate type this way).
++	void set_logo_below_bitmap(const wxBitmap& bitmap);
+ 
+ 	wxFont boldfont;
+ 	wxBoxSizer *content_sizer;
+ 	wxBoxSizer *btn_sizer;
+ 	wxBoxSizer *m_dsa_sizer;
+ 	wxStaticBitmap *logo;
++	// [ORCAPORT:UI-3] the logo's own column; it is a single-child sizer unless a dialog adds a
++	// bitmap below, in which case the column grows but its width (and the button indent) is unchanged.
++	wxBoxSizer     *m_logo_column {nullptr};
++	wxStaticBitmap *m_logo_below {nullptr};
+     MsgButtonsHash  m_buttons;
+ 	CheckBox* m_checkbox_dsa{nullptr};
+     wxString  m_forward_str;
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index c6554db57c..55ed0bb72f 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -1,4 +1,5 @@
+ #include "Plater.hpp"
++#include "BedTypeThumbnails.hpp" // [ORCAPORT:UI-3]
+ #include "../Utils/NetworkAgent.hpp"
+ #include "IPrinterAgent.hpp"
+ #include "CalibUtils.hpp"
+@@ -452,14 +453,6 @@ void Plater::clear_plate_toolbar_image_dirty()
+     m_b_plate_toolbar_image_dirty = false;
+ }
+ 
+-static std::map<BedType, std::string> bed_type_thumbnails = {
+-    {BedType::btPC,        "bed_cool"           },
+-    {BedType::btEP,        "bed_engineering"    },
+-    {BedType::btPEI,       "bed_high_templ"     },
+-    {BedType::btPTE,       "bed_pei"            },
+-    {BedType::btPCT,       "bed_pei_cool"       },
+-    {BedType::btSuperTack, "bed_cool_supertack" }
+-};
+ 
+ enum SlicedInfoIdx
+ {
+@@ -4211,7 +4204,8 @@ std::string Sidebar::get_cur_select_bed_image()
+ {
+     auto select_bed_type   = get_cur_select_bed_type();
+     //auto series_suffix_str = m_cur_image_bed_type.empty() ? "" : ("_" + m_cur_image_bed_type);
+-    auto image_path        = bed_type_thumbnails[select_bed_type];// + series_suffix_str;
++    // [ORCAPORT:UI-3] the mapping lives in BedTypeThumbnails.hpp, shared with the send dialog.
++    auto image_path        = bed_type_thumbnail_name(select_bed_type);// + series_suffix_str;
+     return image_path;
+ }
+ 
+diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
+index 065c40861c..0bb25b387c 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.cpp
++++ b/src/slic3r/GUI/PrintHostDialogs.cpp
+@@ -85,6 +85,7 @@
+ #include "Widgets/RadioBox.hpp"
+ #include "libslic3r/OrcaExt/BedTempOverride.hpp"
+ #include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
++#include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
+ 
+ #include "libslic3r/Preset.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+@@ -562,6 +563,15 @@ void PrintHostSendDialog::init()
+ 
+     const AppConfig* app_config = wxGetApp().app_config;
+ 
++    // [ORCAPORT:UI-3] plate picture under the app logo. Both images are 64 px square sources, so the
++    // two icons match in size and the column keeps its width; a plate with no picture (btDefault)
++    // leaves the dialog exactly as it was.
++    PartPlate*        plate     = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
++    const BedType     bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
++    const std::string bed_image = bed_type_thumbnail_name(bed_type);
++    if (!bed_image.empty())
++        set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
++
+     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
+     label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
+ 
+@@ -628,9 +638,7 @@ void PrintHostSendDialog::init()
+     // re-slicing and without touching a preset.
+     {
+         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+-        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+ 
+-        const BedType bed_type  = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
+         m_bed_temp_base         = OrcaExt::effective_first_layer_bed_temp(
+             preset_bundle->full_config(), bed_type,
+             OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
+@@ -691,8 +699,6 @@ void PrintHostSendDialog::init()
+     // changes the first layer without re-slicing and without touching a preset.
+     {
+         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
+-        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+-        const BedType bed_type      = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
+ 
+         m_first_layer_flow_base = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
+ 

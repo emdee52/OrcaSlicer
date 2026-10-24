@@ -1,4 +1,5 @@
 #include "Plater.hpp"
+#include "BedTypeThumbnails.hpp" // [ORCAPORT:UI-3]
 #include "../Utils/NetworkAgent.hpp"
 #include "IPrinterAgent.hpp"
 #include "CalibUtils.hpp"
@@ -452,14 +453,6 @@ void Plater::clear_plate_toolbar_image_dirty()
     m_b_plate_toolbar_image_dirty = false;
 }
 
-static std::map<BedType, std::string> bed_type_thumbnails = {
-    {BedType::btPC,        "bed_cool"           },
-    {BedType::btEP,        "bed_engineering"    },
-    {BedType::btPEI,       "bed_high_templ"     },
-    {BedType::btPTE,       "bed_pei"            },
-    {BedType::btPCT,       "bed_pei_cool"       },
-    {BedType::btSuperTack, "bed_cool_supertack" }
-};
 
 enum SlicedInfoIdx
 {
@@ -4211,7 +4204,8 @@ std::string Sidebar::get_cur_select_bed_image()
 {
     auto select_bed_type   = get_cur_select_bed_type();
     //auto series_suffix_str = m_cur_image_bed_type.empty() ? "" : ("_" + m_cur_image_bed_type);
-    auto image_path        = bed_type_thumbnails[select_bed_type];// + series_suffix_str;
+    // [ORCAPORT:UI-3] the mapping lives in BedTypeThumbnails.hpp, shared with the send dialog.
+    auto image_path        = bed_type_thumbnail_name(select_bed_type);// + series_suffix_str;
     return image_path;
 }
 
@@ -21383,6 +21377,24 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
             // refresh the plate bed-temperature readout for the new delta
             p->partplate_list.invalidate_bed_temp_textures();
             p->view3D->get_canvas3d()->set_as_dirty();
+        }
+        // [ORCAPORT:BF-1] same plumbing for the first-layer bottom-surface flow reduction: a
+        // project-config write, and the keys are in the G-code-export-only invalidation bucket, so
+        // the export below regenerates the G-code with the new first-layer flow and keeps the slice.
+        // A dialog that never built the row (Flashforge) must not write, or it would reset a choice
+        // made from another send dialog back to the plate default.
+        if (pDlg->has_first_layer_flow_row()) {
+            const double        first_layer_flow_delta = pDlg->first_layer_flow_delta();
+            const bool          first_layer_flow_auto  = pDlg->first_layer_flow_auto();
+            DynamicPrintConfig& project_config         = wxGetApp().preset_bundle->project_config;
+            if (ConfigOptionFloat* opt = project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
+                opt->value = first_layer_flow_delta;
+            else
+                project_config.set_key_value("initial_layer_bottom_surface_flow_delta", new ConfigOptionFloat(first_layer_flow_delta));
+            if (ConfigOptionBool* opt = project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
+                opt->value = first_layer_flow_auto;
+            else
+                project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
         }
         // PrintHostUpload upload_data;
         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();

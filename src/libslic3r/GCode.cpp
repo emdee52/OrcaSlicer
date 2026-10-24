@@ -48,6 +48,7 @@
 #include "Print.hpp"
 #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
 #include "OrcaExt/BedTempOverride.hpp" // [ORCAPORT:BT-1]
+#include "OrcaExt/FirstLayerFlow.hpp"  // [ORCAPORT:BF-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
 #include "LocalesUtils.hpp"
@@ -9379,6 +9380,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         _mm3_per_mm *= NOZZLE_CONFIG(top_solid_infill_flow_ratio);
     } else if (path.role() == erBottomSurface) {
         _mm3_per_mm *= m_config.bottom_solid_infill_flow_ratio;
+        // [ORCAPORT:BF-1] print-time reduction of the first layer's bottom surface only, set from
+        // the upload dialog. The walls on the first layer keep their own flow.
+        if (path_on_first_layer)
+            _mm3_per_mm *= OrcaExt::first_layer_bottom_flow_scale(m_config.initial_layer_bottom_surface_flow_delta.value);
     } else if (path.role() == erInternalBridgeInfill) {
         _mm3_per_mm *= m_config.internal_bridge_flow;
     } else if (path.role() == erBrim) {
