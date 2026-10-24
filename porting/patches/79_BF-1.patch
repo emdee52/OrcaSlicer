@@ -201,17 +201,19 @@ index 28d5e76dd3..cd852810f3 100644
      "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
  };
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 535255b80a..7e825e8209 100644
+index 535255b80a..c6554db57c 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
-@@ -21384,6 +21384,22 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -21384,6 +21384,24 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
              p->partplate_list.invalidate_bed_temp_textures();
              p->view3D->get_canvas3d()->set_as_dirty();
          }
 +        // [ORCAPORT:BF-1] same plumbing for the first-layer bottom-surface flow reduction: a
 +        // project-config write, and the keys are in the G-code-export-only invalidation bucket, so
 +        // the export below regenerates the G-code with the new first-layer flow and keeps the slice.
-+        {
++        // A dialog that never built the row (Flashforge) must not write, or it would reset a choice
++        // made from another send dialog back to the plate default.
++        if (pDlg->has_first_layer_flow_row()) {
 +            const double        first_layer_flow_delta = pDlg->first_layer_flow_delta();
 +            const bool          first_layer_flow_auto  = pDlg->first_layer_flow_auto();
 +            DynamicPrintConfig& project_config         = wxGetApp().preset_bundle->project_config;
@@ -359,10 +361,10 @@ index 566ce92b48..065c40861c 100644
          m_valid_suffix = recent_path.substr(extension_start);
      // .gcode suffix control
 diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
-index 8c32f7043f..9c554fb56b 100644
+index 8c32f7043f..458c689cc2 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.hpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.hpp
-@@ -47,6 +47,10 @@ public:
+@@ -47,6 +47,13 @@ public:
      bool switch_to_device_tab() const {return m_switch_to_device_tab;}
      // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
      int bed_temp_offset() const { return m_bed_temp_offset; }
@@ -370,10 +372,13 @@ index 8c32f7043f..9c554fb56b 100644
 +    double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
 +    // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
 +    bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
++    // [ORCAPORT:BF-1] false for a send dialog that never built the row (Flashforge overrides init()),
++    // so its caller must not write the two keys and reset a choice made from another dialog.
++    bool has_first_layer_flow_row() const { return !m_first_layer_flow_radios.empty(); }
  
      virtual void EndModal(int ret) override;
      virtual void init();
-@@ -77,6 +81,18 @@ protected:
+@@ -77,6 +84,18 @@ protected:
      void                   set_bed_temp_offset(int offset);
      void                   update_bed_temp_status();
      // [ORCAPORT:BT-1] END

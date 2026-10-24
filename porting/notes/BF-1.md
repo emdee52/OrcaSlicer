@@ -152,7 +152,9 @@ flow), `tests/libslic3r/test_orca_first_layer_flow.cpp`.
   silently doing nothing.
 - `FlashforgePrintHostSendDialog::init()` overrides `PrintHostSendDialog::init()` and does not call
   it, so the row (like BT-1's) is not present for Flashforge. Elegoo and Creality call the base
-  `init()` and get it.
+  `init()` and get it. The write-back in `send_gcode_legacy` is skipped when the row was never built
+  (`has_first_layer_flow_row()`), so a Flashforge upload cannot reset a choice made from another send
+  dialog back to the plate default.
 
 ## Verification
 
