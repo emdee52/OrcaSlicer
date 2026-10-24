@@ -22,11 +22,12 @@ own rows still applies to that project alone.
 
 ## Where the preferences live (and why not a printer profile)
 
-`AppConfig` `[app]` section, two strings:
+`AppConfig` `[app]` section, three strings:
 
 ```
 first_layer_flow_plates     = "0:-20;2:-12"                  (BedType:percent)
 first_layer_bed_temp_buckets = "0:-15,-10,-5,0,0,5;5:..."    (BedType:six offsets, bucket order)
+plate_bucket_limits         = "3,15;3,20,50,100"             (footprint %, then height rows mm)
 ```
 
 - `BedType` integers keep the encoding stable; unknown types are ignored, values are clamped on read
@@ -85,14 +86,29 @@ bed size):
 | **50-100 mm** | Medium-large | Large | Large |
 | **100 mm and up** | Tall | Tall | Tall |
 
-- The **under-3 mm gate** is what keeps a single-layer test or a full-bed 1 mm patch at `Small`; before
-  it, the footprint alone put them in the top bucket.
+- The **under-thin gate** is what keeps a single-layer test or a full-bed 1 mm patch at `Small`;
+  before it, the footprint alone put them in the top bucket.
 - 50-100 mm with a small footprint is `Medium-large` rather than `Large`: a slender part lifts sooner,
   but a broad one has more area pulling.
-- The boundaries (`kThinPartHeightMm`, `kMidPartHeightMm`, `kHighPartHeightMm`, `kTallPartHeightMm`,
-  `kPartSizeAreaPctCuts`) are constants, not UI, by decision; they are one edit away if a band feels
-  wrong. The bucket names (`Small ... Large, Tall`) replaced the old "Large flat": with the matrix,
-  the top band is "large and at least 50 mm tall", not only flat.
+- The bucket names (`Small ... Large, Tall`) replaced the old "Large flat": with the matrix, the top
+  band is "large and at least 50 mm tall", not only flat.
+
+### Editable bands
+
+The six edges are a local preference, not constants: `AppConfig` `[app] plate_bucket_limits =
+"3,15;3,20,50,100"` (footprint percentages, then height rows in mm). The **Size bands (all plates)**
+section at the bottom of the popup edits them:
+
+- footprint `[ ] % [ ] %` and height `[ ][ ][ ][ ] mm`, with **Save bands** (writes AppConfig and
+  re-resolves the bed-temperature row immediately) and **Defaults** (fills in the built-in values;
+  still needs Save bands).
+- Ranges enforced on save: footprint 0.1-100 %, height 0.1-500 mm, both strictly increasing. An
+  invalid set is reported inline and nothing is written; a malformed value already in the config
+  falls back to the defaults on load instead of mis-classifying.
+- A **live readout** under the buttons shows the plate being uploaded with the values currently in the
+  fields: `This plate: 42.0 mm tall, 7.2 % of the bed -> Medium`, and updates as you type. That is the
+  tuning loop: type a band, watch which bucket the current part lands in, Save when it looks right.
+- The section caption's tooltip spells out the matrix with the current numbers.
 
 ## Anchors
 
@@ -132,15 +148,17 @@ and an automatic offset of 0 reads `(medium-large)`.
 ## Verification
 
 - Build: `build_win.bat -s --tests --no-gettext -j 8`, clean.
-- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 49
-  assertions in 6 cases): every matrix cell boundary (including the under-3 mm gate at 0.2/1/2.99 mm
-  and 3 mm at both footprint columns), the 100 mm tall override, a plate with no area, the
+- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 75
+  assertions in 9 cases): every matrix cell boundary (including the thin gate at 0.2/1/2.99 mm and
+  at the edge itself, both footprint columns), the tall override, a plate with no area, the
   riskiest-part rule (a full-bed patch plus a first-layer test stays Small; a tower outvotes a
-  patch), the hull-vs-bbox footprint on a 45-degree part, AppConfig round-trip (including configured
-  zeros), malformed/unknown/out-of-range input, and the per-type/per-bucket lookups.
+  patch) and the deciding-part readout, the editable bands (round-trip, defaults fallback for
+  non-increasing/out-of-range/malformed input, classification under a custom 5/10 % and 2/10/30/80 mm
+  set), the hull-vs-bbox footprint on a 45-degree part, both AppConfig maps (including configured
+  zeros), and the per-type/per-bucket lookups.
 - `[OrcaFirstLayerFlow]` updated: the old "cool plates default to -20" case is replaced by the map
   lookup including "configured 0 counts as configured".
-- Suites: libslic3r **1583/1583**, fff_print **460/460**.
+- Suites: libslic3r **1586/1586**, fff_print **460/460**.
 - Runtime smoke over MCP: app starts, model slices, export carries
   `; bed_temperature_offset_auto = 1` next to the existing keys, and a `-10` delta still scales only
   the first layer's bottom surface (BF-1 path untouched).
@@ -151,9 +169,9 @@ and an automatic offset of 0 reads `(medium-large)`.
 
 ## Known limitations
 
-1. **Heuristic**: the matrix is tuned by hand (thin gate 3 mm, 3/15 % footprint columns, 20/50/100 mm
-   height rows). It is deliberately simple and explainable; the thresholds are constants, and the
-   send dialog names the bucket it picked before Upload, so a surprising value is visible.
+1. **Heuristic**: the matrix is tuned by hand, and the bands are runtime-editable in the popup
+   (footprint 0.1-100 %, heights 0.1-500 mm), so the defaults are a starting point rather than a
+   hardcoded truth.
 2. The riskiest part decides, but **plate coverage and part count are not considered**: twenty small
    parts are still classified "small" even though the whole bed is used.
 3. Supports and brims are not in the footprint (they do not exist before slicing).

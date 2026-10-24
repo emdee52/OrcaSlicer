@@ -42,10 +42,10 @@ index 0db3048e38..30c07a6992 100644
  {
 diff --git a/src/libslic3r/OrcaExt/PlateAutomation.hpp b/src/libslic3r/OrcaExt/PlateAutomation.hpp
 new file mode 100644
-index 0000000000..14d420cf69
+index 0000000000..818ff1cbf5
 --- /dev/null
 +++ b/src/libslic3r/OrcaExt/PlateAutomation.hpp
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,367 @@
 +// [ORCAPORT FILE] PlateAutomation - local, per-plate-type automation for the first layer
 +// Source: original (design in porting/notes/PA-1.md)
 +//
@@ -106,6 +106,87 @@ index 0000000000..14d420cf69
 +// size): under 3%, 3-15%, over 15%.
 +constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
 +
++// Editable bands. The six numbers are saved in AppConfig, so they can be tuned at runtime instead of
++// rebuilt; the defaults are the values above. Keep them ascending - valid_part_size_limits() is the
++// gate, and a stored value that fails it falls back to the defaults rather than mis-classifying.
++struct PartSizeLimits {
++    double fp_small_pct {kPartSizeAreaPctCuts[0]};
++    double fp_mid_pct {kPartSizeAreaPctCuts[1]};
++    double h_thin_mm {kThinPartHeightMm};
++    double h_mid_mm {kMidPartHeightMm};
++    double h_high_mm {kHighPartHeightMm};
++    double h_tall_mm {kTallPartHeightMm};
++};
++
++constexpr double kMinFootprintPct = 0.1;
++constexpr double kMaxFootprintPct = 100.0;
++constexpr double kMinHeightMm     = 0.1;
++constexpr double kMaxHeightMm     = 500.0;
++
++inline bool valid_part_size_limits(const PartSizeLimits &limits)
++{
++    if (!(limits.fp_small_pct >= kMinFootprintPct && limits.fp_small_pct < limits.fp_mid_pct
++          && limits.fp_mid_pct <= kMaxFootprintPct))
++        return false;
++    return limits.h_thin_mm >= kMinHeightMm && limits.h_thin_mm < limits.h_mid_mm
++        && limits.h_mid_mm < limits.h_high_mm && limits.h_high_mm < limits.h_tall_mm
++        && limits.h_tall_mm <= kMaxHeightMm;
++}
++
++// "3,15;3,20,50,100" - footprint percentages, then height rows in mm.
++inline std::string serialize_part_size_limits(const PartSizeLimits &limits)
++{
++    auto number = [](double value) {
++        std::string text = std::to_string(value); // 3.000000
++        text.erase(text.find_last_not_of('0') + 1);
++        if (! text.empty() && text.back() == '.')
++            text.pop_back();
++        return text;
++    };
++    return number(limits.fp_small_pct) + "," + number(limits.fp_mid_pct) + ";" + number(limits.h_thin_mm)
++        + "," + number(limits.h_mid_mm) + "," + number(limits.h_high_mm) + "," + number(limits.h_tall_mm);
++}
++
++// Tolerant: anything malformed, out of order or out of range yields the defaults.
++inline PartSizeLimits parse_part_size_limits(const std::string &text)
++{
++    PartSizeLimits limits;
++    const size_t   split = text.find(';');
++    if (split == std::string::npos)
++        return limits;
++
++    auto read_list = [](const std::string &list, std::vector<double> &out) {
++        size_t pos = 0;
++        while (pos <= list.size()) {
++            const size_t      end = list.find(',', pos);
++            const std::string item = list.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
++            try {
++                out.push_back(std::stod(item));
++            } catch (...) {
++                return;
++            }
++            if (end == std::string::npos)
++                break;
++            pos = end + 1;
++        }
++    };
++
++    std::vector<double> fp;
++    std::vector<double> heights;
++    read_list(text.substr(0, split), fp);
++    read_list(text.substr(split + 1), heights);
++    if (fp.size() != 2 || heights.size() != 4)
++        return limits;
++
++    limits.fp_small_pct = fp[0];
++    limits.fp_mid_pct   = fp[1];
++    limits.h_thin_mm    = heights[0];
++    limits.h_mid_mm     = heights[1];
++    limits.h_high_mm    = heights[2];
++    limits.h_tall_mm    = heights[3];
++    return valid_part_size_limits(limits) ? limits : PartSizeLimits {};
++}
++
 +// The bucket a single part falls in.
 +//
 +//              footprint:  under 3%       3-15%          over 15%
@@ -116,38 +197,48 @@ index 0000000000..14d420cf69
 +//   100 mm and up          Tall           Tall           Tall
 +//
 +// `bed_area_mm2` is the plate's own area; a plate with no usable area falls back to Medium rather
-+// than guessing an extreme.
-+inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm)
++// than guessing an extreme. The bands above are the `limits` defaults.
++inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm,
++                                        const PartSizeLimits &limits = PartSizeLimits {})
 +{
-+    if (height_mm < kThinPartHeightMm)
++    if (height_mm < limits.h_thin_mm)
 +        return PartSizeBucket::Small;
-+    if (height_mm >= kTallPartHeightMm)
++    if (height_mm >= limits.h_tall_mm)
 +        return PartSizeBucket::Tall;
 +    if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
 +        return PartSizeBucket::Medium;
 +
 +    const double pct        = 100. * footprint_mm2 / bed_area_mm2;
-+    const bool   small_area = pct < kPartSizeAreaPctCuts[0];
-+    const bool   mid_area   = pct <= kPartSizeAreaPctCuts[1];
++    const bool   small_area = pct < limits.fp_small_pct;
++    const bool   mid_area   = pct <= limits.fp_mid_pct;
 +
-+    if (height_mm < kMidPartHeightMm)
++    if (height_mm < limits.h_mid_mm)
 +        return small_area ? PartSizeBucket::Small : PartSizeBucket::SmallMedium;
-+    if (height_mm < kHighPartHeightMm)
++    if (height_mm < limits.h_high_mm)
 +        return mid_area ? PartSizeBucket::Medium : PartSizeBucket::MediumLarge;
-+    // 50 mm and up: a small footprint is a slender part, which lifts sooner than a broad one.
++    // The top row before Tall: a small footprint is a slender part, which lifts sooner than a broad
++    // one.
 +    return small_area ? PartSizeBucket::MediumLarge : PartSizeBucket::Large;
 +}
 +
 +// The bucket that decides the plate's bed temperature: the highest any part lands in, because the
 +// temperature serves the whole plate. A first-layer test next to a real part gets the real part's
-+// bucket, and a big flat patch no longer outvotes a tall one.
-+inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2)
++// bucket, and a big flat patch no longer outvotes a tall one. `deciding_*` report the part that set
++// the bucket, for the popup's readout.
++inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2,
++                                        const PartSizeLimits &limits = PartSizeLimits {},
++                                        double *deciding_height_mm = nullptr, double *deciding_pct = nullptr)
 +{
 +    PartSizeBucket bucket = PartSizeBucket::Small;
 +    for (const auto &[footprint, height] : footprints) {
-+        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height);
-+        if (int(part) > int(bucket))
++        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height, limits);
++        if (int(part) > int(bucket)) {
 +            bucket = part;
++            if (deciding_height_mm != nullptr)
++                *deciding_height_mm = height;
++            if (deciding_pct != nullptr)
++                *deciding_pct = bed_area_mm2 > 0. ? 100. * footprint / bed_area_mm2 : 0.;
++        }
 +    }
 +    return bucket;
 +}
@@ -481,10 +572,10 @@ index f061d56079..507846371f 100644
  
 diff --git a/src/slic3r/GUI/PlateAutomationDialog.cpp b/src/slic3r/GUI/PlateAutomationDialog.cpp
 new file mode 100644
-index 0000000000..81ca04c8f7
+index 0000000000..24e9070741
 --- /dev/null
 +++ b/src/slic3r/GUI/PlateAutomationDialog.cpp
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,501 @@
 +#include "PlateAutomationDialog.hpp"
 +
 +#include <algorithm>
@@ -496,6 +587,8 @@ index 0000000000..81ca04c8f7
 +#include "BedTypeThumbnails.hpp"
 +#include "GUI.hpp"
 +#include "GUI_App.hpp"
++#include "PartPlate.hpp"
++#include "Plater.hpp"
 +#include "I18N.hpp"
 +#include "PlateAutomationStore.hpp"
 +#include "Widgets/Button.hpp"
@@ -520,25 +613,23 @@ index 0000000000..81ca04c8f7
 +const std::array<double, 5> kFlowChoices {-20., -15., -10., -5., 0.};
 +
 +// Bucket rows: short name plus a tooltip with the rule that lands a part in it.
-+wxString bucket_row_tooltip(int bucket)
-+{
-+    using B = OrcaExt::PartSizeBucket;
-+    switch (bucket) {
-+        case int(B::Small):       return _L("Under 3 mm tall at any footprint, or 3-20 mm tall covering less than 3% of the bed.");
-+        case int(B::SmallMedium): return _L("3-20 mm tall and covering at least 3% of the bed.");
-+        case int(B::Medium):      return _L("20-50 mm tall and covering at most 15% of the bed.");
-+        case int(B::MediumLarge): return _L("20-50 mm tall covering more than 15% of the bed, or 50-100 mm tall covering less than 3%.");
-+        case int(B::Large):       return _L("50-100 mm tall and covering at least 3% of the bed.");
-+        case int(B::Tall):        return _L("100 mm or taller, at any footprint.");
-+        default:                  return wxString();
-+    }
-+}
-+
 +wxString plate_name(BedType bed_type)
 +{
 +    const ConfigOptionDef *def = print_config_def.get("curr_bed_type");
 +    const int              idx = int(bed_type) - 1;
 +    return (def != nullptr && idx >= 0 && idx < int(def->enum_labels.size())) ? from_u8(def->enum_labels[idx]) : _L("Unknown plate");
++}
++
++// The size-band rules spelled out with the current numbers, for the section's tooltip.
++wxString bands_summary(const OrcaExt::PartSizeLimits &limits)
++{
++    auto n = [](double value) { return wxString::Format("%g", value); };
++    return wxString::Format(
++        _L("Bands: under %s mm tall is Small at any footprint. %s-%s mm: Small below %s%% of the bed, otherwise Small-medium. %s-%s mm: Medium, Medium-large above %s%%. %s-%s mm: Medium-large, Large from %s%%. %s mm and up: Tall."),
++        n(limits.h_thin_mm), n(limits.h_thin_mm), n(limits.h_mid_mm), n(limits.fp_small_pct),
++        n(limits.h_mid_mm), n(limits.h_high_mm), n(limits.fp_mid_pct),
++        n(limits.h_high_mm), n(limits.h_tall_mm), n(limits.fp_small_pct),
++        n(limits.h_tall_mm));
 +}
 +
 +} // namespace
@@ -563,6 +654,16 @@ index 0000000000..81ca04c8f7
 +{
 +    SetFont(wxGetApp().normal_font());
 +    SetBackgroundColour(*wxWHITE);
++
++    // The plate being uploaded, for the bands readout: its instances stay put while the dialog is
++    // open, so measure them once.
++    m_plate_footprints.clear();
++    m_plate_area_mm2 = 0.;
++    if (wxGetApp().plater() != nullptr)
++        if (PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate()) {
++            m_plate_footprints = plate->get_instance_footprints();
++            m_plate_area_mm2   = OrcaExt::plate_area_mm2(plate->get_size());
++        }
 +
 +    auto *main_sizer = new wxBoxSizer(wxVERTICAL);
 +
@@ -624,7 +725,6 @@ index 0000000000..81ca04c8f7
 +        auto *label = new wxStaticText(this, wxID_ANY, plate_bucket_short_name(OrcaExt::PartSizeBucket(i)));
 +        label->SetFont(::Label::Body_13);
 +        label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-+        label->SetToolTip(bucket_row_tooltip(i));
 +        bucket_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
 +
 +        m_bucket_inputs[i] = new SpinInput(this, wxEmptyString, _L("\u00B0C" /* degC */), wxDefaultPosition,
@@ -633,6 +733,10 @@ index 0000000000..81ca04c8f7
 +        bucket_grid->Add(m_bucket_inputs[i], 0, wxALIGN_CENTER_VERTICAL);
 +    }
 +    main_sizer->Add(bucket_grid, 0, wxALL, FromDIP(12));
++
++    // Size bands: the six edges behind the buckets, saved locally so they can be tuned without a
++    // rebuild. They apply to every plate type, unlike the offsets above.
++    create_band_controls(main_sizer);
 +
 +    m_hint = new wxStaticText(this, wxID_ANY, wxEmptyString);
 +    m_hint->SetFont(::Label::Body_12);
@@ -661,6 +765,9 @@ index 0000000000..81ca04c8f7
 +    m_focus       = it == kAutomationPlates.end() ? 0 : size_t(it - kAutomationPlates.begin());
 +    toggle_tile(m_focus);
 +    refresh_tile_values();
++
++    load_band_controls(load_plate_bucket_limits(*wxGetApp().app_config));
++    refresh_bands_feedback();
 +}
 +
 +void PlateAutomationDialog::create_plate_tiles(wxSizer *sizer)
@@ -690,6 +797,151 @@ index 0000000000..81ca04c8f7
 +
 +        sizer->Add(cell, 0, wxALIGN_CENTER_HORIZONTAL);
 +    }
++}
++
++void PlateAutomationDialog::create_band_controls(wxSizer *sizer)
++{
++    m_bands_caption = new wxStaticText(this, wxID_ANY, _L("Size bands (all plates)"));
++    m_bands_caption->SetFont(::Label::Body_13);
++    m_bands_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    sizer->Add(m_bands_caption, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
++
++    auto make_label = [this](wxSizer *row, const wxString &text) {
++        auto *item = new wxStaticText(this, wxID_ANY, text);
++        item->SetFont(::Label::Body_12);
++        item->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        row->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
++    };
++    auto make_input = [this](const wxString &suffix) {
++        auto *field = new TextInput(this, wxEmptyString, suffix, "", wxDefaultPosition, FromDIP(wxSize(80, 30)), wxTE_CENTRE);
++        // Tuning loop: the readout follows what is typed, before anything is saved.
++        field->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent &event) {
++            refresh_bands_feedback();
++            event.Skip();
++        });
++        return field;
++    };
++
++    auto *footprint_row = new wxBoxSizer(wxHORIZONTAL);
++    make_label(footprint_row, _L("Footprint"));
++    m_footprint_inputs[0] = make_input("%");
++    footprint_row->Add(m_footprint_inputs[0], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
++    m_footprint_inputs[1] = make_input("%");
++    footprint_row->Add(m_footprint_inputs[1], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
++    make_label(footprint_row, _L("of the bed"));
++    sizer->Add(footprint_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
++
++    auto *height_row = new wxBoxSizer(wxHORIZONTAL);
++    make_label(height_row, _L("Height"));
++    for (int i = 0; i < int(m_height_inputs.size()); ++i) {
++        m_height_inputs[i] = make_input(wxEmptyString);
++        height_row->Add(m_height_inputs[i], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
++    }
++    make_label(height_row, _L("mm"));
++    sizer->Add(height_row, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
++
++    auto *bands_row = new wxBoxSizer(wxHORIZONTAL);
++    auto *save = new Button(this, _L("Save bands"));
++    save->SetStyle(ButtonStyle::Confirm, ButtonType::Compact);
++    save->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { save_bands(); });
++    bands_row->Add(save, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++    auto *defaults = new Button(this, _L("Defaults"));
++    defaults->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++    defaults->SetToolTip(_L("Fill in the built-in bands; press Save bands to keep them."));
++    defaults->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
++        load_band_controls(OrcaExt::PartSizeLimits {});
++        refresh_bands_feedback();
++    });
++    bands_row->Add(defaults, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++    sizer->Add(bands_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
++
++    m_bands_readout = new wxStaticText(this, wxID_ANY, wxEmptyString);
++    m_bands_readout->SetFont(::Label::Body_12);
++    m_bands_readout->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    sizer->Add(m_bands_readout, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
++}
++
++bool PlateAutomationDialog::read_band_controls(OrcaExt::PartSizeLimits &limits) const
++{
++    auto number = [](TextInput *input, double &out) {
++        wxString text = input->GetTextCtrl()->GetValue();
++        text.Trim(true).Trim(false);
++        if (text.IsEmpty())
++            return false;
++        double value = 0.;
++        if (! text.ToDouble(&value))
++            return false;
++        out = value;
++        return true;
++    };
++    return number(m_footprint_inputs[0], limits.fp_small_pct)
++        && number(m_footprint_inputs[1], limits.fp_mid_pct)
++        && number(m_height_inputs[0], limits.h_thin_mm)
++        && number(m_height_inputs[1], limits.h_mid_mm)
++        && number(m_height_inputs[2], limits.h_high_mm)
++        && number(m_height_inputs[3], limits.h_tall_mm)
++        && OrcaExt::valid_part_size_limits(limits);
++}
++
++void PlateAutomationDialog::load_band_controls(const OrcaExt::PartSizeLimits &limits)
++{
++    auto set = [](TextInput *input, double value) {
++        input->GetTextCtrl()->ChangeValue(wxString::Format("%g", value));
++    };
++    set(m_footprint_inputs[0], limits.fp_small_pct);
++    set(m_footprint_inputs[1], limits.fp_mid_pct);
++    set(m_height_inputs[0], limits.h_thin_mm);
++    set(m_height_inputs[1], limits.h_mid_mm);
++    set(m_height_inputs[2], limits.h_high_mm);
++    set(m_height_inputs[3], limits.h_tall_mm);
++}
++
++void PlateAutomationDialog::refresh_bands_feedback()
++{
++    OrcaExt::PartSizeLimits limits;
++    const bool              valid = read_band_controls(limits);
++
++    if (m_bands_caption != nullptr)
++        m_bands_caption->SetToolTip(valid ? bands_summary(limits)
++                                          : _L("Footprint bands must increase from 0.1 to 100 %; height bands must increase from 0.1 to 500 mm."));
++
++    if (m_bands_readout == nullptr)
++        return;
++
++    if (! valid) {
++        m_bands_readout->SetLabel(_L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
++        return;
++    }
++    if (m_plate_footprints.empty()) {
++        m_bands_readout->SetLabel(_L("This plate is empty."));
++        return;
++    }
++
++    double           height = 0.;
++    double           pct    = 0.;
++    const auto       bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, limits, &height, &pct);
++    m_bands_readout->SetLabel(wxString::Format(_L("This plate: %.1f mm tall, %.1f%% of the bed -> %s"),
++                                               height, pct, plate_bucket_short_name(bucket)));
++    m_bands_readout->GetParent()->Layout();
++}
++
++void PlateAutomationDialog::save_bands()
++{
++    OrcaExt::PartSizeLimits limits;
++    if (! read_band_controls(limits)) {
++        set_hint(_L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
++        return;
++    }
++
++    AppConfig &config = *wxGetApp().app_config;
++    save_plate_bucket_limits(config, limits);
++    config.save();
++
++    set_hint(_L("Bands saved."));
++    refresh_bands_feedback();
++    if (m_on_applied)
++        m_on_applied();
 +}
 +
 +void PlateAutomationDialog::toggle_tile(size_t index)
@@ -827,10 +1079,10 @@ index 0000000000..81ca04c8f7
 +} // namespace Slic3r
 diff --git a/src/slic3r/GUI/PlateAutomationDialog.hpp b/src/slic3r/GUI/PlateAutomationDialog.hpp
 new file mode 100644
-index 0000000000..608b8ca741
+index 0000000000..5b999ec698
 --- /dev/null
 +++ b/src/slic3r/GUI/PlateAutomationDialog.hpp
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,85 @@
 +// [ORCAPORT FILE] PlateAutomationDialog - edit the local per-plate automation
 +// Source: original (design in porting/notes/PA-1.md)
 +//
@@ -883,10 +1135,15 @@ index 0000000000..608b8ca741
 +    };
 +
 +    void create_plate_tiles(wxSizer *sizer);
++    void create_band_controls(wxSizer *sizer);
 +    void toggle_tile(size_t index);
 +    void load_controls_from(BedType bed_type);
 +    void refresh_tile_values();
 +    void refresh_flow_controls(double flow_percent);
++    bool read_band_controls(OrcaExt::PartSizeLimits &limits) const;
++    void load_band_controls(const OrcaExt::PartSizeLimits &limits);
++    void refresh_bands_feedback();
++    void save_bands();
 +    void set_hint(const wxString &text);
 +    bool read_flow_control(double &flow_percent) const;
 +    void apply();
@@ -897,6 +1154,12 @@ index 0000000000..608b8ca741
 +    std::vector<RadioBox *> m_flow_radios;
 +    TextInput        *m_flow_custom {nullptr};
 +    std::array<SpinInput *, OrcaExt::kPartSizeBucketCount> m_bucket_inputs {};
++    std::array<TextInput *, 2> m_footprint_inputs {};
++    std::array<TextInput *, 4> m_height_inputs {};
++    wxStaticText     *m_bands_caption {nullptr};
++    wxStaticText     *m_bands_readout {nullptr};
++    std::vector<std::pair<double, double>> m_plate_footprints;
++    double            m_plate_area_mm2 {0.};
 +    wxStaticText     *m_hint {nullptr};
 +    std::function<void()> m_on_applied;
 +};
@@ -907,10 +1170,10 @@ index 0000000000..608b8ca741
 +#endif // slic3r_GUI_PlateAutomationDialog_hpp_
 diff --git a/src/slic3r/GUI/PlateAutomationStore.hpp b/src/slic3r/GUI/PlateAutomationStore.hpp
 new file mode 100644
-index 0000000000..ffc2c0ee10
+index 0000000000..863c7cb7b3
 --- /dev/null
 +++ b/src/slic3r/GUI/PlateAutomationStore.hpp
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,51 @@
 +// [ORCAPORT FILE] PlateAutomationStore - AppConfig side of the local plate automation
 +// Source: original (design in porting/notes/PA-1.md)
 +//
@@ -927,6 +1190,8 @@ index 0000000000..ffc2c0ee10
 +
 +inline constexpr const char *PLATE_FLOW_DEFAULTS_KEY     = "first_layer_flow_plates";
 +inline constexpr const char *PLATE_BED_TEMP_DEFAULTS_KEY = "first_layer_bed_temp_buckets";
++// The size-band edges. Also local-only: they are a tuning preference, not project data.
++inline constexpr const char *PLATE_BUCKET_LIMITS_KEY     = "plate_bucket_limits";
 +
 +inline OrcaExt::PlateFlowDefaults load_plate_flow_defaults(const AppConfig &config)
 +{
@@ -946,6 +1211,16 @@ index 0000000000..ffc2c0ee10
 +inline void save_plate_bed_temp_defaults(AppConfig &config, const OrcaExt::PlateBedTempDefaults &defaults)
 +{
 +    config.set("app", PLATE_BED_TEMP_DEFAULTS_KEY, OrcaExt::serialize_bed_temp_defaults(defaults));
++}
++
++inline OrcaExt::PartSizeLimits load_plate_bucket_limits(const AppConfig &config)
++{
++    return OrcaExt::parse_part_size_limits(config.get("app", PLATE_BUCKET_LIMITS_KEY));
++}
++
++inline void save_plate_bucket_limits(AppConfig &config, const OrcaExt::PartSizeLimits &limits)
++{
++    config.set("app", PLATE_BUCKET_LIMITS_KEY, OrcaExt::serialize_part_size_limits(limits));
 +}
 +
 +} // namespace GUI
@@ -979,7 +1254,7 @@ index 55ed0bb72f..6a001c460c 100644
              // refresh the plate bed-temperature readout for the new delta
              p->partplate_list.invalidate_bed_temp_textures();
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 0bb25b387c..80de6d07c8 100644
+index 0bb25b387c..5d33bc01d8 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -86,6 +86,8 @@
@@ -1036,7 +1311,7 @@ index 0bb25b387c..80de6d07c8 100644
      for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
          m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
      update_first_layer_flow_status();
-@@ -554,6 +575,51 @@ void PrintHostSendDialog::update_first_layer_flow_status()
+@@ -554,6 +575,60 @@ void PrintHostSendDialog::update_first_layer_flow_status()
  }
  // [ORCAPORT:BF-1] END
  
@@ -1052,6 +1327,7 @@ index 0bb25b387c..80de6d07c8 100644
 +    const AppConfig &config    = *wxGetApp().app_config;
 +    m_plate_flow_defaults      = load_plate_flow_defaults(config);
 +    m_plate_bed_temp_defaults  = load_plate_bed_temp_defaults(config);
++    m_part_size_limits         = load_plate_bucket_limits(config);
 +
 +    // Only a row that still follows the automation changes; a value picked by hand belongs to this
 +    // project and is left alone.
@@ -1059,8 +1335,13 @@ index 0bb25b387c..80de6d07c8 100644
 +        m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type);
 +        refresh_first_layer_flow_controls();
 +    }
-+    if (m_bed_temp_auto && m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type)) {
-+        m_bed_temp_offset = OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket);
++
++    // The bands may have changed: reclassify the plate and let the status line follow the new bucket.
++    if (m_has_part_bucket)
++        m_part_bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
++    if (m_bed_temp_auto) {
++        if (m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type))
++            m_bed_temp_offset = OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket);
 +        refresh_bed_temp_controls();
 +    }
 +}
@@ -1070,6 +1351,9 @@ index 0bb25b387c..80de6d07c8 100644
 +    const AppConfig &config   = *wxGetApp().app_config;
 +    m_plate_flow_defaults     = load_plate_flow_defaults(config);
 +    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(config);
++    m_part_size_limits        = load_plate_bucket_limits(config);
++    if (m_has_part_bucket)
++        m_part_bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
 +
 +    // Back to the automatic value where the plate type is configured, and to the stock value where it
 +    // is not. The rows keep their auto flag, so this project follows the automation again.
@@ -1088,7 +1372,7 @@ index 0bb25b387c..80de6d07c8 100644
  void PrintHostSendDialog::init()
  {
      const auto& path = m_path;
-@@ -572,6 +638,18 @@ void PrintHostSendDialog::init()
+@@ -572,6 +647,22 @@ void PrintHostSendDialog::init()
      if (!bed_image.empty())
          set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
  
@@ -1097,17 +1381,21 @@ index 0bb25b387c..80de6d07c8 100644
 +    m_bed_type = bed_type;
 +    m_plate_flow_defaults     = load_plate_flow_defaults(*app_config);
 +    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(*app_config);
++    m_part_size_limits        = load_plate_bucket_limits(*app_config);
 +    m_has_part_bucket         = false;
++    m_plate_footprints.clear();
++    m_plate_area_mm2 = 0.;
 +    if (plate != nullptr) {
-+        const std::vector<std::pair<double, double>> footprints = plate->get_instance_footprints();
-+        m_has_part_bucket = !footprints.empty();
-+        m_part_bucket     = OrcaExt::plate_part_bucket(footprints, OrcaExt::plate_area_mm2(plate->get_size()));
++        m_plate_footprints = plate->get_instance_footprints();
++        m_plate_area_mm2   = OrcaExt::plate_area_mm2(plate->get_size());
++        m_has_part_bucket  = !m_plate_footprints.empty();
++        m_part_bucket      = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, m_part_size_limits);
 +    }
 +
      auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
      label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
  
-@@ -643,8 +721,17 @@ void PrintHostSendDialog::init()
+@@ -643,8 +734,17 @@ void PrintHostSendDialog::init()
              preset_bundle->full_config(), bed_type,
              OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
  
@@ -1126,7 +1414,7 @@ index 0bb25b387c..80de6d07c8 100644
  
          const ConfigOptionDef* bed_type_def = print_config_def.get("curr_bed_type");
          const int              bed_type_idx = (int) bed_type - 1;
-@@ -705,10 +792,9 @@ void PrintHostSendDialog::init()
+@@ -705,10 +805,9 @@ void PrintHostSendDialog::init()
          if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
              m_first_layer_flow_auto = saved_auto->value;
  
@@ -1140,7 +1428,7 @@ index 0bb25b387c..80de6d07c8 100644
          else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
              m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
  
-@@ -718,7 +804,7 @@ void PrintHostSendDialog::init()
+@@ -718,7 +817,7 @@ void PrintHostSendDialog::init()
          caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
          // The reduction covers the first layer's bottom surface infill, not its walls, so the
          // caption alone must not be read as "every extrusion on layer 1".
@@ -1149,7 +1437,7 @@ index 0bb25b387c..80de6d07c8 100644
          row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
  
          // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
-@@ -756,6 +842,25 @@ void PrintHostSendDialog::init()
+@@ -756,6 +855,25 @@ void PrintHostSendDialog::init()
      }
      // [ORCAPORT:BF-1] END
  
@@ -1176,7 +1464,7 @@ index 0bb25b387c..80de6d07c8 100644
          m_valid_suffix = recent_path.substr(extension_start);
      // .gcode suffix control
 diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
-index 458c689cc2..ec16a177a9 100644
+index 458c689cc2..c2e3519766 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.hpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.hpp
 @@ -18,6 +18,7 @@
@@ -1219,7 +1507,7 @@ index 458c689cc2..ec16a177a9 100644
      // [ORCAPORT:BT-1] END
  
      // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Same plumbing as the
-@@ -95,7 +103,19 @@ protected:
+@@ -95,7 +103,22 @@ protected:
      std::vector<RadioBox*> m_first_layer_flow_radios;
      void                   set_first_layer_flow_delta(double delta);
      void                   update_first_layer_flow_status();
@@ -1231,6 +1519,9 @@ index 458c689cc2..ec16a177a9 100644
 +    // on the plate the dialog is uploading.
 +    OrcaExt::PlateFlowDefaults    m_plate_flow_defaults;
 +    OrcaExt::PlateBedTempDefaults m_plate_bed_temp_defaults;
++    OrcaExt::PartSizeLimits       m_part_size_limits;
++    std::vector<std::pair<double, double>> m_plate_footprints;
++    double                        m_plate_area_mm2 {0.};
 +    bool                          m_has_part_bucket {false};
 +    OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
 +    void                          open_plate_automation();
