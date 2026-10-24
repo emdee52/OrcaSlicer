@@ -11,8 +11,8 @@
 // in a 3mf, so a downloaded project or an updated vendor profile cannot carry or clobber them. A
 // value chosen in the print dialog is a per-project override and takes precedence.
 //
-// This header owns the data model (buckets, maps, AppConfig encoding) and the classification, all
-// free of UI, so the behaviour is unit-tested rather than eyeballed.
+// This header owns the data model (buckets, maps, AppConfig encoding), the size matrix and the
+// classification, all free of UI, so the behaviour is unit-tested rather than eyeballed.
 #ifndef slic3r_OrcaExt_PlateAutomation_hpp_
 #define slic3r_OrcaExt_PlateAutomation_hpp_
 
@@ -35,8 +35,7 @@ namespace OrcaExt {
 
 // Size buckets, smallest first. Warping is a height problem first and an area problem second: a thin
 // part has no lever arm and no gradient across its thickness, so it never needs bed heat, while a tall
-// part accumulates enough contraction to lift a large footprint. The classifier is therefore a
-// height x footprint matrix, and `Tall` is decided by height alone.
+// part accumulates enough contraction to lift a large footprint.
 enum class PartSizeBucket : int {
     Small = 0,
     SmallMedium,
@@ -48,26 +47,19 @@ enum class PartSizeBucket : int {
 };
 constexpr int kPartSizeBucketCount = int(PartSizeBucket::Count);
 
-// Height bands, in mm: under kThinPartHeightMm nothing warps; from there to kTallPartHeightMm the
-// footprint bands decide. The 20 and 50 mm edges are the interior rows of the matrix.
-constexpr double kThinPartHeightMm = 3.0;
-constexpr double kMidPartHeightMm  = 20.0;
-constexpr double kHighPartHeightMm = 50.0;
-constexpr double kTallPartHeightMm = 100.0;
-// Footprint columns, as a percentage of the plate's area (percentages so they travel to another bed
-// size): under 3%, 3-15%, over 15%.
-constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
+// The matrix axes: six height rows (the first is the flat gate) and five footprint columns.
+constexpr int kPartSizeHeightRows    = 6;
+constexpr int kPartSizeFootprintCols = 5;
 
-// Editable bands. The six numbers are saved in AppConfig, so they can be tuned at runtime instead of
-// rebuilt; the defaults are the values above. Keep them ascending - valid_part_size_limits() is the
-// gate, and a stored value that fails it falls back to the defaults rather than mis-classifying.
+// Editable bands, saved in AppConfig so they can be tuned at runtime instead of rebuilt. Keep them
+// ascending - valid_part_size_limits() is the gate, and a stored value that fails it falls back to
+// the defaults rather than mis-classifying.
 struct PartSizeLimits {
-    double fp_small_pct {kPartSizeAreaPctCuts[0]};
-    double fp_mid_pct {kPartSizeAreaPctCuts[1]};
-    double h_thin_mm {kThinPartHeightMm};
-    double h_mid_mm {kMidPartHeightMm};
-    double h_high_mm {kHighPartHeightMm};
-    double h_tall_mm {kTallPartHeightMm};
+    // Interior edges of the five footprint bands, as a share of the plate's area.
+    std::array<double, kPartSizeFootprintCols - 1> fp_pct {3., 25., 50., 75.};
+    // Height row edges in mm: the flat gate (a big part above it is Large whatever its height), then
+    // thin, mid, high and tall.
+    std::array<double, kPartSizeHeightRows - 1> h_mm {1., 3., 20., 50., 100.};
 };
 
 constexpr double kMinFootprintPct = 0.1;
@@ -77,100 +69,64 @@ constexpr double kMaxHeightMm     = 500.0;
 
 inline bool valid_part_size_limits(const PartSizeLimits &limits)
 {
-    if (!(limits.fp_small_pct >= kMinFootprintPct && limits.fp_small_pct < limits.fp_mid_pct
-          && limits.fp_mid_pct <= kMaxFootprintPct))
+    if (limits.fp_pct.front() < kMinFootprintPct || limits.fp_pct.back() > kMaxFootprintPct)
         return false;
-    return limits.h_thin_mm >= kMinHeightMm && limits.h_thin_mm < limits.h_mid_mm
-        && limits.h_mid_mm < limits.h_high_mm && limits.h_high_mm < limits.h_tall_mm
-        && limits.h_tall_mm <= kMaxHeightMm;
+    for (size_t i = 1; i < limits.fp_pct.size(); ++i)
+        if (!(limits.fp_pct[i] > limits.fp_pct[i - 1]))
+            return false;
+
+    if (limits.h_mm.front() < kMinHeightMm || limits.h_mm.back() > kMaxHeightMm)
+        return false;
+    for (size_t i = 1; i < limits.h_mm.size(); ++i)
+        if (!(limits.h_mm[i] > limits.h_mm[i - 1]))
+            return false;
+    return true;
 }
 
-// "3,15;3,20,50,100" - footprint percentages, then height rows in mm.
-inline std::string serialize_part_size_limits(const PartSizeLimits &limits)
-{
-    auto number = [](double value) {
-        std::string text = std::to_string(value); // 3.000000
-        text.erase(text.find_last_not_of('0') + 1);
-        if (! text.empty() && text.back() == '.')
-            text.pop_back();
-        return text;
-    };
-    return number(limits.fp_small_pct) + "," + number(limits.fp_mid_pct) + ";" + number(limits.h_thin_mm)
-        + "," + number(limits.h_mid_mm) + "," + number(limits.h_high_mm) + "," + number(limits.h_tall_mm);
-}
-
-// Tolerant: anything malformed, out of order or out of range yields the defaults.
-inline PartSizeLimits parse_part_size_limits(const std::string &text)
-{
-    PartSizeLimits limits;
-    const size_t   split = text.find(';');
-    if (split == std::string::npos)
-        return limits;
-
-    auto read_list = [](const std::string &list, std::vector<double> &out) {
-        size_t pos = 0;
-        while (pos <= list.size()) {
-            const size_t      end = list.find(',', pos);
-            const std::string item = list.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-            try {
-                out.push_back(std::stod(item));
-            } catch (...) {
-                return;
-            }
-            if (end == std::string::npos)
-                break;
-            pos = end + 1;
-        }
-    };
-
-    std::vector<double> fp;
-    std::vector<double> heights;
-    read_list(text.substr(0, split), fp);
-    read_list(text.substr(split + 1), heights);
-    if (fp.size() != 2 || heights.size() != 4)
-        return limits;
-
-    limits.fp_small_pct = fp[0];
-    limits.fp_mid_pct   = fp[1];
-    limits.h_thin_mm    = heights[0];
-    limits.h_mid_mm     = heights[1];
-    limits.h_high_mm    = heights[2];
-    limits.h_tall_mm    = heights[3];
-    return valid_part_size_limits(limits) ? limits : PartSizeLimits {};
-}
-
-// The bucket a single part falls in.
+// The classifier as data: rows are the height bands (below the flat gate first), columns the
+// footprint bands from the smallest share of the bed to the biggest. Thresholds are inclusive at the
+// top of each band, so a part exactly at an edge belongs to the higher band.
 //
-//              footprint:  under 3%       3-15%          over 15%
-//   under 3 mm             Small          Small          Small
-//   3-20 mm                Small          Small-medium   Small-medium
-//   20-50 mm               Medium         Medium         Medium-large
-//   50-100 mm              Medium-large   Large          Large
-//   100 mm and up          Tall           Tall           Tall
-//
-// `bed_area_mm2` is the plate's own area; a plate with no usable area falls back to Medium rather
-// than guessing an extreme. The bands above are the `limits` defaults.
+// A part in the biggest footprint column is Large from the flat gate up to the tall band, with no
+// height row in between: a print that covers most of the bed needs bed heat for adhesion and for the
+// contraction of a long span, however flat it is, and dropping it into Small would be wrong.
+constexpr PartSizeBucket kPartSizeMatrix[kPartSizeHeightRows][kPartSizeFootprintCols] = {
+    // < fp[0]                 fp[0]-fp[1]              fp[1]-fp[2]              fp[2]-fp[3]             > fp[3]
+    {PartSizeBucket::Small,       PartSizeBucket::Small,       PartSizeBucket::Small,       PartSizeBucket::Small,       PartSizeBucket::Small},      // below the flat gate
+    {PartSizeBucket::Small,       PartSizeBucket::Small,       PartSizeBucket::SmallMedium, PartSizeBucket::SmallMedium, PartSizeBucket::Large},      // flat gate .. thin
+    {PartSizeBucket::Small,       PartSizeBucket::SmallMedium, PartSizeBucket::SmallMedium, PartSizeBucket::Medium,      PartSizeBucket::Large},      // thin .. mid
+    {PartSizeBucket::Medium,      PartSizeBucket::Medium,      PartSizeBucket::MediumLarge, PartSizeBucket::MediumLarge, PartSizeBucket::Large},      // mid .. high
+    {PartSizeBucket::MediumLarge, PartSizeBucket::Large,       PartSizeBucket::Large,       PartSizeBucket::Large,       PartSizeBucket::Large},      // high .. tall
+    {PartSizeBucket::Tall,        PartSizeBucket::Tall,        PartSizeBucket::Tall,        PartSizeBucket::Tall,        PartSizeBucket::Tall},       // tall and up
+};
+
+// Row of the matrix a height falls in, 0 = below the flat gate.
+inline int part_size_height_row(double height_mm, const PartSizeLimits &limits = PartSizeLimits {})
+{
+    for (int row = 0; row < kPartSizeHeightRows - 1; ++row)
+        if (height_mm < limits.h_mm[row])
+            return row;
+    return kPartSizeHeightRows - 1;
+}
+
+// Column of the matrix a footprint share falls in, 0 = smallest.
+inline int part_size_footprint_column(double footprint_pct, const PartSizeLimits &limits = PartSizeLimits {})
+{
+    for (int column = 0; column < kPartSizeFootprintCols - 1; ++column)
+        if (footprint_pct < limits.fp_pct[column])
+            return column;
+    return kPartSizeFootprintCols - 1;
+}
+
+// The bucket a single part falls in. `bed_area_mm2` is the plate's own area; a plate with no usable
+// area, or a part with no footprint, falls back to Medium rather than guessing an extreme.
 inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm,
                                         const PartSizeLimits &limits = PartSizeLimits {})
 {
-    if (height_mm < limits.h_thin_mm)
-        return PartSizeBucket::Small;
-    if (height_mm >= limits.h_tall_mm)
-        return PartSizeBucket::Tall;
     if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
         return PartSizeBucket::Medium;
-
-    const double pct        = 100. * footprint_mm2 / bed_area_mm2;
-    const bool   small_area = pct < limits.fp_small_pct;
-    const bool   mid_area   = pct <= limits.fp_mid_pct;
-
-    if (height_mm < limits.h_mid_mm)
-        return small_area ? PartSizeBucket::Small : PartSizeBucket::SmallMedium;
-    if (height_mm < limits.h_high_mm)
-        return mid_area ? PartSizeBucket::Medium : PartSizeBucket::MediumLarge;
-    // The top row before Tall: a small footprint is a slender part, which lifts sooner than a broad
-    // one.
-    return small_area ? PartSizeBucket::MediumLarge : PartSizeBucket::Large;
+    const double pct = 100. * footprint_mm2 / bed_area_mm2;
+    return kPartSizeMatrix[part_size_height_row(height_mm, limits)][part_size_footprint_column(pct, limits)];
 }
 
 // The bucket that decides the plate's bed temperature: the highest any part lands in, because the
@@ -247,6 +203,64 @@ inline int bed_temp_default_for(const PlateBedTempDefaults &defaults, BedType be
     if (it == defaults.end() || int(bucket) < 0 || int(bucket) >= kPartSizeBucketCount)
         return 0;
     return clamp_bed_temp_offset(it->second[int(bucket)]);
+}
+
+// "3,25,50,75;1,3,20,50,100" - footprint edges in percent, then height edges in mm. A value written
+// by an older build (two footprint edges and four heights) does not match the counts and falls back
+// to the defaults, which is the safe direction.
+inline std::string serialize_part_size_limits(const PartSizeLimits &limits)
+{
+    auto number = [](double value) {
+        std::string text = std::to_string(value);
+        text.erase(text.find_last_not_of('0') + 1);
+        if (! text.empty() && text.back() == '.')
+            text.pop_back();
+        return text;
+    };
+    std::string out;
+    for (size_t i = 0; i < limits.fp_pct.size(); ++i)
+        out += (i > 0 ? "," : "") + number(limits.fp_pct[i]);
+    out += ';';
+    for (size_t i = 0; i < limits.h_mm.size(); ++i)
+        out += (i > 0 ? "," : "") + number(limits.h_mm[i]);
+    return out;
+}
+
+// Tolerant: anything malformed, out of order, out of range or of the wrong length yields the
+// defaults.
+inline PartSizeLimits parse_part_size_limits(const std::string &text)
+{
+    PartSizeLimits limits;
+    const size_t   split = text.find(';');
+    if (split == std::string::npos)
+        return limits;
+
+    auto read_list = [](const std::string &list, std::vector<double> &out) {
+        size_t pos = 0;
+        while (pos <= list.size()) {
+            const size_t      end = list.find(',', pos);
+            const std::string item = list.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            try {
+                out.push_back(std::stod(item));
+            } catch (...) {
+                return;
+            }
+            if (end == std::string::npos)
+                break;
+            pos = end + 1;
+        }
+    };
+
+    std::vector<double> fp;
+    std::vector<double> heights;
+    read_list(text.substr(0, split), fp);
+    read_list(text.substr(split + 1), heights);
+    if (fp.size() != limits.fp_pct.size() || heights.size() != limits.h_mm.size())
+        return limits;
+
+    std::copy(fp.begin(), fp.end(), limits.fp_pct.begin());
+    std::copy(heights.begin(), heights.end(), limits.h_mm.begin());
+    return valid_part_size_limits(limits) ? limits : PartSizeLimits {};
 }
 
 // AppConfig encoding. One string each so the whole map is written atomically and stays readable in

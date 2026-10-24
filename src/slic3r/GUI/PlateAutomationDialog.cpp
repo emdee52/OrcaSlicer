@@ -42,16 +42,43 @@ wxString plate_name(BedType bed_type)
     return (def != nullptr && idx >= 0 && idx < int(def->enum_labels.size())) ? from_u8(def->enum_labels[idx]) : _L("Unknown plate");
 }
 
-// The size-band rules spelled out with the current numbers, for the section's tooltip.
-wxString bands_summary(const OrcaExt::PartSizeLimits &limits)
+wxString number_text(double value) { return wxString::Format("%g", value); }
+
+// One matrix column header: "< 3%", "3-25%", "> 75%".
+wxString footprint_column_text(const OrcaExt::PartSizeLimits &limits, int column)
 {
-    auto n = [](double value) { return wxString::Format("%g", value); };
-    return wxString::Format(
-        _L("Bands: under %s mm tall is Small at any footprint. %s-%s mm: Small below %s%% of the bed, otherwise Small-medium. %s-%s mm: Medium, Medium-large above %s%%. %s-%s mm: Medium-large, Large from %s%%. %s mm and up: Tall."),
-        n(limits.h_thin_mm), n(limits.h_thin_mm), n(limits.h_mid_mm), n(limits.fp_small_pct),
-        n(limits.h_mid_mm), n(limits.h_high_mm), n(limits.fp_mid_pct),
-        n(limits.h_high_mm), n(limits.h_tall_mm), n(limits.fp_small_pct),
-        n(limits.h_tall_mm));
+    if (column <= 0)
+        return wxString::Format(_L("< %s%%"), number_text(limits.fp_pct.front()));
+    if (column >= OrcaExt::kPartSizeFootprintCols - 1)
+        return wxString::Format(_L("> %s%%"), number_text(limits.fp_pct.back()));
+    return wxString::Format(_L("%s-%s%%"), number_text(limits.fp_pct[column - 1]), number_text(limits.fp_pct[column]));
+}
+
+// One matrix row header: "< 1", "1-3", ">= 100".
+wxString height_row_text(const OrcaExt::PartSizeLimits &limits, int row)
+{
+    if (row <= 0)
+        return wxString::Format(_L("< %s"), number_text(limits.h_mm.front()));
+    if (row >= OrcaExt::kPartSizeHeightRows - 1)
+        return wxString::Format(_L(">= %s"), number_text(limits.h_mm.back()));
+    return wxString::Format(_L("%s-%s"), number_text(limits.h_mm[row - 1]), number_text(limits.h_mm[row]));
+}
+
+// The caption under the fields: every band the numbers currently define.
+wxString footprint_ranges_line(const OrcaExt::PartSizeLimits &limits)
+{
+    wxString text;
+    for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column)
+        text += (column > 0 ? "  \u00B7  " : "") + footprint_column_text(limits, column);
+    return text;
+}
+
+wxString height_ranges_line(const OrcaExt::PartSizeLimits &limits)
+{
+    wxString text;
+    for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row)
+        text += (row > 0 ? "  \u00B7  " : "") + height_row_text(limits, row);
+    return text;
 }
 
 } // namespace
@@ -223,50 +250,41 @@ void PlateAutomationDialog::create_plate_tiles(wxSizer *sizer)
 
 void PlateAutomationDialog::create_band_controls(wxSizer *sizer)
 {
-    m_bands_caption = new wxStaticText(this, wxID_ANY, _L("Size bands (all plates)"));
-    m_bands_caption->SetFont(::Label::Body_13);
-    m_bands_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-    sizer->Add(m_bands_caption, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-
     auto make_label = [this](wxSizer *row, const wxString &text) {
         auto *item = new wxStaticText(this, wxID_ANY, text);
         item->SetFont(::Label::Body_12);
         item->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
         row->Add(item, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
     };
-    auto make_input = [this](const wxString &suffix) {
-        auto *field = new TextInput(this, wxEmptyString, suffix, "", wxDefaultPosition, FromDIP(wxSize(80, 30)), wxTE_CENTRE);
-        // Tuning loop: the readout follows what is typed, before anything is saved.
+    auto make_input = [this]() {
+        auto *field = new TextInput(this, wxEmptyString, wxEmptyString, "", wxDefaultPosition, FromDIP(wxSize(64, 30)), wxTE_CENTRE);
+        // Tuning loop: the ranges, the table headers and the readout follow what is typed, before
+        // anything is saved.
         field->GetTextCtrl()->Bind(wxEVT_TEXT, [this](wxCommandEvent &event) {
             refresh_bands_feedback();
             event.Skip();
         });
         return field;
     };
+    auto make_note = [this](wxSizer *target, wxStaticText *&label) {
+        label = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        label->SetFont(::Label::Body_12);
+        label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#5A6A6E")));
+        target->Add(label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(4));
+    };
 
-    auto *footprint_row = new wxBoxSizer(wxHORIZONTAL);
-    make_label(footprint_row, _L("Footprint"));
-    m_footprint_inputs[0] = make_input("%");
-    footprint_row->Add(m_footprint_inputs[0], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    m_footprint_inputs[1] = make_input("%");
-    footprint_row->Add(m_footprint_inputs[1], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    make_label(footprint_row, _L("of the bed"));
-    sizer->Add(footprint_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
+    // Header: caption, the bands table (hidden by default) and the built-in values.
+    auto *header_row = new wxBoxSizer(wxHORIZONTAL);
+    m_bands_caption = new wxStaticText(this, wxID_ANY, _L("Size bands (all plates)"));
+    m_bands_caption->SetFont(::Label::Body_13);
+    m_bands_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+    header_row->Add(m_bands_caption, 0, wxALIGN_CENTER_VERTICAL);
+    header_row->AddStretchSpacer();
 
-    auto *height_row = new wxBoxSizer(wxHORIZONTAL);
-    make_label(height_row, _L("Height"));
-    for (int i = 0; i < int(m_height_inputs.size()); ++i) {
-        m_height_inputs[i] = make_input(wxEmptyString);
-        height_row->Add(m_height_inputs[i], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    }
-    make_label(height_row, _L("mm"));
-    sizer->Add(height_row, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-
-    auto *bands_row = new wxBoxSizer(wxHORIZONTAL);
-    auto *save = new Button(this, _L("Save bands"));
-    save->SetStyle(ButtonStyle::Confirm, ButtonType::Compact);
-    save->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { save_bands(); });
-    bands_row->Add(save, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+    m_matrix_toggle = new Button(this, _L("Show table"));
+    m_matrix_toggle->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+    m_matrix_toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { toggle_band_matrix(); });
+    header_row->Add(m_matrix_toggle, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
 
     auto *defaults = new Button(this, _L("Defaults"));
     defaults->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
@@ -275,13 +293,86 @@ void PlateAutomationDialog::create_band_controls(wxSizer *sizer)
         load_band_controls(OrcaExt::PartSizeLimits {});
         refresh_bands_feedback();
     });
-    bands_row->Add(defaults, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-    sizer->Add(bands_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
+    header_row->Add(defaults, 0, wxALIGN_CENTER_VERTICAL);
+    sizer->Add(header_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    auto *footprint_row = new wxBoxSizer(wxHORIZONTAL);
+    make_label(footprint_row, _L("Footprint, % of the bed"));
+    for (int i = 0; i < int(m_footprint_inputs.size()); ++i) {
+        m_footprint_inputs[i] = make_input();
+        footprint_row->Add(m_footprint_inputs[i], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    }
+    sizer->Add(footprint_row, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    make_note(sizer, m_footprint_ranges);
+
+    auto *height_row = new wxBoxSizer(wxHORIZONTAL);
+    make_label(height_row, _L("Height, mm"));
+    for (int i = 0; i < int(m_height_inputs.size()); ++i) {
+        m_height_inputs[i] = make_input();
+        height_row->Add(m_height_inputs[i], 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    }
+    sizer->Add(height_row, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    make_note(sizer, m_height_ranges);
+    make_note(sizer, m_override_note);
+
+    create_band_matrix(sizer);
 
     m_bands_readout = new wxStaticText(this, wxID_ANY, wxEmptyString);
     m_bands_readout->SetFont(::Label::Body_12);
     m_bands_readout->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
     sizer->Add(m_bands_readout, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    auto *save = new Button(this, _L("Save bands"));
+    save->SetStyle(ButtonStyle::Confirm, ButtonType::Compact);
+    save->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { save_bands(); });
+    sizer->Add(save, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+}
+
+void PlateAutomationDialog::create_band_matrix(wxSizer *sizer)
+{
+    m_matrix_panel = new wxPanel(this);
+    m_matrix_panel->SetBackgroundColour(*wxWHITE);
+
+    auto *grid = new wxFlexGridSizer(1 + OrcaExt::kPartSizeHeightRows, 1 + OrcaExt::kPartSizeFootprintCols,
+                                     FromDIP(2), FromDIP(8));
+    auto make_cell = [this](const wxString &text, bool header) {
+        auto *cell = new wxStaticText(m_matrix_panel, wxID_ANY, text);
+        cell->SetFont(header ? ::Label::Body_12 : ::Label::Body_13);
+        cell->SetForegroundColour(StateColor::darkModeColorFor(header ? wxColour("#5A6A6E") : wxColour("#323A3D")));
+        return cell;
+    };
+
+    grid->Add(make_cell(wxEmptyString, true), 0, wxALIGN_CENTER);
+    for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column) {
+        m_matrix_col_labels[column] = make_cell(wxEmptyString, true);
+        grid->Add(m_matrix_col_labels[column], 0, wxALIGN_CENTER);
+    }
+    for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row) {
+        m_matrix_row_labels[row] = make_cell(wxEmptyString, true);
+        grid->Add(m_matrix_row_labels[row], 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
+        for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column) {
+            // The cells are the shared matrix, so this table cannot drift from the classifier.
+            m_matrix_cells[row][column] = make_cell(plate_bucket_short_name(OrcaExt::kPartSizeMatrix[row][column]), false);
+            grid->Add(m_matrix_cells[row][column], 0, wxALIGN_CENTER);
+        }
+    }
+
+    m_matrix_panel->SetSizerAndFit(grid);
+    m_matrix_panel->Hide();
+    sizer->Add(m_matrix_panel, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+}
+
+void PlateAutomationDialog::toggle_band_matrix()
+{
+    if (m_matrix_panel == nullptr)
+        return;
+    const bool show = ! m_matrix_panel->IsShown();
+    m_matrix_panel->Show(show);
+    if (m_matrix_toggle != nullptr)
+        m_matrix_toggle->SetLabel(show ? _L("Hide table") : _L("Show table"));
+    GetSizer()->SetSizeHints(this);
+    Fit();
+    Layout();
 }
 
 bool PlateAutomationDialog::read_band_controls(OrcaExt::PartSizeLimits &limits) const
@@ -297,13 +388,13 @@ bool PlateAutomationDialog::read_band_controls(OrcaExt::PartSizeLimits &limits) 
         out = value;
         return true;
     };
-    return number(m_footprint_inputs[0], limits.fp_small_pct)
-        && number(m_footprint_inputs[1], limits.fp_mid_pct)
-        && number(m_height_inputs[0], limits.h_thin_mm)
-        && number(m_height_inputs[1], limits.h_mid_mm)
-        && number(m_height_inputs[2], limits.h_high_mm)
-        && number(m_height_inputs[3], limits.h_tall_mm)
-        && OrcaExt::valid_part_size_limits(limits);
+    for (size_t i = 0; i < m_footprint_inputs.size(); ++i)
+        if (! number(m_footprint_inputs[i], limits.fp_pct[i]))
+            return false;
+    for (size_t i = 0; i < m_height_inputs.size(); ++i)
+        if (! number(m_height_inputs[i], limits.h_mm[i]))
+            return false;
+    return OrcaExt::valid_part_size_limits(limits);
 }
 
 void PlateAutomationDialog::load_band_controls(const OrcaExt::PartSizeLimits &limits)
@@ -311,12 +402,10 @@ void PlateAutomationDialog::load_band_controls(const OrcaExt::PartSizeLimits &li
     auto set = [](TextInput *input, double value) {
         input->GetTextCtrl()->ChangeValue(wxString::Format("%g", value));
     };
-    set(m_footprint_inputs[0], limits.fp_small_pct);
-    set(m_footprint_inputs[1], limits.fp_mid_pct);
-    set(m_height_inputs[0], limits.h_thin_mm);
-    set(m_height_inputs[1], limits.h_mid_mm);
-    set(m_height_inputs[2], limits.h_high_mm);
-    set(m_height_inputs[3], limits.h_tall_mm);
+    for (size_t i = 0; i < m_footprint_inputs.size(); ++i)
+        set(m_footprint_inputs[i], limits.fp_pct[i]);
+    for (size_t i = 0; i < m_height_inputs.size(); ++i)
+        set(m_height_inputs[i], limits.h_mm[i]);
 }
 
 void PlateAutomationDialog::refresh_bands_feedback()
@@ -324,27 +413,57 @@ void PlateAutomationDialog::refresh_bands_feedback()
     OrcaExt::PartSizeLimits limits;
     const bool              valid = read_band_controls(limits);
 
-    if (m_bands_caption != nullptr)
-        m_bands_caption->SetToolTip(valid ? bands_summary(limits)
-                                          : _L("Footprint bands must increase from 0.1 to 100 %; height bands must increase from 0.1 to 500 mm."));
-
-    if (m_bands_readout == nullptr)
-        return;
+    auto set_text = [](wxStaticText *label, const wxString &text) {
+        if (label != nullptr)
+            label->SetLabel(text);
+    };
+    auto set_cell_style = [this](int row, int column, bool active) {
+        wxStaticText *cell = m_matrix_cells[row][column];
+        if (cell == nullptr)
+            return;
+        cell->SetForegroundColour(StateColor::darkModeColorFor(active ? wxColour("#00897B") : wxColour("#323A3D")));
+        wxFont font = cell->GetFont();
+        font.SetWeight(active ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
+        cell->SetFont(font);
+    };
 
     if (! valid) {
-        m_bands_readout->SetLabel(_L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
-        return;
-    }
-    if (m_plate_footprints.empty()) {
-        m_bands_readout->SetLabel(_L("This plate is empty."));
+        set_text(m_footprint_ranges, wxEmptyString);
+        set_text(m_height_ranges, wxEmptyString);
+        set_text(m_override_note, wxEmptyString);
+        set_text(m_bands_readout, _L("Bands must increase: footprint 0.1-100 %, height 0.1-500 mm."));
         return;
     }
 
-    double           height = 0.;
-    double           pct    = 0.;
-    const auto       bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, limits, &height, &pct);
-    m_bands_readout->SetLabel(wxString::Format(_L("This plate: %.1f mm tall, %.1f%% of the bed -> %s"),
+    set_text(m_footprint_ranges, footprint_ranges_line(limits));
+    set_text(m_height_ranges, height_ranges_line(limits));
+    set_text(m_override_note, wxString::Format(_L("A part over %s%% of the bed and above %s mm gets Large."),
+                                               number_text(limits.fp_pct.back()), number_text(limits.h_mm.front())));
+    for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column)
+        set_text(m_matrix_col_labels[column], footprint_column_text(limits, column));
+    for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row)
+        set_text(m_matrix_row_labels[row], height_row_text(limits, row));
+
+    if (m_plate_footprints.empty()) {
+        set_text(m_bands_readout, _L("This plate is empty."));
+        for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row)
+            for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column)
+                set_cell_style(row, column, false);
+        return;
+    }
+
+    double     height = 0.;
+    double     pct    = 0.;
+    const auto bucket = OrcaExt::plate_part_bucket(m_plate_footprints, m_plate_area_mm2, limits, &height, &pct);
+    set_text(m_bands_readout, wxString::Format(_L("This plate: %.1f mm tall, %.1f%% of the bed -> %s"),
                                                height, pct, plate_bucket_short_name(bucket)));
+
+    const int hit_row    = OrcaExt::part_size_height_row(height, limits);
+    const int hit_column = OrcaExt::part_size_footprint_column(pct, limits);
+    for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row)
+        for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column)
+            set_cell_style(row, column, row == hit_row && column == hit_column);
+
     m_bands_readout->GetParent()->Layout();
 }
 

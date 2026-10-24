@@ -15,8 +15,10 @@ using Catch::Matchers::WithinAbs;
 
 namespace {
 
-// A 270 mm plate: the footprint cuts are percentages of this.
+// A 270 mm plate: the footprint bands are percentages of this.
 constexpr double kBedArea = 270.0 * 270.0;
+
+double footprint_pct(double pct) { return kBedArea * pct / 100.; }
 
 template<int N> std::array<int, N> offsets(std::initializer_list<int> values)
 {
@@ -30,121 +32,115 @@ template<int N> std::array<int, N> offsets(std::initializer_list<int> values)
 
 } // namespace
 
-// Warping is a height problem first and an area problem second: a part under 3 mm tall has no lever
-// arm and no gradient across its thickness, so it never needs bed heat, whatever it covers. Above
-// that, the matrix in classify_part_size decides. Boundaries are inclusive at the top of each band.
+// The classifier is a 6x5 matrix: six height rows (below the flat gate first) by five footprint
+// columns. The biggest footprint column is Large from the flat gate up to the tall band, with no
+// height row in between, so a print covering most of the bed is never classified Small.
 TEST_CASE("Part size buckets follow the height and footprint matrix", "[OrcaPlateAutomation]") {
-    const double small_cut = kBedArea * OrcaExt::kPartSizeAreaPctCuts[0] / 100.;
-    const double mid_cut   = kBedArea * OrcaExt::kPartSizeAreaPctCuts[1] / 100.;
+    using Bucket = OrcaExt::PartSizeBucket;
+    const OrcaExt::PartSizeLimits limits;
 
-    // Thin gate: a 1-layer test or a full-bed patch under 3 mm is always Small.
-    CHECK(OrcaExt::classify_part_size(100., kBedArea, 0.2) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, 1.) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kThinPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::Small);
+    const std::array<double, OrcaExt::kPartSizeHeightRows> heights {0.5, 2., 10., 30., 70., 150.};
+    const std::array<double, OrcaExt::kPartSizeFootprintCols> pcts {1., 10., 35., 60., 90.};
+    const Bucket expected[OrcaExt::kPartSizeHeightRows][OrcaExt::kPartSizeFootprintCols] = {
+        {Bucket::Small, Bucket::Small, Bucket::Small, Bucket::Small, Bucket::Small},
+        {Bucket::Small, Bucket::Small, Bucket::SmallMedium, Bucket::SmallMedium, Bucket::Large},
+        {Bucket::Small, Bucket::SmallMedium, Bucket::SmallMedium, Bucket::Medium, Bucket::Large},
+        {Bucket::Medium, Bucket::Medium, Bucket::MediumLarge, Bucket::MediumLarge, Bucket::Large},
+        {Bucket::MediumLarge, Bucket::Large, Bucket::Large, Bucket::Large, Bucket::Large},
+        {Bucket::Tall, Bucket::Tall, Bucket::Tall, Bucket::Tall, Bucket::Tall},
+    };
 
-    // 3-20 mm: only a sliver of the bed stays Small.
-    CHECK(OrcaExt::classify_part_size(small_cut - 1., kBedArea, OrcaExt::kThinPartHeightMm) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(small_cut, kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
-    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kMidPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::SmallMedium);
+    for (int row = 0; row < OrcaExt::kPartSizeHeightRows; ++row)
+        for (int column = 0; column < OrcaExt::kPartSizeFootprintCols; ++column) {
+            CAPTURE(row, column, heights[row], pcts[column]);
+            CHECK(OrcaExt::classify_part_size(footprint_pct(pcts[column]), kBedArea, heights[row], limits) == expected[row][column]);
+        }
 
-    // 20-50 mm: Medium up to 15 % of the bed, Medium-large above it.
-    CHECK(OrcaExt::classify_part_size(small_cut + 1., kBedArea, OrcaExt::kMidPartHeightMm) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(mid_cut, kBedArea, 30.) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(mid_cut + 1., kBedArea, 30.) == OrcaExt::PartSizeBucket::MediumLarge);
+    // Boundaries belong to the higher band on both axes.
+    CHECK(OrcaExt::classify_part_size(footprint_pct(90.), kBedArea, limits.h_mm[0], limits) == Bucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(90.), kBedArea, limits.h_mm[0] - 0.01, limits) == Bucket::Small);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(24.99), kBedArea, 30., limits) == Bucket::Medium);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(25.), kBedArea, 30., limits) == Bucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(74.99), kBedArea, 2., limits) == Bucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(75.), kBedArea, 2., limits) == Bucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(90.), kBedArea, limits.h_mm[1], limits) == Bucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(90.), kBedArea, limits.h_mm.back(), limits) == Bucket::Tall);
 
-    // 50-100 mm: a slender footprint is Medium-large (it lifts sooner), anything wider is Large.
-    CHECK(OrcaExt::classify_part_size(small_cut - 1., kBedArea, OrcaExt::kHighPartHeightMm) == OrcaExt::PartSizeBucket::MediumLarge);
-    CHECK(OrcaExt::classify_part_size(small_cut + 1., kBedArea, 70.) == OrcaExt::PartSizeBucket::Large);
-    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, OrcaExt::kTallPartHeightMm - 0.01) == OrcaExt::PartSizeBucket::Large);
-
-    // Tall wins at 100 mm, whatever the footprint.
-    CHECK(OrcaExt::classify_part_size(10., kBedArea, OrcaExt::kTallPartHeightMm) == OrcaExt::PartSizeBucket::Tall);
-
-    // A plate with no usable area, or no part, cannot be classified: the middle band keeps the
-    // automation conservative instead of guessing an extreme.
-    CHECK(OrcaExt::classify_part_size(small_cut, 0., 10.) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(0., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+    // A plate with no usable area, or a part with no footprint, falls back to the middle band.
+    CHECK(OrcaExt::classify_part_size(footprint_pct(10.), 0., 10., limits) == Bucket::Medium);
+    CHECK(OrcaExt::classify_part_size(0., kBedArea, 10., limits) == Bucket::Medium);
 }
 
-// The six band edges are saved in AppConfig so they can be tuned without a rebuild; anything
-// malformed, out of order or out of range must fall back to the defaults instead of mis-classifying.
-TEST_CASE("Size bands round-trip through the AppConfig string and fall back safely", "[OrcaPlateAutomation]") {
-    OrcaExt::PartSizeLimits defaults;
-    CHECK(OrcaExt::serialize_part_size_limits(defaults) == "3,15;3,20,50,100");
-
-    OrcaExt::PartSizeLimits custom;
-    custom.fp_small_pct = 5.;
-    custom.fp_mid_pct   = 10.;
-    custom.h_thin_mm    = 2.;
-    custom.h_mid_mm     = 10.;
-    custom.h_high_mm    = 30.;
-    custom.h_tall_mm    = 80.;
-    CHECK(OrcaExt::serialize_part_size_limits(custom) == "5,10;2,10,30,80");
-
-    const OrcaExt::PartSizeLimits parsed = OrcaExt::parse_part_size_limits("5,10;2,10,30,80");
-    CHECK_THAT(parsed.fp_small_pct, WithinAbs(5., 1e-9));
-    CHECK_THAT(parsed.fp_mid_pct, WithinAbs(10., 1e-9));
-    CHECK_THAT(parsed.h_thin_mm, WithinAbs(2., 1e-9));
-    CHECK_THAT(parsed.h_mid_mm, WithinAbs(10., 1e-9));
-    CHECK_THAT(parsed.h_high_mm, WithinAbs(30., 1e-9));
-    CHECK_THAT(parsed.h_tall_mm, WithinAbs(80., 1e-9));
-
-    // Non-increasing footprint, non-increasing heights, missing parts, junk, out of range.
-    for (const char *text : {"10,5;2,10,30,80", "5,10;10,2,30,80", "5,10;2,10,30,80,90",
-                             "5,10", "junk", "0.01,10;2,10,30,80", "5,10;2,10,30,600"})
-        CHECK_THAT(OrcaExt::parse_part_size_limits(text).h_thin_mm, WithinAbs(OrcaExt::kThinPartHeightMm, 1e-9));
-}
-
-TEST_CASE("Classification follows custom size bands", "[OrcaPlateAutomation]") {
-    OrcaExt::PartSizeLimits limits;
-    limits.fp_small_pct = 5.;
-    limits.fp_mid_pct   = 10.;
-    limits.h_thin_mm    = 2.;
-    limits.h_mid_mm     = 10.;
-    limits.h_high_mm    = 30.;
-    limits.h_tall_mm    = 80.;
-
-    const double pct4  = kBedArea * 0.04;
-    const double pct6  = kBedArea * 0.06;
-    const double pct11 = kBedArea * 0.11;
-
-    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, 1.9, limits) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 2., limits) == OrcaExt::PartSizeBucket::Small);
-    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 2., limits) == OrcaExt::PartSizeBucket::SmallMedium);
-    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 10., limits) == OrcaExt::PartSizeBucket::Medium);
-    CHECK(OrcaExt::classify_part_size(pct11, kBedArea, 10., limits) == OrcaExt::PartSizeBucket::MediumLarge);
-    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 30., limits) == OrcaExt::PartSizeBucket::MediumLarge);
-    CHECK(OrcaExt::classify_part_size(pct6, kBedArea, 30., limits) == OrcaExt::PartSizeBucket::Large);
-    CHECK(OrcaExt::classify_part_size(pct4, kBedArea, 80., limits) == OrcaExt::PartSizeBucket::Tall);
-}
-
-// The popup's readout needs the part that decided the bucket, not just the bucket.
-TEST_CASE("The plate's bucket reports the deciding part", "[OrcaPlateAutomation]") {
-    const std::vector<std::pair<double, double>> parts {{kBedArea, 1.}, {kBedArea * 0.05, 60.}};
-    double                                      height = 0.;
-    double                                      pct    = 0.;
-    const auto                                  bucket = OrcaExt::plate_part_bucket(parts, kBedArea, OrcaExt::PartSizeLimits {}, &height, &pct);
-    CHECK(bucket == OrcaExt::PartSizeBucket::Large);
-    CHECK_THAT(height, WithinAbs(60., 1e-9));
-    CHECK_THAT(pct, WithinAbs(5., 1e-9));
-}
-
-// The bed temperature serves the whole plate, so the riskiest part decides: a first-layer test next
-// to a real part takes the real part's bucket, and a tall tower outvotes a large flat patch.
+// The bed temperature serves the whole plate, so the riskiest part decides, and the deciding part's
+// measurements are reported for the popup readout.
 TEST_CASE("The plate's bucket is the riskiest part on it", "[OrcaPlateAutomation]") {
     using Bucket = OrcaExt::PartSizeBucket;
     using Part   = std::pair<double, double>; // footprint, height
 
-    const std::vector<Part> thin_only {{kBedArea, 1.}, {100., 0.2}};
+    const std::vector<Part> thin_only {{kBedArea, 0.5}, {100., 0.2}};
     CHECK(OrcaExt::plate_part_bucket(thin_only, kBedArea) == Bucket::Small);
 
-    const std::vector<Part> patch_and_medium {{kBedArea, 1.}, {kBedArea * 0.05, 30.}};
+    const std::vector<Part> patch_and_medium {{kBedArea, 0.5}, {footprint_pct(10.), 30.}};
     CHECK(OrcaExt::plate_part_bucket(patch_and_medium, kBedArea) == Bucket::Medium);
 
-    const std::vector<Part> patch_and_tower {{kBedArea, 2.}, {50., 120.}};
+    const std::vector<Part> patch_and_tower {{kBedArea, 0.5}, {50., 120.}};
     CHECK(OrcaExt::plate_part_bucket(patch_and_tower, kBedArea) == Bucket::Tall);
 
+    double     height = 0.;
+    double     pct    = 0.;
+    const auto bucket = OrcaExt::plate_part_bucket({{kBedArea, 0.5}, {footprint_pct(60.), 30.}}, kBedArea,
+                                                   OrcaExt::PartSizeLimits {}, &height, &pct);
+    CHECK(bucket == Bucket::MediumLarge);
+    CHECK_THAT(height, WithinAbs(30., 1e-9));
+    CHECK_THAT(pct, WithinAbs(60., 1e-9));
+
     CHECK(OrcaExt::plate_part_bucket({}, kBedArea) == Bucket::Small);
+}
+
+// The bands are saved in AppConfig so they can be tuned without a rebuild; anything malformed, out of
+// order, out of range or of a different length falls back to the defaults.
+TEST_CASE("Size bands round-trip through the AppConfig string and fall back safely", "[OrcaPlateAutomation]") {
+    const OrcaExt::PartSizeLimits defaults;
+    CHECK(OrcaExt::serialize_part_size_limits(defaults) == "3,25,50,75;1,3,20,50,100");
+
+    OrcaExt::PartSizeLimits custom;
+    custom.fp_pct = {5., 10., 20., 30.};
+    custom.h_mm   = {2., 4., 10., 20., 40.};
+    CHECK(OrcaExt::serialize_part_size_limits(custom) == "5,10,20,30;2,4,10,20,40");
+
+    const OrcaExt::PartSizeLimits parsed = OrcaExt::parse_part_size_limits("5,10,20,30;2,4,10,20,40");
+    for (size_t i = 0; i < custom.fp_pct.size(); ++i)
+        CHECK_THAT(parsed.fp_pct[i], WithinAbs(custom.fp_pct[i], 1e-9));
+    for (size_t i = 0; i < custom.h_mm.size(); ++i)
+        CHECK_THAT(parsed.h_mm[i], WithinAbs(custom.h_mm[i], 1e-9));
+
+    // Non-increasing footprint, non-increasing heights, wrong counts (including the 2+4 form an older
+    // build wrote), junk and out of range.
+    for (const char *text : {"10,5,20,30;2,4,10,20,40", "5,10,20,30;10,4,10,20,40", "5,10,20;2,4,10,20,40",
+                             "5,10,20,30;2,4,10,20", "3,15;3,20,50,100", "junk", "0.01,10,20,30;2,4,10,20,40",
+                             "5,10,20,105;2,4,10,20,40", "5,10,20,30;2,4,10,20,600"}) {
+        const OrcaExt::PartSizeLimits fallback = OrcaExt::parse_part_size_limits(text);
+        for (size_t i = 0; i < defaults.fp_pct.size(); ++i)
+            CHECK_THAT(fallback.fp_pct[i], WithinAbs(defaults.fp_pct[i], 1e-9));
+    }
+}
+
+TEST_CASE("Classification follows custom size bands", "[OrcaPlateAutomation]") {
+    OrcaExt::PartSizeLimits limits;
+    limits.fp_pct = {5., 10., 20., 30.};
+    limits.h_mm   = {2., 4., 10., 20., 40.};
+
+    CHECK(OrcaExt::classify_part_size(kBedArea, kBedArea, 1.9, limits) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(4.), kBedArea, 3., limits) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(6.), kBedArea, 3., limits) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(25.), kBedArea, 3., limits) == OrcaExt::PartSizeBucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(35.), kBedArea, 3., limits) == OrcaExt::PartSizeBucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(6.), kBedArea, 10., limits) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(25.), kBedArea, 10., limits) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(35.), kBedArea, 10., limits) == OrcaExt::PartSizeBucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(4.), kBedArea, 20., limits) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(6.), kBedArea, 20., limits) == OrcaExt::PartSizeBucket::Large);
+    CHECK(OrcaExt::classify_part_size(footprint_pct(4.), kBedArea, 40., limits) == OrcaExt::PartSizeBucket::Tall);
 }
 
 // The footprint must come from the 2D hull: a part turned 45 degrees has up to twice the bounding

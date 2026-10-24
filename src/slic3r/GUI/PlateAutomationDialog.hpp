@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <wx/dialog.h>
+#include <wx/panel.h>
 #include <wx/stattext.h>
 
 #include "libslic3r/PrintConfig.hpp"
@@ -51,6 +52,8 @@ private:
 
     void create_plate_tiles(wxSizer *sizer);
     void create_band_controls(wxSizer *sizer);
+    void create_band_matrix(wxSizer *sizer);
+    void toggle_band_matrix();
     void toggle_tile(size_t index);
     void load_controls_from(BedType bed_type);
     void refresh_tile_values();
@@ -69,10 +72,18 @@ private:
     std::vector<RadioBox *> m_flow_radios;
     TextInput        *m_flow_custom {nullptr};
     std::array<SpinInput *, OrcaExt::kPartSizeBucketCount> m_bucket_inputs {};
-    std::array<TextInput *, 2> m_footprint_inputs {};
-    std::array<TextInput *, 4> m_height_inputs {};
+    std::array<TextInput *, OrcaExt::kPartSizeFootprintCols - 1> m_footprint_inputs {};
+    std::array<TextInput *, OrcaExt::kPartSizeHeightRows - 1>    m_height_inputs {};
     wxStaticText     *m_bands_caption {nullptr};
+    wxStaticText     *m_footprint_ranges {nullptr};
+    wxStaticText     *m_height_ranges {nullptr};
+    wxStaticText     *m_override_note {nullptr};
     wxStaticText     *m_bands_readout {nullptr};
+    wxPanel          *m_matrix_panel {nullptr};
+    Button           *m_matrix_toggle {nullptr};
+    wxStaticText     *m_matrix_col_labels[OrcaExt::kPartSizeFootprintCols] {};
+    wxStaticText     *m_matrix_row_labels[OrcaExt::kPartSizeHeightRows] {};
+    wxStaticText     *m_matrix_cells[OrcaExt::kPartSizeHeightRows][OrcaExt::kPartSizeFootprintCols] {};
     std::vector<std::pair<double, double>> m_plate_footprints;
     double            m_plate_area_mm2 {0.};
     wxStaticText     *m_hint {nullptr};
