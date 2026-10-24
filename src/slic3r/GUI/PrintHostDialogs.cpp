@@ -807,8 +807,8 @@ void PrintHostSendDialog::init()
     }
     // [ORCAPORT:BF-1] END
 
-    // [ORCAPORT:PA-1] one entry point for both local automations; the two rows above show what they
-    // resolve to for this plate, and stay overridable per project.
+    // [ORCAPORT:PA-1] one entry point for the local flow automation; the row above shows what it
+    // resolves to for this plate, and stays overridable per project.
     {
         auto *automation_row = new wxBoxSizer(wxHORIZONTAL);
         auto *automation     = new Button(this, _L("Plate automation..."));
