@@ -584,7 +584,7 @@ index 55ed0bb72f..a49c46bf26 100644
              DynamicPrintConfig& project_config  = wxGetApp().preset_bundle->project_config;
              if (ConfigOptionInt* opt = project_config.option<ConfigOptionInt>("bed_temperature_offset"))
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 0bb25b387c..e2541e0e8d 100644
+index 0bb25b387c..532c8c6869 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -86,6 +86,8 @@
@@ -708,8 +708,8 @@ index 0bb25b387c..e2541e0e8d 100644
      }
      // [ORCAPORT:BF-1] END
  
-+    // [ORCAPORT:PA-1] one entry point for both local automations; the two rows above show what they
-+    // resolve to for this plate, and stay overridable per project.
++    // [ORCAPORT:PA-1] one entry point for the local flow automation; the row above shows what it
++    // resolves to for this plate, and stays overridable per project.
 +    {
 +        auto *automation_row = new wxBoxSizer(wxHORIZONTAL);
 +        auto *automation     = new Button(this, _L("Plate automation..."));
