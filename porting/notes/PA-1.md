@@ -1,193 +1,111 @@
-# PA-1 - Local plate automation (first-layer flow and bed temperature)
+# PA-1 - Local plate automation: first-layer flow per plate type
 
-Status: implemented on `port/BF-1` (stacked on BF-1/UI-3; branch from `port/integration`
-`29a5f92560`), build clean, libslic3r 1582/1582, fff_print 460/460, awaiting the user's test of the
-popup. Original feature - no Neotko/preFlight source.
+Status: implemented on `port/BF-1` (stacked on BF-1/UI-3), build clean, libslic3r and fff_print
+suites green, awaiting the user's test of the popup. Original feature - no Neotko/preFlight source.
 
 ## What it does
 
 One **Plate automation...** button in the "Send G-code to printer host" dialog opens a popup that
-edits two preferences **per plate type**:
+edits a **per-plate-type first-layer flow reduction**: multi-select the plate tiles, pick one of
+`-20/-15/-10/-5 %`, `None`, or type a custom percentage (`-50..-1`), press **Apply**, and every
+selected plate type gets it.
 
-1. **First layer flow** - the BF-1 reduction (percent on the first layer's bottom surface infill),
-   now chosen per plate type instead of BF-1's hardcoded `-20 %` for the cool plates. The popup
-   offers the four steps (`-20/-15/-10/-5`), `None`, and a free-form percentage (`-50..-1`).
-2. **Bed temperature offset by part size** - a `degC` offset per size bucket, applied to the plate
-   temperature through BT-1's existing `bed_temperature_offset`, chosen from **the largest single
-   instance on the plate**.
+The reduction itself is BF-1's: the bottom surface flow ratio of layer 1 only, applied at G-code
+export (`GCode::_extrude`, `erBottomSurface`, `path_on_first_layer`). PA-1 replaces BF-1's hardcoded
+`-20 %` for the three cool plates with this local map, and adds the popup to edit it.
 
-Both are saved on this computer only (AppConfig), so a preset, a printer profile, a saved project or
-a 3mf downloaded from anywhere can neither read nor reset them. A value chosen in the send dialog's
-own rows still applies to that project alone.
+The value is saved **on this computer only** (AppConfig), so a preset, a printer profile, a saved
+project or a 3mf downloaded from anywhere can neither read nor reset it. A value chosen in the send
+dialog's own row still applies to that project alone.
 
-## Where the preferences live (and why not a printer profile)
+## Where the preference lives (and why not a printer profile)
 
-`AppConfig` `[app]` section, three strings:
+`AppConfig` `[app] first_layer_flow_plates = "0:-20;2:-12"` (BedType:percent).
 
-```
-first_layer_flow_plates     = "0:-20;2:-12"                  (BedType:percent)
-first_layer_bed_temp_buckets = "0:-15,-10,-5,0,0,5;5:..."    (BedType:six offsets, bucket order)
-plate_bucket_limits         = "3,15;3,20,50,100"             (footprint %, then height rows mm)
-```
-
-- `BedType` integers keep the encoding stable; unknown types are ignored, values are clamped on read
-  so a hand-edited `OrcaSlicer.conf` can never crash the dialog.
+- Keyed by the `BedType` integer so the encoding is stable; unknown types are ignored and values are
+  clamped on read, so a hand-edited `OrcaSlicer.conf` can never crash the dialog.
 - A **configured 0** is kept in the string: it is what makes a plate type's automation override an
   older per-project value instead of falling back to it.
 - A printer profile was rejected: presets are inherited, exported, compared against vendor presets
   and replaced on profile updates - a personal plate preference there travels with any profile you
   share and can be silently reset. It is also per-printer, while the need is per plate type.
-- Nothing new is written into a project: the per-project keys are the ones BF-1/BT-1 already had,
-  and both are excluded from `s_project_options_published`.
 
-## How the automation meets the two dialog rows
+## How the automation meets the send dialog's row
 
-Each row keeps its own project-level `auto` flag:
-
-- `initial_layer_bottom_surface_flow_auto` (BF-1) - the flow row follows the local map.
-- `bed_temperature_offset_auto` (new, PA-1) - the offset row follows the bucket map.
-
-Resolution when the dialog opens (`PrintHostSendDialog::init`):
+The row keeps BF-1's project-level `initial_layer_bottom_surface_flow_auto` flag:
 
 ```
-if (auto && the plate type has a map entry)  value = map[bed_type][bucket]  (flow: map[bed_type])
-else                                         value = the project's stored value
+if (auto && the plate type has a map entry)  value = flow_default_for(map, bed_type)
+else                                         value = the project's stored delta
 ```
 
-- The "has an entry" test is what keeps existing projects intact: a project saved before this
-  feature keeps its stored offset/reduction, because its plate type has no entry yet.
-- Any click in a row sets its `auto` flag to false and stores the clicked value, so a per-project
-  choice sticks and a cleared choice does not come back on reopen.
-- Both flags are in `Print::invalidate_state_by_config_options`' `steps_gcode` set, so writing them
-  (and the values) is a G-code re-export, never a re-slice.
-
-## Part size buckets
-
-Measured on the plate the dialog is uploading (`PartPlate::obj_to_instance_set`):
-
-- footprint = **2D convex hull area** of the instance (`ModelObject::convex_hull_2d`), in mm2. The
-  hull, not the bounding box: a part turned 45 degrees has up to twice the bounding box for the same
-  material, which would move it a band (unit-tested: 20x20 part at 45 deg -> 400 mm2).
-- height = instance bounding box Z, in mm.
-- **the riskiest part decides**: the plate takes the highest bucket any of its parts lands in, because
-  the bed temperature serves the whole plate. A first-layer test sharing the plate with a real part
-  takes the real part's bucket, and a tall tower outvotes a large flat patch.
-
-Warping is a **height** problem first and an area problem second - a thin part has no lever arm and no
-temperature gradient across its thickness, so it never needs bed heat. The classifier is therefore a
-height x footprint matrix, with footprint as a share of the plate's own area (so it travels to another
-bed size):
-
-| height \ footprint | < 3 % | 3-25 % | 25-50 % | 50-75 % | > 75 % |
-|---|---|---|---|---|---|
-| **< 1 mm** | Small | Small | Small | Small | Small |
-| **1-3 mm** | Small | Small | Small-medium | Small-medium | Large |
-| **3-20 mm** | Small | Small-medium | Small-medium | Medium | Large |
-| **20-50 mm** | Medium | Medium | Medium-large | Medium-large | Large |
-| **50-100 mm** | Medium-large | Large | Large | Large | Large |
-| **100 mm and up** | Tall | Tall | Tall | Tall | Tall |
-
-- The **flat gate** (1 mm) is what keeps a single-layer test or a sub-millimetre patch at `Small`.
-- A part in the **biggest footprint band** is `Large` from the flat gate up to the tall band, with no
-  height row in between: a print that covers most of the bed needs bed heat for adhesion and for the
-  contraction of a long span, however flat it is. That is the one place where footprint outranks
-  height.
-- 50-100 mm with a small footprint is `Medium-large` rather than `Large`: a slender part lifts sooner,
-  but a broad one has more area pulling.
-- The bucket names (`Small ... Large, Tall`) replaced the old "Large flat": with the matrix, the top
-  band is "large and at least 50 mm tall", not only flat.
-
-### Editable bands
-
-The nine edges are a local preference, not constants: `AppConfig` `[app] plate_bucket_limits =
-"3,25,50,75;1,3,20,50,100"` (four footprint edges in percent, then five height edges in mm). The
-**Size bands (all plates)** section at the bottom of the popup edits them:
-
-- `Footprint, % of the bed` `[ ][ ][ ][ ]` and `Height, mm` `[ ][ ][ ][ ][ ]`. A caption under each row
-  spells out the bands those numbers currently define, and a second line states the large-footprint
-  rule (`A part over 75 % of the bed and above 1 mm gets Large.`), both updating as you type.
-- **Show table** (top right) opens the 6x5 matrix built from the shared `kPartSizeMatrix`, with the
-  headers taken from the numbers and the uploaded plate's cell highlighted; it is hidden by default so
-  the section stays compact.
-- **Save bands** writes AppConfig and re-resolves the bed-temperature row immediately; **Defaults**
-  fills in the built-in values (still needs Save).
-- Ranges enforced on save: footprint 0.1-100 %, height 0.1-500 mm, each list strictly increasing. An
-  invalid set is reported inline and nothing is written; a malformed value already in the config - or
-  the 2+4 form an earlier build wrote - falls back to the defaults on load instead of mis-classifying.
-- A **live readout** under the table shows the plate being uploaded with the values currently in the
-  fields: `This plate: 42.0 mm tall, 7.2 % of the bed -> Medium`. That is the tuning loop: type a
-  band, watch which bucket the current part lands in, Save when it looks right.
+- The "has an entry" test keeps existing projects intact: a project saved before this feature keeps
+  its stored reduction, because its plate type has no entry yet.
+- Any click in the row sets the flag false and stores the clicked value, so a per-project choice
+  sticks and a cleared choice does not come back on reopen.
+- **Reset to auto** (next to `Plate automation...`) turns the flag back on and restores the automatic
+  value, or the stock value (`0`) where the plate type is not configured.
+- The delta and the flag are in `Print::invalidate_state_by_config_options`' `steps_gcode` set, so
+  writing them is a G-code re-export, never a re-slice.
 
 ## Anchors
 
 | File | What is inserted |
 |------|------------------|
-| `src/libslic3r/OrcaExt/PlateAutomation.hpp` | buckets, classification, both maps + AppConfig encoding, `instance_footprint` |
-| `src/libslic3r/OrcaExt/FirstLayerFlow.hpp` | the hardcoded cool-plate default is removed |
-| `src/libslic3r/PrintConfig.hpp/.cpp` | `bed_temperature_offset_auto` option |
-| `src/libslic3r/Print.cpp` | the new key in `steps_gcode` |
-| `src/libslic3r/PresetBundle.cpp` | the new key in `s_project_options` |
-| `src/slic3r/GUI/PlateAutomationStore.hpp` | load/save the two AppConfig keys |
-| `src/slic3r/GUI/PlateAutomationDialog.hpp/.cpp` | the popup (tiles, flow controls, six bucket inputs, Apply) |
-| `src/slic3r/GUI/PartPlate.hpp/.cpp` | `get_instance_footprints()` |
-| `src/slic3r/GUI/PrintHostDialogs.hpp/.cpp` | row resolution, the **Plate automation...** button, refresh after Apply |
-| `src/slic3r/GUI/Plater.cpp` | writes `bed_temperature_offset_auto` next to the offset (guarded for dialogs that never built the row) |
-| `src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp` | the new key in `project_keys` |
+| `src/libslic3r/OrcaExt/PlateAutomation.hpp` | `PlateFlowDefaults` map, lookup, AppConfig encoding (u + parse) |
+| `src/slic3r/GUI/PlateAutomationStore.hpp` | load/save the `[app] first_layer_flow_plates` key |
+| `src/slic3r/GUI/PlateAutomationDialog.hpp/.cpp` | the popup (plate tiles, flow steps + custom field, Apply) |
+| `src/slic3r/GUI/PrintHostDialogs.hpp/.cpp` | the row's automatic resolution, the **Plate automation...** and **Reset to auto** buttons |
+| `src/slic3r/GUI/PrintHostDialogs.cpp` (BF-1) | emission unchanged: `OrcaExt::first_layer_bottom_flow_scale(m_config.initial_layer_bottom_surface_flow_delta.value)` |
+| `src/libslic3r/PrintConfig.hpp/.cpp`, `Print.cpp`, `PresetBundle.cpp`, `OrcaMCPConfigKeys.hpp` | BF-1's two project-level keys (unchanged by PA-1) |
 
 ## Popup behaviour
 
-- Plate tiles (the six plate pictures) are a **multi-select**; the current plate is preselected and
-  supplies the values shown initially. Clicking a tile loads *that* tile's values into the controls.
-- **Apply** writes the controls (flow value + all six offsets) to **every selected tile**, saves both
-  AppConfig keys, and refreshes the send dialog's rows that still follow the automation; the popup
-  stays open so another group can be edited. Nothing selected -> "Select at least one plate first."
-- A custom flow value is validated on Apply (`-50..0`); an out-of-range or non-numeric entry is
-  reported inline and nothing is written.
-- Tile badges show each type's configured flow (`--` when unset).
-- **Reset to auto** (next to `Plate automation...` in the send dialog) puts both rows back to the
-  automatic value where the plate type is configured, and to the stock value where it is not
-  (flow 0, offset 0). It also turns both `auto` flags back on, so a value picked by hand stops
-  overriding the automation for this project.
-
-The bed-temperature status line names the bucket whenever the automation picked the offset, e.g.
-`Textured Cool Plate: 55°C (-10, medium-large)`; a hand-picked offset keeps the plain `45°C (-15)`,
-and an automatic offset of 0 reads `(medium-large)`.
+- The six plate tiles (the same pictures the plate picker uses) are a **multi-select**; the plate being
+  uploaded is preselected and supplies the values shown initially. Clicking a tile loads *that* tile's
+  value into the controls.
+- **Apply** writes the control value to **every selected tile**, saves AppConfig, and refreshes the
+  send dialog's row when it still follows the automation; the popup stays open for another group.
+  Nothing selected -> "Select at least one plate first."
+- A custom value is validated on Apply (`-50..0`); an out-of-range or non-numeric entry is reported
+  inline and nothing is written.
+- Tile badges show each type's configured value (`--` when unset).
+- Things the popup does not do: there is no per-printer dimension and no per-filament one; the step
+  buttons are `-20/-15/-10/-5`, `None`, and the custom field.
 
 ## Verification
 
 - Build: `build_win.bat -s --tests --no-gettext -j 8`, clean.
-- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 135
-  assertions in 8 cases): every cell of the 6x5 matrix, the band boundaries on both axes (including
-  the flat gate just below and at 1 mm and the biggest-footprint column flipping to Large at the
-  gate), the riskiest-part rule (a patch plus a thin part stays Small; a tower outvotes a patch) and
-  the deciding-part readout, the editable bands (round-trip, defaults fallback for
-  non-increasing/out-of-range/malformed/wrong-length input including the older 2+4 form,
-  classification under a custom set), the hull-vs-bbox footprint on a 45-degree part, both AppConfig
-  maps (including configured zeros), and the per-type/per-bucket lookups.
-- `[OrcaFirstLayerFlow]` updated: the old "cool plates default to -20" case is replaced by the map
-  lookup including "configured 0 counts as configured".
-- Suites: libslic3r **1585/1585**, fff_print **460/460**.
-- Runtime smoke over MCP: app starts, model slices, export carries
-  `; bed_temperature_offset_auto = 1` next to the existing keys, and a `-10` delta still scales only
-  the first layer's bottom surface (BF-1 path untouched).
-- The popup and the bed-temp row's resolved offset are visual-only: a modal wx dialog cannot be
-  opened over MCP. Check by hand: open Plate automation, select two plates, set flow `-10` and a
-  couple of offsets, Apply, reopen and confirm both plates kept the values; then open the send
-  dialog on one of those plates and confirm both rows show them.
+- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 16
+  assertions in 2 cases): the map round-trips through the AppConfig string (including a configured
+  zero), malformed/unknown entries are dropped, values are clamped, and the per-type
+  `has_flow_default` / `flow_default_for` lookups. `[OrcaFirstLayerFlow]` (19 assertions) keeps the
+  scale, the platform clamp and BF-1's "delta 0 = profile flow" behaviour.
+- Suites: libslic3r **1579/1579**, fff_print **460/460**.
+- Runtime A/B over MCP for the emission is BF-1's (unchanged): a delta of -10 scales only layer 1's
+  bottom surface E and nothing else.
+- The popup is visual-only (modal wx dialog, cannot be opened over MCP): select two plates, set
+  `-10 %`, Apply, reopen and confirm both kept it; then set a plate's value back to `None` and confirm
+  the row shows the profile's flow.
 
 ## Known limitations
 
-1. **Heuristic**: the matrix is tuned by hand, and the bands are runtime-editable in the popup
-   (footprint 0.1-100 %, heights 0.1-500 mm), so the defaults are a starting point rather than a
-   hardcoded truth.
-2. The riskiest part decides, but **plate coverage and part count are not considered**: twenty small
-   parts are still classified "small" even though the whole bed is used.
-3. Supports and brims are not in the footprint (they do not exist before slicing).
-4. Multi-plate projects classify **the plate being uploaded**; "All plates" uses the current plate
-   for both rows, as BT-1 and BF-1 already do.
-5. The automation is applied when the **send dialog opens**; exporting G-code from the Prepare tab
-   does not run it (same scope as BF-1's flow reduction).
-6. The bed-temp row's buttons cover `+-5/10/15`; an automated offset outside that grid (e.g. `-20`)
-   applies but leaves no button selected - the status line still shows the offset and the bucket.
-7. `FlashforgePrintHostSendDialog` overrides `init()` and gets none of these rows (existing
+1. The popup covers the six plate types that have a picture; a plate type the printer does not have
+   simply never applies.
+2. The automation is applied when the **send dialog opens**; exporting G-code from the Prepare tab
+   does not run it (same scope as BF-1).
+3. `FlashforgePrintHostSendDialog` overrides `init()` and gets none of these rows (existing
    behaviour).
+4. A value picked by hand in the row is stored in the project and survives reopening; it does not
+   overwrite the local default.
+
+## Removed: bed-temperature automation (by user decision)
+
+PA-1 briefly also automated the bed temperature: a height x footprint size matrix (flat gate, five
+footprint bands, `Small ... Tall`), per-plate-type offsets, an editable bands section, a hidden table
+and a `bed_temperature_offset_auto` project key. The user does not want automatic bed temperature, so
+all of it was removed in the same branch before merge: the matrix/bucket code in
+`OrcaExt/PlateAutomation.hpp`, `PartPlate::get_instance_footprints()`, the `bed_temperature_offset_auto`
+key (PrintConfig / Print.cpp / PresetBundle / MCP keys), the bucket name in the bed-temperature status
+line, the bucket parameters in the popup and their tests. The send dialog's bed-temperature row is
+back to BT-1's manual behaviour. Do not re-attempt it unless the user asks.
