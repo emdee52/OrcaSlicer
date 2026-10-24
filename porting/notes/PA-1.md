@@ -68,23 +68,31 @@ Measured on the plate the dialog is uploading (`PartPlate::obj_to_instance_set`)
   hull, not the bounding box: a part turned 45 degrees has up to twice the bounding box for the same
   material, which would move it a band (unit-tested: 20x20 part at 45 deg -> 400 mm2).
 - height = instance bounding box Z, in mm.
-- *the largest single instance by footprint* decides the bucket; if its height reaches `100 mm` it
-  is `Tall` regardless of footprint.
+- **the riskiest part decides**: the plate takes the highest bucket any of its parts lands in, because
+  the bed temperature serves the whole plate. A first-layer test sharing the plate with a real part
+  takes the real part's bucket, and a tall tower outvotes a large flat patch.
 
-Bands are a share of the plate's own area (`PartPlate::get_size()`), so they travel to another bed
-size:
+Warping is a **height** problem first and an area problem second - a thin part has no lever arm and no
+temperature gradient across its thickness, so it never needs bed heat. The classifier is therefore a
+height x footprint matrix, with footprint as a share of the plate's own area (so it travels to another
+bed size):
 
-| bucket | footprint | on a 270x270 plate |
-|---|---|---|
-| Small | <= 3 % | ≲ 47x47 mm |
-| Small-medium | 3-8 % | ≲ 76x76 mm |
-| Medium | 8-15 % | ≲ 104x104 mm |
-| Medium-large | 15-25 % | ≲ 135x135 mm |
-| Large flat | > 25 % | bigger |
-| Tall | height >= 100 mm (overrides) | |
+| height \ footprint | under 3 % | 3-15 % | over 15 % |
+|---|---|---|---|
+| **under 3 mm** | Small | Small | Small |
+| **3-20 mm** | Small | Small-medium | Small-medium |
+| **20-50 mm** | Medium | Medium | Medium-large |
+| **50-100 mm** | Medium-large | Large | Large |
+| **100 mm and up** | Tall | Tall | Tall |
 
-The cut points (`OrcaExt::kPartSizeAreaPctCuts`, `kTallPartHeightMm`) are constants, not UI, by
-decision; they are one edit away if a band feels wrong.
+- The **under-3 mm gate** is what keeps a single-layer test or a full-bed 1 mm patch at `Small`; before
+  it, the footprint alone put them in the top bucket.
+- 50-100 mm with a small footprint is `Medium-large` rather than `Large`: a slender part lifts sooner,
+  but a broad one has more area pulling.
+- The boundaries (`kThinPartHeightMm`, `kMidPartHeightMm`, `kHighPartHeightMm`, `kTallPartHeightMm`,
+  `kPartSizeAreaPctCuts`) are constants, not UI, by decision; they are one edit away if a band feels
+  wrong. The bucket names (`Small ... Large, Tall`) replaced the old "Large flat": with the matrix,
+  the top band is "large and at least 50 mm tall", not only flat.
 
 ## Anchors
 
@@ -112,18 +120,27 @@ decision; they are one edit away if a band feels wrong.
 - A custom flow value is validated on Apply (`-50..0`); an out-of-range or non-numeric entry is
   reported inline and nothing is written.
 - Tile badges show each type's configured flow (`--` when unset).
+- **Reset to auto** (next to `Plate automation...` in the send dialog) puts both rows back to the
+  automatic value where the plate type is configured, and to the stock value where it is not
+  (flow 0, offset 0). It also turns both `auto` flags back on, so a value picked by hand stops
+  overriding the automation for this project.
+
+The bed-temperature status line names the bucket whenever the automation picked the offset, e.g.
+`Textured Cool Plate: 55°C (-10, medium-large)`; a hand-picked offset keeps the plain `45°C (-15)`,
+and an automatic offset of 0 reads `(medium-large)`.
 
 ## Verification
 
 - Build: `build_win.bat -s --tests --no-gettext -j 8`, clean.
-- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 43
-  assertions in 5 cases): bucket boundaries at exactly 3/8/15/25 % and one unit past each, the tall
-  override in both directions, a plate with no area, the hull-vs-bbox footprint on a 45-degree part,
-  AppConfig round-trip (including configured zeros), malformed/unknown/out-of-range input, and the
-  per-type/per-bucket lookups.
+- Unit tests `tests/libslic3r/test_orca_plate_automation.cpp` (`[OrcaPlateAutomation]`, 49
+  assertions in 6 cases): every matrix cell boundary (including the under-3 mm gate at 0.2/1/2.99 mm
+  and 3 mm at both footprint columns), the 100 mm tall override, a plate with no area, the
+  riskiest-part rule (a full-bed patch plus a first-layer test stays Small; a tower outvotes a
+  patch), the hull-vs-bbox footprint on a 45-degree part, AppConfig round-trip (including configured
+  zeros), malformed/unknown/out-of-range input, and the per-type/per-bucket lookups.
 - `[OrcaFirstLayerFlow]` updated: the old "cool plates default to -20" case is replaced by the map
   lookup including "configured 0 counts as configured".
-- Suites: libslic3r **1582/1582**, fff_print **460/460**.
+- Suites: libslic3r **1583/1583**, fff_print **460/460**.
 - Runtime smoke over MCP: app starts, model slices, export carries
   `; bed_temperature_offset_auto = 1` next to the existing keys, and a `-10` delta still scales only
   the first layer's bottom surface (BF-1 path untouched).
@@ -134,19 +151,17 @@ decision; they are one edit away if a band feels wrong.
 
 ## Known limitations
 
-1. **Heuristic**: an unusual shape (a long diagonal part) can land a band off; the thresholds are
-   constants, and the send dialog shows the resulting value before Upload, so an override is one
-   click away.
-2. Only the **largest single instance** is classified - a plate of 20 small parts counts as "small",
-   and plate coverage is not considered.
+1. **Heuristic**: the matrix is tuned by hand (thin gate 3 mm, 3/15 % footprint columns, 20/50/100 mm
+   height rows). It is deliberately simple and explainable; the thresholds are constants, and the
+   send dialog names the bucket it picked before Upload, so a surprising value is visible.
+2. The riskiest part decides, but **plate coverage and part count are not considered**: twenty small
+   parts are still classified "small" even though the whole bed is used.
 3. Supports and brims are not in the footprint (they do not exist before slicing).
 4. Multi-plate projects classify **the plate being uploaded**; "All plates" uses the current plate
    for both rows, as BT-1 and BF-1 already do.
 5. The automation is applied when the **send dialog opens**; exporting G-code from the Prepare tab
    does not run it (same scope as BF-1's flow reduction).
 6. The bed-temp row's buttons cover `+-5/10/15`; an automated offset outside that grid (e.g. `-20`)
-   applies but leaves no button selected - the status line still shows the value.
-7. A row does not say *why* it shows a value ("auto" vs picked); the popup is where the automation
-   is visible.
-8. `FlashforgePrintHostSendDialog` overrides `init()` and gets none of these rows (existing
+   applies but leaves no button selected - the status line still shows the offset and the bucket.
+7. `FlashforgePrintHostSendDialog` overrides `init()` and gets none of these rows (existing
    behaviour).

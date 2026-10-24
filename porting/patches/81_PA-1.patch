@@ -42,10 +42,10 @@ index 0db3048e38..30c07a6992 100644
  {
 diff --git a/src/libslic3r/OrcaExt/PlateAutomation.hpp b/src/libslic3r/OrcaExt/PlateAutomation.hpp
 new file mode 100644
-index 0000000000..179c216936
+index 0000000000..14d420cf69
 --- /dev/null
 +++ b/src/libslic3r/OrcaExt/PlateAutomation.hpp
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,276 @@
 +// [ORCAPORT FILE] PlateAutomation - local, per-plate-type automation for the first layer
 +// Source: original (design in porting/notes/PA-1.md)
 +//
@@ -81,40 +81,75 @@ index 0000000000..179c216936
 +namespace Slic3r {
 +namespace OrcaExt {
 +
-+// Size buckets for the largest part on the plate, smallest first. `Tall` is decided by height alone
-+// and wins over the footprint, because a tall thin part warps where a flat one of the same footprint
-+// does not.
++// Size buckets, smallest first. Warping is a height problem first and an area problem second: a thin
++// part has no lever arm and no gradient across its thickness, so it never needs bed heat, while a tall
++// part accumulates enough contraction to lift a large footprint. The classifier is therefore a
++// height x footprint matrix, and `Tall` is decided by height alone.
 +enum class PartSizeBucket : int {
 +    Small = 0,
 +    SmallMedium,
 +    Medium,
 +    MediumLarge,
-+    LargeFlat,
++    Large,
 +    Tall,
 +    Count
 +};
 +constexpr int kPartSizeBucketCount = int(PartSizeBucket::Count);
 +
-+// Footprint cut points as a percentage of the plate's area: the band is the first cut the footprint
-+// does not exceed, and anything above the last cut is LargeFlat. Percentages rather than mm so the
-+// bands travel to another printer's bed size.
-+constexpr std::array<double, 4> kPartSizeAreaPctCuts {3.0, 8.0, 15.0, 25.0};
-+// A part at least this tall is Tall whatever its footprint is.
++// Height bands, in mm: under kThinPartHeightMm nothing warps; from there to kTallPartHeightMm the
++// footprint bands decide. The 20 and 50 mm edges are the interior rows of the matrix.
++constexpr double kThinPartHeightMm = 3.0;
++constexpr double kMidPartHeightMm  = 20.0;
++constexpr double kHighPartHeightMm = 50.0;
 +constexpr double kTallPartHeightMm = 100.0;
++// Footprint columns, as a percentage of the plate's area (percentages so they travel to another bed
++// size): under 3%, 3-15%, over 15%.
++constexpr std::array<double, 2> kPartSizeAreaPctCuts {3.0, 15.0};
 +
-+// The band a part falls in. `bed_area_mm2` is the plate's own area; a plate with no usable area
-+// falls back to the middle band rather than guessing an extreme.
++// The bucket a single part falls in.
++//
++//              footprint:  under 3%       3-15%          over 15%
++//   under 3 mm             Small          Small          Small
++//   3-20 mm                Small          Small-medium   Small-medium
++//   20-50 mm               Medium         Medium         Medium-large
++//   50-100 mm              Medium-large   Large          Large
++//   100 mm and up          Tall           Tall           Tall
++//
++// `bed_area_mm2` is the plate's own area; a plate with no usable area falls back to Medium rather
++// than guessing an extreme.
 +inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm)
 +{
++    if (height_mm < kThinPartHeightMm)
++        return PartSizeBucket::Small;
 +    if (height_mm >= kTallPartHeightMm)
 +        return PartSizeBucket::Tall;
 +    if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
 +        return PartSizeBucket::Medium;
-+    const double pct = 100. * footprint_mm2 / bed_area_mm2;
-+    for (int i = 0; i < int(kPartSizeAreaPctCuts.size()); ++i)
-+        if (pct <= kPartSizeAreaPctCuts[i])
-+            return PartSizeBucket(i);
-+    return PartSizeBucket::LargeFlat;
++
++    const double pct        = 100. * footprint_mm2 / bed_area_mm2;
++    const bool   small_area = pct < kPartSizeAreaPctCuts[0];
++    const bool   mid_area   = pct <= kPartSizeAreaPctCuts[1];
++
++    if (height_mm < kMidPartHeightMm)
++        return small_area ? PartSizeBucket::Small : PartSizeBucket::SmallMedium;
++    if (height_mm < kHighPartHeightMm)
++        return mid_area ? PartSizeBucket::Medium : PartSizeBucket::MediumLarge;
++    // 50 mm and up: a small footprint is a slender part, which lifts sooner than a broad one.
++    return small_area ? PartSizeBucket::MediumLarge : PartSizeBucket::Large;
++}
++
++// The bucket that decides the plate's bed temperature: the highest any part lands in, because the
++// temperature serves the whole plate. A first-layer test next to a real part gets the real part's
++// bucket, and a big flat patch no longer outvotes a tall one.
++inline PartSizeBucket plate_part_bucket(const std::vector<std::pair<double, double>> &footprints, double bed_area_mm2)
++{
++    PartSizeBucket bucket = PartSizeBucket::Small;
++    for (const auto &[footprint, height] : footprints) {
++        const PartSizeBucket part = classify_part_size(footprint, bed_area_mm2, height);
++        if (int(part) > int(bucket))
++            bucket = part;
++    }
++    return bucket;
 +}
 +
 +// Footprint (mm2, from the instance's 2D convex hull) and height (mm, from the instance bounding
@@ -446,10 +481,10 @@ index f061d56079..507846371f 100644
  
 diff --git a/src/slic3r/GUI/PlateAutomationDialog.cpp b/src/slic3r/GUI/PlateAutomationDialog.cpp
 new file mode 100644
-index 0000000000..d580f31067
+index 0000000000..81ca04c8f7
 --- /dev/null
 +++ b/src/slic3r/GUI/PlateAutomationDialog.cpp
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,340 @@
 +#include "PlateAutomationDialog.hpp"
 +
 +#include <algorithm>
@@ -484,17 +519,18 @@ index 0000000000..d580f31067
 +// typed into the field.
 +const std::array<double, 5> kFlowChoices {-20., -15., -10., -5., 0.};
 +
-+// Bucket rows: name and the footprint band, in OrcaExt::PartSizeBucket order.
-+wxString bucket_row_label(int bucket)
++// Bucket rows: short name plus a tooltip with the rule that lands a part in it.
++wxString bucket_row_tooltip(int bucket)
 +{
++    using B = OrcaExt::PartSizeBucket;
 +    switch (bucket) {
-+        case int(OrcaExt::PartSizeBucket::Small):       return _L("Small (up to 3% of the bed)");
-+        case int(OrcaExt::PartSizeBucket::SmallMedium): return _L("Small-medium (3-8% of the bed)");
-+        case int(OrcaExt::PartSizeBucket::Medium):      return _L("Medium (8-15% of the bed)");
-+        case int(OrcaExt::PartSizeBucket::MediumLarge): return _L("Medium-large (15-25% of the bed)");
-+        case int(OrcaExt::PartSizeBucket::LargeFlat):   return _L("Large flat (more than 25% of the bed)");
-+        case int(OrcaExt::PartSizeBucket::Tall):        return _L("Tall (100 mm or taller)");
-+        default:                                        return wxString();
++        case int(B::Small):       return _L("Under 3 mm tall at any footprint, or 3-20 mm tall covering less than 3% of the bed.");
++        case int(B::SmallMedium): return _L("3-20 mm tall and covering at least 3% of the bed.");
++        case int(B::Medium):      return _L("20-50 mm tall and covering at most 15% of the bed.");
++        case int(B::MediumLarge): return _L("20-50 mm tall covering more than 15% of the bed, or 50-100 mm tall covering less than 3%.");
++        case int(B::Large):       return _L("50-100 mm tall and covering at least 3% of the bed.");
++        case int(B::Tall):        return _L("100 mm or taller, at any footprint.");
++        default:                  return wxString();
 +    }
 +}
 +
@@ -506,6 +542,20 @@ index 0000000000..d580f31067
 +}
 +
 +} // namespace
++
++wxString plate_bucket_short_name(OrcaExt::PartSizeBucket bucket)
++{
++    using B = OrcaExt::PartSizeBucket;
++    switch (bucket) {
++        case B::Small:       return _L("Small");
++        case B::SmallMedium: return _L("Small-medium");
++        case B::Medium:      return _L("Medium");
++        case B::MediumLarge: return _L("Medium-large");
++        case B::Large:       return _L("Large");
++        case B::Tall:        return _L("Tall");
++        default:             return wxString();
++    }
++}
 +
 +PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type, std::function<void()> on_applied)
 +    : DPIDialog(parent, wxID_ANY, _L("Plate automation"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
@@ -571,9 +621,10 @@ index 0000000000..d580f31067
 +
 +    auto *bucket_grid = new wxFlexGridSizer(OrcaExt::kPartSizeBucketCount, 2, FromDIP(4), FromDIP(10));
 +    for (int i = 0; i < OrcaExt::kPartSizeBucketCount; ++i) {
-+        auto *label = new wxStaticText(this, wxID_ANY, bucket_row_label(i));
++        auto *label = new wxStaticText(this, wxID_ANY, plate_bucket_short_name(OrcaExt::PartSizeBucket(i)));
 +        label->SetFont(::Label::Body_13);
 +        label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        label->SetToolTip(bucket_row_tooltip(i));
 +        bucket_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
 +
 +        m_bucket_inputs[i] = new SpinInput(this, wxEmptyString, _L("\u00B0C" /* degC */), wxDefaultPosition,
@@ -776,10 +827,10 @@ index 0000000000..d580f31067
 +} // namespace Slic3r
 diff --git a/src/slic3r/GUI/PlateAutomationDialog.hpp b/src/slic3r/GUI/PlateAutomationDialog.hpp
 new file mode 100644
-index 0000000000..2175079e32
+index 0000000000..608b8ca741
 --- /dev/null
 +++ b/src/slic3r/GUI/PlateAutomationDialog.hpp
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,74 @@
 +// [ORCAPORT FILE] PlateAutomationDialog - edit the local per-plate automation
 +// Source: original (design in porting/notes/PA-1.md)
 +//
@@ -808,6 +859,10 @@ index 0000000000..2175079e32
 +namespace GUI {
 +
 +class RadioBox;
++
++// Short, user-facing name of a part size bucket ("Small", "Small-medium", ...). Shared by this
++// dialog's rows and the send dialog's status line so the two can never disagree.
++wxString plate_bucket_short_name(OrcaExt::PartSizeBucket bucket);
 +
 +class PlateAutomationDialog : public DPIDialog
 +{
@@ -924,7 +979,7 @@ index 55ed0bb72f..6a001c460c 100644
              // refresh the plate bed-temperature readout for the new delta
              p->partplate_list.invalidate_bed_temp_textures();
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 0bb25b387c..29213eec75 100644
+index 0bb25b387c..80de6d07c8 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -86,6 +86,8 @@
@@ -953,7 +1008,23 @@ index 0bb25b387c..29213eec75 100644
      for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
          m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
      update_bed_temp_status();
-@@ -533,6 +542,11 @@ void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
+@@ -518,7 +527,14 @@ void PrintHostSendDialog::update_bed_temp_status()
+ 
+     const int target = OrcaExt::apply_bed_temp_offset(m_bed_temp_base, m_bed_temp_offset);
+     wxString  text = wxString::Format("%s: %d%s", m_bed_temp_plate_label, target, from_u8(OrcaExt::bed_temp_unit_utf8()));
+-    if (m_bed_temp_offset != 0)
++    // [ORCAPORT:PA-1] say which size bucket picked the offset, so an automatic value is never silent.
++    const bool from_automation = m_bed_temp_auto && m_has_part_bucket
++        && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type);
++    if (from_automation) {
++        const wxString bucket = plate_bucket_short_name(m_part_bucket);
++        text += " " + (m_bed_temp_offset == 0 ? wxString::Format(_L("(%s)"), bucket)
++                                             : wxString::Format(_L("(%+d, %s)"), m_bed_temp_offset, bucket));
++    } else if (m_bed_temp_offset != 0)
+         text += wxString::Format(" (%+d)", m_bed_temp_offset);
+     m_bed_temp_status->SetLabel(text);
+     m_bed_temp_status->GetParent()->Layout();
+@@ -533,6 +549,11 @@ void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
      // ends the plate-driven default, which is why the clear is remembered.
      m_first_layer_flow_auto   = false;
      m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
@@ -965,7 +1036,7 @@ index 0bb25b387c..29213eec75 100644
      for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
          m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
      update_first_layer_flow_status();
-@@ -554,6 +568,32 @@ void PrintHostSendDialog::update_first_layer_flow_status()
+@@ -554,6 +575,51 @@ void PrintHostSendDialog::update_first_layer_flow_status()
  }
  // [ORCAPORT:BF-1] END
  
@@ -993,38 +1064,50 @@ index 0bb25b387c..29213eec75 100644
 +        refresh_bed_temp_controls();
 +    }
 +}
++
++void PrintHostSendDialog::reset_to_automation()
++{
++    const AppConfig &config   = *wxGetApp().app_config;
++    m_plate_flow_defaults     = load_plate_flow_defaults(config);
++    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(config);
++
++    // Back to the automatic value where the plate type is configured, and to the stock value where it
++    // is not. The rows keep their auto flag, so this project follows the automation again.
++    m_first_layer_flow_auto  = true;
++    m_first_layer_flow_delta = OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)
++        ? OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type) : 0.;
++    refresh_first_layer_flow_controls();
++
++    m_bed_temp_auto   = true;
++    m_bed_temp_offset = (m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type))
++        ? OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket) : 0;
++    refresh_bed_temp_controls();
++}
 +// [ORCAPORT:PA-1] END
 +
  void PrintHostSendDialog::init()
  {
      const auto& path = m_path;
-@@ -572,6 +612,25 @@ void PrintHostSendDialog::init()
+@@ -572,6 +638,18 @@ void PrintHostSendDialog::init()
      if (!bed_image.empty())
          set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
  
-+    // [ORCAPORT:PA-1] the local automation and the class of the largest instance on this plate.
++    // [ORCAPORT:PA-1] the local automation and the class of the plate's parts: the highest bucket any
++    // part lands in decides, because the bed temperature serves the whole plate.
 +    m_bed_type = bed_type;
 +    m_plate_flow_defaults     = load_plate_flow_defaults(*app_config);
 +    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(*app_config);
 +    m_has_part_bucket         = false;
 +    if (plate != nullptr) {
-+        double largest_footprint = 0.;
-+        double largest_height    = 0.;
-+        for (const auto &[footprint, height] : plate->get_instance_footprints())
-+            if (footprint > largest_footprint) {
-+                largest_footprint = footprint;
-+                largest_height    = height;
-+            }
-+        if (largest_footprint > 0.) {
-+            m_has_part_bucket = true;
-+            m_part_bucket     = OrcaExt::classify_part_size(largest_footprint, OrcaExt::plate_area_mm2(plate->get_size()), largest_height);
-+        }
++        const std::vector<std::pair<double, double>> footprints = plate->get_instance_footprints();
++        m_has_part_bucket = !footprints.empty();
++        m_part_bucket     = OrcaExt::plate_part_bucket(footprints, OrcaExt::plate_area_mm2(plate->get_size()));
 +    }
 +
      auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
      label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
  
-@@ -643,8 +702,17 @@ void PrintHostSendDialog::init()
+@@ -643,8 +721,17 @@ void PrintHostSendDialog::init()
              preset_bundle->full_config(), bed_type,
              OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
  
@@ -1043,7 +1126,7 @@ index 0bb25b387c..29213eec75 100644
  
          const ConfigOptionDef* bed_type_def = print_config_def.get("curr_bed_type");
          const int              bed_type_idx = (int) bed_type - 1;
-@@ -705,10 +773,9 @@ void PrintHostSendDialog::init()
+@@ -705,10 +792,9 @@ void PrintHostSendDialog::init()
          if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
              m_first_layer_flow_auto = saved_auto->value;
  
@@ -1057,7 +1140,7 @@ index 0bb25b387c..29213eec75 100644
          else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
              m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
  
-@@ -718,7 +785,7 @@ void PrintHostSendDialog::init()
+@@ -718,7 +804,7 @@ void PrintHostSendDialog::init()
          caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
          // The reduction covers the first layer's bottom surface infill, not its walls, so the
          // caption alone must not be read as "every extrusion on layer 1".
@@ -1066,7 +1149,7 @@ index 0bb25b387c..29213eec75 100644
          row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
  
          // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
-@@ -756,6 +823,18 @@ void PrintHostSendDialog::init()
+@@ -756,6 +842,25 @@ void PrintHostSendDialog::init()
      }
      // [ORCAPORT:BF-1] END
  
@@ -1078,6 +1161,13 @@ index 0bb25b387c..29213eec75 100644
 +        automation->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
 +        automation->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_plate_automation(); });
 +        automation_row->Add(automation, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        auto *reset = new Button(this, _L("Reset to auto"));
++        reset->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++        reset->SetToolTip(_L("Restore the first layer flow and the bed temperature offset to the automatic values for this plate."));
++        reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { reset_to_automation(); });
++        automation_row->Add(reset, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
 +        content_sizer->Add(automation_row);
 +        content_sizer->AddSpacer(VERT_SPACING);
 +    }
@@ -1086,7 +1176,7 @@ index 0bb25b387c..29213eec75 100644
          m_valid_suffix = recent_path.substr(extension_start);
      // .gcode suffix control
 diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
-index 458c689cc2..988bfad271 100644
+index 458c689cc2..ec16a177a9 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.hpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.hpp
 @@ -18,6 +18,7 @@
@@ -1129,7 +1219,7 @@ index 458c689cc2..988bfad271 100644
      // [ORCAPORT:BT-1] END
  
      // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Same plumbing as the
-@@ -95,7 +103,18 @@ protected:
+@@ -95,7 +103,19 @@ protected:
      std::vector<RadioBox*> m_first_layer_flow_radios;
      void                   set_first_layer_flow_delta(double delta);
      void                   update_first_layer_flow_status();
@@ -1145,6 +1235,7 @@ index 458c689cc2..988bfad271 100644
 +    OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
 +    void                          open_plate_automation();
 +    void                          refresh_plate_automation();
++    void                          reset_to_automation();
  };
  
  
