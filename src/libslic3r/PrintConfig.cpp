@@ -1472,6 +1472,16 @@ void PrintConfigDef::init_fff_params()
     def->max = OrcaExt::kBedTempOffsetMax;
     def->set_default_value(new ConfigOptionInt(0));
 
+    // [ORCAPORT:PA-1] whether the upload dialog follows the local plate automation for the bed
+    // temperature instead of the stored offset. Project-level like the offset itself; it is turned
+    // off as soon as an offset is chosen or cleared in the dialog, so a per-project choice sticks
+    // while the automatic setting stays saved on this computer.
+    def = this->add("bed_temperature_offset_auto", coBool);
+    def->label = L("Bed temperature offset follows the plate automation");
+    def->tooltip = L("Choose the bed temperature offset from the part size buckets configured for the plate type in the upload dialog. Choosing an offset there turns this off for the project.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction, set from the upload
     // dialog and kept in the project config (PresetBundle::s_project_options) so it never dirties a
     // preset. Applied at G-code export time only, so changing it re-exports the G-code without
@@ -1484,12 +1494,12 @@ void PrintConfigDef::init_fff_params()
     def->max = OrcaExt::kFirstLayerFlowDeltaMax;
     def->set_default_value(new ConfigOptionFloat(0));
 
-    // [ORCAPORT:BF-1] whether the upload dialog preselects the reduction for the plate type. It is
-    // a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct from
-    // "the user never chose" (auto on) and a cleared choice does not come back on reopen.
+    // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow. It
+    // is a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct
+    // from "the user never chose" (auto on) and a cleared choice does not come back on reopen.
     def = this->add("initial_layer_bottom_surface_flow_auto", coBool);
     def->label = L("First layer flow follows the plate");
-    def->tooltip = L("Preselect the first-layer flow reduction for the plate type in the upload dialog: 20% for the cool plates, none for the others. Choosing or clearing a value in the dialog turns this off.");
+    def->tooltip = L("Preselect the first-layer flow reduction configured for the plate type in the plate automation dialog. Choosing or clearing a value in the upload dialog turns this off.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
 

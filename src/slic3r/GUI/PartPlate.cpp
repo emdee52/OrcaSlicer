@@ -10,6 +10,7 @@
 #include "libslic3r/Point.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/OrcaExt/PlateAutomation.hpp" // [ORCAPORT:PA-1]
 #include "libslic3r/Line.hpp"
 #include "libslic3r/Polyline.hpp"
 #include "libslic3r/ExPolygon.hpp"
@@ -4118,6 +4119,20 @@ BoundingBoxf3 PartPlate::get_objects_bounding_box()
     }
     return bbox;
 }
+
+// [ORCAPORT:PA-1] BEGIN
+std::vector<std::pair<double, double>> PartPlate::get_instance_footprints() const
+{
+    std::vector<std::pair<double, double>> out;
+    out.reserve(obj_to_instance_set.size());
+    for (const auto &[obj_id, instance_id] : obj_to_instance_set) {
+        if (obj_id < 0 || obj_id >= int(m_model->objects.size()))
+            continue;
+        out.push_back(OrcaExt::instance_footprint(*m_model->objects[obj_id], size_t(instance_id)));
+    }
+    return out;
+}
+// [ORCAPORT:PA-1] END
 
 //translate instance on the plate
 void PartPlate::translate_all_instance(Vec3d position)

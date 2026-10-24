@@ -1,0 +1,143 @@
+#include <catch2/catch_all.hpp>
+
+#include "libslic3r/Model.hpp"
+#include "libslic3r/OrcaExt/PlateAutomation.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+
+#include <array>
+#include <cmath>
+#include <string>
+
+using namespace Slic3r;
+using Catch::Matchers::WithinAbs;
+
+namespace {
+
+// A 270 mm plate: the footprint cuts are percentages of this.
+constexpr double kBedArea = 270.0 * 270.0;
+
+template<int N> std::array<int, N> offsets(std::initializer_list<int> values)
+{
+    std::array<int, N> out {};
+    size_t             i = 0;
+    for (int value : values)
+        if (i < out.size())
+            out[i++] = value;
+    return out;
+}
+
+} // namespace
+
+// The band a part falls in decides which bed-temperature offset the dialog preselects, so the cut
+// points are inclusive at the top of each band and a tall part wins over its footprint.
+TEST_CASE("Part size buckets follow the footprint and the height", "[OrcaPlateAutomation]") {
+    const double cut_small   = kBedArea * OrcaExt::kPartSizeAreaPctCuts[0] / 100.; // 3 %
+    const double cut_smedium = kBedArea * OrcaExt::kPartSizeAreaPctCuts[1] / 100.; // 8 %
+    const double cut_medium  = kBedArea * OrcaExt::kPartSizeAreaPctCuts[2] / 100.; // 15 %
+    const double cut_mlarge  = kBedArea * OrcaExt::kPartSizeAreaPctCuts[3] / 100.; // 25 %
+
+    CHECK(OrcaExt::classify_part_size(cut_small, kBedArea, 10.) == OrcaExt::PartSizeBucket::Small);
+    CHECK(OrcaExt::classify_part_size(cut_small + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(cut_smedium, kBedArea, 10.) == OrcaExt::PartSizeBucket::SmallMedium);
+    CHECK(OrcaExt::classify_part_size(cut_smedium + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(cut_medium, kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(cut_medium + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(cut_mlarge, kBedArea, 10.) == OrcaExt::PartSizeBucket::MediumLarge);
+    CHECK(OrcaExt::classify_part_size(cut_mlarge + 1., kBedArea, 10.) == OrcaExt::PartSizeBucket::LargeFlat);
+
+    // Height overrides the footprint in both directions: a tall thin part and a tall wide one.
+    CHECK(OrcaExt::classify_part_size(100., kBedArea, OrcaExt::kTallPartHeightMm) == OrcaExt::PartSizeBucket::Tall);
+    CHECK(OrcaExt::classify_part_size(cut_mlarge * 2., kBedArea, OrcaExt::kTallPartHeightMm + 1.) == OrcaExt::PartSizeBucket::Tall);
+    CHECK(OrcaExt::classify_part_size(cut_mlarge * 2., kBedArea, OrcaExt::kTallPartHeightMm - 1.) == OrcaExt::PartSizeBucket::LargeFlat);
+
+    // A plate with no usable area, or no part, cannot be classified: the middle band keeps the
+    // automation conservative instead of guessing an extreme.
+    CHECK(OrcaExt::classify_part_size(cut_small, 0., 10.) == OrcaExt::PartSizeBucket::Medium);
+    CHECK(OrcaExt::classify_part_size(0., kBedArea, 10.) == OrcaExt::PartSizeBucket::Medium);
+}
+
+// The footprint must come from the 2D hull: a part turned 45 degrees has up to twice the bounding
+// box for the same material, which would move it up a band.
+TEST_CASE("Instance footprint is the rotated hull, not the bounding box", "[OrcaPlateAutomation]") {
+    Model        model;
+    ModelObject *object = model.add_object("cube", "", make_cube(20., 20., 10.));
+    ModelInstance *instance = object->add_instance();
+    instance->set_rotation(Vec3d(0., 0., 45.));
+
+    const auto [footprint, height] = OrcaExt::instance_footprint(*object, 0);
+    CHECK_THAT(footprint, WithinAbs(400., 4.));  // 20 x 20, unchanged by the rotation
+    CHECK_THAT(height, WithinAbs(10., 1e-6));
+
+    const auto missing = OrcaExt::instance_footprint(*object, 7);
+    CHECK_THAT(missing.first, WithinAbs(0., 1e-9));
+    CHECK_THAT(missing.second, WithinAbs(0., 1e-9));
+}
+
+// AppConfig is a string; a hand-edited or stale value must never crash the dialog, and the encoding
+// has to round-trip a configured zero ("print at the profile's flow").
+TEST_CASE("Plate flow defaults round-trip through the AppConfig string", "[OrcaPlateAutomation]") {
+    OrcaExt::PlateFlowDefaults defaults;
+    defaults[int(BedType::btPC)]        = -20.;
+    defaults[int(BedType::btPCT)]       = -12.;
+    defaults[int(BedType::btSuperTack)] = 0.;
+
+    const std::string          serialized = OrcaExt::serialize_flow_defaults(defaults);
+    const OrcaExt::PlateFlowDefaults parsed = OrcaExt::parse_flow_defaults(serialized);
+    CHECK(parsed == defaults);
+
+    CHECK(OrcaExt::parse_flow_defaults("").empty());
+    CHECK(OrcaExt::parse_flow_defaults("junk").empty());
+    CHECK(OrcaExt::parse_flow_defaults("x:y;:;-5").empty());
+
+    // Out-of-range values are clamped; an unknown plate type is dropped.
+    const auto clamped = OrcaExt::parse_flow_defaults("1:-99;2:10;99:-20");
+    REQUIRE(clamped.count(int(BedType::btPC)) == 1);
+    CHECK_THAT(clamped.at(int(BedType::btPC)), WithinAbs(OrcaExt::kFirstLayerFlowDeltaMin, 1e-9));
+    CHECK_THAT(clamped.at(int(BedType::btEP)), WithinAbs(0., 1e-9));
+    CHECK(clamped.count(99) == 0);
+}
+
+TEST_CASE("Plate bed temperature defaults round-trip through the AppConfig string", "[OrcaPlateAutomation]") {
+    using Buckets = OrcaExt::PlateBedTempDefaults;
+    Buckets defaults;
+    defaults[int(BedType::btPCT)]       = offsets<OrcaExt::kPartSizeBucketCount>({-15, -10, -5, 0, 0, 5});
+    defaults[int(BedType::btSuperTack)] = offsets<OrcaExt::kPartSizeBucketCount>({-20, -20, -15, 0, 0, 0});
+
+    const std::string serialized = OrcaExt::serialize_bed_temp_defaults(defaults);
+    const Buckets     parsed     = OrcaExt::parse_bed_temp_defaults(serialized);
+    CHECK(parsed == defaults);
+
+    CHECK(OrcaExt::parse_bed_temp_defaults("").empty());
+    CHECK(OrcaExt::parse_bed_temp_defaults("garbage").empty());
+
+    // A short row is padded with zeros, a long one is cut, values are clamped.
+    const Buckets short_row = OrcaExt::parse_bed_temp_defaults("1:-10");
+    REQUIRE(short_row.count(int(BedType::btPC)) == 1);
+    CHECK(short_row.at(int(BedType::btPC))[0] == -10);
+    CHECK(short_row.at(int(BedType::btPC))[int(OrcaExt::PartSizeBucket::Tall)] == 0);
+
+    const Buckets long_row = OrcaExt::parse_bed_temp_defaults("1:1,2,3,4,5,6,7,8");
+    REQUIRE(long_row.count(int(BedType::btPC)) == 1);
+    CHECK(long_row.at(int(BedType::btPC))[int(OrcaExt::PartSizeBucket::Tall)] == 6);
+
+    const Buckets clamped = OrcaExt::parse_bed_temp_defaults("1:-99,99,0,0,0,0");
+    CHECK(clamped.at(int(BedType::btPC))[0] == OrcaExt::kBedTempOffsetMin);
+    CHECK(clamped.at(int(BedType::btPC))[1] == OrcaExt::kBedTempOffsetMax);
+}
+
+// The dialog asks "is this plate type configured?" before letting the automation own a row, and then
+// looks the offset up by bucket.
+TEST_CASE("Plate bed temperature defaults resolve per plate type and bucket", "[OrcaPlateAutomation]") {
+    OrcaExt::PlateBedTempDefaults defaults;
+    CHECK_FALSE(OrcaExt::has_bed_temp_default(defaults, BedType::btPCT));
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Small) == 0);
+
+    defaults[int(BedType::btPCT)] = offsets<OrcaExt::kPartSizeBucketCount>({-15, -10, -5, 0, 5, 10});
+    CHECK(OrcaExt::has_bed_temp_default(defaults, BedType::btPCT));
+    CHECK_FALSE(OrcaExt::has_bed_temp_default(defaults, BedType::btPC));
+
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Small) == -15);
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Medium) == -5);
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::LargeFlat) == 5);
+    CHECK(OrcaExt::bed_temp_default_for(defaults, BedType::btPCT, OrcaExt::PartSizeBucket::Tall) == 10);
+}

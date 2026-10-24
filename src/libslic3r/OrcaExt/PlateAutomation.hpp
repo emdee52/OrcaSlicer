@@ -1,0 +1,241 @@
+// [ORCAPORT FILE] PlateAutomation - local, per-plate-type automation for the first layer
+// Source: original (design in porting/notes/PA-1.md)
+//
+// Two things the upload dialog otherwise asks the user to repeat by hand:
+//
+//   - a reduction of the first layer's bottom surface flow, per plate type (PA-1/BF-2), and
+//   - a bed-temperature offset chosen from the size of the largest part on the plate,
+//     per plate type (PA-1/BT-2).
+//
+// Both are personal, machine-local preferences: they live in AppConfig, never in a preset and never
+// in a 3mf, so a downloaded project or an updated vendor profile cannot carry or clobber them. A
+// value chosen in the print dialog is a per-project override and takes precedence.
+//
+// This header owns the data model (buckets, maps, AppConfig encoding) and the classification, all
+// free of UI, so the behaviour is unit-tested rather than eyeballed.
+#ifndef slic3r_OrcaExt_PlateAutomation_hpp_
+#define slic3r_OrcaExt_PlateAutomation_hpp_
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "../Model.hpp"
+#include "../PrintConfig.hpp"
+#include "BedTempOverride.hpp"  // clamp_bed_temp_offset
+#include "FirstLayerFlow.hpp"   // clamp_first_layer_flow_delta
+
+namespace Slic3r {
+namespace OrcaExt {
+
+// Size buckets for the largest part on the plate, smallest first. `Tall` is decided by height alone
+// and wins over the footprint, because a tall thin part warps where a flat one of the same footprint
+// does not.
+enum class PartSizeBucket : int {
+    Small = 0,
+    SmallMedium,
+    Medium,
+    MediumLarge,
+    LargeFlat,
+    Tall,
+    Count
+};
+constexpr int kPartSizeBucketCount = int(PartSizeBucket::Count);
+
+// Footprint cut points as a percentage of the plate's area: the band is the first cut the footprint
+// does not exceed, and anything above the last cut is LargeFlat. Percentages rather than mm so the
+// bands travel to another printer's bed size.
+constexpr std::array<double, 4> kPartSizeAreaPctCuts {3.0, 8.0, 15.0, 25.0};
+// A part at least this tall is Tall whatever its footprint is.
+constexpr double kTallPartHeightMm = 100.0;
+
+// The band a part falls in. `bed_area_mm2` is the plate's own area; a plate with no usable area
+// falls back to the middle band rather than guessing an extreme.
+inline PartSizeBucket classify_part_size(double footprint_mm2, double bed_area_mm2, double height_mm)
+{
+    if (height_mm >= kTallPartHeightMm)
+        return PartSizeBucket::Tall;
+    if (!(bed_area_mm2 > 0.) || !(footprint_mm2 > 0.))
+        return PartSizeBucket::Medium;
+    const double pct = 100. * footprint_mm2 / bed_area_mm2;
+    for (int i = 0; i < int(kPartSizeAreaPctCuts.size()); ++i)
+        if (pct <= kPartSizeAreaPctCuts[i])
+            return PartSizeBucket(i);
+    return PartSizeBucket::LargeFlat;
+}
+
+// Footprint (mm2, from the instance's 2D convex hull) and height (mm, from the instance bounding
+// box) of one object instance. The hull rather than the bounding box: a part turned 45 degrees has
+// up to twice the bounding box for the same material, which would put it in the wrong band.
+inline std::pair<double, double> instance_footprint(const ModelObject &object, size_t instance_idx)
+{
+    if (instance_idx >= object.instances.size())
+        return {0., 0.};
+    const ModelInstance &instance = *object.instances[instance_idx];
+    const Polygon        hull     = object.convex_hull_2d(instance.get_transformation().get_matrix());
+    // Hull points are in scaled coordinates; SCALING_FACTOR is millimetres per scaled unit, so the
+    // area converts with its square (the same conversion Plater.cpp uses for polygon areas).
+    const double area_mm2 = std::abs(hull.area()) * SCALING_FACTOR * SCALING_FACTOR;
+    return {area_mm2, object.instance_bounding_box(instance).size().z()};
+}
+
+// Local automation, keyed by the BedType's integer value (an unknown or future type is simply an
+// unused row). Both maps start empty: with nothing configured, nothing changes.
+using PlateFlowDefaults    = std::map<int, double>;                                 // percent, -50..0
+using PlateBedTempDefaults = std::map<int, std::array<int, kPartSizeBucketCount>>;  // degC offset
+
+inline bool valid_bed_type_key(int key)
+{
+    return key > int(BedType::btDefault) && key < int(BedType::btCount);
+}
+
+inline double flow_default_for(const PlateFlowDefaults &defaults, BedType bed_type)
+{
+    auto it = defaults.find(int(bed_type));
+    return it == defaults.end() ? 0. : clamp_first_layer_flow_delta(it->second);
+}
+
+// True when the user configured the flow automation for this plate type, even at 0 ("print at the
+// profile's flow"). Only a configured type lets the automation own the row; otherwise an older
+// per-project value keeps showing, so projects saved before this feature do not lose it.
+inline bool has_flow_default(const PlateFlowDefaults &defaults, BedType bed_type)
+{
+    return defaults.find(int(bed_type)) != defaults.end();
+}
+
+// True when the user configured the bed-temperature automation for this plate type, i.e. when the
+// automation owns the row instead of an older per-project offset.
+inline bool has_bed_temp_default(const PlateBedTempDefaults &defaults, BedType bed_type)
+{
+    return defaults.find(int(bed_type)) != defaults.end();
+}
+
+inline int bed_temp_default_for(const PlateBedTempDefaults &defaults, BedType bed_type, PartSizeBucket bucket)
+{
+    auto it = defaults.find(int(bed_type));
+    if (it == defaults.end() || int(bucket) < 0 || int(bucket) >= kPartSizeBucketCount)
+        return 0;
+    return clamp_bed_temp_offset(it->second[int(bucket)]);
+}
+
+// AppConfig encoding. One string each so the whole map is written atomically and stays readable in
+// OrcaSlicer.conf:
+//   flow:     "0:-20;2:-12"                      (BedType:percent)
+//   bed temp: "0:-15,-10,-5,0,0,5;5:0,0,0,0,0,0" (BedType:six offsets in bucket order)
+// Parsing is tolerant: unknown keys, unparsable numbers and short rows are dropped, values are
+// clamped, so a hand-edited or stale value can never crash the dialog.
+inline std::string serialize_flow_defaults(const PlateFlowDefaults &defaults)
+{
+    std::string out;
+    for (const auto &[key, percent] : defaults) {
+        if (! valid_bed_type_key(key))
+            continue;
+        if (! out.empty())
+            out += ';';
+        // A configured 0 ("no reduction") is kept: it is what makes the plate's own automation
+        // override an older per-project value instead of falling back to it.
+        out += std::to_string(key) + ':' + std::to_string(clamp_first_layer_flow_delta(percent));
+    }
+    return out;
+}
+
+inline PlateFlowDefaults parse_flow_defaults(const std::string &text)
+{
+    PlateFlowDefaults out;
+    size_t            pos = 0;
+    while (pos < text.size()) {
+        const size_t end = text.find(';', pos);
+        const std::string entry = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? text.size() : end + 1;
+        const size_t colon = entry.find(':');
+        if (colon == std::string::npos)
+            continue;
+        try {
+            const int    key     = std::stoi(entry.substr(0, colon));
+            const double percent = std::stod(entry.substr(colon + 1));
+            if (! valid_bed_type_key(key))
+                continue;
+            out[key] = clamp_first_layer_flow_delta(percent);
+        } catch (...) {
+            // Malformed entry: ignore it and keep the rest.
+        }
+    }
+    return out;
+}
+
+inline std::string serialize_bed_temp_defaults(const PlateBedTempDefaults &defaults)
+{
+    std::string out;
+    for (const auto &[key, offsets] : defaults) {
+        if (! valid_bed_type_key(key))
+            continue;
+        if (! out.empty())
+            out += ';';
+        out += std::to_string(key) + ':';
+        for (int i = 0; i < kPartSizeBucketCount; ++i) {
+            if (i > 0)
+                out += ',';
+            out += std::to_string(clamp_bed_temp_offset(offsets[i]));
+        }
+    }
+    return out;
+}
+
+inline PlateBedTempDefaults parse_bed_temp_defaults(const std::string &text)
+{
+    PlateBedTempDefaults out;
+    size_t               pos = 0;
+    while (pos < text.size()) {
+        const size_t end = text.find(';', pos);
+        const std::string entry = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? text.size() : end + 1;
+        const size_t colon = entry.find(':');
+        if (colon == std::string::npos)
+            continue;
+        int    key = 0;
+        try {
+            key = std::stoi(entry.substr(0, colon));
+        } catch (...) {
+            continue;
+        }
+        if (! valid_bed_type_key(key))
+            continue;
+        std::array<int, kPartSizeBucketCount> offsets {};
+        const std::string                     values = entry.substr(colon + 1);
+        size_t                                vpos   = 0;
+        int                                   index  = 0;
+        while (vpos <= values.size() && index < kPartSizeBucketCount) {
+            const size_t      vend  = values.find(',', vpos);
+            const std::string value = values.substr(vpos, vend == std::string::npos ? std::string::npos : vend - vpos);
+            if (! value.empty()) {
+                try {
+                    offsets[index] = clamp_bed_temp_offset(std::stoi(value));
+                } catch (...) {
+                    offsets[index] = 0;
+                }
+            }
+            ++index;
+            if (vend == std::string::npos)
+                break;
+            vpos = vend + 1;
+        }
+        out[key] = offsets;
+    }
+    return out;
+}
+
+// The plate area the footprint bands are a percentage of. The plate reports millimetres.
+inline double plate_area_mm2(const Vec2d &plate_size)
+{
+    return std::max(0., plate_size.x()) * std::max(0., plate_size.y());
+}
+
+} // namespace OrcaExt
+} // namespace Slic3r
+
+#endif /* slic3r_OrcaExt_PlateAutomation_hpp_ */

@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "libslic3r/OrcaExt/FirstLayerFlow.hpp"
+#include "libslic3r/OrcaExt/PlateAutomation.hpp"
 
 using namespace Slic3r;
 using Catch::Matchers::WithinAbs;
@@ -19,22 +20,26 @@ TEST_CASE("A first-layer flow reduction scales the profile's bottom surface rati
     CHECK_THAT(OrcaExt::first_layer_bottom_effective_flow(0.95, 0.), WithinAbs(0.95, 1e-9));
 }
 
-// The upload dialog preselects a reduction for the plates that tend to over-extrude their first
-// layer: the three cool plates (Cool Plate / "Smooth Cool Plate", Textured Cool Plate and Cool
-// Plate (SuperTack)). Every other plate starts at the profile's flow.
-TEST_CASE("The first-layer flow default follows the plate type", "[OrcaFirstLayerFlow]") {
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPC), WithinAbs(-20., 1e-9));
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPCT), WithinAbs(-20., 1e-9));
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btSuperTack), WithinAbs(-20., 1e-9));
+// The upload dialog's automation preselects a reduction for a plate type only once the user
+// configured that type in the plate automation popup; with nothing configured nothing changes.
+TEST_CASE("The first-layer flow default follows the local per-plate automation", "[OrcaFirstLayerFlow]") {
+    OrcaExt::PlateFlowDefaults defaults;
+    CHECK_FALSE(OrcaExt::has_flow_default(defaults, BedType::btPC));
+    CHECK_THAT(OrcaExt::flow_default_for(defaults, BedType::btPC), WithinAbs(0., 1e-9));
 
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPEI), WithinAbs(0., 1e-9));
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btEP), WithinAbs(0., 1e-9));
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPTE), WithinAbs(0., 1e-9));
-    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btDefault), WithinAbs(0., 1e-9));
+    defaults[int(BedType::btPC)]        = -20.;
+    defaults[int(BedType::btSuperTack)] = -12.;
 
-    // The preselected value is one the row can show and the clamp accepts.
-    CHECK_THAT(OrcaExt::first_layer_bottom_flow_scale(OrcaExt::kFirstLayerFlowCoolPlateDefault), WithinAbs(0.8, 1e-9));
-    CHECK(OrcaExt::clamp_first_layer_flow_delta(OrcaExt::kFirstLayerFlowCoolPlateDefault) == OrcaExt::kFirstLayerFlowCoolPlateDefault);
+    CHECK(OrcaExt::has_flow_default(defaults, BedType::btPC));
+    CHECK_THAT(OrcaExt::flow_default_for(defaults, BedType::btPC), WithinAbs(-20., 1e-9));
+    CHECK_THAT(OrcaExt::flow_default_for(defaults, BedType::btSuperTack), WithinAbs(-12., 1e-9));
+    CHECK_FALSE(OrcaExt::has_flow_default(defaults, BedType::btPTE));
+
+    // A configured zero is a real choice ("print at the profile's flow") and must still count as
+    // configured, so an older per-project value does not come back through it.
+    defaults[int(BedType::btPTE)] = 0.;
+    CHECK(OrcaExt::has_flow_default(defaults, BedType::btPTE));
+    CHECK_THAT(OrcaExt::flow_default_for(defaults, BedType::btPTE), WithinAbs(0., 1e-9));
 }
 
 // The reduction only ever lowers flow: it must not amplify an over-extruding first layer, and a

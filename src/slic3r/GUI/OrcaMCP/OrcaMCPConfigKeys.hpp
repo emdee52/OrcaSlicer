@@ -31,6 +31,8 @@ inline const std::set<std::string> project_keys = {
     "initial_layer_bottom_surface_flow_delta",
     // Whether that reduction still follows the plate type (no explicit choice yet).
     "initial_layer_bottom_surface_flow_auto",
+    // [ORCAPORT:PA-1] whether the bed temperature offset follows the local plate automation
+    "bed_temperature_offset_auto",
     "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
     "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
 };

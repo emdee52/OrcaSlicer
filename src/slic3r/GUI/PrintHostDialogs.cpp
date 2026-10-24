@@ -86,6 +86,8 @@
 #include "libslic3r/OrcaExt/BedTempOverride.hpp"
 #include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
 #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
+#include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
+#include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -504,8 +506,15 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
 void PrintHostSendDialog::set_bed_temp_offset(int offset)
 {
     // Radio-box semantics with a clear: choosing the active offset turns it off, so the delta is
-    // always relative to the plate temperature instead of accumulating across clicks.
+    // always relative to the plate temperature instead of accumulating across clicks. Any click ends
+    // the plate automation for this project, which is what makes the clear stick.
+    m_bed_temp_auto   = false;
     m_bed_temp_offset = (m_bed_temp_offset == offset) ? 0 : offset;
+    refresh_bed_temp_controls();
+}
+
+void PrintHostSendDialog::refresh_bed_temp_controls()
+{
     for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
         m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
     update_bed_temp_status();
@@ -533,6 +542,11 @@ void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
     // ends the plate-driven default, which is why the clear is remembered.
     m_first_layer_flow_auto   = false;
     m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
+    refresh_first_layer_flow_controls();
+}
+
+void PrintHostSendDialog::refresh_first_layer_flow_controls()
+{
     for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
         m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
     update_first_layer_flow_status();
@@ -554,6 +568,32 @@ void PrintHostSendDialog::update_first_layer_flow_status()
 }
 // [ORCAPORT:BF-1] END
 
+// [ORCAPORT:PA-1] BEGIN - local plate automation
+void PrintHostSendDialog::open_plate_automation()
+{
+    PlateAutomationDialog dlg(this, m_bed_type, [this]() { refresh_plate_automation(); });
+    dlg.ShowModal();
+}
+
+void PrintHostSendDialog::refresh_plate_automation()
+{
+    const AppConfig &config    = *wxGetApp().app_config;
+    m_plate_flow_defaults      = load_plate_flow_defaults(config);
+    m_plate_bed_temp_defaults  = load_plate_bed_temp_defaults(config);
+
+    // Only a row that still follows the automation changes; a value picked by hand belongs to this
+    // project and is left alone.
+    if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)) {
+        m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type);
+        refresh_first_layer_flow_controls();
+    }
+    if (m_bed_temp_auto && m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, m_bed_type)) {
+        m_bed_temp_offset = OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, m_bed_type, m_part_bucket);
+        refresh_bed_temp_controls();
+    }
+}
+// [ORCAPORT:PA-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -571,6 +611,25 @@ void PrintHostSendDialog::init()
     const std::string bed_image = bed_type_thumbnail_name(bed_type);
     if (!bed_image.empty())
         set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
+
+    // [ORCAPORT:PA-1] the local automation and the class of the largest instance on this plate.
+    m_bed_type = bed_type;
+    m_plate_flow_defaults     = load_plate_flow_defaults(*app_config);
+    m_plate_bed_temp_defaults = load_plate_bed_temp_defaults(*app_config);
+    m_has_part_bucket         = false;
+    if (plate != nullptr) {
+        double largest_footprint = 0.;
+        double largest_height    = 0.;
+        for (const auto &[footprint, height] : plate->get_instance_footprints())
+            if (footprint > largest_footprint) {
+                largest_footprint = footprint;
+                largest_height    = height;
+            }
+        if (largest_footprint > 0.) {
+            m_has_part_bucket = true;
+            m_part_bucket     = OrcaExt::classify_part_size(largest_footprint, OrcaExt::plate_area_mm2(plate->get_size()), largest_height);
+        }
+    }
 
     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
     label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
@@ -643,8 +702,17 @@ void PrintHostSendDialog::init()
             preset_bundle->full_config(), bed_type,
             OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
 
+        // [ORCAPORT:PA-1] The automation owns the offset only where the plate type has an entry: a
+        // project saved before this existed keeps its own offset, and a chosen offset in this dialog
+        // turns the automation off for the project.
+        int saved_offset = 0;
         if (const ConfigOptionInt* saved = preset_bundle->project_config.option<ConfigOptionInt>("bed_temperature_offset"))
-            m_bed_temp_offset = saved->value;
+            saved_offset = saved->value;
+        if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("bed_temperature_offset_auto"))
+            m_bed_temp_auto = saved_auto->value;
+        m_bed_temp_offset = (m_bed_temp_auto && m_has_part_bucket && OrcaExt::has_bed_temp_default(m_plate_bed_temp_defaults, bed_type))
+            ? OrcaExt::bed_temp_default_for(m_plate_bed_temp_defaults, bed_type, m_part_bucket)
+            : saved_offset;
 
         const ConfigOptionDef* bed_type_def = print_config_def.get("curr_bed_type");
         const int              bed_type_idx = (int) bed_type - 1;
@@ -705,10 +773,9 @@ void PrintHostSendDialog::init()
         if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
             m_first_layer_flow_auto = saved_auto->value;
 
-        if (m_first_layer_flow_auto)
-            // The cool plates start at the plate default (20% less); every other plate starts at the
-            // profile's value, so the row reads as "nothing chosen" there.
-            m_first_layer_flow_delta = OrcaExt::first_layer_flow_plate_default(bed_type);
+        if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, bed_type))
+            // The automation owns the flow where the plate type has an entry (see PA-1).
+            m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, bed_type);
         else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
             m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
 
@@ -718,7 +785,7 @@ void PrintHostSendDialog::init()
         caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
         // The reduction covers the first layer's bottom surface infill, not its walls, so the
         // caption alone must not be read as "every extrusion on layer 1".
-        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. The cool plates start at 20%; click the selected value to print at the profile's flow."));
+        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. Click the selected value to print at the profile's flow."));
         row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 
         // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
@@ -755,6 +822,18 @@ void PrintHostSendDialog::init()
         update_first_layer_flow_status();
     }
     // [ORCAPORT:BF-1] END
+
+    // [ORCAPORT:PA-1] one entry point for both local automations; the two rows above show what they
+    // resolve to for this plate, and stay overridable per project.
+    {
+        auto *automation_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *automation     = new Button(this, _L("Plate automation..."));
+        automation->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        automation->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_plate_automation(); });
+        automation_row->Add(automation, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(automation_row);
+        content_sizer->AddSpacer(VERT_SPACING);
+    }
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);

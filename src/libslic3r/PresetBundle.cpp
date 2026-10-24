@@ -141,6 +141,9 @@ static std::vector<std::string> s_project_options {
     // Whether the upload dialog preselects that reduction from the plate type; project-level so a
     // project remembers whether the user ever made a choice.
     "initial_layer_bottom_surface_flow_auto",
+    // [ORCAPORT:PA-1] the bed-temperature counterpart: whether the offset follows the local
+    // per-plate automation, or is this project's own choice.
+    "bed_temperature_offset_auto",
     "flush_multiplier",
     // Fast-purge mode: project-level purge control, inert at Default.
     "flush_multiplier_fast",

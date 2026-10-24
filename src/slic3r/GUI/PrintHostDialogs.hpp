@@ -18,6 +18,7 @@
 #include "../Utils/PrintHost.hpp"
 #include "../Utils/Flashforge.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/OrcaExt/PlateAutomation.hpp" // [ORCAPORT:PA-1]
 #include "libslic3r/ProjectTask.hpp"
 class wxButton;
 class wxTextCtrl;
@@ -49,11 +50,15 @@ public:
     int bed_temp_offset() const { return m_bed_temp_offset; }
     // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = stock
     double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
-    // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
+    // [ORCAPORT:BF-1] true while the reduction still follows the plate automation (the user has not
+    // chosen)
     bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
     // [ORCAPORT:BF-1] false for a send dialog that never built the row (Flashforge overrides init()),
     // so its caller must not write the two keys and reset a choice made from another dialog.
     bool has_first_layer_flow_row() const { return !m_first_layer_flow_radios.empty(); }
+    // [ORCAPORT:PA-1] the bed-temperature counterparts of the three accessors above.
+    bool bed_temp_auto() const { return m_bed_temp_auto; }
+    bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
 
     virtual void EndModal(int ret) override;
     virtual void init();
@@ -78,11 +83,14 @@ protected:
     // is triggered.
     int                    m_bed_temp_offset {0};
     int                    m_bed_temp_base {0};
+    bool                   m_bed_temp_auto {true};
+    BedType                m_bed_type {BedType::btDefault};
     wxString               m_bed_temp_plate_label;
     wxStaticText*          m_bed_temp_status {nullptr};
     std::vector<RadioBox*> m_bed_temp_radios;
     void                   set_bed_temp_offset(int offset);
     void                   update_bed_temp_status();
+    void                   refresh_bed_temp_controls();
     // [ORCAPORT:BT-1] END
 
     // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Same plumbing as the
@@ -95,7 +103,18 @@ protected:
     std::vector<RadioBox*> m_first_layer_flow_radios;
     void                   set_first_layer_flow_delta(double delta);
     void                   update_first_layer_flow_status();
+    void                   refresh_first_layer_flow_controls();
     // [ORCAPORT:BF-1] END
+
+    // [ORCAPORT:PA-1] local per-plate-type automation, loaded from AppConfig when the dialog opens
+    // and reloaded when the settings popup applies. The bucket is the class of the largest instance
+    // on the plate the dialog is uploading.
+    OrcaExt::PlateFlowDefaults    m_plate_flow_defaults;
+    OrcaExt::PlateBedTempDefaults m_plate_bed_temp_defaults;
+    bool                          m_has_part_bucket {false};
+    OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
+    void                          open_plate_automation();
+    void                          refresh_plate_automation();
 };
 
 
