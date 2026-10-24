@@ -3,6 +3,12 @@
 Status: implemented on `port/BF-1` (branched from `port/integration` `01f754c26b`), build + tests
 clean, awaiting the user's runtime test. Original feature - no Neotko/preFlight source.
 
+**Superseded in part by PA-1**: the plate-driven default is no longer hardcoded to `-20 %` for the
+cool plates. The reduction is configured per plate type in the **Plate automation** popup and saved
+locally in AppConfig; the row follows it while `initial_layer_bottom_surface_flow_auto` is on, and any
+click makes the value the project's own. The emission, key names and no-re-slice behaviour described
+below are unchanged.
+
 ## What it does
 
 The "Send G-code to printer host" dialog (`PrintHostSendDialog`) gains a **First layer flow** row

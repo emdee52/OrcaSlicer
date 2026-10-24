@@ -86,6 +86,8 @@
 #include "libslic3r/OrcaExt/BedTempOverride.hpp"
 #include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
 #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
+#include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
+#include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -506,6 +508,11 @@ void PrintHostSendDialog::set_bed_temp_offset(int offset)
     // Radio-box semantics with a clear: choosing the active offset turns it off, so the delta is
     // always relative to the plate temperature instead of accumulating across clicks.
     m_bed_temp_offset = (m_bed_temp_offset == offset) ? 0 : offset;
+    refresh_bed_temp_controls();
+}
+
+void PrintHostSendDialog::refresh_bed_temp_controls()
+{
     for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
         m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
     update_bed_temp_status();
@@ -533,6 +540,11 @@ void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
     // ends the plate-driven default, which is why the clear is remembered.
     m_first_layer_flow_auto   = false;
     m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
+    refresh_first_layer_flow_controls();
+}
+
+void PrintHostSendDialog::refresh_first_layer_flow_controls()
+{
     for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
         m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
     update_first_layer_flow_status();
@@ -554,6 +566,40 @@ void PrintHostSendDialog::update_first_layer_flow_status()
 }
 // [ORCAPORT:BF-1] END
 
+// [ORCAPORT:PA-1] BEGIN - local plate automation
+void PrintHostSendDialog::open_plate_automation()
+{
+    PlateAutomationDialog dlg(this, m_bed_type, [this]() { refresh_plate_automation(); });
+    dlg.ShowModal();
+}
+
+void PrintHostSendDialog::refresh_plate_automation()
+{
+    const AppConfig &config = *wxGetApp().app_config;
+    m_plate_flow_defaults   = load_plate_flow_defaults(config);
+
+    // Only a row that still follows the automation changes; a value picked by hand belongs to this
+    // project and is left alone.
+    if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)) {
+        m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type);
+        refresh_first_layer_flow_controls();
+    }
+}
+
+void PrintHostSendDialog::reset_to_automation()
+{
+    const AppConfig &config = *wxGetApp().app_config;
+    m_plate_flow_defaults   = load_plate_flow_defaults(config);
+
+    // Back to the automatic value where the plate type is configured, and to the stock value where it
+    // is not. The row keeps its auto flag, so this project follows the automation again.
+    m_first_layer_flow_auto  = true;
+    m_first_layer_flow_delta = OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)
+        ? OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type) : 0.;
+    refresh_first_layer_flow_controls();
+}
+// [ORCAPORT:PA-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -571,6 +617,10 @@ void PrintHostSendDialog::init()
     const std::string bed_image = bed_type_thumbnail_name(bed_type);
     if (!bed_image.empty())
         set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
+
+    // [ORCAPORT:PA-1] the local flow automation, loaded once for the row below.
+    m_bed_type = bed_type;
+    m_plate_flow_defaults = load_plate_flow_defaults(*app_config);
 
     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
     label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
@@ -643,6 +693,8 @@ void PrintHostSendDialog::init()
             preset_bundle->full_config(), bed_type,
             OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
 
+        // [ORCAPORT:PA-1] The automation only owns the flow row now; the bed-temperature offset is
+        // whatever this project stored (BT-1).
         if (const ConfigOptionInt* saved = preset_bundle->project_config.option<ConfigOptionInt>("bed_temperature_offset"))
             m_bed_temp_offset = saved->value;
 
@@ -705,10 +757,9 @@ void PrintHostSendDialog::init()
         if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
             m_first_layer_flow_auto = saved_auto->value;
 
-        if (m_first_layer_flow_auto)
-            // The cool plates start at the plate default (20% less); every other plate starts at the
-            // profile's value, so the row reads as "nothing chosen" there.
-            m_first_layer_flow_delta = OrcaExt::first_layer_flow_plate_default(bed_type);
+        if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, bed_type))
+            // The automation owns the flow where the plate type has an entry (see PA-1).
+            m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, bed_type);
         else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
             m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
 
@@ -718,7 +769,7 @@ void PrintHostSendDialog::init()
         caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
         // The reduction covers the first layer's bottom surface infill, not its walls, so the
         // caption alone must not be read as "every extrusion on layer 1".
-        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. The cool plates start at 20%; click the selected value to print at the profile's flow."));
+        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. Click the selected value to print at the profile's flow."));
         row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 
         // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
@@ -755,6 +806,25 @@ void PrintHostSendDialog::init()
         update_first_layer_flow_status();
     }
     // [ORCAPORT:BF-1] END
+
+    // [ORCAPORT:PA-1] one entry point for the local flow automation; the row above shows what it
+    // resolves to for this plate, and stays overridable per project.
+    {
+        auto *automation_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *automation     = new Button(this, _L("Plate automation..."));
+        automation->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        automation->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_plate_automation(); });
+        automation_row->Add(automation, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        auto *reset = new Button(this, _L("Reset to auto"));
+        reset->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        reset->SetToolTip(_L("Restore the first layer flow to the automatic value for this plate."));
+        reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { reset_to_automation(); });
+        automation_row->Add(reset, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        content_sizer->Add(automation_row);
+        content_sizer->AddSpacer(VERT_SPACING);
+    }
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);

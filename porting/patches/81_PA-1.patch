@@ -1,0 +1,791 @@
+diff --git a/src/libslic3r/OrcaExt/FirstLayerFlow.hpp b/src/libslic3r/OrcaExt/FirstLayerFlow.hpp
+index 0db3048e38..30c07a6992 100644
+--- a/src/libslic3r/OrcaExt/FirstLayerFlow.hpp
++++ b/src/libslic3r/OrcaExt/FirstLayerFlow.hpp
+@@ -14,34 +14,16 @@
+ 
+ #include <algorithm>
+ 
+-#include "../PrintConfig.hpp"
+-
+ namespace Slic3r {
+ namespace OrcaExt {
+ 
+-// Percent reduction. The dialog offers -20 / -15 / -10 / -5; the wider bound is defence, not UI.
+-// Reduction only: a positive delta would amplify the first-layer squish that causes the problem
+-// this exists for.
++// Percent reduction. The dialog offers -20 / -15 / -10 / -5 plus a custom field; the wider bound is
++// defence, not UI. Reduction only: a positive delta would amplify the first-layer squish that causes
++// the problem this exists for.
+ constexpr double kFirstLayerFlowDeltaMin = -50.0;
+ constexpr double kFirstLayerFlowDeltaMax = 0.0;
+ // Floor on the multiplier, so a hand-edited project cannot ask for (near) zero flow and print air.
+ constexpr double kFirstLayerFlowScaleMin = 0.5;
+-// What the upload dialog preselects for a plate that tends to over-extrude its first layer.
+-constexpr double kFirstLayerFlowCoolPlateDefault = -20.0;
+-
+-// The three cold, smooth/rough build surfaces in BedType's list, which is what a cool plate is in
+-// the plate picker: Cool Plate ("Smooth Cool Plate"), Textured Cool Plate and Cool Plate
+-// (SuperTack).
+-inline bool is_cool_plate(BedType bed_type)
+-{
+-    return bed_type == btPC || bed_type == btPCT || bed_type == btSuperTack;
+-}
+-
+-// Reduction the dialog preselects for `bed_type`: the cool-plate default, or none.
+-inline double first_layer_flow_plate_default(BedType bed_type)
+-{
+-    return is_cool_plate(bed_type) ? kFirstLayerFlowCoolPlateDefault : 0.0;
+-}
+ 
+ inline double clamp_first_layer_flow_delta(double delta)
+ {
+diff --git a/src/libslic3r/OrcaExt/PlateAutomation.hpp b/src/libslic3r/OrcaExt/PlateAutomation.hpp
+new file mode 100644
+index 0000000000..98fd9fbd1c
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/PlateAutomation.hpp
+@@ -0,0 +1,91 @@
++// [ORCAPORT FILE] PlateAutomation - the local per-plate-type first-layer flow defaults
++// Source: original (design in porting/notes/PA-1.md)
++//
++// The upload dialog's "First layer flow" row follows a per-plate-type default that is personal and
++// machine-local: it lives in AppConfig, never in a preset and never in a 3mf, so a downloaded project
++// or an updated vendor profile cannot carry or clobber it. A value chosen in the print dialog is a
++// per-project override and takes precedence (see PrintHostDialogs).
++//
++// This header owns the map and its AppConfig encoding, free of UI, so the behaviour is unit-tested
++// rather than eyeballed. The flow math itself lives in FirstLayerFlow.hpp.
++#ifndef slic3r_OrcaExt_PlateAutomation_hpp_
++#define slic3r_OrcaExt_PlateAutomation_hpp_
++
++#include <cstdlib>
++#include <map>
++#include <string>
++
++#include "../PrintConfig.hpp"
++#include "FirstLayerFlow.hpp" // clamp_first_layer_flow_delta
++
++namespace Slic3r {
++namespace OrcaExt {
++
++// Keyed by the BedType's integer value (an unknown or future type is simply an unused row). The map
++// starts empty: with nothing configured, the row shows whatever the project stored.
++using PlateFlowDefaults = std::map<int, double>; // percent, -50..0
++
++inline bool valid_bed_type_key(int key)
++{
++    return key > int(BedType::btDefault) && key < int(BedType::btCount);
++}
++
++inline double flow_default_for(const PlateFlowDefaults &defaults, BedType bed_type)
++{
++    auto it = defaults.find(int(bed_type));
++    return it == defaults.end() ? 0. : clamp_first_layer_flow_delta(it->second);
++}
++
++// True when the user configured the flow automation for this plate type, even at 0 ("print at the
++// profile's flow"). Only a configured type lets the automation own the row; otherwise an older
++// per-project value keeps showing, so projects saved before this feature do not lose it.
++inline bool has_flow_default(const PlateFlowDefaults &defaults, BedType bed_type)
++{
++    return defaults.find(int(bed_type)) != defaults.end();
++}
++
++// "0:-20;2:-12" (BedType:percent). A configured 0 is kept: it is what makes the plate's own
++// automation override an older per-project value instead of falling back to it.
++inline std::string serialize_flow_defaults(const PlateFlowDefaults &defaults)
++{
++    std::string out;
++    for (const auto &[key, percent] : defaults) {
++        if (! valid_bed_type_key(key))
++            continue;
++        if (! out.empty())
++            out += ';';
++        out += std::to_string(key) + ':' + std::to_string(clamp_first_layer_flow_delta(percent));
++    }
++    return out;
++}
++
++// Tolerant: unknown keys, unparsable numbers and empty entries are dropped, values are clamped, so a
++// hand-edited or stale value can never crash the dialog.
++inline PlateFlowDefaults parse_flow_defaults(const std::string &text)
++{
++    PlateFlowDefaults out;
++    size_t            pos = 0;
++    while (pos < text.size()) {
++        const size_t end = text.find(';', pos);
++        const std::string entry = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
++        pos = end == std::string::npos ? text.size() : end + 1;
++        const size_t colon = entry.find(':');
++        if (colon == std::string::npos)
++            continue;
++        try {
++            const int    key     = std::stoi(entry.substr(0, colon));
++            const double percent = std::stod(entry.substr(colon + 1));
++            if (! valid_bed_type_key(key))
++                continue;
++            out[key] = clamp_first_layer_flow_delta(percent);
++        } catch (...) {
++            // Malformed entry: ignore it and keep the rest.
++        }
++    }
++    return out;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif /* slic3r_OrcaExt_PlateAutomation_hpp_ */
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index 1ea01c371c..a5d9c1990d 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -1484,12 +1484,12 @@ void PrintConfigDef::init_fff_params()
+     def->max = OrcaExt::kFirstLayerFlowDeltaMax;
+     def->set_default_value(new ConfigOptionFloat(0));
+ 
+-    // [ORCAPORT:BF-1] whether the upload dialog preselects the reduction for the plate type. It is
+-    // a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct from
+-    // "the user never chose" (auto on) and a cleared choice does not come back on reopen.
++    // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow. It
++    // is a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct
++    // from "the user never chose" (auto on) and a cleared choice does not come back on reopen.
+     def = this->add("initial_layer_bottom_surface_flow_auto", coBool);
+     def->label = L("First layer flow follows the plate");
+-    def->tooltip = L("Preselect the first-layer flow reduction for the plate type in the upload dialog: 20% for the cool plates, none for the others. Choosing or clearing a value in the dialog turns this off.");
++    def->tooltip = L("Preselect the first-layer flow reduction configured for the plate type in the plate automation dialog. Choosing or clearing a value in the upload dialog turns this off.");
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionBool(true));
+ 
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index ccfb244286..d079d833ed 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -2117,7 +2117,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
+     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction (percent, <= 0);
+     // project-level, never a preset key
+     ((ConfigOptionFloat,              initial_layer_bottom_surface_flow_delta))
+-    // [ORCAPORT:BF-1] whether the upload dialog preselects that reduction from the plate type;
++    // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow;
+     // project-level like the delta, turned off as soon as a value is chosen or cleared
+     ((ConfigOptionBool,               initial_layer_bottom_surface_flow_auto))
+     ((ConfigOptionInts,               cool_plate_temp))
+diff --git a/src/slic3r/CMakeLists.txt b/src/slic3r/CMakeLists.txt
+index bab6ca1f98..1f2eae5d25 100644
+--- a/src/slic3r/CMakeLists.txt
++++ b/src/slic3r/CMakeLists.txt
+@@ -513,6 +513,7 @@ set(SLIC3R_GUI_SOURCES
+     GUI/PrinterWebViewHandler.hpp
+     GUI/PrinterWebView.hpp
+     GUI/PrintHostDialogs.cpp
++    GUI/PlateAutomationDialog.cpp
+     GUI/PrintHostDialogs.hpp
+     GUI/PrintOptionsDialog.cpp
+     GUI/PrintOptionsDialog.hpp
+diff --git a/src/slic3r/GUI/PlateAutomationDialog.cpp b/src/slic3r/GUI/PlateAutomationDialog.cpp
+new file mode 100644
+index 0000000000..88f05de6bc
+--- /dev/null
++++ b/src/slic3r/GUI/PlateAutomationDialog.cpp
+@@ -0,0 +1,273 @@
++#include "PlateAutomationDialog.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++#include <wx/sizer.h>
++
++#include "BedTypeThumbnails.hpp"
++#include "GUI.hpp"
++#include "GUI_App.hpp"
++#include "I18N.hpp"
++#include "PlateAutomationStore.hpp"
++#include "Widgets/Button.hpp"
++#include "Widgets/Label.hpp"
++#include "Widgets/RadioBox.hpp"
++#include "Widgets/TextInput.hpp"
++#include "Widgets/StateColor.hpp"
++#include "wxExtensions.hpp"
++
++namespace Slic3r {
++namespace GUI {
++
++namespace {
++
++// The plate types the automation covers, in the order the plate picker shows them (all of them have
++// a picture, see BedTypeThumbnails.hpp).
++const std::array<BedType, 6> kAutomationPlates {btPC, btEP, btPEI, btPTE, btPCT, btSuperTack};
++
++// Flow choices; 0 is "none" (print at the profile's flow). A custom value outside this grid can be
++// typed into the field.
++const std::array<double, 5> kFlowChoices {-20., -15., -10., -5., 0.};
++
++wxString plate_name(BedType bed_type)
++{
++    const ConfigOptionDef *def = print_config_def.get("curr_bed_type");
++    const int              idx = int(bed_type) - 1;
++    return (def != nullptr && idx >= 0 && idx < int(def->enum_labels.size())) ? from_u8(def->enum_labels[idx]) : _L("Unknown plate");
++}
++
++} // namespace
++
++PlateAutomationDialog::PlateAutomationDialog(wxWindow *parent, BedType bed_type, std::function<void()> on_applied)
++    : DPIDialog(parent, wxID_ANY, _L("Plate automation"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
++    , m_on_applied(std::move(on_applied))
++{
++    SetFont(wxGetApp().normal_font());
++    SetBackgroundColour(*wxWHITE);
++
++    auto *main_sizer = new wxBoxSizer(wxVERTICAL);
++
++    auto *explain = new wxStaticText(this, wxID_ANY,
++        _L("Saved on this computer only - no project, profile or downloaded 3mf changes them. A value chosen in the print dialog applies to that project only."));
++    explain->SetFont(::Label::Body_12);
++    explain->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    explain->Wrap(FromDIP(420));
++    main_sizer->Add(explain, 0, wxALL | wxEXPAND, FromDIP(12));
++
++    auto *select_hint = new wxStaticText(this, wxID_ANY, _L("Select the plates to edit, then Apply."));
++    select_hint->SetFont(::Label::Body_12);
++    select_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    main_sizer->Add(select_hint, 0, wxLEFT | wxRIGHT, FromDIP(12));
++
++    auto *tiles = new wxFlexGridSizer(2, 3, FromDIP(8), FromDIP(8));
++    create_plate_tiles(tiles);
++    main_sizer->Add(tiles, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(12));
++
++    // First layer flow: the four steps the send dialog offers plus None, and a free-form field.
++    auto *flow_caption = new wxStaticText(this, wxID_ANY, _L("First layer flow"));
++    flow_caption->SetFont(::Label::Body_13);
++    flow_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    main_sizer->Add(flow_caption, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
++
++    auto *flow_row = new wxBoxSizer(wxHORIZONTAL);
++    for (double choice : kFlowChoices) {
++        auto *radio = new RadioBox(this);
++        radio->Bind(wxEVT_LEFT_DOWN, [this, choice](wxMouseEvent &) {
++            // A step choice is exclusive with the custom field.
++            if (m_flow_custom != nullptr)
++                m_flow_custom->GetTextCtrl()->ChangeValue(wxEmptyString);
++            for (size_t i = 0; i < m_flow_radios.size(); ++i)
++                m_flow_radios[i]->SetValue(kFlowChoices[i] == choice);
++        });
++        flow_row->Add(radio, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        m_flow_radios.push_back(radio);
++
++        auto *text = new wxStaticText(this, wxID_ANY,
++            choice == 0. ? _L("None") : wxString::Format("%d%%", int(choice)));
++        text->SetFont(::Label::Body_13);
++        text->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        flow_row->Add(text, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        flow_row->AddSpacer(FromDIP(6));
++    }
++    m_flow_custom = new TextInput(this, wxEmptyString, "%", "", wxDefaultPosition, FromDIP(wxSize(90, 30)), wxTE_CENTRE);
++    flow_row->Add(m_flow_custom, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++    main_sizer->Add(flow_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
++
++    m_hint = new wxStaticText(this, wxID_ANY, wxEmptyString);
++    m_hint->SetFont(::Label::Body_12);
++    m_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    main_sizer->Add(m_hint, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
++
++    auto *button_row = new wxBoxSizer(wxHORIZONTAL);
++    button_row->AddStretchSpacer();
++    auto *apply_button = new Button(this, _L("Apply"));
++    apply_button->SetStyle(ButtonStyle::Confirm, ButtonType::Window);
++    apply_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { apply(); });
++    button_row->Add(apply_button, 0, wxALL, FromDIP(6));
++
++    auto *close_button = new Button(this, _L("Close"));
++    close_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
++    close_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CANCEL); });
++    button_row->Add(close_button, 0, wxALL, FromDIP(6));
++    main_sizer->Add(button_row, 0, wxEXPAND | wxALL, FromDIP(6));
++
++    SetSizerAndFit(main_sizer);
++    CenterOnParent();
++    wxGetApp().UpdateDlgDarkUI(this);
++
++    // Preselect the plate being uploaded and show its value.
++    const auto it = std::find(kAutomationPlates.begin(), kAutomationPlates.end(), bed_type);
++    m_focus       = it == kAutomationPlates.end() ? 0 : size_t(it - kAutomationPlates.begin());
++    toggle_tile(m_focus);
++    refresh_tile_values();
++}
++
++void PlateAutomationDialog::create_plate_tiles(wxSizer *sizer)
++{
++    for (BedType bed_type : kAutomationPlates) {
++        auto *cell = new wxBoxSizer(wxVERTICAL);
++
++        const std::string image = bed_type_thumbnail_name(bed_type);
++        auto *button = new Button(this, plate_name(bed_type), wxString::FromUTF8(image), 0, FromDIP(48));
++        button->SetVertical(true);
++        button->SetMinSize(FromDIP(wxSize(160, 96)));
++
++        Tile tile;
++        tile.button   = button;
++        tile.bed_type = bed_type;
++        m_tiles.push_back(tile);
++
++        const size_t index = m_tiles.size() - 1;
++        button->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent &) { toggle_tile(index); });
++        cell->Add(button, 0, wxALIGN_CENTER_HORIZONTAL);
++
++        auto *value = new wxStaticText(this, wxID_ANY, wxEmptyString);
++        value->SetFont(::Label::Body_12);
++        value->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        m_tiles.back().value = value;
++        cell->Add(value, 0, wxALIGN_CENTER_HORIZONTAL | wxTOP, FromDIP(2));
++
++        sizer->Add(cell, 0, wxALIGN_CENTER_HORIZONTAL);
++    }
++}
++
++void PlateAutomationDialog::toggle_tile(size_t index)
++{
++    if (index >= m_tiles.size())
++        return;
++    Tile &tile = m_tiles[index];
++    tile.selected = ! tile.selected;
++    tile.button->SetValue(tile.selected);
++    if (tile.selected)
++        m_selected.push_back(index);
++    else
++        m_selected.erase(std::remove(m_selected.begin(), m_selected.end(), index), m_selected.end());
++    m_focus = index;
++    load_controls_from(tile.bed_type);
++    set_hint(wxEmptyString);
++}
++
++void PlateAutomationDialog::load_controls_from(BedType bed_type)
++{
++    const OrcaExt::PlateFlowDefaults flow = load_plate_flow_defaults(*wxGetApp().app_config);
++    refresh_flow_controls(OrcaExt::has_flow_default(flow, bed_type) ? OrcaExt::flow_default_for(flow, bed_type) : 0.);
++}
++
++void PlateAutomationDialog::refresh_flow_controls(double flow_percent)
++{
++    for (RadioBox *radio : m_flow_radios)
++        radio->SetValue(false);
++
++    // A value on the step grid selects that step; anything else (a custom number, or 0) lives in the
++    // free-form field so it is visible instead of silently unselected.
++    const auto it = std::find(kFlowChoices.begin(), kFlowChoices.end(), flow_percent);
++    if (it != kFlowChoices.end() && flow_percent != 0.)
++        m_flow_radios[size_t(it - kFlowChoices.begin())]->SetValue(true);
++    else if (flow_percent == 0.)
++        m_flow_radios.back()->SetValue(true);
++
++    if (it == kFlowChoices.end())
++        m_flow_custom->GetTextCtrl()->ChangeValue(wxString::Format("%d", int(flow_percent)));
++    else
++        m_flow_custom->GetTextCtrl()->ChangeValue(wxEmptyString);
++}
++
++void PlateAutomationDialog::refresh_tile_values()
++{
++    const OrcaExt::PlateFlowDefaults flow = load_plate_flow_defaults(*wxGetApp().app_config);
++    for (Tile &tile : m_tiles) {
++        if (! OrcaExt::has_flow_default(flow, tile.bed_type))
++            tile.value->SetLabel("--");
++        else
++            tile.value->SetLabel(wxString::Format("%d%%", int(OrcaExt::flow_default_for(flow, tile.bed_type))));
++    }
++}
++
++void PlateAutomationDialog::set_hint(const wxString &text)
++{
++    if (m_hint != nullptr)
++        m_hint->SetLabel(text);
++}
++
++bool PlateAutomationDialog::read_flow_control(double &flow_percent) const
++{
++    wxString custom = m_flow_custom->GetTextCtrl()->GetValue();
++    custom.Trim(true).Trim(false);
++    if (! custom.IsEmpty()) {
++        double value = 0.;
++        if (! custom.ToDouble(&value))
++            return false;
++        if (value > OrcaExt::kFirstLayerFlowDeltaMax || value < OrcaExt::kFirstLayerFlowDeltaMin)
++            return false;
++        flow_percent = value;
++        return true;
++    }
++    for (size_t i = 0; i < m_flow_radios.size(); ++i)
++        if (m_flow_radios[i]->GetValue()) {
++            flow_percent = kFlowChoices[i];
++            return true;
++        }
++    flow_percent = 0.;
++    return true;
++}
++
++void PlateAutomationDialog::apply()
++{
++    if (m_selected.empty()) {
++        set_hint(_L("Select at least one plate first."));
++        return;
++    }
++
++    double flow_percent = 0.;
++    if (! read_flow_control(flow_percent)) {
++        set_hint(wxString::Format(_L("Enter a percentage between %d and %d, or use a step or None."),
++                                  int(OrcaExt::kFirstLayerFlowDeltaMin), int(OrcaExt::kFirstLayerFlowDeltaMax)));
++        return;
++    }
++
++    AppConfig               &config = *wxGetApp().app_config;
++    OrcaExt::PlateFlowDefaults flow   = load_plate_flow_defaults(config);
++    for (size_t index : m_selected) {
++        if (index >= m_tiles.size())
++            continue;
++        flow[int(m_tiles[index].bed_type)] = flow_percent;
++    }
++    save_plate_flow_defaults(config, flow);
++    config.save();
++
++    refresh_tile_values();
++    set_hint(_L("Applied."));
++    if (m_on_applied)
++        m_on_applied();
++}
++
++void PlateAutomationDialog::on_dpi_changed(const wxRect & /*suggested_rect*/)
++{
++    GetSizer()->SetSizeHints(this);
++    Fit();
++    Layout();
++}
++
++} // namespace GUI
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/PlateAutomationDialog.hpp b/src/slic3r/GUI/PlateAutomationDialog.hpp
+new file mode 100644
+index 0000000000..2943e96452
+--- /dev/null
++++ b/src/slic3r/GUI/PlateAutomationDialog.hpp
+@@ -0,0 +1,66 @@
++// [ORCAPORT FILE] PlateAutomationDialog - edit the local per-plate-type first-layer flow defaults
++// Source: original (design in porting/notes/PA-1.md)
++//
++// One popup for the flow automation the upload dialog offers: a reduction of the first layer's bottom
++// surface flow, per plate type, saved on this computer (AppConfig) and never in a preset or a 3mf.
++#ifndef slic3r_GUI_PlateAutomationDialog_hpp_
++#define slic3r_GUI_PlateAutomationDialog_hpp_
++
++#include <functional>
++#include <vector>
++
++#include <wx/dialog.h>
++#include <wx/stattext.h>
++
++#include "libslic3r/PrintConfig.hpp"
++#include "libslic3r/OrcaExt/PlateAutomation.hpp"
++#include "GUI_Utils.hpp"
++
++class Button;
++class TextInput;
++
++namespace Slic3r {
++namespace GUI {
++
++class RadioBox;
++
++class PlateAutomationDialog : public DPIDialog
++{
++public:
++    // `bed_type` is preselected; `on_applied` runs after every Apply so the caller can refresh its
++    // row while the dialog stays open.
++    PlateAutomationDialog(wxWindow *parent, BedType bed_type, std::function<void()> on_applied);
++    ~PlateAutomationDialog() override = default;
++
++    void on_dpi_changed(const wxRect &suggested_rect) override;
++
++private:
++    struct Tile {
++        Button       *button {nullptr};
++        wxStaticText *value {nullptr};
++        BedType       bed_type {BedType::btDefault};
++        bool          selected {false};
++    };
++
++    void create_plate_tiles(wxSizer *sizer);
++    void toggle_tile(size_t index);
++    void load_controls_from(BedType bed_type);
++    void refresh_tile_values();
++    void refresh_flow_controls(double flow_percent);
++    void set_hint(const wxString &text);
++    bool read_flow_control(double &flow_percent) const;
++    void apply();
++
++    std::vector<Tile> m_tiles;
++    std::vector<size_t> m_selected;
++    size_t            m_focus {0};
++    std::vector<RadioBox *> m_flow_radios;
++    TextInput        *m_flow_custom {nullptr};
++    wxStaticText     *m_hint {nullptr};
++    std::function<void()> m_on_applied;
++};
++
++} // namespace GUI
++} // namespace Slic3r
++
++#endif // slic3r_GUI_PlateAutomationDialog_hpp_
+diff --git a/src/slic3r/GUI/PlateAutomationStore.hpp b/src/slic3r/GUI/PlateAutomationStore.hpp
+new file mode 100644
+index 0000000000..af743bbdbc
+--- /dev/null
++++ b/src/slic3r/GUI/PlateAutomationStore.hpp
+@@ -0,0 +1,27 @@
++// [ORCAPORT FILE] PlateAutomationStore - AppConfig side of the local plate flow defaults
++// Source: original (design in porting/notes/PA-1.md)
++//
++// One [app] key. It is deliberately not a print/project key: a preset, a printer profile or a 3mf
++// downloaded from anywhere cannot read or write it, and updating a vendor profile cannot reset it.
++#pragma once
++
++#include "libslic3r/AppConfig.hpp"
++#include "libslic3r/OrcaExt/PlateAutomation.hpp"
++
++namespace Slic3r {
++namespace GUI {
++
++inline constexpr const char *PLATE_FLOW_DEFAULTS_KEY = "first_layer_flow_plates";
++
++inline OrcaExt::PlateFlowDefaults load_plate_flow_defaults(const AppConfig &config)
++{
++    return OrcaExt::parse_flow_defaults(config.get("app", PLATE_FLOW_DEFAULTS_KEY));
++}
++
++inline void save_plate_flow_defaults(AppConfig &config, const OrcaExt::PlateFlowDefaults &defaults)
++{
++    config.set("app", PLATE_FLOW_DEFAULTS_KEY, OrcaExt::serialize_flow_defaults(defaults));
++}
++
++} // namespace GUI
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index 55ed0bb72f..a49c46bf26 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -21365,8 +21365,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
+         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
+         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
+-        // existing slice result (no re-slice, no post-processing script).
+-        {
++        // existing slice result (no re-slice, no post-processing script). A dialog that never built
++        // the row (Flashforge) must not write, or it would reset a choice made elsewhere.
++        if (pDlg->has_bed_temp_row()) {
+             const int           bed_temp_offset = pDlg->bed_temp_offset();
+             DynamicPrintConfig& project_config  = wxGetApp().preset_bundle->project_config;
+             if (ConfigOptionInt* opt = project_config.option<ConfigOptionInt>("bed_temperature_offset"))
+diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
+index 0bb25b387c..532c8c6869 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.cpp
++++ b/src/slic3r/GUI/PrintHostDialogs.cpp
+@@ -86,6 +86,8 @@
+ #include "libslic3r/OrcaExt/BedTempOverride.hpp"
+ #include "libslic3r/OrcaExt/FirstLayerFlow.hpp" // [ORCAPORT:BF-1]
+ #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
++#include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
++#include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
+ 
+ #include "libslic3r/Preset.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+@@ -506,6 +508,11 @@ void PrintHostSendDialog::set_bed_temp_offset(int offset)
+     // Radio-box semantics with a clear: choosing the active offset turns it off, so the delta is
+     // always relative to the plate temperature instead of accumulating across clicks.
+     m_bed_temp_offset = (m_bed_temp_offset == offset) ? 0 : offset;
++    refresh_bed_temp_controls();
++}
++
++void PrintHostSendDialog::refresh_bed_temp_controls()
++{
+     for (size_t i = 0; i < m_bed_temp_radios.size(); ++i)
+         m_bed_temp_radios[i]->SetValue(kBedTempOffsets[i] == m_bed_temp_offset);
+     update_bed_temp_status();
+@@ -533,6 +540,11 @@ void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
+     // ends the plate-driven default, which is why the clear is remembered.
+     m_first_layer_flow_auto   = false;
+     m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
++    refresh_first_layer_flow_controls();
++}
++
++void PrintHostSendDialog::refresh_first_layer_flow_controls()
++{
+     for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
+         m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
+     update_first_layer_flow_status();
+@@ -554,6 +566,40 @@ void PrintHostSendDialog::update_first_layer_flow_status()
+ }
+ // [ORCAPORT:BF-1] END
+ 
++// [ORCAPORT:PA-1] BEGIN - local plate automation
++void PrintHostSendDialog::open_plate_automation()
++{
++    PlateAutomationDialog dlg(this, m_bed_type, [this]() { refresh_plate_automation(); });
++    dlg.ShowModal();
++}
++
++void PrintHostSendDialog::refresh_plate_automation()
++{
++    const AppConfig &config = *wxGetApp().app_config;
++    m_plate_flow_defaults   = load_plate_flow_defaults(config);
++
++    // Only a row that still follows the automation changes; a value picked by hand belongs to this
++    // project and is left alone.
++    if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)) {
++        m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type);
++        refresh_first_layer_flow_controls();
++    }
++}
++
++void PrintHostSendDialog::reset_to_automation()
++{
++    const AppConfig &config = *wxGetApp().app_config;
++    m_plate_flow_defaults   = load_plate_flow_defaults(config);
++
++    // Back to the automatic value where the plate type is configured, and to the stock value where it
++    // is not. The row keeps its auto flag, so this project follows the automation again.
++    m_first_layer_flow_auto  = true;
++    m_first_layer_flow_delta = OrcaExt::has_flow_default(m_plate_flow_defaults, m_bed_type)
++        ? OrcaExt::flow_default_for(m_plate_flow_defaults, m_bed_type) : 0.;
++    refresh_first_layer_flow_controls();
++}
++// [ORCAPORT:PA-1] END
++
+ void PrintHostSendDialog::init()
+ {
+     const auto& path = m_path;
+@@ -572,6 +618,10 @@ void PrintHostSendDialog::init()
+     if (!bed_image.empty())
+         set_logo_below_bitmap(create_scaled_bitmap(bed_image, this, 64));
+ 
++    // [ORCAPORT:PA-1] the local flow automation, loaded once for the row below.
++    m_bed_type = bed_type;
++    m_plate_flow_defaults = load_plate_flow_defaults(*app_config);
++
+     auto *label_dir_hint = new wxStaticText(this, wxID_ANY, _L("Use forward slashes ( / ) as a directory separator if needed."));
+     label_dir_hint->Wrap(CONTENT_WIDTH * wxGetApp().em_unit());
+ 
+@@ -643,6 +693,8 @@ void PrintHostSendDialog::init()
+             preset_bundle->full_config(), bed_type,
+             OrcaExt::to_zero_based_filaments(plate != nullptr ? plate->get_extruders() : std::vector<int>()));
+ 
++        // [ORCAPORT:PA-1] The automation only owns the flow row now; the bed-temperature offset is
++        // whatever this project stored (BT-1).
+         if (const ConfigOptionInt* saved = preset_bundle->project_config.option<ConfigOptionInt>("bed_temperature_offset"))
+             m_bed_temp_offset = saved->value;
+ 
+@@ -705,10 +757,9 @@ void PrintHostSendDialog::init()
+         if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
+             m_first_layer_flow_auto = saved_auto->value;
+ 
+-        if (m_first_layer_flow_auto)
+-            // The cool plates start at the plate default (20% less); every other plate starts at the
+-            // profile's value, so the row reads as "nothing chosen" there.
+-            m_first_layer_flow_delta = OrcaExt::first_layer_flow_plate_default(bed_type);
++        if (m_first_layer_flow_auto && OrcaExt::has_flow_default(m_plate_flow_defaults, bed_type))
++            // The automation owns the flow where the plate type has an entry (see PA-1).
++            m_first_layer_flow_delta = OrcaExt::flow_default_for(m_plate_flow_defaults, bed_type);
+         else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
+             m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
+ 
+@@ -718,7 +769,7 @@ void PrintHostSendDialog::init()
+         caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+         // The reduction covers the first layer's bottom surface infill, not its walls, so the
+         // caption alone must not be read as "every extrusion on layer 1".
+-        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. The cool plates start at 20%; click the selected value to print at the profile's flow."));
++        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. Click the selected value to print at the profile's flow."));
+         row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+ 
+         // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
+@@ -756,6 +807,25 @@ void PrintHostSendDialog::init()
+     }
+     // [ORCAPORT:BF-1] END
+ 
++    // [ORCAPORT:PA-1] one entry point for the local flow automation; the row above shows what it
++    // resolves to for this plate, and stays overridable per project.
++    {
++        auto *automation_row = new wxBoxSizer(wxHORIZONTAL);
++        auto *automation     = new Button(this, _L("Plate automation..."));
++        automation->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++        automation->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_plate_automation(); });
++        automation_row->Add(automation, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        auto *reset = new Button(this, _L("Reset to auto"));
++        reset->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++        reset->SetToolTip(_L("Restore the first layer flow to the automatic value for this plate."));
++        reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { reset_to_automation(); });
++        automation_row->Add(reset, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        content_sizer->Add(automation_row);
++        content_sizer->AddSpacer(VERT_SPACING);
++    }
++
+     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
+         m_valid_suffix = recent_path.substr(extension_start);
+     // .gcode suffix control
+diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
+index 458c689cc2..30edb1029b 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.hpp
++++ b/src/slic3r/GUI/PrintHostDialogs.hpp
+@@ -18,6 +18,7 @@
+ #include "../Utils/PrintHost.hpp"
+ #include "../Utils/Flashforge.hpp"
+ #include "libslic3r/PrintConfig.hpp"
++#include "libslic3r/OrcaExt/PlateAutomation.hpp" // [ORCAPORT:PA-1]
+ #include "libslic3r/ProjectTask.hpp"
+ class wxButton;
+ class wxTextCtrl;
+@@ -49,11 +50,15 @@ public:
+     int bed_temp_offset() const { return m_bed_temp_offset; }
+     // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = stock
+     double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
+-    // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
++    // [ORCAPORT:BF-1] true while the reduction still follows the plate automation (the user has not
++    // chosen)
+     bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
+     // [ORCAPORT:BF-1] false for a send dialog that never built the row (Flashforge overrides init()),
+     // so its caller must not write the two keys and reset a choice made from another dialog.
+     bool has_first_layer_flow_row() const { return !m_first_layer_flow_radios.empty(); }
++    // [ORCAPORT:PA-1] false for a send dialog that never built the bed-temperature row (Flashforge
++    // overrides init()), so its caller must not write the offset for it.
++    bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
+ 
+     virtual void EndModal(int ret) override;
+     virtual void init();
+@@ -78,11 +83,13 @@ protected:
+     // is triggered.
+     int                    m_bed_temp_offset {0};
+     int                    m_bed_temp_base {0};
++    BedType                m_bed_type {BedType::btDefault};
+     wxString               m_bed_temp_plate_label;
+     wxStaticText*          m_bed_temp_status {nullptr};
+     std::vector<RadioBox*> m_bed_temp_radios;
+     void                   set_bed_temp_offset(int offset);
+     void                   update_bed_temp_status();
++    void                   refresh_bed_temp_controls();
+     // [ORCAPORT:BT-1] END
+ 
+     // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row. Same plumbing as the
+@@ -95,7 +102,15 @@ protected:
+     std::vector<RadioBox*> m_first_layer_flow_radios;
+     void                   set_first_layer_flow_delta(double delta);
+     void                   update_first_layer_flow_status();
++    void                   refresh_first_layer_flow_controls();
+     // [ORCAPORT:BF-1] END
++
++    // [ORCAPORT:PA-1] local per-plate-type first-layer flow defaults, loaded from AppConfig when the
++    // dialog opens and reloaded when the settings popup applies.
++    OrcaExt::PlateFlowDefaults m_plate_flow_defaults;
++    void                       open_plate_automation();
++    void                       refresh_plate_automation();
++    void                       reset_to_automation();
+ };
+ 
+ 

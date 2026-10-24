@@ -21365,8 +21365,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
-        // existing slice result (no re-slice, no post-processing script).
-        {
+        // existing slice result (no re-slice, no post-processing script). A dialog that never built
+        // the row (Flashforge) must not write, or it would reset a choice made elsewhere.
+        if (pDlg->has_bed_temp_row()) {
             const int           bed_temp_offset = pDlg->bed_temp_offset();
             DynamicPrintConfig& project_config  = wxGetApp().preset_bundle->project_config;
             if (ConfigOptionInt* opt = project_config.option<ConfigOptionInt>("bed_temperature_offset"))

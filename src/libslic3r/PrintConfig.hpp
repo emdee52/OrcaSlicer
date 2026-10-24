@@ -2117,7 +2117,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction (percent, <= 0);
     // project-level, never a preset key
     ((ConfigOptionFloat,              initial_layer_bottom_surface_flow_delta))
-    // [ORCAPORT:BF-1] whether the upload dialog preselects that reduction from the plate type;
+    // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow;
     // project-level like the delta, turned off as soon as a value is chosen or cleared
     ((ConfigOptionBool,               initial_layer_bottom_surface_flow_auto))
     ((ConfigOptionInts,               cool_plate_temp))
