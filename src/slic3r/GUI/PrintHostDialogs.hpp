@@ -56,8 +56,8 @@ public:
     // [ORCAPORT:BF-1] false for a send dialog that never built the row (Flashforge overrides init()),
     // so its caller must not write the two keys and reset a choice made from another dialog.
     bool has_first_layer_flow_row() const { return !m_first_layer_flow_radios.empty(); }
-    // [ORCAPORT:PA-1] the bed-temperature counterparts of the three accessors above.
-    bool bed_temp_auto() const { return m_bed_temp_auto; }
+    // [ORCAPORT:PA-1] false for a send dialog that never built the bed-temperature row (Flashforge
+    // overrides init()), so its caller must not write the offset for it.
     bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
 
     virtual void EndModal(int ret) override;
@@ -83,7 +83,6 @@ protected:
     // is triggered.
     int                    m_bed_temp_offset {0};
     int                    m_bed_temp_base {0};
-    bool                   m_bed_temp_auto {true};
     BedType                m_bed_type {BedType::btDefault};
     wxString               m_bed_temp_plate_label;
     wxStaticText*          m_bed_temp_status {nullptr};
@@ -106,19 +105,12 @@ protected:
     void                   refresh_first_layer_flow_controls();
     // [ORCAPORT:BF-1] END
 
-    // [ORCAPORT:PA-1] local per-plate-type automation, loaded from AppConfig when the dialog opens
-    // and reloaded when the settings popup applies. The bucket is the class of the largest instance
-    // on the plate the dialog is uploading.
-    OrcaExt::PlateFlowDefaults    m_plate_flow_defaults;
-    OrcaExt::PlateBedTempDefaults m_plate_bed_temp_defaults;
-    OrcaExt::PartSizeLimits       m_part_size_limits;
-    std::vector<std::pair<double, double>> m_plate_footprints;
-    double                        m_plate_area_mm2 {0.};
-    bool                          m_has_part_bucket {false};
-    OrcaExt::PartSizeBucket       m_part_bucket {OrcaExt::PartSizeBucket::Medium};
-    void                          open_plate_automation();
-    void                          refresh_plate_automation();
-    void                          reset_to_automation();
+    // [ORCAPORT:PA-1] local per-plate-type first-layer flow defaults, loaded from AppConfig when the
+    // dialog opens and reloaded when the settings popup applies.
+    OrcaExt::PlateFlowDefaults m_plate_flow_defaults;
+    void                       open_plate_automation();
+    void                       refresh_plate_automation();
+    void                       reset_to_automation();
 };
 
 

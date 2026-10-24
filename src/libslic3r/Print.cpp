@@ -219,9 +219,6 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         // dialog writes both, and neither may invalidate a slice step.
         "initial_layer_bottom_surface_flow_delta",
         "initial_layer_bottom_surface_flow_auto",
-        // [ORCAPORT:PA-1] the bed-temperature counterpart: the dialog writes the auto flag together
-        // with the offset it resolves, and neither may invalidate a slice step.
-        "bed_temperature_offset_auto",
         "reduce_fan_stop_start_freq",
         "dont_slow_down_outer_wall",
         "fan_cooling_layer_time",

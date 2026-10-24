@@ -1472,16 +1472,6 @@ void PrintConfigDef::init_fff_params()
     def->max = OrcaExt::kBedTempOffsetMax;
     def->set_default_value(new ConfigOptionInt(0));
 
-    // [ORCAPORT:PA-1] whether the upload dialog follows the local plate automation for the bed
-    // temperature instead of the stored offset. Project-level like the offset itself; it is turned
-    // off as soon as an offset is chosen or cleared in the dialog, so a per-project choice sticks
-    // while the automatic setting stays saved on this computer.
-    def = this->add("bed_temperature_offset_auto", coBool);
-    def->label = L("Bed temperature offset follows the plate automation");
-    def->tooltip = L("Choose the bed temperature offset from the part size buckets configured for the plate type in the upload dialog. Choosing an offset there turns this off for the project.");
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(true));
-
     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction, set from the upload
     // dialog and kept in the project config (PresetBundle::s_project_options) so it never dirties a
     // preset. Applied at G-code export time only, so changing it re-exports the G-code without

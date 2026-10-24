@@ -467,9 +467,6 @@ public:
     Vec2d get_size() const { return Vec2d(m_width, m_depth); }
     ModelObjectPtrs get_objects() { return m_model->objects; }
     ModelObjectPtrs get_objects_on_this_plate();
-    // [ORCAPORT:PA-1] (footprint mm2, height mm) of every instance on this plate, from the object's
-    // 2D convex hull and instance bounding box; the plate automation classifies the largest one.
-    std::vector<std::pair<double, double>> get_instance_footprints() const;
     ModelInstance* get_instance(int obj_id, int instance_id);
     BoundingBoxf3 get_objects_bounding_box();
 

@@ -2114,9 +2114,6 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionEnum<BedType>,      curr_bed_type))
     // [ORCAPORT:BT-1] print-time bed-temperature offset; project-level, never a preset key
     ((ConfigOptionInt,                bed_temperature_offset))
-    // [ORCAPORT:PA-1] whether that offset follows the local per-plate automation; project-level,
-    // never a preset key
-    ((ConfigOptionBool,               bed_temperature_offset_auto))
     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction (percent, <= 0);
     // project-level, never a preset key
     ((ConfigOptionFloat,              initial_layer_bottom_surface_flow_delta))
