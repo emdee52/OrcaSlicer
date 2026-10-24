@@ -83,6 +83,17 @@ TEST_CASE("First-layer flow reduction scales only the first layer's bottom surfa
         }
     }
     CHECK(first_layer_samples > 0);
+
+    // The auto flag is the dialog's business: it decides what the row preselects and writes the
+    // delta, so on its own it must not move a single E value (the default bed type is a cool plate,
+    // so an emission-time default would show up right here).
+    DynamicPrintConfig manual = config;
+    manual.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(false));
+    print.apply(model, manual);
+    const std::vector<FlowSample> manual_flow = bottom_surface_flow(Test::gcode(print));
+    REQUIRE(manual_flow.size() == baseline.size());
+    for (size_t i = 0; i < baseline.size(); ++i)
+        CHECK(manual_flow[i].e == baseline[i].e);
 }
 
 // The reduction is a G-code-export-only setting: the upload dialog writes it after slicing, and
@@ -103,6 +114,8 @@ TEST_CASE("First-layer flow reduction invalidates only G-code export", "[OrcaFir
 
     DynamicPrintConfig reduced = config;
     reduced.set_key_value("initial_layer_bottom_surface_flow_delta", new ConfigOptionFloat(-10.));
+    // The dialog writes both keys on OK, so the apply carries both.
+    reduced.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(false));
     const PrintBase::ApplyStatus status = print.apply(model, reduced);
 
     CHECK(status == PrintBase::APPLY_STATUS_INVALIDATED);

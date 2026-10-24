@@ -1484,6 +1484,15 @@ void PrintConfigDef::init_fff_params()
     def->max = OrcaExt::kFirstLayerFlowDeltaMax;
     def->set_default_value(new ConfigOptionFloat(0));
 
+    // [ORCAPORT:BF-1] whether the upload dialog preselects the reduction for the plate type. It is
+    // a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct from
+    // "the user never chose" (auto on) and a cleared choice does not come back on reopen.
+    def = this->add("initial_layer_bottom_surface_flow_auto", coBool);
+    def->label = L("First layer flow follows the plate");
+    def->tooltip = L("Preselect the first-layer flow reduction for the plate type in the upload dialog: 20% for the cool plates, none for the others. Choosing or clearing a value in the dialog turns this off.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(true));
+
     // Orca: allow profile maker to set default bed type in machine profile
     // This option won't be shown in the UI
     def = this->add("default_bed_type", coString);

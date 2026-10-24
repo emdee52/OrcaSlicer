@@ -47,8 +47,10 @@ public:
     bool switch_to_device_tab() const {return m_switch_to_device_tab;}
     // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
     int bed_temp_offset() const { return m_bed_temp_offset; }
-    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = unchanged
+    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = stock
     double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
+    // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
+    bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
 
     virtual void EndModal(int ret) override;
     virtual void init();
@@ -84,6 +86,7 @@ protected:
     // bed-temperature offset above: written to the project config by the caller, applied at G-code
     // export.
     double                 m_first_layer_flow_delta {0.};
+    bool                   m_first_layer_flow_auto {true};
     double                 m_first_layer_flow_base {1.};
     wxStaticText*          m_first_layer_flow_status {nullptr};
     std::vector<RadioBox*> m_first_layer_flow_radios;

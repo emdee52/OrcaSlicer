@@ -19,6 +19,24 @@ TEST_CASE("A first-layer flow reduction scales the profile's bottom surface rati
     CHECK_THAT(OrcaExt::first_layer_bottom_effective_flow(0.95, 0.), WithinAbs(0.95, 1e-9));
 }
 
+// The upload dialog preselects a reduction for the plates that tend to over-extrude their first
+// layer: the three cool plates (Cool Plate / "Smooth Cool Plate", Textured Cool Plate and Cool
+// Plate (SuperTack)). Every other plate starts at the profile's flow.
+TEST_CASE("The first-layer flow default follows the plate type", "[OrcaFirstLayerFlow]") {
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPC), WithinAbs(-20., 1e-9));
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPCT), WithinAbs(-20., 1e-9));
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btSuperTack), WithinAbs(-20., 1e-9));
+
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPEI), WithinAbs(0., 1e-9));
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btEP), WithinAbs(0., 1e-9));
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btPTE), WithinAbs(0., 1e-9));
+    CHECK_THAT(OrcaExt::first_layer_flow_plate_default(BedType::btDefault), WithinAbs(0., 1e-9));
+
+    // The preselected value is one the row can show and the clamp accepts.
+    CHECK_THAT(OrcaExt::first_layer_bottom_flow_scale(OrcaExt::kFirstLayerFlowCoolPlateDefault), WithinAbs(0.8, 1e-9));
+    CHECK(OrcaExt::clamp_first_layer_flow_delta(OrcaExt::kFirstLayerFlowCoolPlateDefault) == OrcaExt::kFirstLayerFlowCoolPlateDefault);
+}
+
 // The reduction only ever lowers flow: it must not amplify an over-extruding first layer, and a
 // hand-edited project must not be able to starve the first layer to nothing.
 TEST_CASE("First-layer flow reduction cannot amplify and never stops extrusion", "[OrcaFirstLayerFlow]") {

@@ -29,6 +29,8 @@ inline const std::set<std::string> project_keys = {
     "wipe_tower_x", "wipe_tower_y",
     // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction, set from the upload dialog
     "initial_layer_bottom_surface_flow_delta",
+    // Whether that reduction still follows the plate type (no explicit choice yet).
+    "initial_layer_bottom_surface_flow_auto",
     "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
     "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
 };

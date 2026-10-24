@@ -215,8 +215,10 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "extruder_offset",
         "filament_flow_ratio",
         // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction; G-code export only, so the
-        // upload dialog can lower it without invalidating the slice.
+        // upload dialog can lower it without invalidating the slice. The auto flag rides along: the
+        // dialog writes both, and neither may invalidate a slice step.
         "initial_layer_bottom_surface_flow_delta",
+        "initial_layer_bottom_surface_flow_auto",
         "reduce_fan_stop_start_freq",
         "dont_slow_down_outer_wall",
         "fan_cooling_layer_time",

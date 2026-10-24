@@ -104,8 +104,9 @@ namespace {
 const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 
 // [ORCAPORT:BF-1] the mutually exclusive first-layer bottom-surface flow reductions offered in the
-// upload dialog; 0 means "use the profile's value"
-const std::array<double, 5> kFirstLayerFlowDeltas {-20., -15., -10., -5., 0.};
+// upload dialog. There is no 0% button: choosing the active value clears the reduction instead
+// (radio-box semantics with a clear, like the bed-temperature offsets above).
+const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
 
 wxColour contrasting_text_color(const wxColour& background)
 {
@@ -526,7 +527,11 @@ void PrintHostSendDialog::update_bed_temp_status()
 // [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row helpers
 void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
 {
-    m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(delta);
+    // Radio-box semantics with a clear, like the bed-temperature offsets: choosing the active value
+    // turns the reduction off, so the dialog never sits on a value the user did not pick. Any click
+    // ends the plate-driven default, which is why the clear is remembered.
+    m_first_layer_flow_auto   = false;
+    m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
     for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
         m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
     update_first_layer_flow_status();
@@ -686,9 +691,19 @@ void PrintHostSendDialog::init()
     // changes the first layer without re-slicing and without touching a preset.
     {
         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
-        m_first_layer_flow_base      = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
+        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+        const BedType bed_type      = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
 
-        if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
+        m_first_layer_flow_base = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
+
+        if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
+            m_first_layer_flow_auto = saved_auto->value;
+
+        if (m_first_layer_flow_auto)
+            // The cool plates start at the plate default (20% less); every other plate starts at the
+            // profile's value, so the row reads as "nothing chosen" there.
+            m_first_layer_flow_delta = OrcaExt::first_layer_flow_plate_default(bed_type);
+        else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
             m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
 
         auto* row     = new wxBoxSizer(wxHORIZONTAL);
@@ -697,7 +712,7 @@ void PrintHostSendDialog::init()
         caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
         // The reduction covers the first layer's bottom surface infill, not its walls, so the
         // caption alone must not be read as "every extrusion on layer 1".
-        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected."));
+        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. The cool plates start at 20%; click the selected value to print at the profile's flow."));
         row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 
         // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the

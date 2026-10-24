@@ -14,16 +14,34 @@
 
 #include <algorithm>
 
+#include "../PrintConfig.hpp"
+
 namespace Slic3r {
 namespace OrcaExt {
 
-// Percent reduction. The dialog offers 0 / -5 / -10 / -15 / -20; the wider bound is defence, not
-// UI. Reduction only: a positive delta would amplify the first-layer squish that causes the
-// problem this exists for.
+// Percent reduction. The dialog offers -20 / -15 / -10 / -5; the wider bound is defence, not UI.
+// Reduction only: a positive delta would amplify the first-layer squish that causes the problem
+// this exists for.
 constexpr double kFirstLayerFlowDeltaMin = -50.0;
 constexpr double kFirstLayerFlowDeltaMax = 0.0;
 // Floor on the multiplier, so a hand-edited project cannot ask for (near) zero flow and print air.
 constexpr double kFirstLayerFlowScaleMin = 0.5;
+// What the upload dialog preselects for a plate that tends to over-extrude its first layer.
+constexpr double kFirstLayerFlowCoolPlateDefault = -20.0;
+
+// The three cold, smooth/rough build surfaces in BedType's list, which is what a cool plate is in
+// the plate picker: Cool Plate ("Smooth Cool Plate"), Textured Cool Plate and Cool Plate
+// (SuperTack).
+inline bool is_cool_plate(BedType bed_type)
+{
+    return bed_type == btPC || bed_type == btPCT || bed_type == btSuperTack;
+}
+
+// Reduction the dialog preselects for `bed_type`: the cool-plate default, or none.
+inline double first_layer_flow_plate_default(BedType bed_type)
+{
+    return is_cool_plate(bed_type) ? kFirstLayerFlowCoolPlateDefault : 0.0;
+}
 
 inline double clamp_first_layer_flow_delta(double delta)
 {

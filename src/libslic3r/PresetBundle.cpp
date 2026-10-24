@@ -138,6 +138,9 @@ static std::vector<std::string> s_project_options {
     // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction; project-level like the
     // bed offset, and likewise kept out of s_project_options_published.
     "initial_layer_bottom_surface_flow_delta",
+    // Whether the upload dialog preselects that reduction from the plate type; project-level so a
+    // project remembers whether the user ever made a choice.
+    "initial_layer_bottom_surface_flow_auto",
     "flush_multiplier",
     // Fast-purge mode: project-level purge control, inert at Default.
     "flush_multiplier_fast",
