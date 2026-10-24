@@ -6,16 +6,35 @@ clean, awaiting the user's runtime test. Original feature - no Neotko/preFlight 
 ## What it does
 
 The "Send G-code to printer host" dialog (`PrintHostSendDialog`) gains a **First layer flow** row
-under BT-1's bed-temperature row: five mutually exclusive buttons `-20% -15% -10% -5% 0%` plus a
-status line (`First layer flow: 1.00 -> 0.90 (-10%)`, or `... (profile)` at 0). The chosen
-percentage is applied to the **bottom surface flow ratio of the first layer only**, at G-code
+under BT-1's bed-temperature row: four mutually exclusive buttons `-20% -15% -10% -5%` plus a status
+line (`First layer flow: 1.00 -> 0.80 (-20%)`, or `... (profile)` when the reduction is off). There
+is **no `0%` button**: clicking the selected value clears the reduction, exactly like the
+bed-temperature offsets. On a **cool plate** (Smooth Cool Plate, Textured Cool Plate, Cool Plate
+(SuperTack)) the row starts with `-20%` selected; on any other plate it starts with nothing selected.
+The percentage is applied to the **bottom surface flow ratio of the first layer only**, at G-code
 export. It is for plates that over-extrude layer 1 even with a correct Z offset, without keeping a
 second process profile per plate.
 
 Only `erBottomSurface` paths on the first layer are scaled. On layer 1 those are the solid-infill
 beads that sit on the plate; the outer/inner walls of layer 1 are `erExternalPerimeter`/
 `erPerimeter` and keep their own flow. The dialog caption stays the user's wording ("First layer
-flow"); the row tooltip states the wall caveat.
+flow"); the row tooltip states the wall caveat and the cool-plate default.
+
+### Default selection and "cleared stays cleared"
+
+Spelled out, the row's state comes from two project-level keys:
+
+| State | `..._auto` | `..._delta` | Row on open |
+|---|---|---|---|
+| never chose | `true` | `0` | cool plate: `-20%` selected, other plates: nothing |
+| chose a reduction | `false` | `-5`/`-10`/`-15`/`-20` | that value |
+| clicked the selected value (stock) | `false` | `0` | nothing selected |
+
+`auto` is why the plate default and "the user asked for stock" can both exist: a single
+`delta == 0` cannot tell them apart, so clearing a cool-plate choice would come back on the next
+open. Any click in the row sets `auto = false`. The flag is dialog-only - the G-code generator reads
+`delta` alone - so exporting from the Prepare tab never changes flow and a profile/user that never
+opens the dialog is untouched (the fff_print test pins this: toggling `auto` alone moves no E value).
 
 ## Why no re-slice
 
@@ -42,24 +61,30 @@ Note the difference from the *existing* process option: `bottom_solid_infill_flo
 `PrintObject::invalidate_state_by_config_options`, `PrintObject.cpp:1851`). The new key is
 print-level because the override is per print, not per region/object.
 
-## Config key
+## Config keys
 
 `initial_layer_bottom_surface_flow_delta` - `coFloat`, percent, default `0`, mode `comAdvanced`,
-range `[-50, 0]` (`OrcaExt::kFirstLayerFlowDeltaMin/Max`).
+range `[-50, 0]` (`OrcaExt::kFirstLayerFlowDeltaMin/Max`). This is the value the G-code generator
+applies; `0` is stock flow.
 
-- Member of the **`PrintConfig` struct** (`PrintConfig.hpp:2117`), next to `bed_temperature_offset`.
-  Required: `Print::apply` diffs `m_config.keys()` (`print_config_diffs`) and only applies keys the
-  struct knows.
-- Registered in `PrintConfig.cpp` (`init_fff_params`, next to `bed_temperature_offset`). Not in any
-  `s_Preset_*` list: it is not a process preset key and never appears in a settings tab.
-- Listed in `PresetBundle::s_project_options` so a saved 3mf round-trips it; deliberately **not** in
-  `s_project_options_published` (a published project must not impose the author's first-layer tweak,
-  same reasoning as `curr_bed_type` / `bed_temperature_offset`). Its neutral default is `0`, so a
-  reset project cannot clobber a profile's authored `bottom_solid_infill_flow_ratio` (the trap
-  documented at `PresetBundle.cpp:145`).
-- Added to `Print::invalidate_state_by_config_options`'s `steps_gcode` set.
-- Added to the MCP `project_keys` list (`OrcaMCPConfigKeys.hpp`) so `apply_config` /
-  `get_project_config` can drive it - BT-1 left its key out of that list; this one is in from the
+`initial_layer_bottom_surface_flow_auto` - `coBool`, default `true`, mode `comAdvanced`. Dialog
+state only: it says the row still follows the plate type (cool plates preselect `-20%`) and has not
+been chosen or cleared yet. Nothing in the G-code path reads it.
+
+- Both are members of the **`PrintConfig` struct** (`PrintConfig.hpp`, next to
+  `bed_temperature_offset`). Required: `Print::apply` diffs `m_config.keys()`
+  (`print_config_diffs`) and only applies keys the struct knows.
+- Both are registered in `PrintConfig.cpp` (`init_fff_params`, next to `bed_temperature_offset`). Not
+  in any `s_Preset_*` list: they are not process preset keys and never appear in a settings tab.
+- Both are listed in `PresetBundle::s_project_options` so a saved 3mf round-trips them; deliberately
+  **not** in `s_project_options_published` (a published project must not impose the author's
+  first-layer tweak, same reasoning as `curr_bed_type` / `bed_temperature_offset`). Their neutral
+  defaults (`0` / `true`) let a reset project fall back to the plate default instead of clobbering a
+  profile's authored `bottom_solid_infill_flow_ratio` (the trap documented at
+  `PresetBundle.cpp:145`).
+- Both are in `Print::invalidate_state_by_config_options`'s `steps_gcode` set.
+- Both are in the MCP `project_keys` list (`OrcaMCPConfigKeys.hpp`) so `apply_config` /
+  `get_project_config` can drive them - BT-1 left its key out of that list; these are in from the
   start.
 
 ## Emission
@@ -104,7 +129,7 @@ uses the same two helpers, so it cannot disagree with the emitted value.
 | `src/libslic3r/GCode.cpp` | `GCode::_extrude` (bottom-surface flow arm) | scale applied when `path_on_first_layer` |
 | `src/libslic3r/PresetBundle.cpp` | `s_project_options` | project-level key |
 | `src/slic3r/GUI/PrintHostDialogs.hpp/.cpp` | `PrintHostSendDialog` | the row, its status line and helpers |
-| `src/slic3r/GUI/Plater.cpp` | `Plater::send_gcode_legacy` | persist the delta into `project_config` |
+| `src/slic3r/GUI/Plater.cpp` | `Plater::send_gcode_legacy` | persist both keys into `project_config` |
 | `src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp` | `project_keys` | MCP discovery/apply |
 
 New files: `src/libslic3r/OrcaExt/FirstLayerFlow.hpp` (header-only: bounds + scale + effective
@@ -113,8 +138,13 @@ flow), `tests/libslic3r/test_orca_first_layer_flow.cpp`.
 ## GUI details
 
 - The row reuses BT-1's construction: `RadioBox` per value bound to `wxEVT_LEFT_DOWN`, a body-font
-  caption and a status `wxStaticText` on the following row. `0%` is an explicit button (unlike
-  BT-1's toggle-to-clear) because "off" is one of the five choices.
+  caption and a status `wxStaticText` on the following row. Four buttons (`-20/-15/-10/-5`) and no
+  `0%`: `set_first_layer_flow_delta` clears when the clicked value is the active one, matching the
+  bed-temperature row.
+- On open, `auto` decides what is selected: `true` -> `OrcaExt::first_layer_flow_plate_default(
+  plate->get_bed_type(true))`, i.e. `-20` for `btPC` / `btPCT` / `btSuperTack` and nothing
+  otherwise; `false` -> the stored delta. Any click sets `auto = false`, so a cleared choice stays
+  cleared.
 - The reference value is `preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio")`,
   read once on dialog open - the same cost profile as BT-1's `full_config()` call.
 - Gated on the printer preset's `use_3mf` exactly like BT-1: a `.gcode.3mf` upload is bundled from
@@ -128,37 +158,32 @@ flow), `tests/libslic3r/test_orca_first_layer_flow.cpp`.
 
 - Build: `build_win.bat -s --tests --no-gettext -j 8` (configure needed: new test file), clean.
 - Unit tests:
-  - `tests/libslic3r/test_orca_first_layer_flow.cpp` (`[OrcaFirstLayerFlow]`) - 11 assertions: scale
-    table (`0 -> 1`, `-5 -> 0.95`, `-20 -> 0.8`), a non-1.0 profile ratio keeps its proportion
-    (`0.95, -10 -> 0.855`), reduction never amplifies, the floor is `0.5`, and the effective flow is
-    never zero.
-  - `tests/fff_print/test_orca_first_layer_flow.cpp` (`[OrcaFirstLayerFlow]`) - 118 assertions:
+  - `tests/libslic3r/test_orca_first_layer_flow.cpp` (`[OrcaFirstLayerFlow]`) - 20 assertions in 3
+    cases: the scale table (`0 -> 1`, `-5 -> 0.95`, `-20 -> 0.8`); a non-1.0 profile ratio keeps its
+    proportion (`0.95, -10 -> 0.855`); reduction never amplifies and the floor is `0.5`; and the
+    plate default is `-20` for `btPC`/`btPCT`/`btSuperTack` and `0` for every other `BedType`.
+  - `tests/fff_print/test_orca_first_layer_flow.cpp` (`[OrcaFirstLayerFlow]`) - 172 assertions:
     slicing the same cube with delta 0 and -10 yields the same number of bottom-surface moves in the
-    same order; every first-layer move's E scales by 0.9 (5-decimal rounding) and every move on
-    layers 2+ keeps its exact E. The invalidation case asserts `Print::apply` returns
-    `APPLY_STATUS_INVALIDATED`, `psGCodeExport` is no longer done, and `posSlice`, `posPerimeters`
-    and `posInfill` are still done - i.e. the change cannot re-slice.
-- Suites: libslic3r **1576/1576**, fff_print **460/460**.
+    same order; every first-layer move's E scales by 0.9 and every move on layers 2+ keeps its exact
+    E; toggling `initial_layer_bottom_surface_flow_auto` alone moves no E value (the default bed type
+    is a cool plate, so an emission-time plate default would show up here). The invalidation case
+    applies both keys as the dialog does and asserts `APPLY_STATUS_INVALIDATED`, `psGCodeExport` no
+    longer done, `posSlice`/`posPerimeters`/`posInfill` still done.
+- Suites: libslic3r **1577/1577**, fff_print **460/460**.
 - **Runtime A/B over MCP** (app started with `ORCA_EXT_MCP=1`; `tests/data/test_stl/ASCII/20mmbox-LF.stl`,
-  Snapmaker U1 0.4 nozzle, profile `bottom_solid_infill_flow_ratio = 1`, 100 layers):
-  - slice once, `export_gcode` -> A; `apply_config {type: project, key:
-    initial_layer_bottom_surface_flow_delta, value: -10}` (`applied_keys: [...]`, `invalid_keys: []`)
-    -> `export_gcode` -> B.
-  - Whole-file compare of A and B (8051 lines each, 3887 `G1` each): **116 differing lines**, of
-    which **109 are E-only** changes, all on **layer 1**, all inside `;TYPE:Bottom surface`,
-    **every one at ratio 0.9** (0.899896-0.900209, only the 5-decimal E rounding). No X/Y, no
-    `;TYPE` change, no layer count change.
-  - The other 7: the generation timestamp, `; initial_layer_bottom_surface_flow_delta = 0 -> -10`,
-    the three `; filament used` totals (1007.69 -> 1004.39 mm, 3.08 -> 3.07 g), and one `M73`
-    line moved by a single `G1` at 35% (same 107 M73 lines in both files, identical sequence and
-    values - the progress marker is placed between two moves, so one move crossing the emit point
-    shifts it).
-  - The delta was also checked at -15 (`; initial_layer_bottom_surface_flow_delta = -15`), same
-    restriction to layer 1.
+  Snapmaker U1 0.4 nozzle, Textured Cool Plate, profile `bottom_solid_infill_flow_ratio = 1`):
+  - slice once, `apply_config {auto: false, delta: 0}` -> export G; `delta: -20` -> export F
+    (`applied_keys` both, `invalid_keys: []`).
+  - Whole-file compare (8100 lines each): **109 E-only changes, all on layer 1, all inside
+    `;TYPE:Bottom surface`, every one at exactly ratio 0.8**; no coordinate, `;TYPE` or layer-count
+    change. The remaining differences are the timestamp, the two config-dump lines and the filament
+    totals.
+  - An earlier run at -10 gave the same shape at ratio 0.9 (0.899896-0.900209, only the 5-decimal E
+    rounding), and -15 was checked the same way.
 - Still to eyeball in the GUI (no automated route: the dialog is a modal wx window and the harness
-  cannot click it): the five buttons select exclusively, the status line reads
-  `First layer flow: 1.00 -> 0.90 (-10%)` and `... (profile)` at 0, and the value survives reopening
-  the dialog (project_config round-trip).
+  cannot click it): that a cool plate opens with `-20%` selected and any other plate with nothing,
+  that clicking the selected value clears it and it stays cleared on reopen, and the status line
+  (`First layer flow: 1.00 -> 0.80 (-20%)` / `... (profile)`).
 
 ## Known limitations
 
@@ -175,3 +200,10 @@ flow), `tests/libslic3r/test_orca_first_layer_flow.cpp`.
    scale multiplies it correctly at export.
 5. `+` (amplification) is not offered: the range tops out at `0`. A plate needing more first-layer
    flow needs the process setting, not this row.
+6. The plate default is applied by the **dialog**, not by the G-code generator: exporting from the
+   Prepare tab on a cool plate does not get the -20%. `auto` exists so that a project which was
+   exported that way is not silently changed; the reduction is a print-popup override by design.
+7. An explicit choice is stored per **project**, so it follows the project rather than the plate: a
+   project that has `-10` stored keeps `-10` if it is later printed on a textured PEI plate. While
+   `auto` is on the value follows the plate (and a different plate resolves to nothing), which is the
+   state a project is in until the row is clicked.

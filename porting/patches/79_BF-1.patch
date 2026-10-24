@@ -23,10 +23,10 @@ index e928a4bcbc..90c53f5236 100644
      } else if (path.role() == erBrim) {
 diff --git a/src/libslic3r/OrcaExt/FirstLayerFlow.hpp b/src/libslic3r/OrcaExt/FirstLayerFlow.hpp
 new file mode 100644
-index 0000000000..6a64f0c381
+index 0000000000..0db3048e38
 --- /dev/null
 +++ b/src/libslic3r/OrcaExt/FirstLayerFlow.hpp
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,67 @@
 +// [ORCAPORT FILE] FirstLayerFlow - print-time reduction of the first layer's bottom surface flow
 +// Source: original (design in porting/notes/BF-1.md)
 +//
@@ -43,16 +43,34 @@ index 0000000000..6a64f0c381
 +
 +#include <algorithm>
 +
++#include "../PrintConfig.hpp"
++
 +namespace Slic3r {
 +namespace OrcaExt {
 +
-+// Percent reduction. The dialog offers 0 / -5 / -10 / -15 / -20; the wider bound is defence, not
-+// UI. Reduction only: a positive delta would amplify the first-layer squish that causes the
-+// problem this exists for.
++// Percent reduction. The dialog offers -20 / -15 / -10 / -5; the wider bound is defence, not UI.
++// Reduction only: a positive delta would amplify the first-layer squish that causes the problem
++// this exists for.
 +constexpr double kFirstLayerFlowDeltaMin = -50.0;
 +constexpr double kFirstLayerFlowDeltaMax = 0.0;
 +// Floor on the multiplier, so a hand-edited project cannot ask for (near) zero flow and print air.
 +constexpr double kFirstLayerFlowScaleMin = 0.5;
++// What the upload dialog preselects for a plate that tends to over-extrude its first layer.
++constexpr double kFirstLayerFlowCoolPlateDefault = -20.0;
++
++// The three cold, smooth/rough build surfaces in BedType's list, which is what a cool plate is in
++// the plate picker: Cool Plate ("Smooth Cool Plate"), Textured Cool Plate and Cool Plate
++// (SuperTack).
++inline bool is_cool_plate(BedType bed_type)
++{
++    return bed_type == btPC || bed_type == btPCT || bed_type == btSuperTack;
++}
++
++// Reduction the dialog preselects for `bed_type`: the cool-plate default, or none.
++inline double first_layer_flow_plate_default(BedType bed_type)
++{
++    return is_cool_plate(bed_type) ? kFirstLayerFlowCoolPlateDefault : 0.0;
++}
 +
 +inline double clamp_first_layer_flow_delta(double delta)
 +{
@@ -77,35 +95,40 @@ index 0000000000..6a64f0c381
 +
 +#endif /* slic3r_OrcaExt_FirstLayerFlow_hpp_ */
 diff --git a/src/libslic3r/PresetBundle.cpp b/src/libslic3r/PresetBundle.cpp
-index ba8efee03a..80a9c8357a 100644
+index ba8efee03a..9a88bee972 100644
 --- a/src/libslic3r/PresetBundle.cpp
 +++ b/src/libslic3r/PresetBundle.cpp
-@@ -135,6 +135,9 @@ static std::vector<std::string> s_project_options {
+@@ -135,6 +135,12 @@ static std::vector<std::string> s_project_options {
      // so it round-trips through a saved 3mf without ever being written into a preset. Kept out of
      // s_project_options_published: a published project must not impose the author's bed tweak.
      "bed_temperature_offset",
 +    // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction; project-level like the
 +    // bed offset, and likewise kept out of s_project_options_published.
 +    "initial_layer_bottom_surface_flow_delta",
++    // Whether the upload dialog preselects that reduction from the plate type; project-level so a
++    // project remembers whether the user ever made a choice.
++    "initial_layer_bottom_surface_flow_auto",
      "flush_multiplier",
      // Fast-purge mode: project-level purge control, inert at Default.
      "flush_multiplier_fast",
 diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
-index 1f89776f27..a73e163ba9 100644
+index 1f89776f27..d56b286ccf 100644
 --- a/src/libslic3r/Print.cpp
 +++ b/src/libslic3r/Print.cpp
-@@ -214,6 +214,9 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
+@@ -214,6 +214,11 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
          "extruder_colour",
          "extruder_offset",
          "filament_flow_ratio",
 +        // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction; G-code export only, so the
-+        // upload dialog can lower it without invalidating the slice.
++        // upload dialog can lower it without invalidating the slice. The auto flag rides along: the
++        // dialog writes both, and neither may invalidate a slice step.
 +        "initial_layer_bottom_surface_flow_delta",
++        "initial_layer_bottom_surface_flow_auto",
          "reduce_fan_stop_start_freq",
          "dont_slow_down_outer_wall",
          "fan_cooling_layer_time",
 diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
-index 186e4bb42c..cfb2a35625 100644
+index 186e4bb42c..1ea01c371c 100644
 --- a/src/libslic3r/PrintConfig.cpp
 +++ b/src/libslic3r/PrintConfig.cpp
 @@ -14,6 +14,8 @@
@@ -117,7 +140,7 @@ index 186e4bb42c..cfb2a35625 100644
  
  #include "GCode/Thumbnails.hpp"
  #include <numeric>
-@@ -1470,6 +1472,18 @@ void PrintConfigDef::init_fff_params()
+@@ -1470,6 +1472,27 @@ void PrintConfigDef::init_fff_params()
      def->max = OrcaExt::kBedTempOffsetMax;
      def->set_default_value(new ConfigOptionInt(0));
  
@@ -133,60 +156,79 @@ index 186e4bb42c..cfb2a35625 100644
 +    def->max = OrcaExt::kFirstLayerFlowDeltaMax;
 +    def->set_default_value(new ConfigOptionFloat(0));
 +
++    // [ORCAPORT:BF-1] whether the upload dialog preselects the reduction for the plate type. It is
++    // a separate key, not a sentinel delta, so "the user chose stock" (delta 0) stays distinct from
++    // "the user never chose" (auto on) and a cleared choice does not come back on reopen.
++    def = this->add("initial_layer_bottom_surface_flow_auto", coBool);
++    def->label = L("First layer flow follows the plate");
++    def->tooltip = L("Preselect the first-layer flow reduction for the plate type in the upload dialog: 20% for the cool plates, none for the others. Choosing or clearing a value in the dialog turns this off.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionBool(true));
++
      // Orca: allow profile maker to set default bed type in machine profile
      // This option won't be shown in the UI
      def = this->add("default_bed_type", coString);
 diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
-index 7ec4d7efe0..c1b22f5e39 100644
+index 7ec4d7efe0..ccfb244286 100644
 --- a/src/libslic3r/PrintConfig.hpp
 +++ b/src/libslic3r/PrintConfig.hpp
-@@ -2114,6 +2114,9 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
+@@ -2114,6 +2114,12 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
      ((ConfigOptionEnum<BedType>,      curr_bed_type))
      // [ORCAPORT:BT-1] print-time bed-temperature offset; project-level, never a preset key
      ((ConfigOptionInt,                bed_temperature_offset))
 +    // [ORCAPORT:BF-1] print-time first-layer bottom-surface flow reduction (percent, <= 0);
 +    // project-level, never a preset key
 +    ((ConfigOptionFloat,              initial_layer_bottom_surface_flow_delta))
++    // [ORCAPORT:BF-1] whether the upload dialog preselects that reduction from the plate type;
++    // project-level like the delta, turned off as soon as a value is chosen or cleared
++    ((ConfigOptionBool,               initial_layer_bottom_surface_flow_auto))
      ((ConfigOptionInts,               cool_plate_temp))
      ((ConfigOptionInts,               textured_cool_plate_temp))
      ((ConfigOptionInts,               supertack_plate_temp))
 diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
-index 28d5e76dd3..355b35f20f 100644
+index 28d5e76dd3..cd852810f3 100644
 --- a/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
 +++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
-@@ -27,6 +27,8 @@ inline const std::set<std::string> project_keys = {
+@@ -27,6 +27,10 @@ inline const std::set<std::string> project_keys = {
      "filament_colour", "filament_map", "filament_map_mode", "filament_nozzle_map", "filament_volume_map",
      "flush_volumes_matrix", "flush_volumes_vector", "flush_multiplier", "flush_multiplier_fast", "prime_volume_mode",
      "wipe_tower_x", "wipe_tower_y",
 +    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction, set from the upload dialog
 +    "initial_layer_bottom_surface_flow_delta",
++    // Whether that reduction still follows the plate type (no explicit choice yet).
++    "initial_layer_bottom_surface_flow_auto",
      "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
      "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
  };
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 535255b80a..a1292a980e 100644
+index 535255b80a..7e825e8209 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
-@@ -21384,6 +21384,17 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -21384,6 +21384,22 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
              p->partplate_list.invalidate_bed_temp_textures();
              p->view3D->get_canvas3d()->set_as_dirty();
          }
 +        // [ORCAPORT:BF-1] same plumbing for the first-layer bottom-surface flow reduction: a
-+        // project-config write, and the key is in the G-code-export-only invalidation bucket, so the
-+        // export below regenerates the G-code with the new first-layer flow and keeps the slice.
++        // project-config write, and the keys are in the G-code-export-only invalidation bucket, so
++        // the export below regenerates the G-code with the new first-layer flow and keeps the slice.
 +        {
 +            const double        first_layer_flow_delta = pDlg->first_layer_flow_delta();
++            const bool          first_layer_flow_auto  = pDlg->first_layer_flow_auto();
 +            DynamicPrintConfig& project_config         = wxGetApp().preset_bundle->project_config;
 +            if (ConfigOptionFloat* opt = project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
 +                opt->value = first_layer_flow_delta;
 +            else
 +                project_config.set_key_value("initial_layer_bottom_surface_flow_delta", new ConfigOptionFloat(first_layer_flow_delta));
++            if (ConfigOptionBool* opt = project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
++                opt->value = first_layer_flow_auto;
++            else
++                project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
 +        }
          // PrintHostUpload upload_data;
          upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
          upload_job.upload_data.upload_path = pDlg->filename();
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 566ce92b48..345dcfcb56 100644
+index 566ce92b48..065c40861c 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -84,6 +84,7 @@
@@ -197,25 +239,30 @@ index 566ce92b48..345dcfcb56 100644
  
  #include "libslic3r/Preset.hpp"
  #include "libslic3r/PresetBundle.hpp"
-@@ -102,6 +103,10 @@ namespace {
+@@ -102,6 +103,11 @@ namespace {
  // [ORCAPORT:BT-1] the six mutually exclusive bed-temperature offsets offered in the upload dialog
  const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
  
 +// [ORCAPORT:BF-1] the mutually exclusive first-layer bottom-surface flow reductions offered in the
-+// upload dialog; 0 means "use the profile's value"
-+const std::array<double, 5> kFirstLayerFlowDeltas {-20., -15., -10., -5., 0.};
++// upload dialog. There is no 0% button: choosing the active value clears the reduction instead
++// (radio-box semantics with a clear, like the bed-temperature offsets above).
++const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
 +
  wxColour contrasting_text_color(const wxColour& background)
  {
      return background.GetLuminance() < 0.60 ? *wxWHITE : wxColour("#303030");
-@@ -518,6 +523,31 @@ void PrintHostSendDialog::update_bed_temp_status()
+@@ -518,6 +524,35 @@ void PrintHostSendDialog::update_bed_temp_status()
  }
  // [ORCAPORT:BT-1] END
  
 +// [ORCAPORT:BF-1] BEGIN - first-layer bottom-surface flow reduction row helpers
 +void PrintHostSendDialog::set_first_layer_flow_delta(double delta)
 +{
-+    m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(delta);
++    // Radio-box semantics with a clear, like the bed-temperature offsets: choosing the active value
++    // turns the reduction off, so the dialog never sits on a value the user did not pick. Any click
++    // ends the plate-driven default, which is why the clear is remembered.
++    m_first_layer_flow_auto   = false;
++    m_first_layer_flow_delta  = (delta == m_first_layer_flow_delta) ? 0. : OrcaExt::clamp_first_layer_flow_delta(delta);
 +    for (size_t i = 0; i < m_first_layer_flow_radios.size(); ++i)
 +        m_first_layer_flow_radios[i]->SetValue(kFirstLayerFlowDeltas[i] == m_first_layer_flow_delta);
 +    update_first_layer_flow_status();
@@ -240,7 +287,7 @@ index 566ce92b48..345dcfcb56 100644
  void PrintHostSendDialog::init()
  {
      const auto& path = m_path;
-@@ -651,6 +681,60 @@ void PrintHostSendDialog::init()
+@@ -651,6 +686,70 @@ void PrintHostSendDialog::init()
      }
      // [ORCAPORT:BT-1] END
  
@@ -249,9 +296,19 @@ index 566ce92b48..345dcfcb56 100644
 +    // changes the first layer without re-slicing and without touching a preset.
 +    {
 +        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
-+        m_first_layer_flow_base      = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
++        PartPlate*    plate         = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
++        const BedType bed_type      = plate != nullptr ? plate->get_bed_type(true) : BedType::btDefault;
 +
-+        if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
++        m_first_layer_flow_base = preset_bundle->full_config().opt_float("bottom_solid_infill_flow_ratio");
++
++        if (const ConfigOptionBool* saved_auto = preset_bundle->project_config.option<ConfigOptionBool>("initial_layer_bottom_surface_flow_auto"))
++            m_first_layer_flow_auto = saved_auto->value;
++
++        if (m_first_layer_flow_auto)
++            // The cool plates start at the plate default (20% less); every other plate starts at the
++            // profile's value, so the row reads as "nothing chosen" there.
++            m_first_layer_flow_delta = OrcaExt::first_layer_flow_plate_default(bed_type);
++        else if (const ConfigOptionFloat* saved = preset_bundle->project_config.option<ConfigOptionFloat>("initial_layer_bottom_surface_flow_delta"))
 +            m_first_layer_flow_delta = OrcaExt::clamp_first_layer_flow_delta(saved->value);
 +
 +        auto* row     = new wxBoxSizer(wxHORIZONTAL);
@@ -260,7 +317,7 @@ index 566ce92b48..345dcfcb56 100644
 +        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
 +        // The reduction covers the first layer's bottom surface infill, not its walls, so the
 +        // caption alone must not be read as "every extrusion on layer 1".
-+        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected."));
++        caption->SetToolTip(_L("Lower the flow of the first layer's bottom surface infill only. The walls on the first layer are not affected. The cool plates start at 20%; click the selected value to print at the profile's flow."));
 +        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 +
 +        // Same .gcode.3mf limitation as the bed temperature offset: the bundle is built from the
@@ -302,19 +359,21 @@ index 566ce92b48..345dcfcb56 100644
          m_valid_suffix = recent_path.substr(extension_start);
      // .gcode suffix control
 diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
-index 8c32f7043f..d4d2355c19 100644
+index 8c32f7043f..9c554fb56b 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.hpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.hpp
-@@ -47,6 +47,8 @@ public:
+@@ -47,6 +47,10 @@ public:
      bool switch_to_device_tab() const {return m_switch_to_device_tab;}
      // [ORCAPORT:BT-1] additive bed-temperature offset chosen in this dialog; 0 = unchanged
      int bed_temp_offset() const { return m_bed_temp_offset; }
-+    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = unchanged
++    // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction chosen in this dialog; 0 = stock
 +    double first_layer_flow_delta() const { return m_first_layer_flow_delta; }
++    // [ORCAPORT:BF-1] true while the reduction still follows the plate type (the user has not chosen)
++    bool first_layer_flow_auto() const { return m_first_layer_flow_auto; }
  
      virtual void EndModal(int ret) override;
      virtual void init();
-@@ -77,6 +79,17 @@ protected:
+@@ -77,6 +81,18 @@ protected:
      void                   set_bed_temp_offset(int offset);
      void                   update_bed_temp_status();
      // [ORCAPORT:BT-1] END
@@ -323,6 +382,7 @@ index 8c32f7043f..d4d2355c19 100644
 +    // bed-temperature offset above: written to the project config by the caller, applied at G-code
 +    // export.
 +    double                 m_first_layer_flow_delta {0.};
++    bool                   m_first_layer_flow_auto {true};
 +    double                 m_first_layer_flow_base {1.};
 +    wxStaticText*          m_first_layer_flow_status {nullptr};
 +    std::vector<RadioBox*> m_first_layer_flow_radios;
