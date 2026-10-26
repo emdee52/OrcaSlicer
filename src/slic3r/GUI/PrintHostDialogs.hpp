@@ -60,6 +60,10 @@ public:
     // overrides init()), so its caller must not write the offset for it.
     bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
 
+    // [ORCAPORT:MA-1] the plate's per-material recipes chosen here, and whether the row was built
+    int  material_recipes() const { return m_material_recipes; }
+    bool has_material_row() const { return m_material_recipes_row; }
+
     virtual void EndModal(int ret) override;
     virtual void init();
     virtual std::map<std::string, std::string> extendedInfo() const { return {}; }
@@ -111,6 +115,13 @@ protected:
     void                       open_plate_automation();
     void                       refresh_plate_automation();
     void                       reset_to_automation();
+
+    // [ORCAPORT:MA-1] per-plate material recipes and the table button
+    int           m_material_recipes {0};
+    bool          m_material_recipes_row {false};
+    wxStaticText *m_material_hint {nullptr};
+    void          open_material_automation();
+    void          refresh_material_automation_row();
 };
 
 

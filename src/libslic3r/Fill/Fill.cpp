@@ -21,6 +21,7 @@
 #include "../Print.hpp"
 #include "../PrintConfig.hpp"
 #include "../Surface.hpp"
+#include "../OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 
 #include "AABBTreeLines.hpp"
 #include "libslic3r/Config.hpp"
@@ -1484,7 +1485,13 @@ void Layer::make_fills(const FillAdaptive::RegionOctrees* fill_octrees, FillLigh
 			surface_fill.surface.expolygon = std::move(expoly);
 
 			if(surface_fill.params.bridge && surface_fill.surface.is_external() && surface_fill.params.density > 99.0){
-				params.density = layerm->region().config().bridge_density.get_abs_value(1.0);
+				// [ORCAPORT:MA-1] a material's free-bridging recipe replaces the profile's bridge density.
+				// The solid-infill filament is the one the bridge fill is extruded by, so a mixed plate
+				// resolves each material's own row.
+				const OrcaExt::MaterialValues *material =
+					this->object()->print()->material_slice_values(int(layerm->region().extruder(frSolidInfill)) - 1);
+				params.density = (material != nullptr && material->has_bridge_density) ?
+					material->bridge_density / 100. : layerm->region().config().bridge_density.get_abs_value(1.0);
 				params.dont_adjust = true;
 			}
             if(surface_fill.surface.is_internal_bridge()){

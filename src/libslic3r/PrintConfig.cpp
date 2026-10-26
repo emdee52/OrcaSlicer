@@ -16,6 +16,7 @@
 #include "OrcaExt/BedTempOverride.hpp"
 // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction bounds
 #include "OrcaExt/FirstLayerFlow.hpp"
+#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 
 #include "GCode/Thumbnails.hpp"
 #include <numeric>
@@ -1492,6 +1493,32 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Preselect the first-layer flow reduction configured for the plate type in the plate automation dialog. Choosing or clearing a value in the upload dialog turns this off.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(true));
+
+    // [ORCAPORT:MA-1] the per-material table resolved for one plate, in two keys so the invalidation
+    // stays as small as the change: a toolpath input re-runs perimeters, an E/F input only re-exports
+    // the G-code. Both live in the plate config (never in a preset), so a plate carries its own
+    // recipes and a project keeps them. See OrcaExt/MaterialAutomation.hpp for the encoding.
+    def = this->add("material_automation", coString);
+    def->label = L("Material automation (toolpaths)");
+    def->tooltip = L("Per-material bridge density, bridge flow and top-surface line width for this plate. Filled in by the material automation dialog; never a profile value.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString());
+
+    def = this->add("material_automation_gcode", coString);
+    def->label = L("Material automation (G-code)");
+    def->tooltip = L("Per-material bridge speed, top-surface and outer-wall speeds and first-layer flow for this plate. Filled in by the material automation dialog; applied when the G-code is exported.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionString());
+
+    // [ORCAPORT:MA-1] which recipes this plate has on (a bit mask of OrcaExt::MaterialRecipe). The two
+    // keys above are derived from it, so a change here needs no invalidation of its own.
+    def = this->add("material_automation_recipes", coInt);
+    def->label = L("Material automation recipes");
+    def->tooltip = L("Bit mask of the per-material recipes enabled on this plate.");
+    def->mode = comAdvanced;
+    def->min = 0;
+    def->max = OrcaExt::kAllMaterialRecipes;
+    def->set_default_value(new ConfigOptionInt(0));
 
     // Orca: allow profile maker to set default bed type in machine profile
     // This option won't be shown in the UI

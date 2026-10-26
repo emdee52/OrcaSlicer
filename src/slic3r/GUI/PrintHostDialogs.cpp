@@ -88,6 +88,8 @@
 #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
 #include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
 #include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
+#include "MaterialAutomationDialog.hpp"         // [ORCAPORT:MA-1]
+#include "MaterialAutomationStore.hpp"          // [ORCAPORT:MA-1]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -110,6 +112,27 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 // upload dialog. There is no 0% button: choosing the active value clears the reduction instead
 // (radio-box semantics with a clear, like the bed-temperature offsets above).
 const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
+
+// [ORCAPORT:MA-1] the material names on the current plate, in filament order, deduplicated: the rows
+// the material dialog shows and the table a plate resolves against.
+std::vector<std::string> plate_material_types()
+{
+    std::vector<std::string> out;
+    if (wxGetApp().preset_bundle == nullptr || wxGetApp().plater() == nullptr)
+        return out;
+    PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    const ConfigOptionStrings *types = wxGetApp().preset_bundle->full_config().option<ConfigOptionStrings>("filament_type");
+    if (plate == nullptr || types == nullptr)
+        return out;
+    for (int filament_id : OrcaExt::to_zero_based_filaments(plate->get_extruders())) {
+        if (filament_id < 0 || filament_id >= int(types->values.size()))
+            continue;
+        const std::string name = OrcaExt::normalize_material(types->values[filament_id]);
+        if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
+            out.push_back(name);
+    }
+    return out;
+}
 
 wxColour contrasting_text_color(const wxColour& background)
 {
@@ -600,6 +623,38 @@ void PrintHostSendDialog::reset_to_automation()
 }
 // [ORCAPORT:PA-1] END
 
+// [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
+void PrintHostSendDialog::open_material_automation()
+{
+    MaterialAutomationDialog dlg(this, plate_material_types(), load_material_table(*wxGetApp().app_config),
+                                 [this]() { refresh_material_automation_row(); });
+    dlg.ShowModal();
+}
+
+void PrintHostSendDialog::refresh_material_automation_row()
+{
+    if (m_material_hint == nullptr)
+        return;
+
+    const std::vector<std::string> materials = plate_material_types();
+    const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
+    wxString                      text;
+    if (materials.empty()) {
+        text = _L("No material rows on this plate.");
+    } else {
+        for (const std::string &material : materials) {
+            if (! text.empty())
+                text += " · ";
+            text += from_u8(material);
+            if (OrcaExt::find_material(table, material) == nullptr)
+                text += _L(" (none)");
+        }
+    }
+    m_material_hint->SetLabel(text);
+    m_material_hint->GetParent()->Layout();
+}
+// [ORCAPORT:MA-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -825,6 +880,66 @@ void PrintHostSendDialog::init()
         content_sizer->Add(automation_row);
         content_sizer->AddSpacer(VERT_SPACING);
     }
+
+    // [ORCAPORT:MA-1] BEGIN - the plate's material recipes. Each toggle applies what the local
+    // material table holds for the filaments on this plate; the numbers are edited in the table
+    // dialog. Bridging and the top-surface width are toolpath inputs (one re-slice), the speeds and
+    // flows only re-export the G-code, so the same row also lives on the plate settings dialog.
+    {
+        PartPlate *plate = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+        m_material_recipes     = plate != nullptr ? plate->material_recipes() : 0;
+        m_material_recipes_row = true;
+        PresetBundle *preset_bundle = wxGetApp().preset_bundle;
+
+        auto *row     = new wxBoxSizer(wxHORIZONTAL);
+        auto *caption = new wxStaticText(this, wxID_ANY, _L("Material automation"), wxDefaultPosition, wxDefaultSize, 0);
+        caption->SetFont(::Label::Body_13);
+        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        caption->SetToolTip(_L("Use the values the material table holds for the filaments on this plate. Empty table fields keep the profile's value."));
+        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        // Same .gcode.3mf limitation as the rows above: the bundle ships the already-exported
+        // per-plate G-code, so a change made here could not reach it.
+        const ConfigOptionBool *use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
+        const bool              supported   = use_3mf_opt == nullptr || !use_3mf_opt->value;
+
+        auto add_toggle = [&](OrcaExt::MaterialRecipe recipe, const wxString &label) {
+            auto *check = new wxCheckBox(this, wxID_ANY, label);
+            check->SetValue((m_material_recipes & int(recipe)) != 0);
+            if (supported)
+                check->Bind(wxEVT_CHECKBOX, [this, recipe](wxCommandEvent &evt) {
+                    if (evt.IsChecked())
+                        m_material_recipes |= int(recipe);
+                    else
+                        m_material_recipes &= ~int(recipe);
+                });
+            else {
+                check->Disable();
+                check->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
+            }
+            row->Add(check, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        };
+        add_toggle(OrcaExt::MaterialRecipe::FreeBridging, _L("Free bridging"));
+        add_toggle(OrcaExt::MaterialRecipe::QualityTop, _L("Quality Top"));
+        add_toggle(OrcaExt::MaterialRecipe::OuterSpeed, _L("Outer Speed"));
+        content_sizer->Add(row);
+
+        auto *actions = new wxBoxSizer(wxHORIZONTAL);
+        auto *edit    = new Button(this, _L("Material automation..."));
+        edit->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        edit->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_material_automation(); });
+        actions->Add(edit, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        m_material_hint = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
+        m_material_hint->SetFont(::Label::Body_13);
+        m_material_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        actions->Add(m_material_hint, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        content_sizer->Add(actions);
+        content_sizer->AddSpacer(VERT_SPACING);
+        refresh_material_automation_row();
+    }
+    // [ORCAPORT:MA-1] END
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);

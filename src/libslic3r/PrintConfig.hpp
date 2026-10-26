@@ -2120,6 +2120,10 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow;
     // project-level like the delta, turned off as soon as a value is chosen or cleared
     ((ConfigOptionBool,               initial_layer_bottom_surface_flow_auto))
+    // [ORCAPORT:MA-1] per-material overrides resolved for one plate; plate-level, never a preset key
+    ((ConfigOptionString,             material_automation))
+    ((ConfigOptionString,             material_automation_gcode))
+    ((ConfigOptionInt,                material_automation_recipes))
     ((ConfigOptionInts,               cool_plate_temp))
     ((ConfigOptionInts,               textured_cool_plate_temp))
     ((ConfigOptionInts,               supertack_plate_temp))

@@ -49,6 +49,7 @@
 #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
 #include "OrcaExt/BedTempOverride.hpp" // [ORCAPORT:BT-1]
 #include "OrcaExt/FirstLayerFlow.hpp"  // [ORCAPORT:BF-1]
+#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 #include "Utils.hpp"
 #include "ClipperUtils.hpp"
 #include "LocalesUtils.hpp"
@@ -9372,18 +9373,28 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
 
     // calculate effective extrusion length per distance unit (e_per_mm)
     double filament_flow_ratio = FILAMENT_CONFIG(filament_flow_ratio);
+    // [ORCAPORT:MA-1] the plate's overrides for the filament extruding this path. Null when the plate
+    // sets no automation for this material, which leaves the profile's numbers in charge.
+    const OrcaExt::MaterialValues *material =
+        (m_print != nullptr && m_writer.filament() != nullptr) ? m_print->material_gcode_values(int(m_writer.filament()->id())) : nullptr;
     // We set _mm3_per_mm to effectove flow = Geometric volume * print flow ratio * filament flow ratio * role-based-flow-ratios
     auto _mm3_per_mm = path.mm3_per_mm * this->config().print_flow_ratio;
     _mm3_per_mm *= filament_flow_ratio;
 
     if (path.role() == erTopSolidInfill) {
-        _mm3_per_mm *= NOZZLE_CONFIG(top_solid_infill_flow_ratio);
+        // [ORCAPORT:MA-1] a material's quality-top recipe replaces the profile's top surface flow
+        _mm3_per_mm *= (material != nullptr && material->has_top_flow) ? material->top_flow : NOZZLE_CONFIG(top_solid_infill_flow_ratio);
     } else if (path.role() == erBottomSurface) {
         _mm3_per_mm *= m_config.bottom_solid_infill_flow_ratio;
         // [ORCAPORT:BF-1] print-time reduction of the first layer's bottom surface only, set from
         // the upload dialog. The walls on the first layer keep their own flow.
-        if (path_on_first_layer)
+        if (path_on_first_layer) {
             _mm3_per_mm *= OrcaExt::first_layer_bottom_flow_scale(m_config.initial_layer_bottom_surface_flow_delta.value);
+            // [ORCAPORT:MA-1] the material's own first-layer reduction multiplies the plate's, so a
+            // material tweak and a plate tweak add up instead of one hiding the other.
+            if (material != nullptr && material->has_first_layer_flow)
+                _mm3_per_mm *= OrcaExt::first_layer_bottom_flow_scale(material->first_layer_flow);
+        }
     } else if (path.role() == erInternalBridgeInfill) {
         _mm3_per_mm *= m_config.internal_bridge_flow;
     } else if (path.role() == erBrim) {
@@ -9462,20 +9473,28 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                 speed = std::min(speed, m_config.scarf_joint_speed.get_abs_value(speed));
             }
         } else if (path.role() == erExternalPerimeter) {
-            speed = NOZZLE_CONFIG(outer_wall_speed);
+            // [ORCAPORT:MA-1] the material's outer wall speed replaces the profile's when the plate's
+            // outer-speed recipe is on
+            speed = (material != nullptr && material->has_outer_speed) ? material->outer_speed : NOZZLE_CONFIG(outer_wall_speed);
             if (sloped) {
                 speed = std::min(speed, m_config.scarf_joint_speed.get_abs_value(speed));
             }
         } else if(path.role() == erInternalBridgeInfill) {
             speed = m_config.internal_bridge_speed.get_at(nozzle).get_abs_value(m_config.bridge_speed.get_at(nozzle));
-        } else if (path.role() == erOverhangPerimeter || path.role() == erSupportTransition || path.role() == erBridgeInfill) {
+        } else if (path.role() == erOverhangPerimeter || path.role() == erSupportTransition) {
+            // [ORCAPORT:MA-1] overhang walls keep the profile's bridge speed: the free-bridging
+            // recipe tunes external bridges only, so it must not move an overhang wall.
             speed = NOZZLE_CONFIG(bridge_speed);
+        } else if (path.role() == erBridgeInfill) {
+            // [ORCAPORT:MA-1] external bridge speed from the material's free-bridging recipe
+            speed = (material != nullptr && material->has_bridge_speed) ? material->bridge_speed : NOZZLE_CONFIG(bridge_speed);
         } else if (path.role() == erInternalInfill) {
             speed = NOZZLE_CONFIG(sparse_infill_speed);
         } else if (path.role() == erSolidInfill) {
             speed = NOZZLE_CONFIG(internal_solid_infill_speed);
         } else if (path.role() == erTopSolidInfill) {
-            speed = NOZZLE_CONFIG(top_surface_speed);
+            // [ORCAPORT:MA-1] top surface speed from the material's quality-top recipe
+            speed = (material != nullptr && material->has_top_speed) ? material->top_speed : NOZZLE_CONFIG(top_surface_speed);
         } else if (path.role() == erIroning) {
             const size_t filament_idx = get_filament_config_index(m_writer.filament()->id());
             speed = m_config.filament_ironing_speed.is_nil(filament_idx)

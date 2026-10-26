@@ -514,6 +514,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/PrinterWebView.hpp
     GUI/PrintHostDialogs.cpp
     GUI/PlateAutomationDialog.cpp
+    GUI/MaterialAutomationDialog.cpp
     GUI/PrintHostDialogs.hpp
     GUI/PrintOptionsDialog.cpp
     GUI/PrintOptionsDialog.hpp

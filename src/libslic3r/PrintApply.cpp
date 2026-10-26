@@ -2310,6 +2310,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 	if (apply_status != APPLY_STATUS_UNCHANGED)
 		m_modified_count++;
 	BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: finished,  this %2%, m_modified_count %3%, apply_status %4%, m_support_used %5%")%__LINE__ %this %m_modified_count %apply_status %m_support_used;
+    // [ORCAPORT:MA-1] the plate's per-material keys are part of the config now; resolve them once so
+    // the slice and the export read the same table.
+    this->refresh_material_automation();
 	return static_cast<ApplyStatus>(apply_status);
 }
 

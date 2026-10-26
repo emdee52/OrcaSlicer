@@ -43,6 +43,7 @@
 #include "ExtrusionEntityCollection.hpp"
 #include "MultiMaterialSegmentation.hpp"
 #include "SurfaceCollection.hpp"
+#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 
 namespace Slic3r {
 
@@ -67,7 +68,10 @@ Flow LayerRegion::bridging_flow(FlowRole role, bool thick_bridge) const
     const ConfigOptionFloatOrPercent& bridge_width_opt = region_config.bridge_line_width;
     const double                      bridge_width      = bridge_width_opt.get_abs_value(nozzle_diameter);
     const bool                        has_bridge_width  = bridge_width > 0.;
-    const double                      bridge_flow_ratio = region_config.bridge_flow;
+    // [ORCAPORT:MA-1] a material's free-bridging recipe replaces the profile's bridge flow ratio; the
+    // bridge width stays the profile's, since the recipe does not carry one.
+    const OrcaExt::MaterialValues *material = print_object.print()->material_slice_values(int(region.extruder(role)) - 1);
+    const double bridge_flow_ratio = (material != nullptr && material->has_bridge_flow) ? material->bridge_flow : region_config.bridge_flow;
 
     if (thick_bridge) {
         // The old Slic3r way (different from all other slicers): Use rounded extrusions.

@@ -18,6 +18,8 @@
 #include "slic3r/GUI/wxExtensions.hpp"
 #include <vector>
 #include "slic3r/GUI/GUI_App.hpp"
+#include <wx/checkbox.h>
+#include "libslic3r/OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include <wx/sizer.h>
 #include "slic3r/GUI/Widgets/TextInput.hpp"
@@ -462,6 +464,24 @@ PlateSettingsDialog::PlateSettingsDialog(wxWindow* parent, const wxString& title
     top_sizer->Add(spiral_mode_txt, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT | wxTOP | wxBOTTOM, FromDIP(5));
     top_sizer->Add(m_spiral_mode_choice, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxTOP | wxBOTTOM, FromDIP(5));
 
+    // [ORCAPORT:MA-1] per-plate material recipes: what the local material table applies to the
+    // filaments on this plate. Same three toggles as the print dialog, here so the slice can be
+    // re-run and previewed before sending.
+    {
+        auto* material_txt = new wxStaticText(this, wxID_ANY, _L("Material automation"));
+        material_txt->SetFont(Label::Body_14);
+        top_sizer->Add(material_txt, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT | wxTOP | wxBOTTOM, FromDIP(5));
+
+        auto* material_row      = new wxBoxSizer(wxHORIZONTAL);
+        m_material_free_bridging = new wxCheckBox(this, wxID_ANY, _L("Free bridging"));
+        m_material_quality_top   = new wxCheckBox(this, wxID_ANY, _L("Quality Top"));
+        m_material_outer_speed   = new wxCheckBox(this, wxID_ANY, _L("Outer Speed"));
+        material_row->Add(m_material_free_bridging, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+        material_row->Add(m_material_quality_top, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+        material_row->Add(m_material_outer_speed, 0, wxALIGN_CENTER_VERTICAL, 0);
+        top_sizer->Add(material_row, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxTOP | wxBOTTOM, FromDIP(5));
+    }
+
     // First layer filament sequence
     m_first_layer_print_seq_choice = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(240), -1), 0, NULL, wxCB_READONLY);
     m_first_layer_print_seq_choice->Append(_L("Auto"));
@@ -561,6 +581,10 @@ PlateSettingsDialog::PlateSettingsDialog(wxWindow* parent, const wxString& title
             if (item->GetWindow())
                 item->GetWindow()->Show(false);
         }
+        // [ORCAPORT:MA-1] the material row is a sizer of checkboxes, so hide it by hand
+        if (m_material_free_bridging) m_material_free_bridging->Show(false);
+        if (m_material_quality_top)   m_material_quality_top->Show(false);
+        if (m_material_outer_speed)   m_material_outer_speed->Show(false);
         first_layer_txt->Show();
         m_first_layer_print_seq_choice->Show();
         m_drag_canvas->Show();
@@ -639,6 +663,28 @@ void PlateSettingsDialog::sync_spiral_mode(bool spiral_mode, bool as_global)
                 m_spiral_mode_choice->SetSelection(2);
         }
     }
+}
+
+void PlateSettingsDialog::sync_material_recipes(int mask)
+{
+    if (m_material_free_bridging)
+        m_material_free_bridging->SetValue((mask & int(OrcaExt::MaterialRecipe::FreeBridging)) != 0);
+    if (m_material_quality_top)
+        m_material_quality_top->SetValue((mask & int(OrcaExt::MaterialRecipe::QualityTop)) != 0);
+    if (m_material_outer_speed)
+        m_material_outer_speed->SetValue((mask & int(OrcaExt::MaterialRecipe::OuterSpeed)) != 0);
+}
+
+int PlateSettingsDialog::get_material_recipes_choice() const
+{
+    int mask = 0;
+    if (m_material_free_bridging && m_material_free_bridging->GetValue())
+        mask |= int(OrcaExt::MaterialRecipe::FreeBridging);
+    if (m_material_quality_top && m_material_quality_top->GetValue())
+        mask |= int(OrcaExt::MaterialRecipe::QualityTop);
+    if (m_material_outer_speed && m_material_outer_speed->GetValue())
+        mask |= int(OrcaExt::MaterialRecipe::OuterSpeed);
+    return mask;
 }
 
 wxString PlateSettingsDialog::to_bed_type_name(BedType bed_type) {
