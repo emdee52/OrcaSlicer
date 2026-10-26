@@ -79,13 +79,17 @@ are what the slicer reads, and without the branch an unknown print key would fal
   plate and the values are resolved; `export_gcode` then re-slices or re-exports as needed.
 - **Plate Settings** ("Customize current plate"): the same three checkboxes, so a toolpath recipe can
   be turned on, sliced and previewed before sending.
-- **Table dialog**: a **material selector** at the top (the project's filament types plus any material
-  that already has a row - a plate's own list is empty until it is sliced, so it cannot be the source)
-  and the eight fields for that one material. Switching material stores the current one first, so
+- **Table dialog**: a **material selector** at the top and the eight fields for that one material.
+  The list comes from the **filament profiles this printer can use** (`preset_bundle->filaments`,
+  compatible and visible, the same source the filament sync and the preset wizard take a type from),
+  plus the project's own filaments and any material that already has a row - never from the plate,
+  whose filament list is empty until it is sliced. Switching material stores the current one first, so
   nothing typed is lost; empty = not set. Validates and applies without closing.
 - **Apply and reslice** in the send dialog: writes everything the dialog holds (bed offset, first-layer
   flow, material recipes), slices and closes without uploading, so the G-code can be read in the
-  preview or exported from the plate instead of being printed.
+  preview or exported from the plate instead of being printed. It uses its own return code
+  (`PrintHostSendDialog::RESLICE_RETURN_CODE`, not `wxID_APPLY`, which the "switch to device tab"
+  checkbox already owns) and does not write the device-tab preference, which only concerns an upload.
 - **Bed badge**: the plate name texture gains a second texture to its right reading
   `Free bridging · Quality Top · Outer Speed` for the recipes that are on (same `generate_from_text_string`
   path as BT-1's bed-temperature readout). Nothing is drawn when no recipe is on.
@@ -130,3 +134,5 @@ are what the slicer reads, and without the branch an unknown print key would fal
    in the settings pages is not done.
 6. `PrintRegion::bridging_height_avg` (support interface) still reads the profile's `bridge_flow`; the
    recipe is about external bridges.
+7. The badge and the material hint join with a wide `L" \u00B7 "` literal: a narrow UTF-8 `" · "` in
+   the source reached wxString as two Latin-1 characters and drew as `Â·` on the bed.

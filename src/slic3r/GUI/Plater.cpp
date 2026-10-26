@@ -21358,10 +21358,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
 
         pDlg->init();
         const int dialog_result = pDlg->ShowModal();
-        if (dialog_result != wxID_OK && dialog_result != wxID_APPLY)
+        if (dialog_result != wxID_OK && dialog_result != PrintHostSendDialog::RESLICE_RETURN_CODE)
             return;
 
-        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
@@ -21413,11 +21412,13 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         // PrintHostUpload upload_data;
         // [ORCAPORT:MA-1] "Apply and reslice" wrote everything the dialog holds above. Slice and stop
         // here instead of building an upload, so the G-code can be inspected in the preview or
-        // exported from the plate.
-        if (dialog_result == wxID_APPLY) {
+        // exported from the plate. The device-tab preference is not written on this path: no upload
+        // happens, so the checkbox has nothing to say.
+        if (dialog_result == PrintHostSendDialog::RESLICE_RETURN_CODE) {
             this->reslice();
             return;
         }
+        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
         upload_job.upload_data.upload_path = pDlg->filename();
         upload_job.upload_data.post_action = pDlg->post_action();

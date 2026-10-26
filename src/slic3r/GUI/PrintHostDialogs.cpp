@@ -113,26 +113,42 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 // (radio-box semantics with a clear, like the bed-temperature offsets above).
 const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
 
-// [ORCAPORT:MA-1] the material names the table dialog offers: the project's filament types (a plate's
-// own list is empty until it is sliced, so it cannot be the source) plus any material that already has
-// a row, deduplicated. That way a row saved earlier stays editable even if no filament uses it today.
-std::vector<std::string> project_material_types()
+// [ORCAPORT:MA-1] the material names the table offers: the filament profiles this printer can use
+// (system and user - the same source the filament sync and the preset wizard take a material from),
+// plus the project's own filaments and any row already saved. A plate's own list is empty until the
+// plate is sliced, so it cannot be the source.
+std::vector<std::string> available_material_types()
 {
     std::vector<std::string> out;
-    if (wxGetApp().preset_bundle == nullptr || wxGetApp().app_config == nullptr)
+    PresetBundle *bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr || wxGetApp().app_config == nullptr)
         return out;
 
-    const ConfigOptionStrings *types = wxGetApp().preset_bundle->full_config().option<ConfigOptionStrings>("filament_type");
     auto append = [&out](const std::string &raw) {
         const std::string name = OrcaExt::normalize_material(raw);
         if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
             out.push_back(name);
     };
-    if (types != nullptr)
+
+    for (const Preset &preset : bundle->filaments.get_presets())
+        if (preset.is_compatible && preset.is_visible)
+            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
+                append(type->values.front());
+
+    // Visibility depends on the "show incompatible" preference, so a strict filter could come back
+    // empty; every preset then still has a type worth offering.
+    if (out.empty())
+        for (const Preset &preset : bundle->filaments.get_presets())
+            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
+                append(type->values.front());
+
+    if (const auto *types = bundle->full_config().option<ConfigOptionStrings>("filament_type"))
         for (const std::string &type : types->values)
             append(type);
     for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
         append(name);
+
+    std::sort(out.begin(), out.end());
     return out;
 }
 
@@ -628,7 +644,7 @@ void PrintHostSendDialog::reset_to_automation()
 // [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
 void PrintHostSendDialog::open_material_automation()
 {
-    MaterialAutomationDialog dlg(this, project_material_types(), load_material_table(*wxGetApp().app_config),
+    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config),
                                  [this]() { refresh_material_automation_row(); });
     dlg.ShowModal();
 }
@@ -638,7 +654,7 @@ void PrintHostSendDialog::refresh_material_automation_row()
     if (m_material_hint == nullptr)
         return;
 
-    const std::vector<std::string> materials = project_material_types();
+    const std::vector<std::string> materials = available_material_types();
     const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
     wxString                      text;
     if (materials.empty()) {
@@ -646,7 +662,7 @@ void PrintHostSendDialog::refresh_material_automation_row()
     } else {
         for (const std::string &material : materials) {
             if (! text.empty())
-                text += " · ";
+                text += L" \u00B7 ";
             text += from_u8(material);
             if (OrcaExt::find_material(table, material) == nullptr)
                 text += _L(" (none)");
@@ -944,7 +960,7 @@ void PrintHostSendDialog::init()
         auto *slice     = new Button(this, _L("Apply and reslice"));
         slice->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
         slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
-        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_APPLY); });
+        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(RESLICE_RETURN_CODE); });
         slice_row->Add(slice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
         content_sizer->Add(slice_row);
         content_sizer->AddSpacer(VERT_SPACING);

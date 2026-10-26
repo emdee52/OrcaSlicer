@@ -3818,7 +3818,7 @@ void PartPlate::generate_material_badge_texture()
 	wxString  label;
 	auto      append = [&label](const wxString &text) {
         if (! label.empty())
-            label += " · ";
+            label += L" \u00B7 ";
         label += text;
 	};
 	if (mask & int(OrcaExt::MaterialRecipe::FreeBridging))

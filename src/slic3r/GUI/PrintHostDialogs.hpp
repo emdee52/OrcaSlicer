@@ -39,6 +39,10 @@ namespace GUI {
 class PrintHostSendDialog : public GUI::MsgDialog
 {
 public:
+    // [ORCAPORT:MA-1] return code of the dialog's "Apply and reslice" button. Deliberately not
+    // wxID_APPLY: the "switch to device tab" checkbox already uses that as its control id.
+    static constexpr int RESLICE_RETURN_CODE = wxID_HIGHEST + 71;
+
     PrintHostSendDialog(const boost::filesystem::path &path, PrintHostPostUploadActions post_actions, const wxArrayString& groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab);
     virtual ~PrintHostSendDialog() {}
     boost::filesystem::path filename() const;
