@@ -113,24 +113,26 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 // (radio-box semantics with a clear, like the bed-temperature offsets above).
 const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
 
-// [ORCAPORT:MA-1] the material names on the current plate, in filament order, deduplicated: the rows
-// the material dialog shows and the table a plate resolves against.
-std::vector<std::string> plate_material_types()
+// [ORCAPORT:MA-1] the material names the table dialog offers: the project's filament types (a plate's
+// own list is empty until it is sliced, so it cannot be the source) plus any material that already has
+// a row, deduplicated. That way a row saved earlier stays editable even if no filament uses it today.
+std::vector<std::string> project_material_types()
 {
     std::vector<std::string> out;
-    if (wxGetApp().preset_bundle == nullptr || wxGetApp().plater() == nullptr)
+    if (wxGetApp().preset_bundle == nullptr || wxGetApp().app_config == nullptr)
         return out;
-    PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+
     const ConfigOptionStrings *types = wxGetApp().preset_bundle->full_config().option<ConfigOptionStrings>("filament_type");
-    if (plate == nullptr || types == nullptr)
-        return out;
-    for (int filament_id : OrcaExt::to_zero_based_filaments(plate->get_extruders())) {
-        if (filament_id < 0 || filament_id >= int(types->values.size()))
-            continue;
-        const std::string name = OrcaExt::normalize_material(types->values[filament_id]);
+    auto append = [&out](const std::string &raw) {
+        const std::string name = OrcaExt::normalize_material(raw);
         if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
             out.push_back(name);
-    }
+    };
+    if (types != nullptr)
+        for (const std::string &type : types->values)
+            append(type);
+    for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
+        append(name);
     return out;
 }
 
@@ -626,7 +628,7 @@ void PrintHostSendDialog::reset_to_automation()
 // [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
 void PrintHostSendDialog::open_material_automation()
 {
-    MaterialAutomationDialog dlg(this, plate_material_types(), load_material_table(*wxGetApp().app_config),
+    MaterialAutomationDialog dlg(this, project_material_types(), load_material_table(*wxGetApp().app_config),
                                  [this]() { refresh_material_automation_row(); });
     dlg.ShowModal();
 }
@@ -636,11 +638,11 @@ void PrintHostSendDialog::refresh_material_automation_row()
     if (m_material_hint == nullptr)
         return;
 
-    const std::vector<std::string> materials = plate_material_types();
+    const std::vector<std::string> materials = project_material_types();
     const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
     wxString                      text;
     if (materials.empty()) {
-        text = _L("No material rows on this plate.");
+        text = _L("No materials: add a filament to the project first.");
     } else {
         for (const std::string &material : materials) {
             if (! text.empty())
@@ -936,6 +938,15 @@ void PrintHostSendDialog::init()
         actions->Add(m_material_hint, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 
         content_sizer->Add(actions);
+        // [ORCAPORT:MA-1] apply everything the dialog holds and slice without uploading, so the
+        // G-code can be inspected in the preview or exported from the plate instead of being sent.
+        auto *slice_row = new wxBoxSizer(wxHORIZONTAL);
+        auto *slice     = new Button(this, _L("Apply and reslice"));
+        slice->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
+        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_APPLY); });
+        slice_row->Add(slice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(slice_row);
         content_sizer->AddSpacer(VERT_SPACING);
         refresh_material_automation_row();
     }

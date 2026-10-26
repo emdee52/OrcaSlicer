@@ -79,8 +79,13 @@ are what the slicer reads, and without the branch an unknown print key would fal
   plate and the values are resolved; `export_gcode` then re-slices or re-exports as needed.
 - **Plate Settings** ("Customize current plate"): the same three checkboxes, so a toolpath recipe can
   be turned on, sliced and previewed before sending.
-- **Table dialog**: one column per material on the plate, one row per field, empty = not set. Validates
-  and applies without closing, so a group of values can be entered in one go.
+- **Table dialog**: a **material selector** at the top (the project's filament types plus any material
+  that already has a row - a plate's own list is empty until it is sliced, so it cannot be the source)
+  and the eight fields for that one material. Switching material stores the current one first, so
+  nothing typed is lost; empty = not set. Validates and applies without closing.
+- **Apply and reslice** in the send dialog: writes everything the dialog holds (bed offset, first-layer
+  flow, material recipes), slices and closes without uploading, so the G-code can be read in the
+  preview or exported from the plate instead of being printed.
 - **Bed badge**: the plate name texture gains a second texture to its right reading
   `Free bridging · Quality Top · Outer Speed` for the recipes that are on (same `generate_from_text_string`
   path as BT-1's bed-temperature readout). Nothing is drawn when no recipe is on.
