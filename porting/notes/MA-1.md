@@ -101,6 +101,13 @@ are what the slicer reads, and without the branch an unknown print key would fal
     `filament_max_volumetric_speed` (2 mm3/s in the defaults) and a speed assertion measures the cap
     rather than the recipe.
 - Suites: libslic3r **1582/1582**, fff_print **462/462**.
+- Runtime (MCP, `20mmbox-LF.stl` on the user's Kingroon PETG profile, project-level `apply_config` on
+  the two keys, the plate path exercised by the user test): the table's `ts=33` emits `G1 F1980` in
+  `;TYPE:Top surface` (profile: `F12000`), `tw=120%` widens the top surface from `WIDTH:0.423804` to
+  `WIDTH:0.485237`, and `os=44` emits `F2640` once the printer profile's **resonance avoidance** is
+  off - with it on, the writer floors that band at `min_resonance_avoidance_speed` (40 mm/s), which
+  hits any speed in that range, profile values included. Worth remembering when a test value seems
+  ignored: 100 mm/s went through untouched.
 - Runtime: not yet checked in the app - the modal dialogs and the bed badge cannot be driven over MCP;
   the user's test covers the rows, the table dialog and the badge.
 
