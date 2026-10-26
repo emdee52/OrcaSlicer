@@ -1,80 +1,3 @@
-From efbae45b4009bad6c5eb8de8c73ce7645ea962b9 Mon Sep 17 00:00:00 2001
-From: emdee52 <emdee7101@gmail.com>
-Date: Mon, 26 Oct 2026 15:07:04 -0600
-Subject: [PATCH] port(MA-1): a local per-material table for bridge,
- top-surface and speed recipes
-
-Original work, no Neotko/preFlight source (design in porting/notes/MA-1.md).
-
-The table is keyed by filament_type and saved on this computer (AppConfig
-[app] orca_ext_material_automation), so a material can carry its own bridge and
-top-surface numbers instead of a separate process profile. A plate turns on Free
-bridging (external bridge density, bridge flow ratio, bridge speed), Quality Top
-(top surface flow, line width, speed) and Outer Speed (outer wall speed); the
-first-layer bottom-surface reduction has no toggle and applies as soon as a
-material sets it.
-
-The plate owns a recipe mask and the RESOLVED copy of the table in its own config
-(material_automation_recipes / material_automation / material_automation_gcode),
-which rides the 3mf plate data, so a project slices the same on a machine whose
-local table differs. Resolution runs in BackgroundSlicingProcess::apply before the
-plate config is merged: a table edit, a filament swap, a project load and a plate
-switch all converge there, and the write is skipped when unchanged.
-
-Invalidation follows what the value feeds: the toolpath key maps to posPerimeters
-and posSupportMaterial (perimeters/infill/supports re-run, meshes do not), the E/F
-key is in steps_gcode (export only), and the mask key has an explicit no-op branch
-because the two derived keys travel with it. GCode::_extrude replaces the role
-value for erTopSolidInfill flow/speed, erExternalPerimeter speed and
-erBridgeInfill speed only (overhang walls keep the profile bridge speed); the
-first-layer reduction multiplies BF-1's plate delta. PrintRegion::flow,
-LayerRegion::bridging_flow and the external-bridge density in Fill resolve the
-toolpath half per region filament. Print caches the parsed tables per filament
-(refresh at apply/process/export_gcode) so the hot flow path is one index.
-
-UI: three toggles plus a table dialog in the send dialog and in Plate Settings, a
-band badge to the right of the plate name, and a manual tar.
-
-Off at defaults: an empty table leaves every profile value in place (pinned by an
-fff_print case that restores the baseline E/F). libslic3r 1582/1582, fff_print
-462/462, build clean.
----
- localization/i18n/list.txt                    |   1 +
- src/libslic3r/Fill/Fill.cpp                   |   9 +-
- src/libslic3r/GCode.cpp                       |  29 +-
- src/libslic3r/LayerRegion.cpp                 |   6 +-
- src/libslic3r/OrcaExt/MaterialAutomation.hpp  | 295 ++++++++++++++++++
- src/libslic3r/Print.cpp                       |  55 ++++
- src/libslic3r/Print.hpp                       |  18 ++
- src/libslic3r/PrintApply.cpp                  |   3 +
- src/libslic3r/PrintConfig.cpp                 |  27 ++
- src/libslic3r/PrintConfig.hpp                 |   4 +
- src/libslic3r/PrintRegion.cpp                 |   8 +-
- src/slic3r/CMakeLists.txt                     |   1 +
- src/slic3r/GUI/BackgroundSlicingProcess.cpp   |   3 +
- src/slic3r/GUI/MaterialAutomationDialog.cpp   | 260 +++++++++++++++
- src/slic3r/GUI/MaterialAutomationDialog.hpp   |  64 ++++
- src/slic3r/GUI/MaterialAutomationStore.hpp    |  30 ++
- src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp  |   5 +
- src/slic3r/GUI/PartPlate.cpp                  | 129 ++++++++
- src/slic3r/GUI/PartPlate.hpp                  |  18 ++
- src/slic3r/GUI/PlateSettingsDialog.cpp        |  46 +++
- src/slic3r/GUI/PlateSettingsDialog.hpp        |   8 +
- src/slic3r/GUI/Plater.cpp                     |  18 ++
- src/slic3r/GUI/PrintHostDialogs.cpp           | 115 +++++++
- src/slic3r/GUI/PrintHostDialogs.hpp           |  11 +
- tests/fff_print/CMakeLists.txt                |   1 +
- .../test_orca_material_automation.cpp         | 203 ++++++++++++
- tests/libslic3r/CMakeLists.txt                |   1 +
- .../test_orca_material_automation.cpp         | 170 ++++++++++
- 28 files changed, 1530 insertions(+), 8 deletions(-)
- create mode 100644 src/libslic3r/OrcaExt/MaterialAutomation.hpp
- create mode 100644 src/slic3r/GUI/MaterialAutomationDialog.cpp
- create mode 100644 src/slic3r/GUI/MaterialAutomationDialog.hpp
- create mode 100644 src/slic3r/GUI/MaterialAutomationStore.hpp
- create mode 100644 tests/fff_print/test_orca_material_automation.cpp
- create mode 100644 tests/libslic3r/test_orca_material_automation.cpp
-
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index f0760bc7f8..821c119afc 100644
 --- a/localization/i18n/list.txt
@@ -774,10 +697,10 @@ index b6f95e30c0..27ddc0c982 100644
      new_config.apply(*m_current_plate->config());
 diff --git a/src/slic3r/GUI/MaterialAutomationDialog.cpp b/src/slic3r/GUI/MaterialAutomationDialog.cpp
 new file mode 100644
-index 0000000000..6883e271f3
+index 0000000000..66efaab680
 --- /dev/null
 +++ b/src/slic3r/GUI/MaterialAutomationDialog.cpp
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,271 @@
 +#include "MaterialAutomationDialog.hpp"
 +
 +#include <wx/sizer.h>
@@ -787,6 +710,7 @@ index 0000000000..6883e271f3
 +#include "I18N.hpp"
 +#include "MaterialAutomationStore.hpp"
 +#include "Widgets/Button.hpp"
++#include "Widgets/ComboBox.hpp"
 +#include "Widgets/Label.hpp"
 +#include "Widgets/StateColor.hpp"
 +#include "Widgets/TextInput.hpp"
@@ -797,13 +721,15 @@ index 0000000000..6883e271f3
 +
 +namespace {
 +
-+constexpr int kValueWidth = 78;
++constexpr int kValueWidth = 110;
 +
 +} // namespace
 +
 +MaterialAutomationDialog::MaterialAutomationDialog(wxWindow *parent, std::vector<std::string> materials,
 +                                                   const OrcaExt::MaterialTable &table, std::function<void()> on_applied)
 +    : DPIDialog(parent, wxID_ANY, _L("Material automation"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
++    , m_materials(std::move(materials))
++    , m_table(table)
 +    , m_on_applied(std::move(on_applied))
 +{
 +    SetFont(wxGetApp().normal_font());
@@ -815,93 +741,220 @@ index 0000000000..6883e271f3
 +        _L("Saved on this computer only - no project, profile or downloaded 3mf changes it. The plate keeps a copy of the values it uses, so a project slices the same on another machine. An empty field leaves the profile's value alone."));
 +    explain->SetFont(::Label::Body_12);
 +    explain->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-+    explain->Wrap(FromDIP(560));
++    explain->Wrap(FromDIP(520));
 +    main_sizer->Add(explain, 0, wxALL | wxEXPAND, FromDIP(12));
 +
-+    if (materials.empty()) {
-+        auto *empty = new wxStaticText(this, wxID_ANY, _L("No material rows: this plate has no filaments assigned yet."));
++    if (m_materials.empty()) {
++        auto *empty = new wxStaticText(this, wxID_ANY,
++            _L("No materials in this project and none saved yet. Add a filament in the project, then reopen this dialog."));
 +        empty->SetFont(::Label::Body_13);
++        empty->Wrap(FromDIP(520));
 +        main_sizer->Add(empty, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
++    } else {
++        auto *material_row     = new wxBoxSizer(wxHORIZONTAL);
++        auto *material_caption = new wxStaticText(this, wxID_ANY, _L("Material"));
++        material_caption->SetFont(::Label::Body_13);
++        material_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        material_row->Add(material_caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        m_material_choice = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(220), -1), 0, NULL, wxCB_READONLY);
++        for (const std::string &material : m_materials)
++            m_material_choice->Append(from_u8(material));
++        m_material_choice->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent &) {
++            const int selected = m_material_choice->GetSelection();
++            if (selected < 0 || size_t(selected) == m_current)
++                return;
++            // Keep what was typed: a switch first stores this material, and only then loads the next.
++            if (! store_current(true)) {
++                m_material_choice->SetSelection(int(m_current));
++                return;
++            }
++            select_material(size_t(selected));
++        });
++        material_row->Add(m_material_choice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        main_sizer->Add(material_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
 +    }
 +
-+    auto *grid = new wxFlexGridSizer(int(1 + materials.size()), FromDIP(6), FromDIP(6));
-+    grid->AddGrowableCol(0, 0);
-+    grid->Add(new wxStaticText(this, wxID_ANY, wxEmptyString), 0, wxALIGN_CENTER_VERTICAL);
-+    for (const std::string &material : materials) {
-+        auto *header = new wxStaticText(this, wxID_ANY, from_u8(material));
-+        header->SetFont(::Label::Body_13);
-+        grid->Add(header, 0, wxALIGN_CENTER | wxALIGN_CENTER_VERTICAL);
-+    }
-+
-+    auto make_input = [this](const wxString &value) {
-+        auto *input = new TextInput(this, value, "", "", wxDefaultPosition, wxSize(FromDIP(kValueWidth), -1), wxTE_PROCESS_ENTER);
-+        return input;
-+    };
-+
-+    m_columns.reserve(materials.size());
-+    for (const std::string &material : materials) {
-+        Column column;
-+        column.material = material;
-+        const OrcaExt::MaterialValues *values = OrcaExt::find_material(table, material);
-+
-+        column.bridge_density = make_input(values != nullptr && values->has_bridge_density ? wxString::FromDouble(values->bridge_density, 2) : wxString());
-+        column.bridge_flow = make_input(values != nullptr && values->has_bridge_flow ? wxString::FromDouble(values->bridge_flow, 3) : wxString());
-+        column.bridge_speed = make_input(values != nullptr && values->has_bridge_speed ? wxString::FromDouble(values->bridge_speed) : wxString());
-+        column.top_flow = make_input(values != nullptr && values->has_top_flow ? wxString::FromDouble(values->top_flow, 3) : wxString());
-+        column.top_width = make_input(values != nullptr && values->has_top_width
-+            ? wxString::FromDouble(values->top_width) + (values->top_width_percent ? "%" : "")
-+            : wxString());
-+        column.top_speed = make_input(values != nullptr && values->has_top_speed ? wxString::FromDouble(values->top_speed) : wxString());
-+        column.outer_speed = make_input(values != nullptr && values->has_outer_speed ? wxString::FromDouble(values->outer_speed) : wxString());
-+        column.first_layer_flow = make_input(values != nullptr && values->has_first_layer_flow
-+            ? wxString::FromDouble(values->first_layer_flow, 2)
-+            : wxString());
-+        m_columns.push_back(column);
-+    }
-+
-+    add_row(grid, _L("Bridge density (%)"), &Column::bridge_density);
-+    add_row(grid, _L("Bridge flow ratio"), &Column::bridge_flow);
-+    add_row(grid, _L("Bridge speed (mm/s)"), &Column::bridge_speed);
-+    add_row(grid, _L("Top surface flow ratio"), &Column::top_flow);
-+    add_row(grid, _L("Top surface line width (mm or %)"), &Column::top_width);
-+    add_row(grid, _L("Top surface speed (mm/s)"), &Column::top_speed);
-+    add_row(grid, _L("Outer wall speed (mm/s)"), &Column::outer_speed);
-+    add_row(grid, _L("First layer flow (%)"), &Column::first_layer_flow);
-+
-+    main_sizer->Add(grid, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
++    auto *grid = new wxFlexGridSizer(2, FromDIP(6), FromDIP(6));
++    grid->AddGrowableCol(1, 0);
++    add_field(grid, _L("Bridge density (%)"), m_bridge_density);
++    add_field(grid, _L("Bridge flow ratio"), m_bridge_flow);
++    add_field(grid, _L("Bridge speed (mm/s)"), m_bridge_speed);
++    add_field(grid, _L("Top surface flow ratio"), m_top_flow);
++    add_field(grid, _L("Top surface line width (mm or %)"), m_top_width);
++    add_field(grid, _L("Top surface speed (mm/s)"), m_top_speed);
++    add_field(grid, _L("Outer wall speed (mm/s)"), m_outer_speed);
++    add_field(grid, _L("First layer flow (%)"), m_first_layer_flow);
++    main_sizer->Add(grid, 0, wxALL, FromDIP(12));
 +
 +    m_hint = new wxStaticText(this, wxID_ANY, wxEmptyString);
 +    m_hint->SetFont(::Label::Body_12);
 +    m_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-+    m_hint->Wrap(FromDIP(560));
++    m_hint->Wrap(FromDIP(520));
 +    main_sizer->Add(m_hint, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
 +
-+    auto *buttons = new wxBoxSizer(wxHORIZONTAL);
++    auto *buttons     = new wxBoxSizer(wxHORIZONTAL);
 +    auto *apply_button = new Button(this, _L("Apply"));
 +    apply_button->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
 +    apply_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { apply(); });
 +    buttons->Add(apply_button, 0, wxALL, FromDIP(2));
 +
-+    auto *close = new Button(this, _L("Close"));
-+
-+    close->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
-+    close->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CLOSE); });
-+    buttons->Add(close, 0, wxALL, FromDIP(2));
++    auto *close_button = new Button(this, _L("Close"));
++    close_button->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++    close_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CLOSE); });
++    buttons->Add(close_button, 0, wxALL, FromDIP(2));
 +    main_sizer->Add(buttons, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
 +
 +    SetSizerAndFit(main_sizer);
 +    CenterOnParent();
 +    wxGetApp().UpdateDlgDarkUI(this);
++
++    if (! m_materials.empty()) {
++        m_material_choice->SetSelection(0);
++        select_material(0);
++    }
 +}
 +
-+void MaterialAutomationDialog::add_row(wxSizer *grid, const wxString &label, TextInput *Column::*member)
++void MaterialAutomationDialog::add_field(wxSizer *grid, const wxString &label, TextInput *&input)
 +{
 +    auto *caption = new wxStaticText(this, wxID_ANY, label);
 +    caption->SetFont(::Label::Body_13);
 +    caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
 +    grid->Add(caption, 0, wxALIGN_CENTER_VERTICAL);
-+    for (Column &column : m_columns)
-+        grid->Add(column.*member, 0, wxALIGN_CENTER_VERTICAL);
++
++    input = new TextInput(this, wxEmptyString, "", "", wxDefaultPosition, wxSize(FromDIP(kValueWidth), -1), wxTE_PROCESS_ENTER);
++    grid->Add(input, 0, wxALIGN_CENTER_VERTICAL);
++}
++
++void MaterialAutomationDialog::select_material(size_t index)
++{
++    if (index >= m_materials.size())
++        return;
++    m_current = index;
++    m_hint->SetLabel(wxEmptyString);
++    load_material(index);
++    Layout();
++}
++
++void MaterialAutomationDialog::load_material(size_t index)
++{
++    const OrcaExt::MaterialValues *values = OrcaExt::find_material(m_table, m_materials[index]);
++
++    auto set = [](TextInput *input, const wxString &text) { input->GetTextCtrl()->ChangeValue(text); };
++    set(m_bridge_density, values != nullptr && values->has_bridge_density ? wxString::FromDouble(values->bridge_density, 2) : wxString());
++    set(m_bridge_flow, values != nullptr && values->has_bridge_flow ? wxString::FromDouble(values->bridge_flow, 3) : wxString());
++    set(m_bridge_speed, values != nullptr && values->has_bridge_speed ? wxString::FromDouble(values->bridge_speed) : wxString());
++    set(m_top_flow, values != nullptr && values->has_top_flow ? wxString::FromDouble(values->top_flow, 3) : wxString());
++    set(m_top_width, values != nullptr && values->has_top_width
++                         ? wxString::FromDouble(values->top_width) + (values->top_width_percent ? "%" : "")
++                         : wxString());
++    set(m_top_speed, values != nullptr && values->has_top_speed ? wxString::FromDouble(values->top_speed) : wxString());
++    set(m_outer_speed, values != nullptr && values->has_outer_speed ? wxString::FromDouble(values->outer_speed) : wxString());
++    set(m_first_layer_flow,
++        values != nullptr && values->has_first_layer_flow ? wxString::FromDouble(values->first_layer_flow, 2) : wxString());
++}
++
++bool MaterialAutomationDialog::store_current(bool quiet)
++{
++    if (m_materials.empty())
++        return true;
++
++    auto read = [](TextInput *input, double &value) {
++        const wxString text = input->GetTextCtrl()->GetValue().Trim().Trim(false);
++        if (text.empty())
++            return false;
++        double parsed = 0.;
++        if (! text.ToCDouble(&parsed))
++            return false;
++        value = parsed;
++        return true;
++    };
++    auto fail = [this, quiet](const wxString &message) {
++        if (! quiet)
++            set_hint(message);
++        return false;
++    };
++
++    OrcaExt::MaterialValues values;
++    double                   number = 0.;
++
++    if (read(m_bridge_density, number)) {
++        if (number < OrcaExt::kBridgeDensityMin || number > OrcaExt::kBridgeDensityMax)
++            return fail(_L("Bridge density must be between 10 and 125 %."));
++        values.has_bridge_density = true;
++        values.bridge_density     = number;
++    }
++    if (read(m_bridge_flow, number)) {
++        if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax)
++            return fail(_L("Bridge flow ratio must be between 0 and 2."));
++        values.has_bridge_flow = true;
++        values.bridge_flow     = number;
++    }
++    if (read(m_bridge_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Bridge speed must be between 1 and 1000 mm/s."));
++        values.has_bridge_speed = true;
++        values.bridge_speed     = number;
++    }
++    if (read(m_top_flow, number)) {
++        if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax)
++            return fail(_L("Top surface flow ratio must be between 0 and 2."));
++        values.has_top_flow = true;
++        values.top_flow     = number;
++    }
++    {
++        wxString text = m_top_width->GetTextCtrl()->GetValue();
++        text.Trim().Trim(false);
++        if (! text.empty()) {
++            const bool percent = text.EndsWith("%");
++            if (percent)
++                text.RemoveLast();
++            double width = 0.;
++            if (! text.ToCDouble(&width))
++                return fail(_L("Top surface line width must be a number in mm, or a percentage of the nozzle diameter."));
++            if (width <= 0. || width > (percent ? OrcaExt::kLineWidthPercentMax : OrcaExt::kLineWidthMmMax))
++                return fail(_L("Top surface line width must be a positive value in mm or a percentage of the nozzle diameter."));
++            values.has_top_width     = true;
++            values.top_width         = width;
++            values.top_width_percent = percent;
++        }
++    }
++    if (read(m_top_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Top surface speed must be between 1 and 1000 mm/s."));
++        values.has_top_speed = true;
++        values.top_speed     = number;
++    }
++    if (read(m_outer_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Outer wall speed must be between 1 and 1000 mm/s."));
++        values.has_outer_speed = true;
++        values.outer_speed     = number;
++    }
++    if (read(m_first_layer_flow, number)) {
++        if (number > OrcaExt::kFirstLayerFlowDeltaMax || number < OrcaExt::kFirstLayerFlowDeltaMin)
++            return fail(_L("First layer flow must be a reduction between -50 and 0 %."));
++        values.has_first_layer_flow = true;
++        values.first_layer_flow     = number;
++    }
++
++    const std::string key = OrcaExt::normalize_material(m_materials[m_current]);
++    if (values.empty())
++        m_table.erase(key);
++    else
++        m_table[key] = values;
++
++    save_material_table(*wxGetApp().app_config, m_table);
++    if (m_on_applied)
++        m_on_applied();
++    return true;
++}
++
++void MaterialAutomationDialog::apply()
++{
++    if (! store_current(false))
++        return;
++    set_hint(_L("Saved."));
 +}
 +
 +void MaterialAutomationDialog::set_hint(const wxString &text)
@@ -910,128 +963,9 @@ index 0000000000..6883e271f3
 +        m_hint->SetLabel(text);
 +}
 +
-+bool MaterialAutomationDialog::read_number(const TextInput *input, double &value) const
-+{
-+    const wxString text = input->GetTextCtrl()->GetValue().Trim().Trim(false);
-+    if (text.empty())
-+        return false;
-+    double parsed = 0.;
-+    if (! text.ToCDouble(&parsed))
-+        return false;
-+    value = parsed;
-+    return true;
-+}
-+
-+bool MaterialAutomationDialog::read_line_width(const TextInput *input, double &value, bool &percent) const
-+{
-+    wxString text = input->GetTextCtrl()->GetValue();
-+    text.Trim().Trim(false);
-+    if (text.empty())
-+        return false;
-+    percent = text.EndsWith("%");
-+    if (percent)
-+        text.RemoveLast();
-+    double parsed = 0.;
-+    if (! text.ToCDouble(&parsed))
-+        return false;
-+    value   = parsed;
-+    return true;
-+}
-+
-+void MaterialAutomationDialog::apply()
-+{
-+    OrcaExt::MaterialTable table = load_material_table(*wxGetApp().app_config);
-+
-+    for (Column &column : m_columns) {
-+        OrcaExt::MaterialValues values;
-+        double                   number = 0.;
-+
-+        if (read_number(column.bridge_density, number)) {
-+            if (number < OrcaExt::kBridgeDensityMin || number > OrcaExt::kBridgeDensityMax) {
-+                set_hint(_L("Bridge density must be between 10 and 125 %."));
-+                return;
-+            }
-+            values.has_bridge_density = true;
-+            values.bridge_density     = number;
-+        }
-+        if (read_number(column.bridge_flow, number)) {
-+            if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax) {
-+                set_hint(_L("Bridge flow ratio must be between 0 and 2."));
-+                return;
-+            }
-+            values.has_bridge_flow = true;
-+            values.bridge_flow     = number;
-+        }
-+        if (read_number(column.bridge_speed, number)) {
-+            if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax) {
-+                set_hint(_L("Bridge speed must be between 1 and 1000 mm/s."));
-+                return;
-+            }
-+            values.has_bridge_speed = true;
-+            values.bridge_speed     = number;
-+        }
-+        if (read_number(column.top_flow, number)) {
-+            if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax) {
-+                set_hint(_L("Top surface flow ratio must be between 0 and 2."));
-+                return;
-+            }
-+            values.has_top_flow = true;
-+            values.top_flow     = number;
-+        }
-+        {
-+            double width = 0.;
-+            bool   percent = false;
-+            if (read_line_width(column.top_width, width, percent)) {
-+                if (width <= 0. || width > (percent ? OrcaExt::kLineWidthPercentMax : OrcaExt::kLineWidthMmMax)) {
-+                    set_hint(_L("Top surface line width must be a positive value in mm or a percentage of the nozzle diameter."));
-+                    return;
-+                }
-+                values.has_top_width     = true;
-+                values.top_width         = width;
-+                values.top_width_percent = percent;
-+            }
-+        }
-+        if (read_number(column.top_speed, number)) {
-+            if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax) {
-+                set_hint(_L("Top surface speed must be between 1 and 1000 mm/s."));
-+                return;
-+            }
-+            values.has_top_speed = true;
-+            values.top_speed     = number;
-+        }
-+        if (read_number(column.outer_speed, number)) {
-+            if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax) {
-+                set_hint(_L("Outer wall speed must be between 1 and 1000 mm/s."));
-+                return;
-+            }
-+            values.has_outer_speed = true;
-+            values.outer_speed     = number;
-+        }
-+        if (read_number(column.first_layer_flow, number)) {
-+            if (number > OrcaExt::kFirstLayerFlowDeltaMax || number < OrcaExt::kFirstLayerFlowDeltaMin) {
-+                set_hint(_L("First layer flow must be a reduction between -50 and 0 %."));
-+                return;
-+            }
-+            values.has_first_layer_flow = true;
-+            values.first_layer_flow     = number;
-+        }
-+
-+        const std::string key = OrcaExt::normalize_material(column.material);
-+        if (values.empty())
-+            table.erase(key);
-+        else
-+            table[key] = values;
-+    }
-+
-+    save_material_table(*wxGetApp().app_config, table);
-+    set_hint(_L("Saved."));
-+    if (m_on_applied)
-+        m_on_applied();
-+}
-+
 +void MaterialAutomationDialog::on_dpi_changed(const wxRect &suggested_rect)
 +{
-+    this->SetSize(wxSize(FromDIP(640), -1));
++    this->SetSize(wxSize(FromDIP(620), -1));
 +    Layout();
 +    Fit();
 +}
@@ -1040,16 +974,18 @@ index 0000000000..6883e271f3
 +} // namespace Slic3r
 diff --git a/src/slic3r/GUI/MaterialAutomationDialog.hpp b/src/slic3r/GUI/MaterialAutomationDialog.hpp
 new file mode 100644
-index 0000000000..b444d52f7c
+index 0000000000..6271cce916
 --- /dev/null
 +++ b/src/slic3r/GUI/MaterialAutomationDialog.hpp
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,67 @@
 +// [ORCAPORT FILE] MaterialAutomationDialog - edit the local per-material table
 +// Source: original (design in porting/notes/MA-1.md)
 +//
-+// One row per material loaded on the plate, one column per value. An empty field means "leave the
-+// profile alone", which is what makes an empty table a no-op. The values are saved on this computer
-+// (AppConfig); the plate carries the *resolved* copy, so a project slices the same elsewhere.
++// One material at a time, chosen from the list the project carries: a plate's own filament list is
++// empty until it is sliced, so the selector is the project's filament types plus any material that
++// already has a row. An empty field means "leave the profile alone", which is what makes an empty
++// table a no-op. The values are saved on this computer (AppConfig); the plate carries the *resolved*
++// copy, so a project slices the same elsewhere.
 +#ifndef slic3r_GUI_MaterialAutomationDialog_hpp_
 +#define slic3r_GUI_MaterialAutomationDialog_hpp_
 +
@@ -1063,6 +999,7 @@ index 0000000000..b444d52f7c
 +#include "libslic3r/OrcaExt/MaterialAutomation.hpp"
 +#include "GUI_Utils.hpp"
 +
++class ComboBox;
 +class TextInput;
 +
 +namespace Slic3r {
@@ -1071,8 +1008,8 @@ index 0000000000..b444d52f7c
 +class MaterialAutomationDialog : public DPIDialog
 +{
 +public:
-+    // `materials` is the display order (the plate's filaments, deduplicated). `on_applied` runs after
-+    // every apply so the caller can refresh its rows and the plates without closing the dialog.
++    // `materials` is the selector's list, already ordered and deduplicated. `on_applied` runs after
++    // every save so the caller can refresh its rows without closing the dialog.
 +    MaterialAutomationDialog(wxWindow *parent, std::vector<std::string> materials,
 +                             const OrcaExt::MaterialTable &table, std::function<void()> on_applied);
 +    ~MaterialAutomationDialog() override = default;
@@ -1080,28 +1017,28 @@ index 0000000000..b444d52f7c
 +    void on_dpi_changed(const wxRect &suggested_rect) override;
 +
 +private:
-+    struct Column
-+    {
-+        std::string material;
-+        TextInput  *bridge_density {nullptr};
-+        TextInput  *bridge_flow {nullptr};
-+        TextInput  *bridge_speed {nullptr};
-+        TextInput  *top_flow {nullptr};
-+        TextInput  *top_width {nullptr};
-+        TextInput  *top_speed {nullptr};
-+        TextInput  *outer_speed {nullptr};
-+        TextInput  *first_layer_flow {nullptr};
-+    };
-+
-+    void add_row(wxSizer *grid, const wxString &label, TextInput *Column::*member);
-+    void set_hint(const wxString &text);
-+    bool read_number(const TextInput *input, double &value) const;
-+    bool read_line_width(const TextInput *input, double &value, bool &percent) const;
++    void add_field(wxSizer *grid, const wxString &label, TextInput *&input);
++    void load_material(size_t index);
++    void select_material(size_t index);
++    bool store_current(bool quiet);
 +    void apply();
++    void set_hint(const wxString &text);
 +
-+    std::vector<Column>  m_columns;
-+    wxStaticText        *m_hint {nullptr};
-+    std::function<void()> m_on_applied;
++    TextInput *m_bridge_density {nullptr};
++    TextInput *m_bridge_flow {nullptr};
++    TextInput *m_bridge_speed {nullptr};
++    TextInput *m_top_flow {nullptr};
++    TextInput *m_top_width {nullptr};
++    TextInput *m_top_speed {nullptr};
++    TextInput *m_outer_speed {nullptr};
++    TextInput *m_first_layer_flow {nullptr};
++
++    ComboBox             *m_material_choice {nullptr};
++    wxStaticText         *m_hint {nullptr};
++    std::vector<std::string> m_materials;
++    OrcaExt::MaterialTable   m_table; // working copy, saved on Apply
++    size_t                   m_current {0};
++    std::function<void()>    m_on_applied;
 +};
 +
 +} // namespace GUI
@@ -1490,10 +1427,22 @@ index 1f05b58aeb..23a9fdc76b 100644
      OtherLayersSeqPanel* m_other_layers_seq_panel;
      TextInput *m_ti_plate_name;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index a49c46bf26..bd1d5505e7 100644
+index a49c46bf26..8a574b57d1 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
-@@ -21397,6 +21397,19 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -21357,9 +21357,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+         }
+ 
+         pDlg->init();
+-        if (pDlg->ShowModal() != wxID_OK) {
++        const int dialog_result = pDlg->ShowModal();
++        if (dialog_result != wxID_OK && dialog_result != wxID_APPLY)
+             return;
+-        }
+ 
+         config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
+         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
+@@ -21397,7 +21397,27 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
              else
                  project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
          }
@@ -1511,9 +1460,17 @@ index a49c46bf26..bd1d5505e7 100644
 +            }
 +        }
          // PrintHostUpload upload_data;
++        // [ORCAPORT:MA-1] "Apply and reslice" wrote everything the dialog holds above. Slice and stop
++        // here instead of building an upload, so the G-code can be inspected in the preview or
++        // exported from the plate.
++        if (dialog_result == wxID_APPLY) {
++            this->reslice();
++            return;
++        }
          upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
          upload_job.upload_data.upload_path = pDlg->filename();
-@@ -23371,6 +23384,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+         upload_job.upload_data.post_action = pDlg->post_action();
+@@ -23371,6 +23391,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
      }
  
      dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
@@ -1521,7 +1478,7 @@ index a49c46bf26..bd1d5505e7 100644
  
      dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
          PartPlate* curr_plate = p->partplate_list.get_curr_plate();
-@@ -23410,6 +23424,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+@@ -23410,6 +23431,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
              curr_plate->set_spiral_vase_mode(false, true);
          }
  
@@ -1533,7 +1490,7 @@ index a49c46bf26..bd1d5505e7 100644
          set_plater_dirty(true);
          BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % ps_sel % plate_index;
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 532c8c6869..4f6c539907 100644
+index 532c8c6869..95d1f61aaa 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -88,6 +88,8 @@
@@ -1545,42 +1502,44 @@ index 532c8c6869..4f6c539907 100644
  
  #include "libslic3r/Preset.hpp"
  #include "libslic3r/PresetBundle.hpp"
-@@ -111,6 +113,27 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
+@@ -111,6 +113,29 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
  // (radio-box semantics with a clear, like the bed-temperature offsets above).
  const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
  
-+// [ORCAPORT:MA-1] the material names on the current plate, in filament order, deduplicated: the rows
-+// the material dialog shows and the table a plate resolves against.
-+std::vector<std::string> plate_material_types()
++// [ORCAPORT:MA-1] the material names the table dialog offers: the project's filament types (a plate's
++// own list is empty until it is sliced, so it cannot be the source) plus any material that already has
++// a row, deduplicated. That way a row saved earlier stays editable even if no filament uses it today.
++std::vector<std::string> project_material_types()
 +{
 +    std::vector<std::string> out;
-+    if (wxGetApp().preset_bundle == nullptr || wxGetApp().plater() == nullptr)
++    if (wxGetApp().preset_bundle == nullptr || wxGetApp().app_config == nullptr)
 +        return out;
-+    PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
++
 +    const ConfigOptionStrings *types = wxGetApp().preset_bundle->full_config().option<ConfigOptionStrings>("filament_type");
-+    if (plate == nullptr || types == nullptr)
-+        return out;
-+    for (int filament_id : OrcaExt::to_zero_based_filaments(plate->get_extruders())) {
-+        if (filament_id < 0 || filament_id >= int(types->values.size()))
-+            continue;
-+        const std::string name = OrcaExt::normalize_material(types->values[filament_id]);
++    auto append = [&out](const std::string &raw) {
++        const std::string name = OrcaExt::normalize_material(raw);
 +        if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
 +            out.push_back(name);
-+    }
++    };
++    if (types != nullptr)
++        for (const std::string &type : types->values)
++            append(type);
++    for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
++        append(name);
 +    return out;
 +}
 +
  wxColour contrasting_text_color(const wxColour& background)
  {
      return background.GetLuminance() < 0.60 ? *wxWHITE : wxColour("#303030");
-@@ -600,6 +623,38 @@ void PrintHostSendDialog::reset_to_automation()
+@@ -600,6 +625,38 @@ void PrintHostSendDialog::reset_to_automation()
  }
  // [ORCAPORT:PA-1] END
  
 +// [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
 +void PrintHostSendDialog::open_material_automation()
 +{
-+    MaterialAutomationDialog dlg(this, plate_material_types(), load_material_table(*wxGetApp().app_config),
++    MaterialAutomationDialog dlg(this, project_material_types(), load_material_table(*wxGetApp().app_config),
 +                                 [this]() { refresh_material_automation_row(); });
 +    dlg.ShowModal();
 +}
@@ -1590,11 +1549,11 @@ index 532c8c6869..4f6c539907 100644
 +    if (m_material_hint == nullptr)
 +        return;
 +
-+    const std::vector<std::string> materials = plate_material_types();
++    const std::vector<std::string> materials = project_material_types();
 +    const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
 +    wxString                      text;
 +    if (materials.empty()) {
-+        text = _L("No material rows on this plate.");
++        text = _L("No materials: add a filament to the project first.");
 +    } else {
 +        for (const std::string &material : materials) {
 +            if (! text.empty())
@@ -1612,7 +1571,7 @@ index 532c8c6869..4f6c539907 100644
  void PrintHostSendDialog::init()
  {
      const auto& path = m_path;
-@@ -826,6 +881,66 @@ void PrintHostSendDialog::init()
+@@ -826,6 +883,75 @@ void PrintHostSendDialog::init()
          content_sizer->AddSpacer(VERT_SPACING);
      }
  
@@ -1671,6 +1630,15 @@ index 532c8c6869..4f6c539907 100644
 +        actions->Add(m_material_hint, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 +
 +        content_sizer->Add(actions);
++        // [ORCAPORT:MA-1] apply everything the dialog holds and slice without uploading, so the
++        // G-code can be inspected in the preview or exported from the plate instead of being sent.
++        auto *slice_row = new wxBoxSizer(wxHORIZONTAL);
++        auto *slice     = new Button(this, _L("Apply and reslice"));
++        slice->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++        slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
++        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_APPLY); });
++        slice_row->Add(slice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        content_sizer->Add(slice_row);
 +        content_sizer->AddSpacer(VERT_SPACING);
 +        refresh_material_automation_row();
 +    }
@@ -2117,6 +2085,3 @@ index 0000000000..cc705b8e03
 +    CHECK(OrcaExt::find_material(gcode_none, "PLA")->has_first_layer_flow);
 +    CHECK(! OrcaExt::find_material(gcode_none, "PLA")->has_outer_speed);
 +}
--- 
-2.43.0.windows.1
-
