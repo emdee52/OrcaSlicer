@@ -1098,7 +1098,7 @@ index cd852810f3..f853a399e2 100644
      "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
  };
 diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
-index 64fd312561..c707a12c49 100644
+index 64fd312561..c9570cfce0 100644
 --- a/src/slic3r/GUI/PartPlate.cpp
 +++ b/src/slic3r/GUI/PartPlate.cpp
 @@ -59,6 +59,8 @@
@@ -1195,7 +1195,7 @@ index 64fd312561..c707a12c49 100644
 +	wxString  label;
 +	auto      append = [&label](const wxString &text) {
 +        if (! label.empty())
-+            label += " · ";
++            label += L" \u00B7 ";
 +        label += text;
 +	};
 +	if (mask & int(OrcaExt::MaterialRecipe::FreeBridging))
@@ -1427,22 +1427,24 @@ index 1f05b58aeb..23a9fdc76b 100644
      OtherLayersSeqPanel* m_other_layers_seq_panel;
      TextInput *m_ti_plate_name;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index a49c46bf26..8a574b57d1 100644
+index a49c46bf26..4a7a38a70d 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
-@@ -21357,9 +21357,9 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -21357,11 +21357,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
          }
  
          pDlg->init();
 -        if (pDlg->ShowModal() != wxID_OK) {
 +        const int dialog_result = pDlg->ShowModal();
-+        if (dialog_result != wxID_OK && dialog_result != wxID_APPLY)
++        if (dialog_result != wxID_OK && dialog_result != PrintHostSendDialog::RESLICE_RETURN_CODE)
              return;
 -        }
  
-         config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
+-        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
          // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
-@@ -21397,7 +21397,27 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
+         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
+@@ -21397,7 +21396,29 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
              else
                  project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
          }
@@ -1462,15 +1464,17 @@ index a49c46bf26..8a574b57d1 100644
          // PrintHostUpload upload_data;
 +        // [ORCAPORT:MA-1] "Apply and reslice" wrote everything the dialog holds above. Slice and stop
 +        // here instead of building an upload, so the G-code can be inspected in the preview or
-+        // exported from the plate.
-+        if (dialog_result == wxID_APPLY) {
++        // exported from the plate. The device-tab preference is not written on this path: no upload
++        // happens, so the checkbox has nothing to say.
++        if (dialog_result == PrintHostSendDialog::RESLICE_RETURN_CODE) {
 +            this->reslice();
 +            return;
 +        }
++        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
          upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
          upload_job.upload_data.upload_path = pDlg->filename();
          upload_job.upload_data.post_action = pDlg->post_action();
-@@ -23371,6 +23391,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+@@ -23371,6 +23392,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
      }
  
      dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
@@ -1478,7 +1482,7 @@ index a49c46bf26..8a574b57d1 100644
  
      dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
          PartPlate* curr_plate = p->partplate_list.get_curr_plate();
-@@ -23410,6 +23431,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+@@ -23410,6 +23432,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
              curr_plate->set_spiral_vase_mode(false, true);
          }
  
@@ -1490,7 +1494,7 @@ index a49c46bf26..8a574b57d1 100644
          set_plater_dirty(true);
          BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % ps_sel % plate_index;
 diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
-index 532c8c6869..95d1f61aaa 100644
+index 532c8c6869..2575e84638 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.cpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.cpp
 @@ -88,6 +88,8 @@
@@ -1502,44 +1506,60 @@ index 532c8c6869..95d1f61aaa 100644
  
  #include "libslic3r/Preset.hpp"
  #include "libslic3r/PresetBundle.hpp"
-@@ -111,6 +113,29 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
+@@ -111,6 +113,45 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
  // (radio-box semantics with a clear, like the bed-temperature offsets above).
  const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
  
-+// [ORCAPORT:MA-1] the material names the table dialog offers: the project's filament types (a plate's
-+// own list is empty until it is sliced, so it cannot be the source) plus any material that already has
-+// a row, deduplicated. That way a row saved earlier stays editable even if no filament uses it today.
-+std::vector<std::string> project_material_types()
++// [ORCAPORT:MA-1] the material names the table offers: the filament profiles this printer can use
++// (system and user - the same source the filament sync and the preset wizard take a material from),
++// plus the project's own filaments and any row already saved. A plate's own list is empty until the
++// plate is sliced, so it cannot be the source.
++std::vector<std::string> available_material_types()
 +{
 +    std::vector<std::string> out;
-+    if (wxGetApp().preset_bundle == nullptr || wxGetApp().app_config == nullptr)
++    PresetBundle *bundle = wxGetApp().preset_bundle;
++    if (bundle == nullptr || wxGetApp().app_config == nullptr)
 +        return out;
 +
-+    const ConfigOptionStrings *types = wxGetApp().preset_bundle->full_config().option<ConfigOptionStrings>("filament_type");
 +    auto append = [&out](const std::string &raw) {
 +        const std::string name = OrcaExt::normalize_material(raw);
 +        if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
 +            out.push_back(name);
 +    };
-+    if (types != nullptr)
++
++    for (const Preset &preset : bundle->filaments.get_presets())
++        if (preset.is_compatible && preset.is_visible)
++            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
++                append(type->values.front());
++
++    // Visibility depends on the "show incompatible" preference, so a strict filter could come back
++    // empty; every preset then still has a type worth offering.
++    if (out.empty())
++        for (const Preset &preset : bundle->filaments.get_presets())
++            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
++                append(type->values.front());
++
++    if (const auto *types = bundle->full_config().option<ConfigOptionStrings>("filament_type"))
 +        for (const std::string &type : types->values)
 +            append(type);
 +    for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
 +        append(name);
++
++    std::sort(out.begin(), out.end());
 +    return out;
 +}
 +
  wxColour contrasting_text_color(const wxColour& background)
  {
      return background.GetLuminance() < 0.60 ? *wxWHITE : wxColour("#303030");
-@@ -600,6 +625,38 @@ void PrintHostSendDialog::reset_to_automation()
+@@ -600,6 +641,38 @@ void PrintHostSendDialog::reset_to_automation()
  }
  // [ORCAPORT:PA-1] END
  
 +// [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
 +void PrintHostSendDialog::open_material_automation()
 +{
-+    MaterialAutomationDialog dlg(this, project_material_types(), load_material_table(*wxGetApp().app_config),
++    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config),
 +                                 [this]() { refresh_material_automation_row(); });
 +    dlg.ShowModal();
 +}
@@ -1549,7 +1569,7 @@ index 532c8c6869..95d1f61aaa 100644
 +    if (m_material_hint == nullptr)
 +        return;
 +
-+    const std::vector<std::string> materials = project_material_types();
++    const std::vector<std::string> materials = available_material_types();
 +    const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
 +    wxString                      text;
 +    if (materials.empty()) {
@@ -1557,7 +1577,7 @@ index 532c8c6869..95d1f61aaa 100644
 +    } else {
 +        for (const std::string &material : materials) {
 +            if (! text.empty())
-+                text += " · ";
++                text += L" \u00B7 ";
 +            text += from_u8(material);
 +            if (OrcaExt::find_material(table, material) == nullptr)
 +                text += _L(" (none)");
@@ -1571,7 +1591,7 @@ index 532c8c6869..95d1f61aaa 100644
  void PrintHostSendDialog::init()
  {
      const auto& path = m_path;
-@@ -826,6 +883,75 @@ void PrintHostSendDialog::init()
+@@ -826,6 +899,75 @@ void PrintHostSendDialog::init()
          content_sizer->AddSpacer(VERT_SPACING);
      }
  
@@ -1636,7 +1656,7 @@ index 532c8c6869..95d1f61aaa 100644
 +        auto *slice     = new Button(this, _L("Apply and reslice"));
 +        slice->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
 +        slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
-+        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_APPLY); });
++        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(RESLICE_RETURN_CODE); });
 +        slice_row->Add(slice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
 +        content_sizer->Add(slice_row);
 +        content_sizer->AddSpacer(VERT_SPACING);
@@ -1648,10 +1668,21 @@ index 532c8c6869..95d1f61aaa 100644
          m_valid_suffix = recent_path.substr(extension_start);
      // .gcode suffix control
 diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
-index 30edb1029b..e7d26304fd 100644
+index 30edb1029b..81ef5e2613 100644
 --- a/src/slic3r/GUI/PrintHostDialogs.hpp
 +++ b/src/slic3r/GUI/PrintHostDialogs.hpp
-@@ -60,6 +60,10 @@ public:
+@@ -39,6 +39,10 @@ namespace GUI {
+ class PrintHostSendDialog : public GUI::MsgDialog
+ {
+ public:
++    // [ORCAPORT:MA-1] return code of the dialog's "Apply and reslice" button. Deliberately not
++    // wxID_APPLY: the "switch to device tab" checkbox already uses that as its control id.
++    static constexpr int RESLICE_RETURN_CODE = wxID_HIGHEST + 71;
++
+     PrintHostSendDialog(const boost::filesystem::path &path, PrintHostPostUploadActions post_actions, const wxArrayString& groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab);
+     virtual ~PrintHostSendDialog() {}
+     boost::filesystem::path filename() const;
+@@ -60,6 +64,10 @@ public:
      // overrides init()), so its caller must not write the offset for it.
      bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
  
@@ -1662,7 +1693,7 @@ index 30edb1029b..e7d26304fd 100644
      virtual void EndModal(int ret) override;
      virtual void init();
      virtual std::map<std::string, std::string> extendedInfo() const { return {}; }
-@@ -111,6 +115,13 @@ protected:
+@@ -111,6 +119,13 @@ protected:
      void                       open_plate_automation();
      void                       refresh_plate_automation();
      void                       reset_to_automation();
