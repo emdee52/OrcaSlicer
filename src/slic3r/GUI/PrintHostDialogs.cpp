@@ -644,32 +644,8 @@ void PrintHostSendDialog::reset_to_automation()
 // [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
 void PrintHostSendDialog::open_material_automation()
 {
-    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config),
-                                 [this]() { refresh_material_automation_row(); });
+    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config), {});
     dlg.ShowModal();
-}
-
-void PrintHostSendDialog::refresh_material_automation_row()
-{
-    if (m_material_hint == nullptr)
-        return;
-
-    const std::vector<std::string> materials = available_material_types();
-    const OrcaExt::MaterialTable  table     = load_material_table(*wxGetApp().app_config);
-    wxString                      text;
-    if (materials.empty()) {
-        text = _L("No materials: add a filament to the project first.");
-    } else {
-        for (const std::string &material : materials) {
-            if (! text.empty())
-                text += L" \u00B7 ";
-            text += from_u8(material);
-            if (OrcaExt::find_material(table, material) == nullptr)
-                text += _L(" (none)");
-        }
-    }
-    m_material_hint->SetLabel(text);
-    m_material_hint->GetParent()->Layout();
 }
 // [ORCAPORT:MA-1] END
 
@@ -947,24 +923,15 @@ void PrintHostSendDialog::init()
         edit->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
         edit->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_material_automation(); });
         actions->Add(edit, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-
-        m_material_hint = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, 0);
-        m_material_hint->SetFont(::Label::Body_13);
-        m_material_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
-        actions->Add(m_material_hint, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-
         content_sizer->Add(actions);
-        // [ORCAPORT:MA-1] apply everything the dialog holds and slice without uploading, so the
-        // G-code can be inspected in the preview or exported from the plate instead of being sent.
-        auto *slice_row = new wxBoxSizer(wxHORIZONTAL);
-        auto *slice     = new Button(this, _L("Apply and reslice"));
-        slice->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
-        slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
-        slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(RESLICE_RETURN_CODE); });
-        slice_row->Add(slice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
-        content_sizer->Add(slice_row);
         content_sizer->AddSpacer(VERT_SPACING);
-        refresh_material_automation_row();
+
+        // [ORCAPORT:MA-1] "Apply and reslice" joins the dialog's button row, so it reads as the same
+        // family as Upload, but Regular instead of Confirm keeps it visually apart from the uploads.
+        if (Button *slice = add_button(RESLICE_RETURN_CODE, false, _L("Apply and reslice"))) {
+            slice->SetStyle(ButtonStyle::Regular, ButtonType::Choice);
+            slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
+        }
     }
     // [ORCAPORT:MA-1] END
 

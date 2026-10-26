@@ -74,9 +74,10 @@ are what the slicer reads, and without the branch an unknown print key would fal
 
 ## UI
 
-- **Send dialog**: a "Material automation" row with the three checkboxes, a **Material automation...**
-  button and a hint listing the plate's material rows (or `(none)`). On OK the mask is written to the
-  plate and the values are resolved; `export_gcode` then re-slices or re-exports as needed.
+- **Send dialog**: a "Material automation" row with the three checkboxes and a **Material automation...**
+  button; no material list is drawn there (it widened the dialog), the table dialog shows the rows.
+  On OK the mask is written to the plate and the values are resolved; `export_gcode` then re-slices or
+  re-exports as needed.
 - **Plate Settings** ("Customize current plate"): the same three checkboxes, so a toolpath recipe can
   be turned on, sliced and previewed before sending.
 - **Table dialog**: a **material selector** at the top and the eight fields for that one material.
@@ -87,7 +88,9 @@ are what the slicer reads, and without the branch an unknown print key would fal
   nothing typed is lost; empty = not set. Validates and applies without closing.
 - **Apply and reslice** in the send dialog: writes everything the dialog holds (bed offset, first-layer
   flow, material recipes), slices and closes without uploading, so the G-code can be read in the
-  preview or exported from the plate instead of being printed. It uses its own return code
+  preview or exported from the plate instead of being printed. It sits in the dialog's button row
+  (`ButtonStyle::Regular, ButtonType::Choice` - same shape as Upload, grey instead of green, so it
+  reads as a different action at a glance). It uses its own return code
   (`PrintHostSendDialog::RESLICE_RETURN_CODE`, not `wxID_APPLY`, which the "switch to device tab"
   checkbox already owns) and does not write the device-tab preference, which only concerns an upload.
 - **Bed badge**: the plate name texture gains a second texture to its right reading

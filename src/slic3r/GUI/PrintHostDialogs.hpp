@@ -120,12 +120,10 @@ protected:
     void                       refresh_plate_automation();
     void                       reset_to_automation();
 
-    // [ORCAPORT:MA-1] per-plate material recipes and the table button
+    // [ORCAPORT:MA-1] per-plate material recipes
     int           m_material_recipes {0};
     bool          m_material_recipes_row {false};
-    wxStaticText *m_material_hint {nullptr};
     void          open_material_automation();
-    void          refresh_material_automation_row();
 };
 
 
