@@ -127,7 +127,8 @@ private:
     void  apply_pivot_snap(const Vec2d& mouse_pos);
     void  clear_pivot_snap();
 private:
-    int m_last_selected_obejct_idx, m_last_selected_volume_idx;
+    // -1 is a selection without a single volume; -2 is no selection seen yet.
+    int m_last_selected_obejct_idx{-2}, m_last_selected_volume_idx{-2};
 };
 
 
