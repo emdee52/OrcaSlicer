@@ -2,6 +2,7 @@
 #include "GizmoStyle.hpp" // [ORCAPORT:PP-2] the shared 3D overlay colours
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/ImGuiWrapper.hpp"
 #include "slic3r/GUI/Shortcuts.hpp"
 //BBS: GUI refactor
 #include "slic3r/GUI/Plater.hpp"
