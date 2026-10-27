@@ -24,6 +24,14 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
+- In flight, not merged and not pushed: **`port/MA-1`** - material automation. A local
+  per-material table (`[app] orca_ext_material_automation`) holds bridge / top-surface / speed
+  recipes; a plate turns on **Free bridging**, **Quality Top** and **Outer Speed** (toggles in the
+  send dialog *and* Plate Settings) and the plate keeps the resolved copy, so a project slices the
+  same elsewhere. Bridging and the top-surface width re-run perimeters, the speeds and flows only
+  re-export; first-layer flow has no toggle. A bed badge right of the plate name lists the recipes
+  that are on. Notes `notes/MA-1.md`, patch 82. Build clean, libslic3r 1582/1582, fff_print
+  462/462 - **the user's test of the dialogs and the badge is the gate**.
 - Latest integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
   first-layer flow, per plate type, saved on this computer" - user-tested 2026-10-24. **PA-1** replaces
   BF-1's hardcoded -20 % cool-plate default with a local per-plate-type map (`AppConfig` `[app]

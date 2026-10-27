@@ -335,6 +335,9 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "grab_length",
         "bed_temperature_formula",
         "bed_temperature_offset", // [ORCAPORT:BT-1] G-code-only: changing it must not re-slice
+        // [ORCAPORT:MA-1] the per-material E/F overrides: re-export only. The toolpath half of the
+        // table is the separate `material_automation` key, handled further down.
+        "material_automation_gcode",
         "filament_notes",
         "process_notes",
         "printer_notes",
@@ -535,6 +538,17 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         // primary_zone_box, which is the only part of the layout update_imex_slice_offset reads.
         // imex_tool_layout does move that box, so it is left to the fallback below.
         else if (opt_key == "imex_viz_theme" || opt_key == "imex_carriage_margin") {
+        }
+        // [ORCAPORT:MA-1] the toolpath half of the per-material table (bridge density, bridge flow,
+        // top-surface line width). Perimeters pull in infill, and supports read the bridge flow for
+        // their interface, so those two steps cover every reader of the resolved values.
+        else if (opt_key == "material_automation") {
+            osteps.emplace_back(posPerimeters);
+            osteps.emplace_back(posSupportMaterial);
+        }
+        // [ORCAPORT:MA-1] the recipe mask alone changes nothing: the two resolved keys above are
+        // written with it, and they are what the slicer reads.
+        else if (opt_key == "material_automation_recipes") {
         } else {
             // for legacy, if we can't handle this option let's invalidate all steps
             //FIXME invalidate all steps of all objects as well?
@@ -3140,6 +3154,7 @@ std::map<ObjectID, unsigned int> getObjectExtruderMap(const Print& print) {
 // Slicing process, running at a background thread.
 void Print::process(long long *time_cost_with_cache, bool use_cache)
 {
+    this->refresh_material_automation(); // [ORCAPORT:MA-1]
     long long start_time = 0, end_time = 0;
     if (time_cost_with_cache)
         *time_cost_with_cache = 0;
@@ -3876,8 +3891,48 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 // The export_gcode may die for various reasons (fails to process filename_format,
 // write error into the G-code, cannot execute post-processing scripts).
 // It is up to the caller to show an error message.
+// [ORCAPORT:MA-1] BEGIN - the per-material table, resolved once per slice/export
+// The plate's two keys carry the table snapshot for the recipes it has on. Resolving here, against
+// the current filament_type list, means swapping a filament picks that material's row with no GUI
+// round trip, and the accessors below stay a single index for the flow/speed hot paths.
+void Print::refresh_material_automation()
+{
+    MaterialAutomationCache &cache        = m_material_automation;
+    const std::string       &slice_source = m_config.material_automation.value;
+    const std::string       &gcode_source = m_config.material_automation_gcode.value;
+    const size_t             count        = m_config.filament_type.values.size();
+    if (cache.slice_source == slice_source && cache.gcode_source == gcode_source && cache.by_filament_slice.size() == count)
+        return;
+
+    cache.slice_source = slice_source;
+    cache.gcode_source = gcode_source;
+    cache.slice        = OrcaExt::parse(slice_source);
+    cache.gcode        = OrcaExt::parse(gcode_source);
+    cache.by_filament_slice.assign(count, nullptr);
+    cache.by_filament_gcode.assign(count, nullptr);
+    for (size_t i = 0; i < count; ++i) {
+        const std::string &type         = m_config.filament_type.values[i];
+        cache.by_filament_slice[i]      = OrcaExt::find_material(cache.slice, type);
+        cache.by_filament_gcode[i]      = OrcaExt::find_material(cache.gcode, type);
+    }
+}
+
+const OrcaExt::MaterialValues *Print::material_slice_values(int filament_id) const
+{
+    const auto &values = m_material_automation.by_filament_slice;
+    return (filament_id >= 0 && size_t(filament_id) < values.size()) ? values[filament_id] : nullptr;
+}
+
+const OrcaExt::MaterialValues *Print::material_gcode_values(int filament_id) const
+{
+    const auto &values = m_material_automation.by_filament_gcode;
+    return (filament_id >= 0 && size_t(filament_id) < values.size()) ? values[filament_id] : nullptr;
+}
+// [ORCAPORT:MA-1] END
+
 std::string Print::export_gcode(const std::string& path_template, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
+    this->refresh_material_automation(); // [ORCAPORT:MA-1]
     // output everything to a G-code file
     // The following call may die if the filename_format template substitution fails.
     std::string path = this->output_filepath(path_template);

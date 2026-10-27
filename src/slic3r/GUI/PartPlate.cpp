@@ -59,6 +59,8 @@
 #include <sstream>
 #include <regex>
 #include "libslic3r/MultiNozzleUtils.hpp"
+#include "libslic3r/OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+#include "MaterialAutomationStore.hpp"               // [ORCAPORT:MA-1]
 #include "libslic3r/FilamentMixer.hpp"
 #include <future>
 #include <glad/gl.h>
@@ -319,6 +321,51 @@ void PartPlate::reset_bed_type()
 {
     m_config.erase("curr_bed_type");
 }
+
+// [ORCAPORT:MA-1] BEGIN - per-plate material recipes and the resolved values the slicer reads
+int PartPlate::material_recipes() const
+{
+    const ConfigOptionInt *opt = m_config.option<ConfigOptionInt>("material_automation_recipes");
+    return opt != nullptr ? opt->value : 0;
+}
+
+void PartPlate::set_material_recipes(int mask)
+{
+    mask &= OrcaExt::kAllMaterialRecipes;
+    if (mask != material_recipes()) {
+        update_slice_result_valid_state(false);
+        if (mask == 0)
+            m_config.erase("material_automation_recipes");
+        else
+            m_config.set_key_value("material_automation_recipes", new ConfigOptionInt(mask));
+    }
+    invalidate_material_badge_texture();
+}
+
+void PartPlate::resolve_material_automation()
+{
+    const AppConfig *app_config = wxGetApp().app_config;
+    if (app_config == nullptr)
+        return;
+
+    // The plate keeps a copy of what it actually uses, so a project slices identically on a machine
+    // whose local table differs. Writing only on a change keeps an untouched project clean.
+    const OrcaExt::MaterialTable table = load_material_table(*app_config);
+    const int                      mask  = material_recipes();
+    auto sync = [this](const char *key, const OrcaExt::MaterialTable &resolved) {
+        const std::string value = OrcaExt::serialize(resolved);
+        if (value.empty()) {
+            if (m_config.has(key))
+                m_config.erase(key);
+        } else if (! m_config.has(key) || m_config.opt_string(key) != value) {
+            m_config.set_key_value(key, new ConfigOptionString(value));
+        }
+    };
+    sync("material_automation", OrcaExt::resolved_table(table, mask, true));
+    sync("material_automation_gcode", OrcaExt::resolved_table(table, mask, false));
+    invalidate_material_badge_texture();
+}
+// [ORCAPORT:MA-1] END
 
 void PartPlate::reset_skirt_start_angle()
 {
@@ -2244,6 +2291,7 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
             }
         }
 		render_plate_name_texture();
+		render_material_badge_texture(); // [ORCAPORT:MA-1] right of the name, so it needs the name's width
 
         glsafe(::glDisable(GL_BLEND));
 
@@ -3628,6 +3676,9 @@ void PartPlate::generate_plate_name_texture()
     //    px = scale_(bed_ext.center()(0)) - (width + height) / 2.00;
 
     p += Vec2d(0, offset_y);
+    // [ORCAPORT:MA-1] the material badge sits to the right of the name, so it needs the name's width
+    m_plate_name_width_mm = width;
+    invalidate_material_badge_texture();
 
     poly.contour.append({ scale_(p(0)        ), scale_(p(1)         ) });
     poly.contour.append({ scale_(p(0) + width), scale_(p(1)         ) });
@@ -3755,6 +3806,84 @@ void PartPlate::render_bed_temp_texture()
 	glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
 }
 // [ORCAPORT:BT-1] END
+
+// [ORCAPORT:MA-1] BEGIN - the plate's material recipe readout, right of the plate name
+void PartPlate::generate_material_badge_texture()
+{
+	m_material_badge_ready = true;
+	m_material_badge_icon.reset();
+	m_material_badge_texture.reset();
+
+	const int mask = material_recipes();
+	wxString  label;
+	auto      append = [&label](const wxString &text) {
+        if (! label.empty())
+            label += L" \u00B7 ";
+        label += text;
+	};
+	if (mask & int(OrcaExt::MaterialRecipe::FreeBridging))
+		append(_L("Free bridging"));
+	if (mask & int(OrcaExt::MaterialRecipe::QualityTop))
+		append(_L("Quality Top"));
+	if (mask & int(OrcaExt::MaterialRecipe::OuterSpeed))
+		append(_L("Outer Speed"));
+	if (label.empty())
+		return; // no recipe on: the bed shows the name alone
+
+	int    size = wxGetApp().em_unit() * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE;
+	auto   l    = Label::sysFont(int(size), true);
+	wxFont *font = &l;
+
+	wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
+	if (! m_material_badge_texture.generate_from_text_string(label.ToUTF8().data(), *font, *wxBLACK, foreground)) {
+		BOOST_LOG_TRIVIAL(error) << "PartPlate::generate_material_badge_texture(): generate_from_text_string() failed";
+		return;
+	}
+
+	calc_vertex_for_material_badge_texture(m_material_badge_texture, m_material_badge_icon);
+}
+
+void PartPlate::calc_vertex_for_material_badge_texture(GLTexture &texture, GLModel &buffer)
+{
+	buffer.reset();
+	if (m_plate_name_width_mm <= 0.f)
+		return; // the name has not been laid out yet
+
+	const float factor   = icon_scale_factor();
+	const float icon_sz  = factor * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE * 0.8f;
+	const float width    = icon_sz * texture.get_width() / texture.get_height();
+	const float height   = icon_sz;
+	const float offset_y = factor * PARTPLATE_TEXT_OFFSET_Y;
+	const float gap      = factor * 2.f;
+
+	auto  bed_ext = get_extents(m_shape);
+	Vec2d p       = bed_ext[3];
+	p += Vec2d(m_plate_name_width_mm + gap, offset_y);
+
+	ExPolygon poly;
+	poly.contour.append({ scale_(p(0)), scale_(p(1)) });
+	poly.contour.append({ scale_(p(0) + width), scale_(p(1)) });
+	poly.contour.append({ scale_(p(0) + width), scale_(p(1) + height) });
+	poly.contour.append({ scale_(p(0)), scale_(p(1) + height) });
+
+	if (! init_model_from_poly(buffer, poly, GROUND_Z))
+		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for material badge\n";
+}
+
+void PartPlate::render_material_badge_texture()
+{
+	if (! m_material_badge_ready)
+		generate_material_badge_texture();
+
+	if (m_material_badge_texture.get_id() == 0)
+		return;
+
+	GLuint tex_id = (GLuint) m_material_badge_texture.get_id();
+	glsafe(::glBindTexture(GL_TEXTURE_2D, tex_id));
+	m_material_badge_icon.render();
+	glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
+}
+// [ORCAPORT:MA-1] END
 
 void PartPlate::set_plate_name(const std::string& name) 
 { 

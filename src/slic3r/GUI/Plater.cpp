@@ -21357,11 +21357,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
         }
 
         pDlg->init();
-        if (pDlg->ShowModal() != wxID_OK) {
+        const int dialog_result = pDlg->ShowModal();
+        if (dialog_result != wxID_OK && dialog_result != PrintHostSendDialog::RESLICE_RETURN_CODE)
             return;
-        }
 
-        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
@@ -21397,7 +21396,29 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
             else
                 project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
         }
+        // [ORCAPORT:MA-1] the plate's material recipes, chosen in this dialog. The values themselves
+        // are resolved from the local table when the plate is applied, so only the mask is written
+        // here; a slice-affecting recipe invalidates perimeters and the export below re-slices before
+        // uploading, an E/F-only recipe just re-exports.
+        if (pDlg->has_material_row()) {
+            // A "send all plates" dialog still shows the current plate's recipes, so the mask goes to
+            // that plate rather than nowhere.
+            const int     plate_idx = resolved_plate_idx >= 0 ? resolved_plate_idx : get_partplate_list().get_curr_plate_index();
+            if (PartPlate *plate = get_partplate_list().get_plate(plate_idx)) {
+                plate->set_material_recipes(pDlg->material_recipes());
+                plate->resolve_material_automation();
+            }
+        }
         // PrintHostUpload upload_data;
+        // [ORCAPORT:MA-1] "Apply and reslice" wrote everything the dialog holds above. Slice and stop
+        // here instead of building an upload, so the G-code can be inspected in the preview or
+        // exported from the plate. The device-tab preference is not written on this path: no upload
+        // happens, so the checkbox has nothing to say.
+        if (dialog_result == PrintHostSendDialog::RESLICE_RETURN_CODE) {
+            this->reslice();
+            return;
+        }
+        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
         upload_job.upload_data.upload_path = pDlg->filename();
         upload_job.upload_data.post_action = pDlg->post_action();
@@ -23371,6 +23392,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
     }
 
     dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
+    dlg.sync_material_recipes(curr_plate->material_recipes()); // [ORCAPORT:MA-1]
 
     dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
         PartPlate* curr_plate = p->partplate_list.get_curr_plate();
@@ -23409,6 +23431,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
         else {
             curr_plate->set_spiral_vase_mode(false, true);
         }
+
+        // [ORCAPORT:MA-1] the material recipes; the values are resolved from the local table when the
+        // plate is applied, and the notification below re-slices when a recipe needs toolpaths.
+        curr_plate->set_material_recipes(dlg.get_material_recipes_choice());
 
         update_project_dirty_from_presets();
         set_plater_dirty(true);

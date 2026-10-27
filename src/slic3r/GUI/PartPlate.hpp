@@ -207,6 +207,12 @@ private:
     GLTexture m_bed_temp_texture;
     bool      m_bed_temp_ready {false};
 
+    // [ORCAPORT:MA-1] material recipe readout, drawn to the right of the plate name
+    GLModel   m_material_badge_icon;
+    GLTexture m_material_badge_texture;
+    bool      m_material_badge_ready {false};
+    float     m_plate_name_width_mm {0.f};
+
     void init();
     bool valid_instance(int obj_id, int instance_id) const;
     void generate_print_polygon(ExPolygon &print_polygon);
@@ -237,6 +243,10 @@ private:
     void calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer);
     void render_bed_temp_texture();
     void generate_bed_temp_texture();
+    // [ORCAPORT:MA-1]
+    void calc_vertex_for_material_badge_texture(GLTexture &texture, GLModel &buffer);
+    void render_material_badge_texture();
+    void generate_material_badge_texture();
     void calc_vertex_for_plate_name_edit_icon(GLTexture *texture, int index, PickingModel &model);
     void calc_vertex_for_icons(int index, PickingModel &model);
     void calc_vertex_for_imex_warn_badge(int imex_icon_index, GLModel &model);
@@ -263,6 +273,8 @@ private:
     void invalidate_plate_name_texture();
     // [ORCAPORT:BT-1]
     void invalidate_bed_temp_texture() { m_bed_temp_ready = false; }
+    // [ORCAPORT:MA-1]
+    void invalidate_material_badge_texture() { m_material_badge_ready = false; }
     void register_raycasters_for_picking(GLCanvas3D& canvas);
     int picking_id_component(int idx) const;
 
@@ -325,6 +337,12 @@ public:
     BedType get_bed_type(bool load_from_project = false) const;
     void set_bed_type(BedType bed_type);
     void reset_bed_type();
+
+    // [ORCAPORT:MA-1] per-plate material recipes (OrcaExt::MaterialRecipe bits) and the resolved
+    // table the slicer reads, written into this plate's config from the local table.
+    int  material_recipes() const;
+    void set_material_recipes(int mask);
+    void resolve_material_automation();
 
     void reset_skirt_start_angle();
 

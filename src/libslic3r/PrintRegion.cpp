@@ -5,6 +5,7 @@
 #include <cstddef>
 #include "PrintConfig.hpp"
 #include "libslic3r.h"
+#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -47,7 +48,12 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
     } else if (role == frSolidInfill) {
         config_width = m_config.internal_solid_infill_line_width;
     } else if (role == frTopSolidInfill) {
-        config_width = m_config.top_surface_line_width;
+        // [ORCAPORT:MA-1] a material's quality-top recipe replaces the profile's top-surface width.
+        // The initial-layer width keeps precedence on layer 1, exactly as it does for the profile.
+        const OrcaExt::MaterialValues *material = object.print()->material_slice_values(int(this->extruder(role)) - 1);
+        config_width = (material != nullptr && material->has_top_width) ?
+            ConfigOptionFloatOrPercent(material->top_width, material->top_width_percent) :
+            m_config.top_surface_line_width;
     } else {
         throw Slic3r::InvalidArgument("Unknown role");
     }

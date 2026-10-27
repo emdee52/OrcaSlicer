@@ -64,6 +64,7 @@ add_executable(${_TEST_NAME}_tests
     test_orca_bed_temp.cpp
     test_orca_first_layer_flow.cpp
     test_orca_plate_automation.cpp
+    test_orca_material_automation.cpp
     test_meshboolean.cpp
     test_mesh_repair.cpp
     test_trianglemesh_slicer.cpp

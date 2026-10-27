@@ -88,6 +88,8 @@
 #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
 #include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
 #include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
+#include "MaterialAutomationDialog.hpp"         // [ORCAPORT:MA-1]
+#include "MaterialAutomationStore.hpp"          // [ORCAPORT:MA-1]
 
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -110,6 +112,45 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
 // upload dialog. There is no 0% button: choosing the active value clears the reduction instead
 // (radio-box semantics with a clear, like the bed-temperature offsets above).
 const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
+
+// [ORCAPORT:MA-1] the material names the table offers: the filament profiles this printer can use
+// (system and user - the same source the filament sync and the preset wizard take a material from),
+// plus the project's own filaments and any row already saved. A plate's own list is empty until the
+// plate is sliced, so it cannot be the source.
+std::vector<std::string> available_material_types()
+{
+    std::vector<std::string> out;
+    PresetBundle *bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr || wxGetApp().app_config == nullptr)
+        return out;
+
+    auto append = [&out](const std::string &raw) {
+        const std::string name = OrcaExt::normalize_material(raw);
+        if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
+            out.push_back(name);
+    };
+
+    for (const Preset &preset : bundle->filaments.get_presets())
+        if (preset.is_compatible && preset.is_visible)
+            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
+                append(type->values.front());
+
+    // Visibility depends on the "show incompatible" preference, so a strict filter could come back
+    // empty; every preset then still has a type worth offering.
+    if (out.empty())
+        for (const Preset &preset : bundle->filaments.get_presets())
+            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
+                append(type->values.front());
+
+    if (const auto *types = bundle->full_config().option<ConfigOptionStrings>("filament_type"))
+        for (const std::string &type : types->values)
+            append(type);
+    for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
+        append(name);
+
+    std::sort(out.begin(), out.end());
+    return out;
+}
 
 wxColour contrasting_text_color(const wxColour& background)
 {
@@ -600,6 +641,14 @@ void PrintHostSendDialog::reset_to_automation()
 }
 // [ORCAPORT:PA-1] END
 
+// [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
+void PrintHostSendDialog::open_material_automation()
+{
+    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config), {});
+    dlg.ShowModal();
+}
+// [ORCAPORT:MA-1] END
+
 void PrintHostSendDialog::init()
 {
     const auto& path = m_path;
@@ -825,6 +874,66 @@ void PrintHostSendDialog::init()
         content_sizer->Add(automation_row);
         content_sizer->AddSpacer(VERT_SPACING);
     }
+
+    // [ORCAPORT:MA-1] BEGIN - the plate's material recipes. Each toggle applies what the local
+    // material table holds for the filaments on this plate; the numbers are edited in the table
+    // dialog. Bridging and the top-surface width are toolpath inputs (one re-slice), the speeds and
+    // flows only re-export the G-code, so the same row also lives on the plate settings dialog.
+    {
+        PartPlate *plate = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
+        m_material_recipes     = plate != nullptr ? plate->material_recipes() : 0;
+        m_material_recipes_row = true;
+        PresetBundle *preset_bundle = wxGetApp().preset_bundle;
+
+        auto *row     = new wxBoxSizer(wxHORIZONTAL);
+        auto *caption = new wxStaticText(this, wxID_ANY, _L("Material automation"), wxDefaultPosition, wxDefaultSize, 0);
+        caption->SetFont(::Label::Body_13);
+        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+        caption->SetToolTip(_L("Use the values the material table holds for the filaments on this plate. Empty table fields keep the profile's value."));
+        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+
+        // Same .gcode.3mf limitation as the rows above: the bundle ships the already-exported
+        // per-plate G-code, so a change made here could not reach it.
+        const ConfigOptionBool *use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
+        const bool              supported   = use_3mf_opt == nullptr || !use_3mf_opt->value;
+
+        auto add_toggle = [&](OrcaExt::MaterialRecipe recipe, const wxString &label) {
+            auto *check = new wxCheckBox(this, wxID_ANY, label);
+            check->SetValue((m_material_recipes & int(recipe)) != 0);
+            if (supported)
+                check->Bind(wxEVT_CHECKBOX, [this, recipe](wxCommandEvent &evt) {
+                    if (evt.IsChecked())
+                        m_material_recipes |= int(recipe);
+                    else
+                        m_material_recipes &= ~int(recipe);
+                });
+            else {
+                check->Disable();
+                check->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
+            }
+            row->Add(check, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        };
+        add_toggle(OrcaExt::MaterialRecipe::FreeBridging, _L("Free bridging"));
+        add_toggle(OrcaExt::MaterialRecipe::QualityTop, _L("Quality Top"));
+        add_toggle(OrcaExt::MaterialRecipe::OuterSpeed, _L("Outer Speed"));
+        content_sizer->Add(row);
+
+        auto *actions = new wxBoxSizer(wxHORIZONTAL);
+        auto *edit    = new Button(this, _L("Material automation..."));
+        edit->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
+        edit->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_material_automation(); });
+        actions->Add(edit, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
+        content_sizer->Add(actions);
+        content_sizer->AddSpacer(VERT_SPACING);
+
+        // [ORCAPORT:MA-1] "Apply and reslice" joins the dialog's button row, so it reads as the same
+        // family as Upload, but Regular instead of Confirm keeps it visually apart from the uploads.
+        if (Button *slice = add_button(RESLICE_RETURN_CODE, false, _L("Apply and reslice"))) {
+            slice->SetStyle(ButtonStyle::Regular, ButtonType::Choice);
+            slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
+        }
+    }
+    // [ORCAPORT:MA-1] END
 
     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
         m_valid_suffix = recent_path.substr(extension_start);

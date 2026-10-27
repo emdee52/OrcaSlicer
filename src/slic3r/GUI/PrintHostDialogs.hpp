@@ -39,6 +39,10 @@ namespace GUI {
 class PrintHostSendDialog : public GUI::MsgDialog
 {
 public:
+    // [ORCAPORT:MA-1] return code of the dialog's "Apply and reslice" button. Deliberately not
+    // wxID_APPLY: the "switch to device tab" checkbox already uses that as its control id.
+    static constexpr int RESLICE_RETURN_CODE = wxID_HIGHEST + 71;
+
     PrintHostSendDialog(const boost::filesystem::path &path, PrintHostPostUploadActions post_actions, const wxArrayString& groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab);
     virtual ~PrintHostSendDialog() {}
     boost::filesystem::path filename() const;
@@ -59,6 +63,10 @@ public:
     // [ORCAPORT:PA-1] false for a send dialog that never built the bed-temperature row (Flashforge
     // overrides init()), so its caller must not write the offset for it.
     bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
+
+    // [ORCAPORT:MA-1] the plate's per-material recipes chosen here, and whether the row was built
+    int  material_recipes() const { return m_material_recipes; }
+    bool has_material_row() const { return m_material_recipes_row; }
 
     virtual void EndModal(int ret) override;
     virtual void init();
@@ -111,6 +119,11 @@ protected:
     void                       open_plate_automation();
     void                       refresh_plate_automation();
     void                       reset_to_automation();
+
+    // [ORCAPORT:MA-1] per-plate material recipes
+    int           m_material_recipes {0};
+    bool          m_material_recipes_row {false};
+    void          open_material_automation();
 };
 
 

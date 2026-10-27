@@ -32,6 +32,7 @@
 #include "BeltTransform.hpp"
 #include "ObjectID.hpp"
 #include "TriangleSelector.hpp"
+#include "OrcaExt/MaterialAutomation.hpp"
 #include "libslic3r.h"
 
 #include <Eigen/Geometry>
@@ -1204,6 +1205,12 @@ public:
     const PrintConfig&          config() const { return m_config; }
     const PrintObjectConfig&    default_object_config() const { return m_default_object_config; }
     const PrintRegionConfig& default_region_config() const { return m_default_region_config; }
+    // [ORCAPORT:MA-1] per-material overrides resolved from the plate's table keys, split into the
+    // toolpath inputs and the E/F inputs. Rebuilt before every slice and every G-code export; the
+    // accessors stay O(1) so the flow and speed lookups in the hot paths cost one array index.
+    void                        refresh_material_automation();
+    const OrcaExt::MaterialValues * material_slice_values(int filament_id) const;
+    const OrcaExt::MaterialValues * material_gcode_values(int filament_id) const;
     ConstPrintObjectPtrsAdaptor objects() const { return ConstPrintObjectPtrsAdaptor(&m_objects); }
     PrintObject*                get_object(size_t idx) { return const_cast<PrintObject*>(m_objects[idx]); }
     const PrintObject*          get_object(size_t idx) const { return m_objects[idx]; }
@@ -1571,6 +1578,17 @@ private:
     PrintConfig                             m_config;
     PrintObjectConfig                       m_default_object_config;
     PrintRegionConfig                       m_default_region_config;
+    // [ORCAPORT:MA-1] parsed material tables and their per-filament lookup, keyed by filament_type
+    struct MaterialAutomationCache
+    {
+        std::string  slice_source;
+        std::string  gcode_source;
+        OrcaExt::MaterialTable slice;
+        OrcaExt::MaterialTable gcode;
+        std::vector<const OrcaExt::MaterialValues *> by_filament_slice;
+        std::vector<const OrcaExt::MaterialValues *> by_filament_gcode;
+    };
+    MaterialAutomationCache                 m_material_automation;
     PrintObjectPtrs                         m_objects;
     PrintRegionPtrs                         m_print_regions;
     bool                                    m_same_shrinkage_compensations { false };

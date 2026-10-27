@@ -1,0 +1,2083 @@
+diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
+index f0760bc7f8..821c119afc 100644
+--- a/localization/i18n/list.txt
++++ b/localization/i18n/list.txt
+@@ -178,6 +178,7 @@ src/slic3r/GUI/PresetComboBoxes.cpp
+ src/slic3r/GUI/PresetHints.cpp
+ src/slic3r/GUI/ProgressStatusBar.cpp
+ src/slic3r/GUI/PlateSettingsDialog.cpp
++src/slic3r/GUI/MaterialAutomationDialog.cpp
+ src/slic3r/GUI/PrivacyUpdateDialog.cpp
+ src/slic3r/GUI/PublishSettingsDialog.cpp
+ src/slic3r/GUI/SavePresetDialog.cpp
+diff --git a/src/libslic3r/Fill/Fill.cpp b/src/libslic3r/Fill/Fill.cpp
+index 0c4379d410..0da102785d 100644
+--- a/src/libslic3r/Fill/Fill.cpp
++++ b/src/libslic3r/Fill/Fill.cpp
+@@ -21,6 +21,7 @@
+ #include "../Print.hpp"
+ #include "../PrintConfig.hpp"
+ #include "../Surface.hpp"
++#include "../OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ 
+ #include "AABBTreeLines.hpp"
+ #include "libslic3r/Config.hpp"
+@@ -1484,7 +1485,13 @@ void Layer::make_fills(const FillAdaptive::RegionOctrees* fill_octrees, FillLigh
+ 			surface_fill.surface.expolygon = std::move(expoly);
+ 
+ 			if(surface_fill.params.bridge && surface_fill.surface.is_external() && surface_fill.params.density > 99.0){
+-				params.density = layerm->region().config().bridge_density.get_abs_value(1.0);
++				// [ORCAPORT:MA-1] a material's free-bridging recipe replaces the profile's bridge density.
++				// The solid-infill filament is the one the bridge fill is extruded by, so a mixed plate
++				// resolves each material's own row.
++				const OrcaExt::MaterialValues *material =
++					this->object()->print()->material_slice_values(int(layerm->region().extruder(frSolidInfill)) - 1);
++				params.density = (material != nullptr && material->has_bridge_density) ?
++					material->bridge_density / 100. : layerm->region().config().bridge_density.get_abs_value(1.0);
+ 				params.dont_adjust = true;
+ 			}
+             if(surface_fill.surface.is_internal_bridge()){
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index 90c53f5236..c1ae609d0d 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -49,6 +49,7 @@
+ #include "OrcaExt/SeamNotch.hpp"      // [ORCAPORT:PF-1]
+ #include "OrcaExt/BedTempOverride.hpp" // [ORCAPORT:BT-1]
+ #include "OrcaExt/FirstLayerFlow.hpp"  // [ORCAPORT:BF-1]
++#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ #include "Utils.hpp"
+ #include "ClipperUtils.hpp"
+ #include "LocalesUtils.hpp"
+@@ -9372,18 +9373,28 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
+ 
+     // calculate effective extrusion length per distance unit (e_per_mm)
+     double filament_flow_ratio = FILAMENT_CONFIG(filament_flow_ratio);
++    // [ORCAPORT:MA-1] the plate's overrides for the filament extruding this path. Null when the plate
++    // sets no automation for this material, which leaves the profile's numbers in charge.
++    const OrcaExt::MaterialValues *material =
++        (m_print != nullptr && m_writer.filament() != nullptr) ? m_print->material_gcode_values(int(m_writer.filament()->id())) : nullptr;
+     // We set _mm3_per_mm to effectove flow = Geometric volume * print flow ratio * filament flow ratio * role-based-flow-ratios
+     auto _mm3_per_mm = path.mm3_per_mm * this->config().print_flow_ratio;
+     _mm3_per_mm *= filament_flow_ratio;
+ 
+     if (path.role() == erTopSolidInfill) {
+-        _mm3_per_mm *= NOZZLE_CONFIG(top_solid_infill_flow_ratio);
++        // [ORCAPORT:MA-1] a material's quality-top recipe replaces the profile's top surface flow
++        _mm3_per_mm *= (material != nullptr && material->has_top_flow) ? material->top_flow : NOZZLE_CONFIG(top_solid_infill_flow_ratio);
+     } else if (path.role() == erBottomSurface) {
+         _mm3_per_mm *= m_config.bottom_solid_infill_flow_ratio;
+         // [ORCAPORT:BF-1] print-time reduction of the first layer's bottom surface only, set from
+         // the upload dialog. The walls on the first layer keep their own flow.
+-        if (path_on_first_layer)
++        if (path_on_first_layer) {
+             _mm3_per_mm *= OrcaExt::first_layer_bottom_flow_scale(m_config.initial_layer_bottom_surface_flow_delta.value);
++            // [ORCAPORT:MA-1] the material's own first-layer reduction multiplies the plate's, so a
++            // material tweak and a plate tweak add up instead of one hiding the other.
++            if (material != nullptr && material->has_first_layer_flow)
++                _mm3_per_mm *= OrcaExt::first_layer_bottom_flow_scale(material->first_layer_flow);
++        }
+     } else if (path.role() == erInternalBridgeInfill) {
+         _mm3_per_mm *= m_config.internal_bridge_flow;
+     } else if (path.role() == erBrim) {
+@@ -9462,20 +9473,28 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
+                 speed = std::min(speed, m_config.scarf_joint_speed.get_abs_value(speed));
+             }
+         } else if (path.role() == erExternalPerimeter) {
+-            speed = NOZZLE_CONFIG(outer_wall_speed);
++            // [ORCAPORT:MA-1] the material's outer wall speed replaces the profile's when the plate's
++            // outer-speed recipe is on
++            speed = (material != nullptr && material->has_outer_speed) ? material->outer_speed : NOZZLE_CONFIG(outer_wall_speed);
+             if (sloped) {
+                 speed = std::min(speed, m_config.scarf_joint_speed.get_abs_value(speed));
+             }
+         } else if(path.role() == erInternalBridgeInfill) {
+             speed = m_config.internal_bridge_speed.get_at(nozzle).get_abs_value(m_config.bridge_speed.get_at(nozzle));
+-        } else if (path.role() == erOverhangPerimeter || path.role() == erSupportTransition || path.role() == erBridgeInfill) {
++        } else if (path.role() == erOverhangPerimeter || path.role() == erSupportTransition) {
++            // [ORCAPORT:MA-1] overhang walls keep the profile's bridge speed: the free-bridging
++            // recipe tunes external bridges only, so it must not move an overhang wall.
+             speed = NOZZLE_CONFIG(bridge_speed);
++        } else if (path.role() == erBridgeInfill) {
++            // [ORCAPORT:MA-1] external bridge speed from the material's free-bridging recipe
++            speed = (material != nullptr && material->has_bridge_speed) ? material->bridge_speed : NOZZLE_CONFIG(bridge_speed);
+         } else if (path.role() == erInternalInfill) {
+             speed = NOZZLE_CONFIG(sparse_infill_speed);
+         } else if (path.role() == erSolidInfill) {
+             speed = NOZZLE_CONFIG(internal_solid_infill_speed);
+         } else if (path.role() == erTopSolidInfill) {
+-            speed = NOZZLE_CONFIG(top_surface_speed);
++            // [ORCAPORT:MA-1] top surface speed from the material's quality-top recipe
++            speed = (material != nullptr && material->has_top_speed) ? material->top_speed : NOZZLE_CONFIG(top_surface_speed);
+         } else if (path.role() == erIroning) {
+             const size_t filament_idx = get_filament_config_index(m_writer.filament()->id());
+             speed = m_config.filament_ironing_speed.is_nil(filament_idx)
+diff --git a/src/libslic3r/LayerRegion.cpp b/src/libslic3r/LayerRegion.cpp
+index a53f5d3d89..5de58b46ff 100644
+--- a/src/libslic3r/LayerRegion.cpp
++++ b/src/libslic3r/LayerRegion.cpp
+@@ -43,6 +43,7 @@
+ #include "ExtrusionEntityCollection.hpp"
+ #include "MultiMaterialSegmentation.hpp"
+ #include "SurfaceCollection.hpp"
++#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ 
+ namespace Slic3r {
+ 
+@@ -67,7 +68,10 @@ Flow LayerRegion::bridging_flow(FlowRole role, bool thick_bridge) const
+     const ConfigOptionFloatOrPercent& bridge_width_opt = region_config.bridge_line_width;
+     const double                      bridge_width      = bridge_width_opt.get_abs_value(nozzle_diameter);
+     const bool                        has_bridge_width  = bridge_width > 0.;
+-    const double                      bridge_flow_ratio = region_config.bridge_flow;
++    // [ORCAPORT:MA-1] a material's free-bridging recipe replaces the profile's bridge flow ratio; the
++    // bridge width stays the profile's, since the recipe does not carry one.
++    const OrcaExt::MaterialValues *material = print_object.print()->material_slice_values(int(region.extruder(role)) - 1);
++    const double bridge_flow_ratio = (material != nullptr && material->has_bridge_flow) ? material->bridge_flow : region_config.bridge_flow;
+ 
+     if (thick_bridge) {
+         // The old Slic3r way (different from all other slicers): Use rounded extrusions.
+diff --git a/src/libslic3r/OrcaExt/MaterialAutomation.hpp b/src/libslic3r/OrcaExt/MaterialAutomation.hpp
+new file mode 100644
+index 0000000000..cf5a767240
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/MaterialAutomation.hpp
+@@ -0,0 +1,295 @@
++// [ORCAPORT FILE] OrcaExt MaterialAutomation - per-material overrides for bridging, the top surface,
++// the first layer and the outer wall
++// Source: original (design in porting/notes/MA-1.md)
++//
++// One local table keyed by filament_type, edited in the print dialog, lets a material carry its own
++// bridge/top-surface recipe instead of a separate process profile. The GUI resolves the table against
++// the plate's enabled recipes into two plate-level keys: `material_automation` (toolpath inputs, so a
++// change re-runs perimeters) and `material_automation_gcode` (E/F only, so a change re-exports G-code
++// without re-slicing). This header owns the encoding, the ranges and the resolution, free of UI, so
++// the behaviour is unit-tested rather than eyeballed.
++//
++// Keys are stored under the filament_type name because that is what a swap of a filament changes; a
++// value is never written into a profile, so turning a recipe off restores the profile's own numbers.
++#ifndef slic3r_OrcaExt_MaterialAutomation_hpp_
++#define slic3r_OrcaExt_MaterialAutomation_hpp_
++
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <cstdio>
++#include <map>
++#include <string>
++
++#include "FirstLayerFlow.hpp" // clamp_first_layer_flow_delta
++
++namespace Slic3r {
++namespace OrcaExt {
++
++// One bit per recipe. The plate owns the mask (project data); the table holds the numbers.
++enum class MaterialRecipe : int {
++    FreeBridging = 1 << 0, // external bridges only: density, flow, speed
++    QualityTop   = 1 << 1, // top surface: flow, line width, speed
++    OuterSpeed   = 1 << 2, // outer wall speed
++};
++
++constexpr int kAllMaterialRecipes =
++    int(MaterialRecipe::FreeBridging) | int(MaterialRecipe::QualityTop) | int(MaterialRecipe::OuterSpeed);
++
++inline bool material_recipe_enabled(int mask, MaterialRecipe recipe)
++{
++    return (mask & int(recipe)) != 0;
++}
++
++// Ranges mirror the option definitions in PrintConfig.cpp, so a hand-edited value is bounded the same
++// way the settings page bounds it.
++constexpr double kBridgeDensityMin = 10.0, kBridgeDensityMax = 125.0;
++constexpr double kFlowRatioMin = 0.0, kFlowRatioMax = 2.0;
++constexpr double kSpeedMin = 1.0, kSpeedMax = 1000.0;
++constexpr double kLineWidthMmMax = 10.0, kLineWidthPercentMax = 1000.0;
++constexpr double kTopWidthDefaultMin = 0.0;
++
++inline double clamp_material_bridge_density(double v) { return std::clamp(v, kBridgeDensityMin, kBridgeDensityMax); }
++inline double clamp_material_flow(double v) { return std::clamp(v, kFlowRatioMin, kFlowRatioMax); }
++inline double clamp_material_speed(double v) { return std::clamp(v, kSpeedMin, kSpeedMax); }
++inline double clamp_material_line_width(double v, bool percent)
++{
++    return std::clamp(v, kTopWidthDefaultMin, percent ? kLineWidthPercentMax : kLineWidthMmMax);
++}
++
++// What one material sets. `has_*` says whether the user filled the field in: an unset field leaves
++// the profile's value alone, which is what keeps the table empty-at-default a no-op.
++struct MaterialValues
++{
++    bool   has_bridge_density {false};
++    double bridge_density {100.}; // percent
++    bool   has_bridge_flow {false};
++    double bridge_flow {1.};
++    bool   has_bridge_speed {false};
++    double bridge_speed {0.}; // mm/s
++    bool   has_top_flow {false};
++    double top_flow {1.};
++    bool   has_top_width {false};
++    double top_width {0.};
++    bool   top_width_percent {false}; // "%" of the nozzle diameter, else mm
++    bool   has_top_speed {false};
++    double top_speed {0.}; // mm/s
++    bool   has_outer_speed {false};
++    double outer_speed {0.}; // mm/s
++    bool   has_first_layer_flow {false};
++    double first_layer_flow {0.}; // percent delta, -50..0
++
++    bool empty() const
++    {
++        return ! has_bridge_density && ! has_bridge_flow && ! has_bridge_speed && ! has_top_flow &&
++               ! has_top_width && ! has_top_speed && ! has_outer_speed && ! has_first_layer_flow;
++    }
++
++    bool has_slice_fields() const { return has_bridge_density || has_bridge_flow || has_top_width; }
++};
++
++// Keyed by filament_type. A map keeps the pointers returned by lookups stable while it lives.
++using MaterialTable = std::map<std::string, MaterialValues>;
++
++inline std::string normalize_material(std::string name)
++{
++    while (! name.empty() && std::isspace(static_cast<unsigned char>(name.front())))
++        name.erase(name.begin());
++    while (! name.empty() && std::isspace(static_cast<unsigned char>(name.back())))
++        name.pop_back();
++    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::toupper(c)); });
++    return name;
++}
++
++inline const MaterialValues *find_material(const MaterialTable &table, const std::string &filament_type)
++{
++    if (filament_type.empty())
++        return nullptr;
++    auto it = table.find(normalize_material(filament_type));
++    return it == table.end() ? nullptr : &it->second;
++}
++
++// The plate stores two strings. The slice key keeps only the toolpath inputs of the enabled recipes;
++// the G-code key keeps the E/F inputs. The first-layer flow has no recipe: it applies per material as
++// soon as the material has a value, which keeps the plate's own first-layer automation intact.
++inline MaterialValues resolved_values(const MaterialValues &in, int recipes, bool slice_key)
++{
++    MaterialValues out;
++    if (slice_key) {
++        if (material_recipe_enabled(recipes, MaterialRecipe::FreeBridging)) {
++            out.has_bridge_density   = in.has_bridge_density;
++            out.bridge_density       = in.bridge_density;
++            out.has_bridge_flow      = in.has_bridge_flow;
++            out.bridge_flow          = in.bridge_flow;
++        }
++        if (material_recipe_enabled(recipes, MaterialRecipe::QualityTop)) {
++            out.has_top_width   = in.has_top_width;
++            out.top_width       = in.top_width;
++            out.top_width_percent = in.top_width_percent;
++        }
++    } else {
++        if (material_recipe_enabled(recipes, MaterialRecipe::FreeBridging)) {
++            out.has_bridge_speed = in.has_bridge_speed;
++            out.bridge_speed     = in.bridge_speed;
++        }
++        if (material_recipe_enabled(recipes, MaterialRecipe::QualityTop)) {
++            out.has_top_flow  = in.has_top_flow;
++            out.top_flow      = in.top_flow;
++            out.has_top_speed = in.has_top_speed;
++            out.top_speed     = in.top_speed;
++        }
++        if (material_recipe_enabled(recipes, MaterialRecipe::OuterSpeed)) {
++            out.has_outer_speed = in.has_outer_speed;
++            out.outer_speed     = in.outer_speed;
++        }
++        out.has_first_layer_flow = in.has_first_layer_flow;
++        out.first_layer_flow     = in.first_layer_flow;
++    }
++    return out;
++}
++
++inline MaterialTable resolved_table(const MaterialTable &table, int recipes, bool slice_key)
++{
++    MaterialTable out;
++    for (const auto &[name, values] : table) {
++        MaterialValues resolved = resolved_values(values, recipes, slice_key);
++        if (! resolved.empty())
++            out.emplace(name, resolved);
++    }
++    return out;
++}
++
++// "PLA:bd=120;bf=1.05|PETG:bd=125" - materials separated by '|', fields by ';', name and value by
++// '='. Tolerant on read: unknown fields, unknown materials are dropped, numbers are clamped, so a
++// hand-edited or stale value can never crash the dialog or the slicer.
++inline std::string format_number(double value)
++{
++    // Trim trailing zeros so the stored string is stable across a save/load round trip.
++    char buffer[64];
++    std::snprintf(buffer, sizeof(buffer), "%.4f", value);
++    std::string text(buffer);
++    while (text.size() > 1 && text.back() == '0' && text[text.size() - 2] != '.')
++        text.pop_back();
++    if (! text.empty() && text.back() == '.')
++        text.pop_back();
++    return text;
++}
++
++inline std::string serialize(const MaterialTable &table)
++{
++    std::string out;
++    for (const auto &[name, values] : table) {
++        if (values.empty())
++            continue;
++        std::string row;
++        auto        add = [&row](const char *key, double value) {
++            if (! row.empty())
++                row += ';';
++            row += key;
++            row += '=';
++            row += format_number(value);
++        };
++        if (values.has_bridge_density) add("bd", clamp_material_bridge_density(values.bridge_density));
++        if (values.has_bridge_flow) add("bf", clamp_material_flow(values.bridge_flow));
++        if (values.has_bridge_speed) add("bs", clamp_material_speed(values.bridge_speed));
++        if (values.has_top_flow) add("tf", clamp_material_flow(values.top_flow));
++        if (values.has_top_width) {
++            if (! row.empty())
++                row += ';';
++            row += "tw=";
++            row += format_number(clamp_material_line_width(values.top_width, values.top_width_percent));
++            if (values.top_width_percent)
++                row += '%';
++        }
++        if (values.has_top_speed) add("ts", clamp_material_speed(values.top_speed));
++        if (values.has_outer_speed) add("os", clamp_material_speed(values.outer_speed));
++        if (values.has_first_layer_flow) add("fl", clamp_first_layer_flow_delta(values.first_layer_flow));
++        if (row.empty())
++            continue;
++        if (! out.empty())
++            out += '|';
++        out += normalize_material(name);
++        out += ':';
++        out += row;
++    }
++    return out;
++}
++
++inline MaterialTable parse(const std::string &text)
++{
++    MaterialTable out;
++    size_t        pos = 0;
++    while (pos < text.size()) {
++        const size_t row_end = text.find('|', pos);
++        const std::string row = text.substr(pos, row_end == std::string::npos ? std::string::npos : row_end - pos);
++        pos = row_end == std::string::npos ? text.size() : row_end + 1;
++
++        const size_t colon = row.find(':');
++        if (colon == std::string::npos)
++            continue;
++        const std::string name = normalize_material(row.substr(0, colon));
++        if (name.empty())
++            continue;
++
++        MaterialValues values;
++        size_t         field_pos = colon + 1;
++        while (field_pos < row.size()) {
++            const size_t field_end = row.find(';', field_pos);
++            const std::string field =
++                row.substr(field_pos, field_end == std::string::npos ? std::string::npos : field_end - field_pos);
++            field_pos = field_end == std::string::npos ? row.size() : field_end + 1;
++
++            const size_t equals = field.find('=');
++            if (equals == std::string::npos)
++                continue;
++            const std::string key   = field.substr(0, equals);
++            std::string       value = field.substr(equals + 1);
++            const bool        percent = ! value.empty() && value.back() == '%';
++            if (percent)
++                value.pop_back();
++            double number = 0.;
++            try {
++                number = std::stod(value);
++            } catch (...) {
++                continue; // malformed number: drop the field, keep the row
++            }
++            if (! std::isfinite(number))
++                continue;
++
++            if (key == "bd") {
++                values.has_bridge_density = true;
++                values.bridge_density     = clamp_material_bridge_density(number);
++            } else if (key == "bf") {
++                values.has_bridge_flow = true;
++                values.bridge_flow     = clamp_material_flow(number);
++            } else if (key == "bs") {
++                values.has_bridge_speed = true;
++                values.bridge_speed     = clamp_material_speed(number);
++            } else if (key == "tf") {
++                values.has_top_flow = true;
++                values.top_flow     = clamp_material_flow(number);
++            } else if (key == "tw") {
++                values.has_top_width      = true;
++                values.top_width          = clamp_material_line_width(number, percent);
++                values.top_width_percent  = percent;
++            } else if (key == "ts") {
++                values.has_top_speed = true;
++                values.top_speed     = clamp_material_speed(number);
++            } else if (key == "os") {
++                values.has_outer_speed = true;
++                values.outer_speed     = clamp_material_speed(number);
++            } else if (key == "fl") {
++                values.has_first_layer_flow = true;
++                values.first_layer_flow     = clamp_first_layer_flow_delta(number);
++            }
++        }
++        if (! values.empty())
++            out[name] = values;
++    }
++    return out;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif /* slic3r_OrcaExt_MaterialAutomation_hpp_ */
+diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
+index d56b286ccf..38504ea87e 100644
+--- a/src/libslic3r/Print.cpp
++++ b/src/libslic3r/Print.cpp
+@@ -335,6 +335,9 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
+         "grab_length",
+         "bed_temperature_formula",
+         "bed_temperature_offset", // [ORCAPORT:BT-1] G-code-only: changing it must not re-slice
++        // [ORCAPORT:MA-1] the per-material E/F overrides: re-export only. The toolpath half of the
++        // table is the separate `material_automation` key, handled further down.
++        "material_automation_gcode",
+         "filament_notes",
+         "process_notes",
+         "printer_notes",
+@@ -535,6 +538,17 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
+         // primary_zone_box, which is the only part of the layout update_imex_slice_offset reads.
+         // imex_tool_layout does move that box, so it is left to the fallback below.
+         else if (opt_key == "imex_viz_theme" || opt_key == "imex_carriage_margin") {
++        }
++        // [ORCAPORT:MA-1] the toolpath half of the per-material table (bridge density, bridge flow,
++        // top-surface line width). Perimeters pull in infill, and supports read the bridge flow for
++        // their interface, so those two steps cover every reader of the resolved values.
++        else if (opt_key == "material_automation") {
++            osteps.emplace_back(posPerimeters);
++            osteps.emplace_back(posSupportMaterial);
++        }
++        // [ORCAPORT:MA-1] the recipe mask alone changes nothing: the two resolved keys above are
++        // written with it, and they are what the slicer reads.
++        else if (opt_key == "material_automation_recipes") {
+         } else {
+             // for legacy, if we can't handle this option let's invalidate all steps
+             //FIXME invalidate all steps of all objects as well?
+@@ -3140,6 +3154,7 @@ std::map<ObjectID, unsigned int> getObjectExtruderMap(const Print& print) {
+ // Slicing process, running at a background thread.
+ void Print::process(long long *time_cost_with_cache, bool use_cache)
+ {
++    this->refresh_material_automation(); // [ORCAPORT:MA-1]
+     long long start_time = 0, end_time = 0;
+     if (time_cost_with_cache)
+         *time_cost_with_cache = 0;
+@@ -3876,8 +3891,48 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
+ // The export_gcode may die for various reasons (fails to process filename_format,
+ // write error into the G-code, cannot execute post-processing scripts).
+ // It is up to the caller to show an error message.
++// [ORCAPORT:MA-1] BEGIN - the per-material table, resolved once per slice/export
++// The plate's two keys carry the table snapshot for the recipes it has on. Resolving here, against
++// the current filament_type list, means swapping a filament picks that material's row with no GUI
++// round trip, and the accessors below stay a single index for the flow/speed hot paths.
++void Print::refresh_material_automation()
++{
++    MaterialAutomationCache &cache        = m_material_automation;
++    const std::string       &slice_source = m_config.material_automation.value;
++    const std::string       &gcode_source = m_config.material_automation_gcode.value;
++    const size_t             count        = m_config.filament_type.values.size();
++    if (cache.slice_source == slice_source && cache.gcode_source == gcode_source && cache.by_filament_slice.size() == count)
++        return;
++
++    cache.slice_source = slice_source;
++    cache.gcode_source = gcode_source;
++    cache.slice        = OrcaExt::parse(slice_source);
++    cache.gcode        = OrcaExt::parse(gcode_source);
++    cache.by_filament_slice.assign(count, nullptr);
++    cache.by_filament_gcode.assign(count, nullptr);
++    for (size_t i = 0; i < count; ++i) {
++        const std::string &type         = m_config.filament_type.values[i];
++        cache.by_filament_slice[i]      = OrcaExt::find_material(cache.slice, type);
++        cache.by_filament_gcode[i]      = OrcaExt::find_material(cache.gcode, type);
++    }
++}
++
++const OrcaExt::MaterialValues *Print::material_slice_values(int filament_id) const
++{
++    const auto &values = m_material_automation.by_filament_slice;
++    return (filament_id >= 0 && size_t(filament_id) < values.size()) ? values[filament_id] : nullptr;
++}
++
++const OrcaExt::MaterialValues *Print::material_gcode_values(int filament_id) const
++{
++    const auto &values = m_material_automation.by_filament_gcode;
++    return (filament_id >= 0 && size_t(filament_id) < values.size()) ? values[filament_id] : nullptr;
++}
++// [ORCAPORT:MA-1] END
++
+ std::string Print::export_gcode(const std::string& path_template, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
+ {
++    this->refresh_material_automation(); // [ORCAPORT:MA-1]
+     // output everything to a G-code file
+     // The following call may die if the filename_format template substitution fails.
+     std::string path = this->output_filepath(path_template);
+diff --git a/src/libslic3r/Print.hpp b/src/libslic3r/Print.hpp
+index 3dfbb3d8b2..2e4f7c1ae5 100644
+--- a/src/libslic3r/Print.hpp
++++ b/src/libslic3r/Print.hpp
+@@ -32,6 +32,7 @@
+ #include "BeltTransform.hpp"
+ #include "ObjectID.hpp"
+ #include "TriangleSelector.hpp"
++#include "OrcaExt/MaterialAutomation.hpp"
+ #include "libslic3r.h"
+ 
+ #include <Eigen/Geometry>
+@@ -1204,6 +1205,12 @@ public:
+     const PrintConfig&          config() const { return m_config; }
+     const PrintObjectConfig&    default_object_config() const { return m_default_object_config; }
+     const PrintRegionConfig& default_region_config() const { return m_default_region_config; }
++    // [ORCAPORT:MA-1] per-material overrides resolved from the plate's table keys, split into the
++    // toolpath inputs and the E/F inputs. Rebuilt before every slice and every G-code export; the
++    // accessors stay O(1) so the flow and speed lookups in the hot paths cost one array index.
++    void                        refresh_material_automation();
++    const OrcaExt::MaterialValues * material_slice_values(int filament_id) const;
++    const OrcaExt::MaterialValues * material_gcode_values(int filament_id) const;
+     ConstPrintObjectPtrsAdaptor objects() const { return ConstPrintObjectPtrsAdaptor(&m_objects); }
+     PrintObject*                get_object(size_t idx) { return const_cast<PrintObject*>(m_objects[idx]); }
+     const PrintObject*          get_object(size_t idx) const { return m_objects[idx]; }
+@@ -1571,6 +1578,17 @@ private:
+     PrintConfig                             m_config;
+     PrintObjectConfig                       m_default_object_config;
+     PrintRegionConfig                       m_default_region_config;
++    // [ORCAPORT:MA-1] parsed material tables and their per-filament lookup, keyed by filament_type
++    struct MaterialAutomationCache
++    {
++        std::string  slice_source;
++        std::string  gcode_source;
++        OrcaExt::MaterialTable slice;
++        OrcaExt::MaterialTable gcode;
++        std::vector<const OrcaExt::MaterialValues *> by_filament_slice;
++        std::vector<const OrcaExt::MaterialValues *> by_filament_gcode;
++    };
++    MaterialAutomationCache                 m_material_automation;
+     PrintObjectPtrs                         m_objects;
+     PrintRegionPtrs                         m_print_regions;
+     bool                                    m_same_shrinkage_compensations { false };
+diff --git a/src/libslic3r/PrintApply.cpp b/src/libslic3r/PrintApply.cpp
+index 60ad4f471a..76a668a2ae 100644
+--- a/src/libslic3r/PrintApply.cpp
++++ b/src/libslic3r/PrintApply.cpp
+@@ -2310,6 +2310,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
+ 	if (apply_status != APPLY_STATUS_UNCHANGED)
+ 		m_modified_count++;
+ 	BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: finished,  this %2%, m_modified_count %3%, apply_status %4%, m_support_used %5%")%__LINE__ %this %m_modified_count %apply_status %m_support_used;
++    // [ORCAPORT:MA-1] the plate's per-material keys are part of the config now; resolve them once so
++    // the slice and the export read the same table.
++    this->refresh_material_automation();
+ 	return static_cast<ApplyStatus>(apply_status);
+ }
+ 
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index a5d9c1990d..de594ae486 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -16,6 +16,7 @@
+ #include "OrcaExt/BedTempOverride.hpp"
+ // [ORCAPORT:BF-1] first-layer bottom-surface flow reduction bounds
+ #include "OrcaExt/FirstLayerFlow.hpp"
++#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ 
+ #include "GCode/Thumbnails.hpp"
+ #include <numeric>
+@@ -1493,6 +1494,32 @@ void PrintConfigDef::init_fff_params()
+     def->mode = comAdvanced;
+     def->set_default_value(new ConfigOptionBool(true));
+ 
++    // [ORCAPORT:MA-1] the per-material table resolved for one plate, in two keys so the invalidation
++    // stays as small as the change: a toolpath input re-runs perimeters, an E/F input only re-exports
++    // the G-code. Both live in the plate config (never in a preset), so a plate carries its own
++    // recipes and a project keeps them. See OrcaExt/MaterialAutomation.hpp for the encoding.
++    def = this->add("material_automation", coString);
++    def->label = L("Material automation (toolpaths)");
++    def->tooltip = L("Per-material bridge density, bridge flow and top-surface line width for this plate. Filled in by the material automation dialog; never a profile value.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionString());
++
++    def = this->add("material_automation_gcode", coString);
++    def->label = L("Material automation (G-code)");
++    def->tooltip = L("Per-material bridge speed, top-surface and outer-wall speeds and first-layer flow for this plate. Filled in by the material automation dialog; applied when the G-code is exported.");
++    def->mode = comAdvanced;
++    def->set_default_value(new ConfigOptionString());
++
++    // [ORCAPORT:MA-1] which recipes this plate has on (a bit mask of OrcaExt::MaterialRecipe). The two
++    // keys above are derived from it, so a change here needs no invalidation of its own.
++    def = this->add("material_automation_recipes", coInt);
++    def->label = L("Material automation recipes");
++    def->tooltip = L("Bit mask of the per-material recipes enabled on this plate.");
++    def->mode = comAdvanced;
++    def->min = 0;
++    def->max = OrcaExt::kAllMaterialRecipes;
++    def->set_default_value(new ConfigOptionInt(0));
++
+     // Orca: allow profile maker to set default bed type in machine profile
+     // This option won't be shown in the UI
+     def = this->add("default_bed_type", coString);
+diff --git a/src/libslic3r/PrintConfig.hpp b/src/libslic3r/PrintConfig.hpp
+index d079d833ed..5410781b8e 100644
+--- a/src/libslic3r/PrintConfig.hpp
++++ b/src/libslic3r/PrintConfig.hpp
+@@ -2120,6 +2120,10 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
+     // [ORCAPORT:BF-1] whether the upload dialog follows the local plate automation for the flow;
+     // project-level like the delta, turned off as soon as a value is chosen or cleared
+     ((ConfigOptionBool,               initial_layer_bottom_surface_flow_auto))
++    // [ORCAPORT:MA-1] per-material overrides resolved for one plate; plate-level, never a preset key
++    ((ConfigOptionString,             material_automation))
++    ((ConfigOptionString,             material_automation_gcode))
++    ((ConfigOptionInt,                material_automation_recipes))
+     ((ConfigOptionInts,               cool_plate_temp))
+     ((ConfigOptionInts,               textured_cool_plate_temp))
+     ((ConfigOptionInts,               supertack_plate_temp))
+diff --git a/src/libslic3r/PrintRegion.cpp b/src/libslic3r/PrintRegion.cpp
+index e1a9797f01..2188996941 100644
+--- a/src/libslic3r/PrintRegion.cpp
++++ b/src/libslic3r/PrintRegion.cpp
+@@ -5,6 +5,7 @@
+ #include <cstddef>
+ #include "PrintConfig.hpp"
+ #include "libslic3r.h"
++#include "OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ #include <cmath>
+ #include <vector>
+ #include <algorithm>
+@@ -47,7 +48,12 @@ Flow PrintRegion::flow(const PrintObject &object, FlowRole role, double layer_he
+     } else if (role == frSolidInfill) {
+         config_width = m_config.internal_solid_infill_line_width;
+     } else if (role == frTopSolidInfill) {
+-        config_width = m_config.top_surface_line_width;
++        // [ORCAPORT:MA-1] a material's quality-top recipe replaces the profile's top-surface width.
++        // The initial-layer width keeps precedence on layer 1, exactly as it does for the profile.
++        const OrcaExt::MaterialValues *material = object.print()->material_slice_values(int(this->extruder(role)) - 1);
++        config_width = (material != nullptr && material->has_top_width) ?
++            ConfigOptionFloatOrPercent(material->top_width, material->top_width_percent) :
++            m_config.top_surface_line_width;
+     } else {
+         throw Slic3r::InvalidArgument("Unknown role");
+     }
+diff --git a/src/slic3r/CMakeLists.txt b/src/slic3r/CMakeLists.txt
+index 1f2eae5d25..0936c1335e 100644
+--- a/src/slic3r/CMakeLists.txt
++++ b/src/slic3r/CMakeLists.txt
+@@ -514,6 +514,7 @@ set(SLIC3R_GUI_SOURCES
+     GUI/PrinterWebView.hpp
+     GUI/PrintHostDialogs.cpp
+     GUI/PlateAutomationDialog.cpp
++    GUI/MaterialAutomationDialog.cpp
+     GUI/PrintHostDialogs.hpp
+     GUI/PrintOptionsDialog.cpp
+     GUI/PrintOptionsDialog.hpp
+diff --git a/src/slic3r/GUI/BackgroundSlicingProcess.cpp b/src/slic3r/GUI/BackgroundSlicingProcess.cpp
+index b6f95e30c0..27ddc0c982 100644
+--- a/src/slic3r/GUI/BackgroundSlicingProcess.cpp
++++ b/src/slic3r/GUI/BackgroundSlicingProcess.cpp
+@@ -740,6 +740,9 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model& model, const Dyn
+ {
+     assert(m_print != nullptr);
+     assert(config.opt_enum<PrinterTechnology>("printer_technology") == m_print->technology());
++    // [ORCAPORT:MA-1] resolve this plate's per-material keys from the local table before they are
++    // merged, so a table edit or a filament swap reaches the slice without a separate hook.
++    m_current_plate->resolve_material_automation();
+     // TODO: add partplate config
+     DynamicPrintConfig new_config = config;
+     new_config.apply(*m_current_plate->config());
+diff --git a/src/slic3r/GUI/MaterialAutomationDialog.cpp b/src/slic3r/GUI/MaterialAutomationDialog.cpp
+new file mode 100644
+index 0000000000..66efaab680
+--- /dev/null
++++ b/src/slic3r/GUI/MaterialAutomationDialog.cpp
+@@ -0,0 +1,271 @@
++#include "MaterialAutomationDialog.hpp"
++
++#include <wx/sizer.h>
++
++#include "GUI.hpp"
++#include "GUI_App.hpp"
++#include "I18N.hpp"
++#include "MaterialAutomationStore.hpp"
++#include "Widgets/Button.hpp"
++#include "Widgets/ComboBox.hpp"
++#include "Widgets/Label.hpp"
++#include "Widgets/StateColor.hpp"
++#include "Widgets/TextInput.hpp"
++#include "wxExtensions.hpp"
++
++namespace Slic3r {
++namespace GUI {
++
++namespace {
++
++constexpr int kValueWidth = 110;
++
++} // namespace
++
++MaterialAutomationDialog::MaterialAutomationDialog(wxWindow *parent, std::vector<std::string> materials,
++                                                   const OrcaExt::MaterialTable &table, std::function<void()> on_applied)
++    : DPIDialog(parent, wxID_ANY, _L("Material automation"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE)
++    , m_materials(std::move(materials))
++    , m_table(table)
++    , m_on_applied(std::move(on_applied))
++{
++    SetFont(wxGetApp().normal_font());
++    SetBackgroundColour(*wxWHITE);
++
++    auto *main_sizer = new wxBoxSizer(wxVERTICAL);
++
++    auto *explain = new wxStaticText(this, wxID_ANY,
++        _L("Saved on this computer only - no project, profile or downloaded 3mf changes it. The plate keeps a copy of the values it uses, so a project slices the same on another machine. An empty field leaves the profile's value alone."));
++    explain->SetFont(::Label::Body_12);
++    explain->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    explain->Wrap(FromDIP(520));
++    main_sizer->Add(explain, 0, wxALL | wxEXPAND, FromDIP(12));
++
++    if (m_materials.empty()) {
++        auto *empty = new wxStaticText(this, wxID_ANY,
++            _L("No materials in this project and none saved yet. Add a filament in the project, then reopen this dialog."));
++        empty->SetFont(::Label::Body_13);
++        empty->Wrap(FromDIP(520));
++        main_sizer->Add(empty, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
++    } else {
++        auto *material_row     = new wxBoxSizer(wxHORIZONTAL);
++        auto *material_caption = new wxStaticText(this, wxID_ANY, _L("Material"));
++        material_caption->SetFont(::Label::Body_13);
++        material_caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        material_row->Add(material_caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        m_material_choice = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(220), -1), 0, NULL, wxCB_READONLY);
++        for (const std::string &material : m_materials)
++            m_material_choice->Append(from_u8(material));
++        m_material_choice->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent &) {
++            const int selected = m_material_choice->GetSelection();
++            if (selected < 0 || size_t(selected) == m_current)
++                return;
++            // Keep what was typed: a switch first stores this material, and only then loads the next.
++            if (! store_current(true)) {
++                m_material_choice->SetSelection(int(m_current));
++                return;
++            }
++            select_material(size_t(selected));
++        });
++        material_row->Add(m_material_choice, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        main_sizer->Add(material_row, 0, wxLEFT | wxRIGHT, FromDIP(12));
++    }
++
++    auto *grid = new wxFlexGridSizer(2, FromDIP(6), FromDIP(6));
++    grid->AddGrowableCol(1, 0);
++    add_field(grid, _L("Bridge density (%)"), m_bridge_density);
++    add_field(grid, _L("Bridge flow ratio"), m_bridge_flow);
++    add_field(grid, _L("Bridge speed (mm/s)"), m_bridge_speed);
++    add_field(grid, _L("Top surface flow ratio"), m_top_flow);
++    add_field(grid, _L("Top surface line width (mm or %)"), m_top_width);
++    add_field(grid, _L("Top surface speed (mm/s)"), m_top_speed);
++    add_field(grid, _L("Outer wall speed (mm/s)"), m_outer_speed);
++    add_field(grid, _L("First layer flow (%)"), m_first_layer_flow);
++    main_sizer->Add(grid, 0, wxALL, FromDIP(12));
++
++    m_hint = new wxStaticText(this, wxID_ANY, wxEmptyString);
++    m_hint->SetFont(::Label::Body_12);
++    m_hint->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    m_hint->Wrap(FromDIP(520));
++    main_sizer->Add(m_hint, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
++
++    auto *buttons     = new wxBoxSizer(wxHORIZONTAL);
++    auto *apply_button = new Button(this, _L("Apply"));
++    apply_button->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++    apply_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { apply(); });
++    buttons->Add(apply_button, 0, wxALL, FromDIP(2));
++
++    auto *close_button = new Button(this, _L("Close"));
++    close_button->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++    close_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { EndModal(wxID_CLOSE); });
++    buttons->Add(close_button, 0, wxALL, FromDIP(2));
++    main_sizer->Add(buttons, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
++
++    SetSizerAndFit(main_sizer);
++    CenterOnParent();
++    wxGetApp().UpdateDlgDarkUI(this);
++
++    if (! m_materials.empty()) {
++        m_material_choice->SetSelection(0);
++        select_material(0);
++    }
++}
++
++void MaterialAutomationDialog::add_field(wxSizer *grid, const wxString &label, TextInput *&input)
++{
++    auto *caption = new wxStaticText(this, wxID_ANY, label);
++    caption->SetFont(::Label::Body_13);
++    caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++    grid->Add(caption, 0, wxALIGN_CENTER_VERTICAL);
++
++    input = new TextInput(this, wxEmptyString, "", "", wxDefaultPosition, wxSize(FromDIP(kValueWidth), -1), wxTE_PROCESS_ENTER);
++    grid->Add(input, 0, wxALIGN_CENTER_VERTICAL);
++}
++
++void MaterialAutomationDialog::select_material(size_t index)
++{
++    if (index >= m_materials.size())
++        return;
++    m_current = index;
++    m_hint->SetLabel(wxEmptyString);
++    load_material(index);
++    Layout();
++}
++
++void MaterialAutomationDialog::load_material(size_t index)
++{
++    const OrcaExt::MaterialValues *values = OrcaExt::find_material(m_table, m_materials[index]);
++
++    auto set = [](TextInput *input, const wxString &text) { input->GetTextCtrl()->ChangeValue(text); };
++    set(m_bridge_density, values != nullptr && values->has_bridge_density ? wxString::FromDouble(values->bridge_density, 2) : wxString());
++    set(m_bridge_flow, values != nullptr && values->has_bridge_flow ? wxString::FromDouble(values->bridge_flow, 3) : wxString());
++    set(m_bridge_speed, values != nullptr && values->has_bridge_speed ? wxString::FromDouble(values->bridge_speed) : wxString());
++    set(m_top_flow, values != nullptr && values->has_top_flow ? wxString::FromDouble(values->top_flow, 3) : wxString());
++    set(m_top_width, values != nullptr && values->has_top_width
++                         ? wxString::FromDouble(values->top_width) + (values->top_width_percent ? "%" : "")
++                         : wxString());
++    set(m_top_speed, values != nullptr && values->has_top_speed ? wxString::FromDouble(values->top_speed) : wxString());
++    set(m_outer_speed, values != nullptr && values->has_outer_speed ? wxString::FromDouble(values->outer_speed) : wxString());
++    set(m_first_layer_flow,
++        values != nullptr && values->has_first_layer_flow ? wxString::FromDouble(values->first_layer_flow, 2) : wxString());
++}
++
++bool MaterialAutomationDialog::store_current(bool quiet)
++{
++    if (m_materials.empty())
++        return true;
++
++    auto read = [](TextInput *input, double &value) {
++        const wxString text = input->GetTextCtrl()->GetValue().Trim().Trim(false);
++        if (text.empty())
++            return false;
++        double parsed = 0.;
++        if (! text.ToCDouble(&parsed))
++            return false;
++        value = parsed;
++        return true;
++    };
++    auto fail = [this, quiet](const wxString &message) {
++        if (! quiet)
++            set_hint(message);
++        return false;
++    };
++
++    OrcaExt::MaterialValues values;
++    double                   number = 0.;
++
++    if (read(m_bridge_density, number)) {
++        if (number < OrcaExt::kBridgeDensityMin || number > OrcaExt::kBridgeDensityMax)
++            return fail(_L("Bridge density must be between 10 and 125 %."));
++        values.has_bridge_density = true;
++        values.bridge_density     = number;
++    }
++    if (read(m_bridge_flow, number)) {
++        if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax)
++            return fail(_L("Bridge flow ratio must be between 0 and 2."));
++        values.has_bridge_flow = true;
++        values.bridge_flow     = number;
++    }
++    if (read(m_bridge_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Bridge speed must be between 1 and 1000 mm/s."));
++        values.has_bridge_speed = true;
++        values.bridge_speed     = number;
++    }
++    if (read(m_top_flow, number)) {
++        if (number < OrcaExt::kFlowRatioMin || number > OrcaExt::kFlowRatioMax)
++            return fail(_L("Top surface flow ratio must be between 0 and 2."));
++        values.has_top_flow = true;
++        values.top_flow     = number;
++    }
++    {
++        wxString text = m_top_width->GetTextCtrl()->GetValue();
++        text.Trim().Trim(false);
++        if (! text.empty()) {
++            const bool percent = text.EndsWith("%");
++            if (percent)
++                text.RemoveLast();
++            double width = 0.;
++            if (! text.ToCDouble(&width))
++                return fail(_L("Top surface line width must be a number in mm, or a percentage of the nozzle diameter."));
++            if (width <= 0. || width > (percent ? OrcaExt::kLineWidthPercentMax : OrcaExt::kLineWidthMmMax))
++                return fail(_L("Top surface line width must be a positive value in mm or a percentage of the nozzle diameter."));
++            values.has_top_width     = true;
++            values.top_width         = width;
++            values.top_width_percent = percent;
++        }
++    }
++    if (read(m_top_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Top surface speed must be between 1 and 1000 mm/s."));
++        values.has_top_speed = true;
++        values.top_speed     = number;
++    }
++    if (read(m_outer_speed, number)) {
++        if (number < OrcaExt::kSpeedMin || number > OrcaExt::kSpeedMax)
++            return fail(_L("Outer wall speed must be between 1 and 1000 mm/s."));
++        values.has_outer_speed = true;
++        values.outer_speed     = number;
++    }
++    if (read(m_first_layer_flow, number)) {
++        if (number > OrcaExt::kFirstLayerFlowDeltaMax || number < OrcaExt::kFirstLayerFlowDeltaMin)
++            return fail(_L("First layer flow must be a reduction between -50 and 0 %."));
++        values.has_first_layer_flow = true;
++        values.first_layer_flow     = number;
++    }
++
++    const std::string key = OrcaExt::normalize_material(m_materials[m_current]);
++    if (values.empty())
++        m_table.erase(key);
++    else
++        m_table[key] = values;
++
++    save_material_table(*wxGetApp().app_config, m_table);
++    if (m_on_applied)
++        m_on_applied();
++    return true;
++}
++
++void MaterialAutomationDialog::apply()
++{
++    if (! store_current(false))
++        return;
++    set_hint(_L("Saved."));
++}
++
++void MaterialAutomationDialog::set_hint(const wxString &text)
++{
++    if (m_hint != nullptr)
++        m_hint->SetLabel(text);
++}
++
++void MaterialAutomationDialog::on_dpi_changed(const wxRect &suggested_rect)
++{
++    this->SetSize(wxSize(FromDIP(620), -1));
++    Layout();
++    Fit();
++}
++
++} // namespace GUI
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/MaterialAutomationDialog.hpp b/src/slic3r/GUI/MaterialAutomationDialog.hpp
+new file mode 100644
+index 0000000000..6271cce916
+--- /dev/null
++++ b/src/slic3r/GUI/MaterialAutomationDialog.hpp
+@@ -0,0 +1,67 @@
++// [ORCAPORT FILE] MaterialAutomationDialog - edit the local per-material table
++// Source: original (design in porting/notes/MA-1.md)
++//
++// One material at a time, chosen from the list the project carries: a plate's own filament list is
++// empty until it is sliced, so the selector is the project's filament types plus any material that
++// already has a row. An empty field means "leave the profile alone", which is what makes an empty
++// table a no-op. The values are saved on this computer (AppConfig); the plate carries the *resolved*
++// copy, so a project slices the same elsewhere.
++#ifndef slic3r_GUI_MaterialAutomationDialog_hpp_
++#define slic3r_GUI_MaterialAutomationDialog_hpp_
++
++#include <functional>
++#include <string>
++#include <vector>
++
++#include <wx/dialog.h>
++#include <wx/stattext.h>
++
++#include "libslic3r/OrcaExt/MaterialAutomation.hpp"
++#include "GUI_Utils.hpp"
++
++class ComboBox;
++class TextInput;
++
++namespace Slic3r {
++namespace GUI {
++
++class MaterialAutomationDialog : public DPIDialog
++{
++public:
++    // `materials` is the selector's list, already ordered and deduplicated. `on_applied` runs after
++    // every save so the caller can refresh its rows without closing the dialog.
++    MaterialAutomationDialog(wxWindow *parent, std::vector<std::string> materials,
++                             const OrcaExt::MaterialTable &table, std::function<void()> on_applied);
++    ~MaterialAutomationDialog() override = default;
++
++    void on_dpi_changed(const wxRect &suggested_rect) override;
++
++private:
++    void add_field(wxSizer *grid, const wxString &label, TextInput *&input);
++    void load_material(size_t index);
++    void select_material(size_t index);
++    bool store_current(bool quiet);
++    void apply();
++    void set_hint(const wxString &text);
++
++    TextInput *m_bridge_density {nullptr};
++    TextInput *m_bridge_flow {nullptr};
++    TextInput *m_bridge_speed {nullptr};
++    TextInput *m_top_flow {nullptr};
++    TextInput *m_top_width {nullptr};
++    TextInput *m_top_speed {nullptr};
++    TextInput *m_outer_speed {nullptr};
++    TextInput *m_first_layer_flow {nullptr};
++
++    ComboBox             *m_material_choice {nullptr};
++    wxStaticText         *m_hint {nullptr};
++    std::vector<std::string> m_materials;
++    OrcaExt::MaterialTable   m_table; // working copy, saved on Apply
++    size_t                   m_current {0};
++    std::function<void()>    m_on_applied;
++};
++
++} // namespace GUI
++} // namespace Slic3r
++
++#endif // slic3r_GUI_MaterialAutomationDialog_hpp_
+diff --git a/src/slic3r/GUI/MaterialAutomationStore.hpp b/src/slic3r/GUI/MaterialAutomationStore.hpp
+new file mode 100644
+index 0000000000..b99fc9827e
+--- /dev/null
++++ b/src/slic3r/GUI/MaterialAutomationStore.hpp
+@@ -0,0 +1,30 @@
++// [ORCAPORT FILE] MaterialAutomationStore - AppConfig side of the local per-material table
++// Source: original (design in porting/notes/MA-1.md)
++//
++// One [app] key. Deliberately not a preset or project key: a downloaded 3mf or an updated vendor
++// profile can neither read nor reset it. The plate keeps the *resolved* values, so a project still
++// slices identically on a machine whose table differs.
++#pragma once
++
++#include <string>
++
++#include "libslic3r/AppConfig.hpp"
++#include "libslic3r/OrcaExt/MaterialAutomation.hpp"
++
++namespace Slic3r {
++namespace GUI {
++
++inline constexpr const char *MATERIAL_TABLE_KEY = "orca_ext_material_automation";
++
++inline OrcaExt::MaterialTable load_material_table(const AppConfig &config)
++{
++    return OrcaExt::parse(config.get("app", MATERIAL_TABLE_KEY));
++}
++
++inline void save_material_table(AppConfig &config, const OrcaExt::MaterialTable &table)
++{
++    config.set("app", MATERIAL_TABLE_KEY, OrcaExt::serialize(table));
++}
++
++} // namespace GUI
++} // namespace Slic3r
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
+index cd852810f3..f853a399e2 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPConfigKeys.hpp
+@@ -31,6 +31,11 @@ inline const std::set<std::string> project_keys = {
+     "initial_layer_bottom_surface_flow_delta",
+     // Whether that reduction still follows the plate type (no explicit choice yet).
+     "initial_layer_bottom_surface_flow_auto",
++    // [ORCAPORT:MA-1] the per-material table a plate resolves for its recipes. They are plate-level
++    // keys; they are listed here so an automation client can drive them for a runtime check.
++    "material_automation",
++    "material_automation_gcode",
++    "material_automation_recipes",
+     "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
+     "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve", "filament_mixed_gradient_per_part"
+ };
+diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
+index 64fd312561..c9570cfce0 100644
+--- a/src/slic3r/GUI/PartPlate.cpp
++++ b/src/slic3r/GUI/PartPlate.cpp
+@@ -59,6 +59,8 @@
+ #include <sstream>
+ #include <regex>
+ #include "libslic3r/MultiNozzleUtils.hpp"
++#include "libslic3r/OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
++#include "MaterialAutomationStore.hpp"               // [ORCAPORT:MA-1]
+ #include "libslic3r/FilamentMixer.hpp"
+ #include <future>
+ #include <glad/gl.h>
+@@ -320,6 +322,51 @@ void PartPlate::reset_bed_type()
+     m_config.erase("curr_bed_type");
+ }
+ 
++// [ORCAPORT:MA-1] BEGIN - per-plate material recipes and the resolved values the slicer reads
++int PartPlate::material_recipes() const
++{
++    const ConfigOptionInt *opt = m_config.option<ConfigOptionInt>("material_automation_recipes");
++    return opt != nullptr ? opt->value : 0;
++}
++
++void PartPlate::set_material_recipes(int mask)
++{
++    mask &= OrcaExt::kAllMaterialRecipes;
++    if (mask != material_recipes()) {
++        update_slice_result_valid_state(false);
++        if (mask == 0)
++            m_config.erase("material_automation_recipes");
++        else
++            m_config.set_key_value("material_automation_recipes", new ConfigOptionInt(mask));
++    }
++    invalidate_material_badge_texture();
++}
++
++void PartPlate::resolve_material_automation()
++{
++    const AppConfig *app_config = wxGetApp().app_config;
++    if (app_config == nullptr)
++        return;
++
++    // The plate keeps a copy of what it actually uses, so a project slices identically on a machine
++    // whose local table differs. Writing only on a change keeps an untouched project clean.
++    const OrcaExt::MaterialTable table = load_material_table(*app_config);
++    const int                      mask  = material_recipes();
++    auto sync = [this](const char *key, const OrcaExt::MaterialTable &resolved) {
++        const std::string value = OrcaExt::serialize(resolved);
++        if (value.empty()) {
++            if (m_config.has(key))
++                m_config.erase(key);
++        } else if (! m_config.has(key) || m_config.opt_string(key) != value) {
++            m_config.set_key_value(key, new ConfigOptionString(value));
++        }
++    };
++    sync("material_automation", OrcaExt::resolved_table(table, mask, true));
++    sync("material_automation_gcode", OrcaExt::resolved_table(table, mask, false));
++    invalidate_material_badge_texture();
++}
++// [ORCAPORT:MA-1] END
++
+ void PartPlate::reset_skirt_start_angle()
+ {
+     m_config.erase("skirt_start_angle");
+@@ -2244,6 +2291,7 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
+             }
+         }
+ 		render_plate_name_texture();
++		render_material_badge_texture(); // [ORCAPORT:MA-1] right of the name, so it needs the name's width
+ 
+         glsafe(::glDisable(GL_BLEND));
+ 
+@@ -3628,6 +3676,9 @@ void PartPlate::generate_plate_name_texture()
+     //    px = scale_(bed_ext.center()(0)) - (width + height) / 2.00;
+ 
+     p += Vec2d(0, offset_y);
++    // [ORCAPORT:MA-1] the material badge sits to the right of the name, so it needs the name's width
++    m_plate_name_width_mm = width;
++    invalidate_material_badge_texture();
+ 
+     poly.contour.append({ scale_(p(0)        ), scale_(p(1)         ) });
+     poly.contour.append({ scale_(p(0) + width), scale_(p(1)         ) });
+@@ -3756,6 +3807,84 @@ void PartPlate::render_bed_temp_texture()
+ }
+ // [ORCAPORT:BT-1] END
+ 
++// [ORCAPORT:MA-1] BEGIN - the plate's material recipe readout, right of the plate name
++void PartPlate::generate_material_badge_texture()
++{
++	m_material_badge_ready = true;
++	m_material_badge_icon.reset();
++	m_material_badge_texture.reset();
++
++	const int mask = material_recipes();
++	wxString  label;
++	auto      append = [&label](const wxString &text) {
++        if (! label.empty())
++            label += L" \u00B7 ";
++        label += text;
++	};
++	if (mask & int(OrcaExt::MaterialRecipe::FreeBridging))
++		append(_L("Free bridging"));
++	if (mask & int(OrcaExt::MaterialRecipe::QualityTop))
++		append(_L("Quality Top"));
++	if (mask & int(OrcaExt::MaterialRecipe::OuterSpeed))
++		append(_L("Outer Speed"));
++	if (label.empty())
++		return; // no recipe on: the bed shows the name alone
++
++	int    size = wxGetApp().em_unit() * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE;
++	auto   l    = Label::sysFont(int(size), true);
++	wxFont *font = &l;
++
++	wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
++	if (! m_material_badge_texture.generate_from_text_string(label.ToUTF8().data(), *font, *wxBLACK, foreground)) {
++		BOOST_LOG_TRIVIAL(error) << "PartPlate::generate_material_badge_texture(): generate_from_text_string() failed";
++		return;
++	}
++
++	calc_vertex_for_material_badge_texture(m_material_badge_texture, m_material_badge_icon);
++}
++
++void PartPlate::calc_vertex_for_material_badge_texture(GLTexture &texture, GLModel &buffer)
++{
++	buffer.reset();
++	if (m_plate_name_width_mm <= 0.f)
++		return; // the name has not been laid out yet
++
++	const float factor   = icon_scale_factor();
++	const float icon_sz  = factor * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE * 0.8f;
++	const float width    = icon_sz * texture.get_width() / texture.get_height();
++	const float height   = icon_sz;
++	const float offset_y = factor * PARTPLATE_TEXT_OFFSET_Y;
++	const float gap      = factor * 2.f;
++
++	auto  bed_ext = get_extents(m_shape);
++	Vec2d p       = bed_ext[3];
++	p += Vec2d(m_plate_name_width_mm + gap, offset_y);
++
++	ExPolygon poly;
++	poly.contour.append({ scale_(p(0)), scale_(p(1)) });
++	poly.contour.append({ scale_(p(0) + width), scale_(p(1)) });
++	poly.contour.append({ scale_(p(0) + width), scale_(p(1) + height) });
++	poly.contour.append({ scale_(p(0)), scale_(p(1) + height) });
++
++	if (! init_model_from_poly(buffer, poly, GROUND_Z))
++		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "Unable to generate geometry buffers for material badge\n";
++}
++
++void PartPlate::render_material_badge_texture()
++{
++	if (! m_material_badge_ready)
++		generate_material_badge_texture();
++
++	if (m_material_badge_texture.get_id() == 0)
++		return;
++
++	GLuint tex_id = (GLuint) m_material_badge_texture.get_id();
++	glsafe(::glBindTexture(GL_TEXTURE_2D, tex_id));
++	m_material_badge_icon.render();
++	glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
++}
++// [ORCAPORT:MA-1] END
++
+ void PartPlate::set_plate_name(const std::string& name) 
+ { 
+ 	// compare if name equal to m_name, case sensitive
+diff --git a/src/slic3r/GUI/PartPlate.hpp b/src/slic3r/GUI/PartPlate.hpp
+index f061d56079..9687b794e1 100644
+--- a/src/slic3r/GUI/PartPlate.hpp
++++ b/src/slic3r/GUI/PartPlate.hpp
+@@ -207,6 +207,12 @@ private:
+     GLTexture m_bed_temp_texture;
+     bool      m_bed_temp_ready {false};
+ 
++    // [ORCAPORT:MA-1] material recipe readout, drawn to the right of the plate name
++    GLModel   m_material_badge_icon;
++    GLTexture m_material_badge_texture;
++    bool      m_material_badge_ready {false};
++    float     m_plate_name_width_mm {0.f};
++
+     void init();
+     bool valid_instance(int obj_id, int instance_id) const;
+     void generate_print_polygon(ExPolygon &print_polygon);
+@@ -237,6 +243,10 @@ private:
+     void calc_vertex_for_bed_temp_texture(GLTexture &texture, GLModel &buffer);
+     void render_bed_temp_texture();
+     void generate_bed_temp_texture();
++    // [ORCAPORT:MA-1]
++    void calc_vertex_for_material_badge_texture(GLTexture &texture, GLModel &buffer);
++    void render_material_badge_texture();
++    void generate_material_badge_texture();
+     void calc_vertex_for_plate_name_edit_icon(GLTexture *texture, int index, PickingModel &model);
+     void calc_vertex_for_icons(int index, PickingModel &model);
+     void calc_vertex_for_imex_warn_badge(int imex_icon_index, GLModel &model);
+@@ -263,6 +273,8 @@ private:
+     void invalidate_plate_name_texture();
+     // [ORCAPORT:BT-1]
+     void invalidate_bed_temp_texture() { m_bed_temp_ready = false; }
++    // [ORCAPORT:MA-1]
++    void invalidate_material_badge_texture() { m_material_badge_ready = false; }
+     void register_raycasters_for_picking(GLCanvas3D& canvas);
+     int picking_id_component(int idx) const;
+ 
+@@ -326,6 +338,12 @@ public:
+     void set_bed_type(BedType bed_type);
+     void reset_bed_type();
+ 
++    // [ORCAPORT:MA-1] per-plate material recipes (OrcaExt::MaterialRecipe bits) and the resolved
++    // table the slicer reads, written into this plate's config from the local table.
++    int  material_recipes() const;
++    void set_material_recipes(int mask);
++    void resolve_material_automation();
++
+     void reset_skirt_start_angle();
+ 
+     DynamicPrintConfig* config() { return &m_config; }
+diff --git a/src/slic3r/GUI/PlateSettingsDialog.cpp b/src/slic3r/GUI/PlateSettingsDialog.cpp
+index 31b8367774..2f10451d22 100644
+--- a/src/slic3r/GUI/PlateSettingsDialog.cpp
++++ b/src/slic3r/GUI/PlateSettingsDialog.cpp
+@@ -18,6 +18,8 @@
+ #include "slic3r/GUI/wxExtensions.hpp"
+ #include <vector>
+ #include "slic3r/GUI/GUI_App.hpp"
++#include <wx/checkbox.h>
++#include "libslic3r/OrcaExt/MaterialAutomation.hpp" // [ORCAPORT:MA-1]
+ #include "slic3r/GUI/GUI_Utils.hpp"
+ #include <wx/sizer.h>
+ #include "slic3r/GUI/Widgets/TextInput.hpp"
+@@ -462,6 +464,24 @@ PlateSettingsDialog::PlateSettingsDialog(wxWindow* parent, const wxString& title
+     top_sizer->Add(spiral_mode_txt, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT | wxTOP | wxBOTTOM, FromDIP(5));
+     top_sizer->Add(m_spiral_mode_choice, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxTOP | wxBOTTOM, FromDIP(5));
+ 
++    // [ORCAPORT:MA-1] per-plate material recipes: what the local material table applies to the
++    // filaments on this plate. Same three toggles as the print dialog, here so the slice can be
++    // re-run and previewed before sending.
++    {
++        auto* material_txt = new wxStaticText(this, wxID_ANY, _L("Material automation"));
++        material_txt->SetFont(Label::Body_14);
++        top_sizer->Add(material_txt, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT | wxTOP | wxBOTTOM, FromDIP(5));
++
++        auto* material_row      = new wxBoxSizer(wxHORIZONTAL);
++        m_material_free_bridging = new wxCheckBox(this, wxID_ANY, _L("Free bridging"));
++        m_material_quality_top   = new wxCheckBox(this, wxID_ANY, _L("Quality Top"));
++        m_material_outer_speed   = new wxCheckBox(this, wxID_ANY, _L("Outer Speed"));
++        material_row->Add(m_material_free_bridging, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
++        material_row->Add(m_material_quality_top, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
++        material_row->Add(m_material_outer_speed, 0, wxALIGN_CENTER_VERTICAL, 0);
++        top_sizer->Add(material_row, 0, wxALIGN_CENTER_VERTICAL | wxALIGN_RIGHT | wxTOP | wxBOTTOM, FromDIP(5));
++    }
++
+     // First layer filament sequence
+     m_first_layer_print_seq_choice = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(240), -1), 0, NULL, wxCB_READONLY);
+     m_first_layer_print_seq_choice->Append(_L("Auto"));
+@@ -561,6 +581,10 @@ PlateSettingsDialog::PlateSettingsDialog(wxWindow* parent, const wxString& title
+             if (item->GetWindow())
+                 item->GetWindow()->Show(false);
+         }
++        // [ORCAPORT:MA-1] the material row is a sizer of checkboxes, so hide it by hand
++        if (m_material_free_bridging) m_material_free_bridging->Show(false);
++        if (m_material_quality_top)   m_material_quality_top->Show(false);
++        if (m_material_outer_speed)   m_material_outer_speed->Show(false);
+         first_layer_txt->Show();
+         m_first_layer_print_seq_choice->Show();
+         m_drag_canvas->Show();
+@@ -641,6 +665,28 @@ void PlateSettingsDialog::sync_spiral_mode(bool spiral_mode, bool as_global)
+     }
+ }
+ 
++void PlateSettingsDialog::sync_material_recipes(int mask)
++{
++    if (m_material_free_bridging)
++        m_material_free_bridging->SetValue((mask & int(OrcaExt::MaterialRecipe::FreeBridging)) != 0);
++    if (m_material_quality_top)
++        m_material_quality_top->SetValue((mask & int(OrcaExt::MaterialRecipe::QualityTop)) != 0);
++    if (m_material_outer_speed)
++        m_material_outer_speed->SetValue((mask & int(OrcaExt::MaterialRecipe::OuterSpeed)) != 0);
++}
++
++int PlateSettingsDialog::get_material_recipes_choice() const
++{
++    int mask = 0;
++    if (m_material_free_bridging && m_material_free_bridging->GetValue())
++        mask |= int(OrcaExt::MaterialRecipe::FreeBridging);
++    if (m_material_quality_top && m_material_quality_top->GetValue())
++        mask |= int(OrcaExt::MaterialRecipe::QualityTop);
++    if (m_material_outer_speed && m_material_outer_speed->GetValue())
++        mask |= int(OrcaExt::MaterialRecipe::OuterSpeed);
++    return mask;
++}
++
+ wxString PlateSettingsDialog::to_bed_type_name(BedType bed_type) {
+     switch (bed_type) {
+     case btDefault:
+diff --git a/src/slic3r/GUI/PlateSettingsDialog.hpp b/src/slic3r/GUI/PlateSettingsDialog.hpp
+index 1f05b58aeb..23a9fdc76b 100644
+--- a/src/slic3r/GUI/PlateSettingsDialog.hpp
++++ b/src/slic3r/GUI/PlateSettingsDialog.hpp
+@@ -17,6 +17,7 @@
+ #include "slic3r/GUI/GUI_Utils.hpp"
+ #include <wx/string.h>
+ #include <wx/toplevel.h>
++#include <wx/checkbox.h>
+ #include "libslic3r/PrintConfig.hpp"
+ #include <utility>
+ #include "slic3r/GUI/Widgets/TextInput.hpp"
+@@ -119,6 +120,9 @@ public:
+     void sync_first_layer_print_seq(int selection, const std::vector<int>& seq = std::vector<int>());
+     void sync_other_layers_print_seq(int selection, const std::vector<LayerPrintSequence>& seq);
+     void sync_spiral_mode(bool spiral_mode, bool as_global);
++    // [ORCAPORT:MA-1] per-plate material recipes
++    void sync_material_recipes(int mask);
++    int  get_material_recipes_choice() const;
+     wxString to_bed_type_name(BedType bed_type);
+     wxString to_print_sequence_name(PrintSequence print_seq);
+     void on_dpi_changed(const wxRect& suggested_rect) override;
+@@ -182,6 +186,10 @@ protected:
+     ComboBox* m_print_seq_choice { nullptr };
+     ComboBox* m_first_layer_print_seq_choice { nullptr };
+     ComboBox* m_spiral_mode_choice { nullptr };
++    // [ORCAPORT:MA-1]
++    wxCheckBox* m_material_free_bridging { nullptr };
++    wxCheckBox* m_material_quality_top { nullptr };
++    wxCheckBox* m_material_outer_speed { nullptr };
+     DragCanvas* m_drag_canvas;
+     OtherLayersSeqPanel* m_other_layers_seq_panel;
+     TextInput *m_ti_plate_name;
+diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
+index a49c46bf26..4a7a38a70d 100644
+--- a/src/slic3r/GUI/Plater.cpp
++++ b/src/slic3r/GUI/Plater.cpp
+@@ -21357,11 +21357,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+         }
+ 
+         pDlg->init();
+-        if (pDlg->ShowModal() != wxID_OK) {
++        const int dialog_result = pDlg->ShowModal();
++        if (dialog_result != wxID_OK && dialog_result != PrintHostSendDialog::RESLICE_RETURN_CODE)
+             return;
+-        }
+ 
+-        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
+         // [ORCAPORT:BT-1] persist the dialog's bed-temperature offset in the project config. The
+         // bed-temperature keys are in the G-code-export-only invalidation bucket, so the export
+         // scheduled just below regenerates the G-code with the new plate temperature and keeps the
+@@ -21397,7 +21396,29 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+             else
+                 project_config.set_key_value("initial_layer_bottom_surface_flow_auto", new ConfigOptionBool(first_layer_flow_auto));
+         }
++        // [ORCAPORT:MA-1] the plate's material recipes, chosen in this dialog. The values themselves
++        // are resolved from the local table when the plate is applied, so only the mask is written
++        // here; a slice-affecting recipe invalidates perimeters and the export below re-slices before
++        // uploading, an E/F-only recipe just re-exports.
++        if (pDlg->has_material_row()) {
++            // A "send all plates" dialog still shows the current plate's recipes, so the mask goes to
++            // that plate rather than nowhere.
++            const int     plate_idx = resolved_plate_idx >= 0 ? resolved_plate_idx : get_partplate_list().get_curr_plate_index();
++            if (PartPlate *plate = get_partplate_list().get_plate(plate_idx)) {
++                plate->set_material_recipes(pDlg->material_recipes());
++                plate->resolve_material_automation();
++            }
++        }
+         // PrintHostUpload upload_data;
++        // [ORCAPORT:MA-1] "Apply and reslice" wrote everything the dialog holds above. Slice and stop
++        // here instead of building an upload, so the G-code can be inspected in the preview or
++        // exported from the plate. The device-tab preference is not written on this path: no upload
++        // happens, so the checkbox has nothing to say.
++        if (dialog_result == PrintHostSendDialog::RESLICE_RETURN_CODE) {
++            this->reslice();
++            return;
++        }
++        config->set_bool("open_device_tab_post_upload", pDlg->switch_to_device_tab());
+         upload_job.switch_to_device_tab    = pDlg->switch_to_device_tab();
+         upload_job.upload_data.upload_path = pDlg->filename();
+         upload_job.upload_data.post_action = pDlg->post_action();
+@@ -23371,6 +23392,7 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+     }
+ 
+     dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
++    dlg.sync_material_recipes(curr_plate->material_recipes()); // [ORCAPORT:MA-1]
+ 
+     dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
+         PartPlate* curr_plate = p->partplate_list.get_curr_plate();
+@@ -23410,6 +23432,10 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
+             curr_plate->set_spiral_vase_mode(false, true);
+         }
+ 
++        // [ORCAPORT:MA-1] the material recipes; the values are resolved from the local table when the
++        // plate is applied, and the notification below re-slices when a recipe needs toolpaths.
++        curr_plate->set_material_recipes(dlg.get_material_recipes_choice());
++
+         update_project_dirty_from_presets();
+         set_plater_dirty(true);
+         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % ps_sel % plate_index;
+diff --git a/src/slic3r/GUI/PrintHostDialogs.cpp b/src/slic3r/GUI/PrintHostDialogs.cpp
+index 532c8c6869..5ad62ed50b 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.cpp
++++ b/src/slic3r/GUI/PrintHostDialogs.cpp
+@@ -88,6 +88,8 @@
+ #include "BedTypeThumbnails.hpp"                // [ORCAPORT:UI-3]
+ #include "PlateAutomationDialog.hpp"            // [ORCAPORT:PA-1]
+ #include "PlateAutomationStore.hpp"             // [ORCAPORT:PA-1]
++#include "MaterialAutomationDialog.hpp"         // [ORCAPORT:MA-1]
++#include "MaterialAutomationStore.hpp"          // [ORCAPORT:MA-1]
+ 
+ #include "libslic3r/Preset.hpp"
+ #include "libslic3r/PresetBundle.hpp"
+@@ -111,6 +113,45 @@ const std::array<int, 6> kBedTempOffsets {-15, -10, -5, 5, 10, 15};
+ // (radio-box semantics with a clear, like the bed-temperature offsets above).
+ const std::array<double, 4> kFirstLayerFlowDeltas {-20., -15., -10., -5.};
+ 
++// [ORCAPORT:MA-1] the material names the table offers: the filament profiles this printer can use
++// (system and user - the same source the filament sync and the preset wizard take a material from),
++// plus the project's own filaments and any row already saved. A plate's own list is empty until the
++// plate is sliced, so it cannot be the source.
++std::vector<std::string> available_material_types()
++{
++    std::vector<std::string> out;
++    PresetBundle *bundle = wxGetApp().preset_bundle;
++    if (bundle == nullptr || wxGetApp().app_config == nullptr)
++        return out;
++
++    auto append = [&out](const std::string &raw) {
++        const std::string name = OrcaExt::normalize_material(raw);
++        if (! name.empty() && std::find(out.begin(), out.end(), name) == out.end())
++            out.push_back(name);
++    };
++
++    for (const Preset &preset : bundle->filaments.get_presets())
++        if (preset.is_compatible && preset.is_visible)
++            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
++                append(type->values.front());
++
++    // Visibility depends on the "show incompatible" preference, so a strict filter could come back
++    // empty; every preset then still has a type worth offering.
++    if (out.empty())
++        for (const Preset &preset : bundle->filaments.get_presets())
++            if (const auto *type = preset.config.option<ConfigOptionStrings>("filament_type"); type != nullptr && ! type->values.empty())
++                append(type->values.front());
++
++    if (const auto *types = bundle->full_config().option<ConfigOptionStrings>("filament_type"))
++        for (const std::string &type : types->values)
++            append(type);
++    for (const auto &[name, values] : load_material_table(*wxGetApp().app_config))
++        append(name);
++
++    std::sort(out.begin(), out.end());
++    return out;
++}
++
+ wxColour contrasting_text_color(const wxColour& background)
+ {
+     return background.GetLuminance() < 0.60 ? *wxWHITE : wxColour("#303030");
+@@ -600,6 +641,14 @@ void PrintHostSendDialog::reset_to_automation()
+ }
+ // [ORCAPORT:PA-1] END
+ 
++// [ORCAPORT:MA-1] BEGIN - the material table dialog and the row that points at it
++void PrintHostSendDialog::open_material_automation()
++{
++    MaterialAutomationDialog dlg(this, available_material_types(), load_material_table(*wxGetApp().app_config), {});
++    dlg.ShowModal();
++}
++// [ORCAPORT:MA-1] END
++
+ void PrintHostSendDialog::init()
+ {
+     const auto& path = m_path;
+@@ -826,6 +875,66 @@ void PrintHostSendDialog::init()
+         content_sizer->AddSpacer(VERT_SPACING);
+     }
+ 
++    // [ORCAPORT:MA-1] BEGIN - the plate's material recipes. Each toggle applies what the local
++    // material table holds for the filaments on this plate; the numbers are edited in the table
++    // dialog. Bridging and the top-surface width are toolpath inputs (one re-slice), the speeds and
++    // flows only re-export the G-code, so the same row also lives on the plate settings dialog.
++    {
++        PartPlate *plate = wxGetApp().plater() != nullptr ? wxGetApp().plater()->get_partplate_list().get_curr_plate() : nullptr;
++        m_material_recipes     = plate != nullptr ? plate->material_recipes() : 0;
++        m_material_recipes_row = true;
++        PresetBundle *preset_bundle = wxGetApp().preset_bundle;
++
++        auto *row     = new wxBoxSizer(wxHORIZONTAL);
++        auto *caption = new wxStaticText(this, wxID_ANY, _L("Material automation"), wxDefaultPosition, wxDefaultSize, 0);
++        caption->SetFont(::Label::Body_13);
++        caption->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
++        caption->SetToolTip(_L("Use the values the material table holds for the filaments on this plate. Empty table fields keep the profile's value."));
++        row->Add(caption, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++
++        // Same .gcode.3mf limitation as the rows above: the bundle ships the already-exported
++        // per-plate G-code, so a change made here could not reach it.
++        const ConfigOptionBool *use_3mf_opt = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf");
++        const bool              supported   = use_3mf_opt == nullptr || !use_3mf_opt->value;
++
++        auto add_toggle = [&](OrcaExt::MaterialRecipe recipe, const wxString &label) {
++            auto *check = new wxCheckBox(this, wxID_ANY, label);
++            check->SetValue((m_material_recipes & int(recipe)) != 0);
++            if (supported)
++                check->Bind(wxEVT_CHECKBOX, [this, recipe](wxCommandEvent &evt) {
++                    if (evt.IsChecked())
++                        m_material_recipes |= int(recipe);
++                    else
++                        m_material_recipes &= ~int(recipe);
++                });
++            else {
++                check->Disable();
++                check->SetToolTip(_L("Not available when the printer is sent a G-code bundle (.gcode.3mf)."));
++            }
++            row->Add(check, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        };
++        add_toggle(OrcaExt::MaterialRecipe::FreeBridging, _L("Free bridging"));
++        add_toggle(OrcaExt::MaterialRecipe::QualityTop, _L("Quality Top"));
++        add_toggle(OrcaExt::MaterialRecipe::OuterSpeed, _L("Outer Speed"));
++        content_sizer->Add(row);
++
++        auto *actions = new wxBoxSizer(wxHORIZONTAL);
++        auto *edit    = new Button(this, _L("Material automation..."));
++        edit->SetStyle(ButtonStyle::Regular, ButtonType::Compact);
++        edit->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { open_material_automation(); });
++        actions->Add(edit, 0, wxALL | wxALIGN_CENTER, FromDIP(2));
++        content_sizer->Add(actions);
++        content_sizer->AddSpacer(VERT_SPACING);
++
++        // [ORCAPORT:MA-1] "Apply and reslice" joins the dialog's button row, so it reads as the same
++        // family as Upload, but Regular instead of Confirm keeps it visually apart from the uploads.
++        if (Button *slice = add_button(RESLICE_RETURN_CODE, false, _L("Apply and reslice"))) {
++            slice->SetStyle(ButtonStyle::Regular, ButtonType::Choice);
++            slice->SetToolTip(_L("Apply these settings and slice without uploading, so the G-code can be inspected or exported from the plate."));
++        }
++    }
++    // [ORCAPORT:MA-1] END
++
+     if (size_t extension_start = recent_path.find_last_of('.'); extension_start != std::string::npos)
+         m_valid_suffix = recent_path.substr(extension_start);
+     // .gcode suffix control
+diff --git a/src/slic3r/GUI/PrintHostDialogs.hpp b/src/slic3r/GUI/PrintHostDialogs.hpp
+index 30edb1029b..d46a219e86 100644
+--- a/src/slic3r/GUI/PrintHostDialogs.hpp
++++ b/src/slic3r/GUI/PrintHostDialogs.hpp
+@@ -39,6 +39,10 @@ namespace GUI {
+ class PrintHostSendDialog : public GUI::MsgDialog
+ {
+ public:
++    // [ORCAPORT:MA-1] return code of the dialog's "Apply and reslice" button. Deliberately not
++    // wxID_APPLY: the "switch to device tab" checkbox already uses that as its control id.
++    static constexpr int RESLICE_RETURN_CODE = wxID_HIGHEST + 71;
++
+     PrintHostSendDialog(const boost::filesystem::path &path, PrintHostPostUploadActions post_actions, const wxArrayString& groups, const wxArrayString& storage_paths, const wxArrayString& storage_names, bool switch_to_device_tab);
+     virtual ~PrintHostSendDialog() {}
+     boost::filesystem::path filename() const;
+@@ -60,6 +64,10 @@ public:
+     // overrides init()), so its caller must not write the offset for it.
+     bool has_bed_temp_row() const { return !m_bed_temp_radios.empty(); }
+ 
++    // [ORCAPORT:MA-1] the plate's per-material recipes chosen here, and whether the row was built
++    int  material_recipes() const { return m_material_recipes; }
++    bool has_material_row() const { return m_material_recipes_row; }
++
+     virtual void EndModal(int ret) override;
+     virtual void init();
+     virtual std::map<std::string, std::string> extendedInfo() const { return {}; }
+@@ -111,6 +119,11 @@ protected:
+     void                       open_plate_automation();
+     void                       refresh_plate_automation();
+     void                       reset_to_automation();
++
++    // [ORCAPORT:MA-1] per-plate material recipes
++    int           m_material_recipes {0};
++    bool          m_material_recipes_row {false};
++    void          open_material_automation();
+ };
+ 
+ 
+diff --git a/tests/fff_print/CMakeLists.txt b/tests/fff_print/CMakeLists.txt
+index 927ca1445e..bb718d3702 100644
+--- a/tests/fff_print/CMakeLists.txt
++++ b/tests/fff_print/CMakeLists.txt
+@@ -19,6 +19,7 @@ add_executable(${_TEST_NAME}_tests
+ 	test_model.cpp
+ 	test_multifilament.cpp
+ 	test_orca_first_layer_flow.cpp
++	test_orca_material_automation.cpp
+ 	test_perforation.cpp
+ 	test_perimeters.cpp
+ 	# Seam geometry and pipeline regressions share the existing Print fixtures.
+diff --git a/tests/fff_print/test_orca_material_automation.cpp b/tests/fff_print/test_orca_material_automation.cpp
+new file mode 100644
+index 0000000000..839181c5d3
+--- /dev/null
++++ b/tests/fff_print/test_orca_material_automation.cpp
+@@ -0,0 +1,203 @@
++#include <catch2/catch_all.hpp>
++
++#include "test_helpers.hpp"
++
++#include "libslic3r/GCode.hpp"
++#include "libslic3r/Print.hpp"
++#include "libslic3r/PrintConfig.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <string>
++#include <vector>
++
++using namespace Slic3r;
++using Catch::Matchers::WithinAbs;
++using Catch::Matchers::WithinRel;
++
++namespace {
++
++struct Move
++{
++    std::string role;
++    double      f {0.};
++    double      e {0.};
++    int         layer {0};
++};
++
++// G1 moves that extrude, tagged with the extrusion role and the layer they belong to. F is a sticky
++// modal value in G-code, so each move carries the last F seen.
++std::vector<Move> extruding_moves(const std::string &gcode)
++{
++    std::vector<Move> out;
++    std::string       role;
++    double            f     = 0.;
++    int               layer = -1;
++    size_t            pos   = 0;
++    while (pos < gcode.size()) {
++        size_t end = gcode.find('\n', pos);
++        if (end == std::string::npos)
++            end = gcode.size();
++        const std::string line = gcode.substr(pos, end - pos);
++        pos = end + 1;
++
++        if (line == ";LAYER_CHANGE") {
++            ++layer;
++        } else if (line.rfind(";TYPE:", 0) == 0) {
++            role = line.substr(6);
++        } else if (line.rfind("G1 ", 0) == 0) {
++            if (const size_t f_pos = line.find('F'); f_pos != std::string::npos) {
++                try {
++                    f = std::stod(line.substr(f_pos + 1));
++                } catch (...) {
++                }
++            }
++            Move move;
++            move.role  = role;
++            move.layer = layer;
++            move.f     = f;
++            if (const size_t e_pos = line.find('E'); e_pos != std::string::npos) {
++                try {
++                    move.e = std::stod(line.substr(e_pos + 1));
++                } catch (...) {
++                    continue;
++                }
++            }
++            if (std::abs(move.e) > 1e-9)
++                out.push_back(move);
++        }
++    }
++    return out;
++}
++
++// Cooling and the volumetric cap may lower moves, so the highest F in a role is the one the recipe
++// asked for (the cap is disabled in the fixture below).
++double max_feed(const std::vector<Move> &moves, const std::string &role)
++{
++    double out = 0.;
++    for (const Move &move : moves)
++        if (move.role == role)
++            out = std::max(out, move.f);
++    return out;
++}
++
++// A deterministic print: no cooling-driven slowdown, no overhang slowdown and no volumetric cap, so a
++// speed recipe is the only thing that can move F. The filament is PLA, which is what the table keys
++// are written against.
++DynamicPrintConfig ma_config()
++{
++    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
++    config.set_key_value("filament_type", new ConfigOptionStrings{"PLA"});
++    config.set_key_value("slow_down_for_layer_cooling", new ConfigOptionBools{false});
++    config.set_key_value("slow_down_layers", new ConfigOptionInt(0));
++    config.set_key_value("enable_overhang_speed", new ConfigOptionBools{false});
++    config.set_key_value("slowdown_for_curled_perimeters", new ConfigOptionBools{false});
++    config.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats{0.});
++    return config;
++}
++
++} // namespace
++
++// The E/F half of the table: a material's speeds and first-layer reduction replace the profile's at
++// export time, and the change re-exports the G-code without invalidating a slice step.
++TEST_CASE("Material recipes drive speeds and the first layer at export only", "[OrcaMaterialAutomation]") {
++    Print              print;
++    Model              model;
++    DynamicPrintConfig config = ma_config();
++    Test::init_print({Test::cube(10.)}, print, model, config);
++
++    const std::vector<Move> baseline = extruding_moves(Test::gcode(print));
++    REQUIRE(! baseline.empty());
++    const double plain_top  = max_feed(baseline, "Top surface");
++    const double plain_wall = max_feed(baseline, "Outer wall");
++    REQUIRE(plain_top > 0.);
++    REQUIRE(plain_wall > 0.);
++    CAPTURE(plain_top, plain_wall);
++    CHECK(plain_top != 33. * 60.);
++    CHECK(plain_wall != 44. * 60.);
++
++    // A key for a material the plate does not use must not touch anything.
++    DynamicPrintConfig other_material = config;
++    other_material.set_key_value("material_automation_gcode", new ConfigOptionString("PETG:ts=33;os=44;fl=-10"));
++    print.apply(model, other_material);
++    const std::vector<Move> untouched = extruding_moves(Test::gcode(print));
++    REQUIRE(untouched.size() == baseline.size());
++    for (size_t i = 0; i < baseline.size(); ++i) {
++        CHECK(untouched[i].f == baseline[i].f);
++        CHECK(untouched[i].e == baseline[i].e);
++    }
++
++    DynamicPrintConfig recipe = config;
++    recipe.set_key_value("material_automation_gcode", new ConfigOptionString("PLA:ts=33;os=44;fl=-10"));
++    const PrintBase::ApplyStatus status = print.apply(model, recipe);
++    CHECK(status == PrintBase::APPLY_STATUS_INVALIDATED);
++    // Only the export is invalidated: the slice result is reused.
++    REQUIRE(print.objects().size() == 1);
++    CHECK(print.objects().front()->is_step_done(posSlice));
++    CHECK(print.objects().front()->is_step_done(posInfill));
++
++    const std::vector<Move> changed = extruding_moves(Test::gcode(print));
++    CHECK_THAT(max_feed(changed, "Top surface"), WithinAbs(33. * 60., 1.));
++    CHECK_THAT(max_feed(changed, "Outer wall"), WithinAbs(44. * 60., 1.));
++
++    // The first-layer reduction scales the E of the first layer's bottom surface only.
++    REQUIRE(changed.size() == baseline.size());
++    size_t first_layer_samples = 0;
++    for (size_t i = 0; i < baseline.size(); ++i) {
++        CAPTURE(i, baseline[i].role, baseline[i].layer);
++        if (baseline[i].role == "Bottom surface" && baseline[i].layer == 0) {
++            ++first_layer_samples;
++            CHECK_THAT(changed[i].e / baseline[i].e, WithinRel(0.9, 1e-3));
++        } else {
++            CHECK(changed[i].e == baseline[i].e);
++        }
++    }
++    CHECK(first_layer_samples > 0);
++}
++
++namespace {
++
++// The top-surface extrusion width the region resolves for this object.
++double top_surface_width(const Print &print, const PrintObject &object)
++{
++    return print.get_print_region(0).flow(object, frTopSolidInfill, object.config().layer_height).width();
++}
++
++} // namespace
++
++// The toolpath half: the top-surface width is a slice input, so it must invalidate perimeters (not a
++// full re-slice of the meshes) and reach the region's resolved flow.
++TEST_CASE("A toolpath recipe re-runs perimeters and changes the top-surface width", "[OrcaMaterialAutomation]") {
++    Print              print;
++    Model              model;
++    DynamicPrintConfig config = ma_config();
++    Test::init_print({Test::cube(10.)}, print, model, config);
++
++    const std::vector<Move> baseline = extruding_moves(Test::gcode(print));
++    REQUIRE(! baseline.empty());
++    const double plain_width = top_surface_width(print, *print.objects().front());
++    REQUIRE(plain_width > 0.);
++
++    DynamicPrintConfig widened = config;
++    widened.set_key_value("material_automation", new ConfigOptionString("PLA:tw=120%"));
++    const PrintBase::ApplyStatus status = print.apply(model, widened);
++    CHECK(status == PrintBase::APPLY_STATUS_INVALIDATED);
++    REQUIRE(print.objects().size() == 1);
++    // A wider line, and the mesh is not re-sliced.
++    CHECK(print.objects().front()->is_step_done(posSlice));
++    CHECK(! print.objects().front()->is_step_done(posPerimeters));
++    const double wide_width = top_surface_width(print, *print.objects().front());
++    CHECK(wide_width > plain_width);
++
++    // Back to an empty table: the profile's own values, exactly as before the recipe.
++    DynamicPrintConfig empty = config;
++    empty.set_key_value("material_automation", new ConfigOptionString(""));
++    empty.set_key_value("material_automation_gcode", new ConfigOptionString(""));
++    print.apply(model, empty);
++    const std::vector<Move> restored = extruding_moves(Test::gcode(print));
++    REQUIRE(restored.size() == baseline.size());
++    for (size_t i = 0; i < baseline.size(); ++i) {
++        CHECK(restored[i].f == baseline[i].f);
++        CHECK(restored[i].e == baseline[i].e);
++    }
++}
+diff --git a/tests/libslic3r/CMakeLists.txt b/tests/libslic3r/CMakeLists.txt
+index c3e1914176..1fed3d4b84 100644
+--- a/tests/libslic3r/CMakeLists.txt
++++ b/tests/libslic3r/CMakeLists.txt
+@@ -64,6 +64,7 @@ add_executable(${_TEST_NAME}_tests
+     test_orca_bed_temp.cpp
+     test_orca_first_layer_flow.cpp
+     test_orca_plate_automation.cpp
++    test_orca_material_automation.cpp
+     test_meshboolean.cpp
+     test_mesh_repair.cpp
+     test_trianglemesh_slicer.cpp
+diff --git a/tests/libslic3r/test_orca_material_automation.cpp b/tests/libslic3r/test_orca_material_automation.cpp
+new file mode 100644
+index 0000000000..cc705b8e03
+--- /dev/null
++++ b/tests/libslic3r/test_orca_material_automation.cpp
+@@ -0,0 +1,170 @@
++#include <catch2/catch_all.hpp>
++
++#include "libslic3r/OrcaExt/MaterialAutomation.hpp"
++
++#include <cmath>
++#include <string>
++
++using namespace Slic3r;
++using Catch::Matchers::WithinAbs;
++
++// The local material table is one AppConfig string keyed by filament_type. An empty field must stay
++// empty (the profile's value is then in charge), and a hand-edited string must never produce an
++// out-of-range value: both are what keep the feature off by default and safe to edit.
++TEST_CASE("Material table round-trips through its string encoding", "[OrcaMaterialAutomation]") {
++    OrcaExt::MaterialTable table;
++    OrcaExt::MaterialValues pla;
++    pla.has_bridge_density = true;
++    pla.bridge_density     = 120.;
++    pla.has_bridge_flow    = true;
++    pla.bridge_flow        = 1.05;
++    pla.has_bridge_speed   = true;
++    pla.bridge_speed       = 30.;
++    pla.has_top_flow       = true;
++    pla.top_flow           = 0.96;
++    pla.has_top_width      = true;
++    pla.top_width          = 110.;
++    pla.top_width_percent  = true;
++    pla.has_top_speed      = true;
++    pla.top_speed          = 80.;
++    pla.has_outer_speed    = true;
++    pla.outer_speed        = 120.;
++    pla.has_first_layer_flow = true;
++    pla.first_layer_flow     = -10.;
++    table["PLA"] = pla;
++
++    OrcaExt::MaterialValues petg;
++    petg.has_bridge_density = true;
++    petg.bridge_density     = 95.;
++    table["PETG"]           = petg;
++
++    const std::string          serialized = OrcaExt::serialize(table);
++    const OrcaExt::MaterialTable parsed    = OrcaExt::parse(serialized);
++
++    REQUIRE(parsed.size() == 2);
++    const OrcaExt::MaterialValues *round_trip = OrcaExt::find_material(parsed, "pla");
++    REQUIRE(round_trip != nullptr);
++    CHECK(round_trip->has_bridge_density);
++    CHECK_THAT(round_trip->bridge_density, WithinAbs(120., 1e-9));
++    CHECK(round_trip->has_bridge_flow);
++    CHECK_THAT(round_trip->bridge_flow, WithinAbs(1.05, 1e-9));
++    CHECK(round_trip->has_bridge_speed);
++    CHECK_THAT(round_trip->bridge_speed, WithinAbs(30., 1e-9));
++    CHECK(round_trip->has_top_flow);
++    CHECK_THAT(round_trip->top_flow, WithinAbs(0.96, 1e-9));
++    CHECK(round_trip->has_top_width);
++    CHECK(round_trip->top_width_percent);
++    CHECK_THAT(round_trip->top_width, WithinAbs(110., 1e-9));
++    CHECK(round_trip->has_top_speed);
++    CHECK_THAT(round_trip->top_speed, WithinAbs(80., 1e-9));
++    CHECK(round_trip->has_outer_speed);
++    CHECK_THAT(round_trip->outer_speed, WithinAbs(120., 1e-9));
++    CHECK(round_trip->has_first_layer_flow);
++    CHECK_THAT(round_trip->first_layer_flow, WithinAbs(-10., 1e-9));
++
++    // An unset field stays unset, so the profile keeps its own value.
++    const OrcaExt::MaterialValues *other = OrcaExt::find_material(parsed, "PETG");
++    REQUIRE(other != nullptr);
++    CHECK(! other->has_bridge_flow);
++    CHECK(! other->has_top_width);
++    CHECK(! other->has_first_layer_flow);
++
++    CHECK(OrcaExt::parse("").empty());
++    CHECK(OrcaExt::parse("junk").empty());
++    CHECK(OrcaExt::parse("PLA:").empty());
++}
++
++TEST_CASE("Material table parsing is tolerant and bounded", "[OrcaMaterialAutomation]") {
++    CHECK(OrcaExt::normalize_material("  pla ").compare("PLA") == 0);
++
++    // Unknown field and malformed number are dropped; the rest of the row survives.
++    const OrcaExt::MaterialTable parsed = OrcaExt::parse(" pla :bogus=1;bd=oops;bf=1.1 ");
++    const OrcaExt::MaterialValues *values = OrcaExt::find_material(parsed, "PLA");
++    REQUIRE(values != nullptr);
++    CHECK(! values->has_bridge_density);
++    CHECK(values->has_bridge_flow);
++    CHECK_THAT(values->bridge_flow, WithinAbs(1.1, 1e-9));
++
++    // Out-of-range values are clamped to the option's own range.
++    const OrcaExt::MaterialTable clamped = OrcaExt::parse("PLA:bd=500;bs=0;fl=-90;tf=9");
++    const OrcaExt::MaterialValues *clamped_values = OrcaExt::find_material(clamped, "PLA");
++    REQUIRE(clamped_values != nullptr);
++    CHECK_THAT(clamped_values->bridge_density, WithinAbs(OrcaExt::kBridgeDensityMax, 1e-9));
++    CHECK_THAT(clamped_values->bridge_speed, WithinAbs(OrcaExt::kSpeedMin, 1e-9));
++    CHECK_THAT(clamped_values->first_layer_flow, WithinAbs(OrcaExt::kFirstLayerFlowDeltaMin, 1e-9));
++    CHECK_THAT(clamped_values->top_flow, WithinAbs(OrcaExt::kFlowRatioMax, 1e-9));
++
++    // A mm width and a percent width are distinguishable after the round trip.
++    const OrcaExt::MaterialTable widths = OrcaExt::parse("PLA:tw=0.45|PETG:tw=120%");
++    CHECK_THAT(OrcaExt::find_material(widths, "PLA")->top_width, WithinAbs(0.45, 1e-9));
++    CHECK(! OrcaExt::find_material(widths, "PLA")->top_width_percent);
++    CHECK_THAT(OrcaExt::find_material(widths, "PETG")->top_width, WithinAbs(120., 1e-9));
++    CHECK(OrcaExt::find_material(widths, "PETG")->top_width_percent);
++}
++
++// A plate stores one table per key kind: only the toolpath inputs of the recipes it has on, and only
++// the E/F inputs of the same recipes. The first-layer flow is not a recipe: it applies per material
++// as soon as the material sets it, which is what "no toggle" means.
++TEST_CASE("Resolving a plate keeps only the enabled recipes' fields", "[OrcaMaterialAutomation]") {
++    OrcaExt::MaterialValues values;
++    values.has_bridge_density    = true;
++    values.bridge_density        = 120.;
++    values.has_bridge_flow       = true;
++    values.bridge_flow           = 1.05;
++    values.has_bridge_speed      = true;
++    values.bridge_speed          = 30.;
++    values.has_top_flow          = true;
++    values.top_flow              = 0.96;
++    values.has_top_width         = true;
++    values.top_width             = 110.;
++    values.top_width_percent     = true;
++    values.has_top_speed         = true;
++    values.top_speed             = 80.;
++    values.has_outer_speed       = true;
++    values.outer_speed           = 120.;
++    values.has_first_layer_flow  = true;
++    values.first_layer_flow      = -10.;
++
++    OrcaExt::MaterialTable table;
++    table["PLA"] = values;
++
++    // Free bridging only: the toolpath key carries density and flow, the G-code key only the speed.
++    const OrcaExt::MaterialTable slice_free = OrcaExt::resolved_table(table, int(OrcaExt::MaterialRecipe::FreeBridging), true);
++    const OrcaExt::MaterialValues *free_slice = OrcaExt::find_material(slice_free, "PLA");
++    REQUIRE(free_slice != nullptr);
++    CHECK(free_slice->has_bridge_density);
++    CHECK(free_slice->has_bridge_flow);
++    CHECK(! free_slice->has_top_width);
++    CHECK(! free_slice->empty());
++
++    const OrcaExt::MaterialTable gcode_free = OrcaExt::resolved_table(table, int(OrcaExt::MaterialRecipe::FreeBridging), false);
++    const OrcaExt::MaterialValues *free_gcode = OrcaExt::find_material(gcode_free, "PLA");
++    REQUIRE(free_gcode != nullptr);
++    CHECK(free_gcode->has_bridge_speed);
++    CHECK(! free_gcode->has_top_flow);
++    CHECK(! free_gcode->has_outer_speed);
++    // No toggle governs the first-layer flow, so it is always in the G-code half.
++    CHECK(free_gcode->has_first_layer_flow);
++
++    // Quality top: the width is a toolpath input, flow and speed are not.
++    const OrcaExt::MaterialTable slice_top = OrcaExt::resolved_table(table, int(OrcaExt::MaterialRecipe::QualityTop), true);
++    CHECK(! OrcaExt::find_material(slice_top, "PLA")->has_bridge_density);
++    CHECK(OrcaExt::find_material(slice_top, "PLA")->has_top_width);
++
++    const OrcaExt::MaterialTable gcode_top = OrcaExt::resolved_table(table, int(OrcaExt::MaterialRecipe::QualityTop), false);
++    CHECK(OrcaExt::find_material(gcode_top, "PLA")->has_top_flow);
++    CHECK(OrcaExt::find_material(gcode_top, "PLA")->has_top_speed);
++    CHECK(! OrcaExt::find_material(gcode_top, "PLA")->has_outer_speed);
++
++    // Outer speed only.
++    const OrcaExt::MaterialTable gcode_outer = OrcaExt::resolved_table(table, int(OrcaExt::MaterialRecipe::OuterSpeed), false);
++    CHECK(OrcaExt::find_material(gcode_outer, "PLA")->has_outer_speed);
++    CHECK(! OrcaExt::find_material(gcode_outer, "PLA")->has_top_flow);
++
++    // Nothing enabled still emits the first-layer flow, and nothing in the toolpath half.
++    const OrcaExt::MaterialTable slice_none = OrcaExt::resolved_table(table, 0, true);
++    CHECK(slice_none.empty());
++    const OrcaExt::MaterialTable gcode_none = OrcaExt::resolved_table(table, 0, false);
++    CHECK(OrcaExt::find_material(gcode_none, "PLA")->has_first_layer_flow);
++    CHECK(! OrcaExt::find_material(gcode_none, "PLA")->has_outer_speed);
++}

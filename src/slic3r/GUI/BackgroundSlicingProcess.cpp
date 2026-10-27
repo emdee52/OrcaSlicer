@@ -740,6 +740,9 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model& model, const Dyn
 {
     assert(m_print != nullptr);
     assert(config.opt_enum<PrinterTechnology>("printer_technology") == m_print->technology());
+    // [ORCAPORT:MA-1] resolve this plate's per-material keys from the local table before they are
+    // merged, so a table edit or a filament swap reaches the slice without a separate hook.
+    m_current_plate->resolve_material_automation();
     // TODO: add partplate config
     DynamicPrintConfig new_config = config;
     new_config.apply(*m_current_plate->config());
