@@ -24,7 +24,16 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- Latest integration commit at handoff: **`260807b84e`** "Merge port/MA-1: material automation is a local
+- Latest integration commit at handoff: **`c7b76a5373`** "Merge port/EX-1: the Exhaust fan rows follow
+  the selected nozzle variant" - merged (user-tested 2026-10-27) and pushed. The Filament -> Cooling
+  **Exhaust fan** rows were built on the base option key, so they edited only the first nozzle-variant
+  column; on a plate whose nozzles resolve to High Flow the air-filtration setting looked on in the UI
+  while the slice read 0 and emitted no `M106 P3`. Upstream's #13228 put the five keys in
+  `filament_options_with_variant` without indexing the rows; fixed locally (rows get index 0, the
+  enable/disable block follows `variant_index`, and every `Tab.cpp` call site in that list was
+  swept). When upstream fixes their copy, drop this and expect a conflict in `83_EX-1.patch`. Notes
+  `EX-1.md`.
+- Before it: **`260807b84e`** "Merge port/MA-1: material automation is a local
   per-material table of bridge, top-surface and speed recipes" - merged 2026-10-27 at the owner's
   request. A local per-material table (`[app] orca_ext_material_automation`) holds bridge /
   top-surface / speed recipes; a plate turns on **Free bridging**, **Quality Top** and **Outer
@@ -35,12 +44,6 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   patch 82. libslic3r 1582/1582, fff_print 462/462. Tested in the app over several rounds; the last
   two tweaks (dropping the material list from the dialog, moving Apply and reslice into the button
   row) were not re-tested before the merge.
-- In flight on **`port/EX-1`** (off integration): the Filament -> Cooling **Exhaust fan** rows edit
-  only the first nozzle-variant column, so on a printer whose nozzles resolve to High Flow the
-  air-filtration setting stored for Standard looks enabled in the UI while the slice reads 0 and
-  emits no `M106 P3`. Upstream's #13228 added the five keys to `filament_options_with_variant`
-  without indexing the rows. Fixed, build clean, **awaiting the owner's click-through**; notes
-  `EX-1.md`, patch 83.
 - Previous integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
   first-layer flow, per plate type, saved on this computer" - user-tested 2026-10-24. **PA-1** replaces
   BF-1's hardcoded -20 % cool-plate default with a local per-plate-type map (`AppConfig` `[app]
@@ -248,11 +251,11 @@ rationale, the manual checklist and the two pre-existing gaps it leaves are in `
 
 **BT-1 fix 2 is DONE and merged into `port/integration` (user-verified).** Branch `port/BT-1-fix2` from
 `port/integration` `e1fe5d221f`, merged as `8fa72e4493`. Labels with an offset suffix
-(`65°C (+10)`, `60°C (+5)`) rendered squished and sat at a varying distance from the plate number: the
+(`65Â°C (+10)`, `60Â°C (+5)`) rendered squished and sat at a varying distance from the plate number: the
 readout's quad used the text's *original* aspect while `generate_from_text_string()` pads the texture
 to a power of two, so the glyphs were scaled by `(orig_w/orig_h)/(POT_w/POT_h)` - ~1.0 for short
 labels, ~0.58 for one that crosses into the 256 bucket. The quad now follows the padded aspect and
-anchors the visible text. Measured: `70°C (+15)` vs `55°C` width ratio 1.32 -> 2.32 (2.32 is the
+anchors the visible text. Measured: `70Â°C (+15)` vs `55Â°C` width ratio 1.32 -> 2.32 (2.32 is the
 natural ratio) and the right edge no longer moves with the string (125 px -> 3 px). See
 `notes/BT-1.md` "Fix 2 (2026-10-15)" and patch `29_BT-1-fix2.patch`.
 
@@ -266,9 +269,9 @@ mutation passes through. The label was also moved from below/right of the plate 
 and out of the default fit-plate view, behind the icon column) to **on the plate, immediately left of
 the number**. Verified over MCP + window captures on a Textured PEI plate whose per-filament
 `textured_plate_temp_initial_layer` is `80,80,60,80`:
-- object on filament 3 (PLA, 60) -> label `60°C`, plate G-code `M190 S60`;
-- object switched to filament 1 (PETG, 80) -> label `80°C`, `M190 S80`;
-- a second object on filament 1 while the first stayed on 3 -> label `80°C` = the highest of the used
+- object on filament 3 (PLA, 60) -> label `60Â°C`, plate G-code `M190 S60`;
+- object switched to filament 1 (PETG, 80) -> label `80Â°C`, `M190 S80`;
+- a second object on filament 1 while the first stayed on 3 -> label `80Â°C` = the highest of the used
   filaments, matching `bed_temperature_formula = by_highest_temp`. (No G-code for this row: slicing
   PLA + PETG on that printer is refused by the nozzle-temperature compatibility validation.)
 See `notes/BT-1.md` "Fix (2026-10-14)" and patch `28_BT-1-fix.patch`.
