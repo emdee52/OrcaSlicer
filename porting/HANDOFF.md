@@ -35,11 +35,12 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   patch 82. libslic3r 1582/1582, fff_print 462/462. Tested in the app over several rounds; the last
   two tweaks (dropping the material list from the dialog, moving Apply and reslice into the button
   row) were not re-tested before the merge.
-- Open bug, fixed on **`port/EX-1`** (off integration): the Filament -> Cooling **Exhaust fan** rows
-  edit only the first nozzle-variant column, so on a printer whose nozzles resolve to High Flow the
+- In flight on **`port/EX-1`** (off integration): the Filament -> Cooling **Exhaust fan** rows edit
+  only the first nozzle-variant column, so on a printer whose nozzles resolve to High Flow the
   air-filtration setting stored for Standard looks enabled in the UI while the slice reads 0 and
   emits no `M106 P3`. Upstream's #13228 added the five keys to `filament_options_with_variant`
-  without indexing the rows. Notes `EX-1.md`.
+  without indexing the rows. Fixed, build clean, **awaiting the owner's click-through**; notes
+  `EX-1.md`, patch 83.
 - Previous integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
   first-layer flow, per plate type, saved on this computer" - user-tested 2026-10-24. **PA-1** replaces
   BF-1's hardcoded -20 % cool-plate default with a local per-plate-type map (`AppConfig` `[app]

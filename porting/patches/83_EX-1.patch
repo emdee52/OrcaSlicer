@@ -1,0 +1,83 @@
+From e2a7e088f6463760f773cfab7845ab32dcf62e02 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Tue, 27 Oct 2026 15:31:51 -0600
+Subject: [PATCH] port(EX-1): the Exhaust fan rows follow the selected nozzle
+ variant
+
+The five air-filtration / exhaust-speed options are per nozzle variant (upstream
+81d81da08c, #13228), but the Filament -> Cooling rows were built without a variant
+index, so they always read and wrote column 0. On a plate whose nozzles resolve to
+High Flow the UI showed the Standard values (filtration on, speed 100) while the
+slice read 0 and emitted no M106 P3.
+
+Give the rows index 0 like the auxiliary fan row already had, pass 256 + variant_index
+to the enable/disable toggles, and read activate_air_filtration* at the selected
+variant. Swept every Tab.cpp call site for a key in filament_options_with_variant
+(63 keys / 29 sites): these five were the only un-indexed ones.
+
+Upstream defect, fixed locally. Build clean; engine side untouched, so no engine test
+change: GCodeWriter::set_exhaust_fan still emits M106 P3 unconditionally.
+---
+ src/slic3r/GUI/Tab.cpp | 30 +++++++++++++++++++-----------
+ 1 file changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/src/slic3r/GUI/Tab.cpp b/src/slic3r/GUI/Tab.cpp
+index b32ae8cf96..55ad7ea387 100644
+--- a/src/slic3r/GUI/Tab.cpp
++++ b/src/slic3r/GUI/Tab.cpp
+@@ -4872,18 +4872,23 @@ void TabFilament::build()
+ 
+         optgroup = page->new_optgroup(L("Exhaust fan"),L"param_cooling_exhaust");
+ 
+-        optgroup->append_single_option_line("activate_air_filtration", "material_cooling#activate-air-filtration");
++        // [ORCAPORT:EX-1] these five keys are in filament_options_with_variant, so their values are
++        // stored once per nozzle variant and the slicer reads the variant actually in use. Building
++        // the rows without an index pins them to column 0: selecting High Flow showed the Standard
++        // values, and editing them never reached the G-code. Same index treatment as the auxiliary
++        // fan row above.
++        optgroup->append_single_option_line("activate_air_filtration", "material_cooling#activate-air-filtration", 0);
+ 
+         line = {L("During print"), ""};
+-        line.append_option(optgroup->get_option("activate_air_filtration_during_print"));
+-        line.append_option(optgroup->get_option("during_print_exhaust_fan_speed"));
++        line.append_option(optgroup->get_option("activate_air_filtration_during_print", 0));
++        line.append_option(optgroup->get_option("during_print_exhaust_fan_speed", 0));
+         line.label_path = "material_cooling#during-print";
+         optgroup->append_line(line);
+ 
+ 
+         line = {L("Complete print"), ""};
+-        line.append_option(optgroup->get_option("activate_air_filtration_on_completion"));
+-        line.append_option(optgroup->get_option("complete_print_exhaust_fan_speed"));
++        line.append_option(optgroup->get_option("activate_air_filtration_on_completion", 0));
++        line.append_option(optgroup->get_option("complete_print_exhaust_fan_speed", 0));
+         line.label_path = "material_cooling#complete-print";
+         optgroup->append_line(line);
+         //BBS
+@@ -5099,14 +5104,17 @@ void TabFilament::toggle_options()
+ 
+         bool support_air_filtration = printer_cfg.opt_bool("support_air_filtration");
+         for (auto el : {"activate_air_filtration", "during_print_exhaust_fan_speed", "complete_print_exhaust_fan_speed"})
+-            toggle_line(el, support_air_filtration);
++            // [ORCAPORT:EX-1] follow the selected nozzle variant, like the auxiliary fan row above
++            toggle_line(el, support_air_filtration, 256 + variant_index);
+ 
+         if (support_air_filtration) {
+-            bool activate_air_filtration = m_config->opt_bool("activate_air_filtration", 0);
+-            toggle_option("activate_air_filtration_during_print", activate_air_filtration);
+-            toggle_option("during_print_exhaust_fan_speed", activate_air_filtration && m_config->opt_bool("activate_air_filtration_during_print", 0));
+-            toggle_option("activate_air_filtration_on_completion", activate_air_filtration);
+-            toggle_option("complete_print_exhaust_fan_speed", activate_air_filtration && m_config->opt_bool("activate_air_filtration_on_completion", 0));
++            // [ORCAPORT:EX-1] the rows are variant-indexed now, so the enable/disable state has to be
++            // read and applied on the same column
++            bool activate_air_filtration = m_config->opt_bool("activate_air_filtration", variant_index);
++            toggle_option("activate_air_filtration_during_print", activate_air_filtration, 256 + variant_index);
++            toggle_option("during_print_exhaust_fan_speed", activate_air_filtration && m_config->opt_bool("activate_air_filtration_during_print", variant_index), 256 + variant_index);
++            toggle_option("activate_air_filtration_on_completion", activate_air_filtration, 256 + variant_index);
++            toggle_option("complete_print_exhaust_fan_speed", activate_air_filtration && m_config->opt_bool("activate_air_filtration_on_completion", variant_index), 256 + variant_index);
+         }
+     }
+     if (m_active_page->title() == L("Filament"))
+-- 
+2.43.0.windows.1
+
