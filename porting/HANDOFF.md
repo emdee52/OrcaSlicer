@@ -24,15 +24,23 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- In flight, not merged and not pushed: **`port/MA-1`** - material automation. A local
-  per-material table (`[app] orca_ext_material_automation`) holds bridge / top-surface / speed
-  recipes; a plate turns on **Free bridging**, **Quality Top** and **Outer Speed** (toggles in the
-  send dialog *and* Plate Settings) and the plate keeps the resolved copy, so a project slices the
-  same elsewhere. Bridging and the top-surface width re-run perimeters, the speeds and flows only
-  re-export; first-layer flow has no toggle. A bed badge right of the plate name lists the recipes
-  that are on. Notes `notes/MA-1.md`, patch 82. Build clean, libslic3r 1582/1582, fff_print
-  462/462 - **the user's test of the dialogs and the badge is the gate**.
-- Latest integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
+- Latest integration commit at handoff: **`260807b84e`** "Merge port/MA-1: material automation is a local
+  per-material table of bridge, top-surface and speed recipes" - merged 2026-10-27 at the owner's
+  request. A local per-material table (`[app] orca_ext_material_automation`) holds bridge /
+  top-surface / speed recipes; a plate turns on **Free bridging**, **Quality Top** and **Outer
+  Speed** (toggles in the send dialog *and* Plate Settings) and keeps the resolved copy, so a project
+  slices the same elsewhere. Bridging and the top-surface width re-run perimeters, the speeds and
+  flows only re-export; first-layer flow has no toggle. **Apply and reslice** slices without
+  uploading, and a bed badge right of the plate name lists the recipes that are on. Notes `MA-1.md`,
+  patch 82. libslic3r 1582/1582, fff_print 462/462. Tested in the app over several rounds; the last
+  two tweaks (dropping the material list from the dialog, moving Apply and reslice into the button
+  row) were not re-tested before the merge.
+- Open bug, fixed on **`port/EX-1`** (off integration): the Filament -> Cooling **Exhaust fan** rows
+  edit only the first nozzle-variant column, so on a printer whose nozzles resolve to High Flow the
+  air-filtration setting stored for Standard looks enabled in the UI while the slice reads 0 and
+  emits no `M106 P3`. Upstream's #13228 added the five keys to `filament_options_with_variant`
+  without indexing the rows. Notes `EX-1.md`.
+- Previous integration commit at handoff: **`51b24f3b75`** "Merge port/BF-1 (PA-1): plate automation is the
   first-layer flow, per plate type, saved on this computer" - user-tested 2026-10-24. **PA-1** replaces
   BF-1's hardcoded -20 % cool-plate default with a local per-plate-type map (`AppConfig` `[app]
   first_layer_flow_plates`), edited in the **Plate automation...** popup (plate tiles multi-select,
