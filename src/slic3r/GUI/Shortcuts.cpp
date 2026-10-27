@@ -132,7 +132,10 @@ constexpr std::array<ShortcutInfo, size_t(Shortcut::Count)> shortcut_table = {{
     SHORTCUT(GizmoEdgeDress,    "gizmo_edge_dress",   L("Gizmo edge chamfer / fillet"),                           PLATER, { 'X' }),
     SHORTCUT(GizmoExtrude,   "gizmo_extrude",  L("Gizmo extrude"),                                     PLATER, { 'G' }),
     SHORTCUT(GizmoPerforation,  "gizmo_perforation",  L("Gizmo perforations"),                                    PLATER, { 'Z' }),
-    SHORTCUT(GizmoTabs,         "gizmo_tabs",         L("Gizmo tabs"),                                            PLATER, { 'V' }),
+    // Bare V is upstream's Toggle printable for object/part (the registry's collision test catches the clash)
+    // and every other bare letter of the plater context is taken, so the tabs gizmo takes Shift+W - the
+    // registry's own test uses bare W as its "free chord" example, and stays correct.
+    SHORTCUT(GizmoTabs,         "gizmo_tabs",         L("Gizmo tabs"),                                            PLATER, { 'W', SHIFT }),
 
     // Sliders
     SHORTCUT(GoToLayer,           "go_to_layer",           L("Jump to layer"),                                   PREVIEW, { 'G', SHIFT }),
