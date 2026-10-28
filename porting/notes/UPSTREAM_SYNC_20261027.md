@@ -14,6 +14,7 @@ had to decide, so a later session can review it without re-reading every hunk.
 | branch | `sync/upstream-20261027`, from `port/integration` `c713a251cb` |
 | backup ref | `backup/port-integration-20261027` |
 | merge commit | `73d471ad01` "Merge upstream/main (441 commits) into the fork" |
+| merged into `port/integration` | `1b7483adcc`, after the owner tested the build (2026-10-28) |
 | conflicts | 14 files, 20 hunks, all resolved |
 | files both sides changed | 77 (the other 63 merged silently and are the review surface) |
 | upstream deletions | 12 files, none of them fork-modified |

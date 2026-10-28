@@ -24,14 +24,21 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- **Upstream sync in flight, not merged:** branch **`sync/upstream-20261027`** carries 441 upstream
-  commits (`109d09e0b8` -> `6d2869c430`) as merge **`73d471ad01`** plus two fallout commits
-  (`413cdcc542` includes, `1f8b3b250e` TB-1's Shift+W), on top of `port/integration`. Release build
-  clean and `ctest` **2888/2888**, and the off-by-default G-code equivalence check against the
-  pre-merge tree is recorded in `notes/UPSTREAM_SYNC_20261027.md`. **Merge it into
-  `port/integration` only after the owner has tested the build**, per `MERGE_POLICY.md`. `main` is
-  fast-forwarded to `6d2869c430`; backup ref `backup/port-integration-20261027`.
-- Latest integration commit at handoff: **`c7b76a5373`** "Merge port/EX-1: the Exhaust fan rows follow
+- **Upstream sync merged, user-tested 2026-10-28:** **`1b7483adcc`** "Merge
+  sync/upstream-20261027: upstream/main 6d2869c430 (441 commits) is in", on top of `c7b76a5373`.
+  Second mainline sync (`109d09e0b8` -> `6d2869c430`, 441 commits, 1066 files): 14 conflicts in 20
+  hunks, plus two fallouts the build and the suite caught - three files that relied on includes
+  upstream trimmed (`GLGizmoMove.cpp`, `OrcaMCP/OrcaMCPCommon.cpp`, `OrcaMCP/OrcaMCPServer.cpp`) and
+  TB-1's gizmo shortcut, which was on bare **V** - a chord upstream's `toggle_printable` has always
+  owned in the plater context, so the tabs gizmo is now **Shift+W**. EX-1 survives (upstream still
+  has not fixed the unindexed air-filtration rows), AS-1's `!OrcaExt::free_z()` is combined with
+  upstream's inline `mo->auto_drop`, SU-1 follows upstream's new `outline_pos` loop, and MCP-1 moved
+  to upstream's `unique_ptr` `HttpServer`. Release build clean, `ctest` **2888/2888**, markers
+  unchanged at 1104 in 183 files, and G-code **byte-identical to stock `6d2869c430`** at defaults.
+  Read `porting/notes/UPSTREAM_SYNC_20261027.md` for the per-conflict record and the `dep_OCCT`
+  stale-shim trap that the new `deps/` needs (`porting/BUILD.md`). `main` is fast-forwarded to
+  `6d2869c430`; backup ref `backup/port-integration-20261027`.
+- Previous integration commit at handoff: **`c7b76a5373`** "Merge port/EX-1: the Exhaust fan rows follow
   the selected nozzle variant" - merged (user-tested 2026-10-27) and pushed. The Filament -> Cooling
   **Exhaust fan** rows were built on the base option key, so they edited only the first nozzle-variant
   column; on a plate whose nozzles resolve to High Flow the air-filtration setting looked on in the UI
