@@ -6586,6 +6586,7 @@ void GLCanvas3D::do_move(const std::string& snapshot_type, bool force_volume_mov
                 }
             }
         } else if (mo->auto_drop && !OrcaExt::free_z() && (current_printer_technology() == ptSLA || shift_z > SINKING_Z_THRESHOLD) && (shift_z != 0.0f)) {
+            //BBS: don't call translate if the z is zero
             const Vec3d shift(0.0, 0.0, -shift_z);
             m_selection.translate(i.first, i.second, shift);
             mo->translate_instance(i.second, shift);
