@@ -15,7 +15,7 @@ lives in `porting/notes/<ID>.md`; this file is the map.
 7. `OrcaSlicer/porting/BUILD.md` before building
 8. `OrcaSlicer/porting/notes/UPSTREAM_SYNC_<date>.md` - the most recent upstream sync: what the
    merge changed, what it deliberately dropped, and what is still open (latest:
-   `notes/UPSTREAM_SYNC_20261015.md`)
+   `notes/UPSTREAM_SYNC_20261027.md`)
 
 Root `AGENTS.md` has the workspace mission and session protocol.
 
@@ -24,6 +24,13 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
+- **Upstream sync in flight, not merged:** branch **`sync/upstream-20261027`** carries 441 upstream
+  commits (`109d09e0b8` -> `6d2869c430`) as merge **`73d471ad01`** plus two fallout commits
+  (`413cdcc542` includes, `1f8b3b250e` TB-1's Shift+W), on top of `port/integration`. Release build
+  clean and `ctest` **2888/2888**, and the off-by-default G-code equivalence check against the
+  pre-merge tree is recorded in `notes/UPSTREAM_SYNC_20261027.md`. **Merge it into
+  `port/integration` only after the owner has tested the build**, per `MERGE_POLICY.md`. `main` is
+  fast-forwarded to `6d2869c430`; backup ref `backup/port-integration-20261027`.
 - Latest integration commit at handoff: **`c7b76a5373`** "Merge port/EX-1: the Exhaust fan rows follow
   the selected nozzle variant" - merged (user-tested 2026-10-27) and pushed. The Filament -> Cooling
   **Exhaust fan** rows were built on the base option key, so they edited only the first nozzle-variant
