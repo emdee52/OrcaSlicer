@@ -12,6 +12,7 @@
 #include "slic3r/GUI/DeviceManager.hpp"
 #include "slic3r/GUI/DeviceCore/DevManager.h"
 #include "slic3r/GUI/GLCanvas3D.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/CutUtils.hpp"
@@ -21,6 +22,7 @@
 #include "libslic3r/Print.hpp"
 
 #include <boost/log/trivial.hpp>
+#include <wx/base64.h>
 #include <future>
 
 namespace Slic3r { namespace GUI {

@@ -119,6 +119,13 @@ Use `-i` to install a self-contained tree (binary + resources) at
 - A dependency build that fails deep in package resolution: retry that stage with
   `.\OrcaSlicer\build_win.bat -d -c -v`.
 - A stale or half-configured tree: `.\OrcaSlicer\build_win.bat -s -c`.
+- `dep_OCCT` fails with `C1083` on `dep_OCCT-prefix\...\src\OSD\OSD.hxx` (or any pre-8.0
+  package path) after a deps change: its generated `include/occt/*.hxx` shims are stale. OCCT's
+  header collector skips rewriting them when the first header already exists, so a source-layout
+  change does not refresh them. Delete `deps/build/dep_OCCT-prefix/src/dep_OCCT-build/include/occt`
+  and the `dep_OCCT-configure`/`-build`/`-install`/`-done` stamps under
+  `deps/build/dep_OCCT-prefix/src/dep_OCCT-stamp/Release`, then
+  `cmake --build deps/build --config Release --target dep_OCCT`. A full `-d -c` is not needed.
 - Compiler processes stuck: `.\OrcaSlicer\build_win.bat -k`.
 - The script refuses a config or tree it did not create; `-h` lists the valid values.
 - If Strawberry Perl shadows a real CMake, the script reorders `PATH` itself; do not

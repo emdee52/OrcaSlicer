@@ -2330,3 +2330,56 @@ questions; the answers are the decisions below.
   snapping the passage to a detected hole, a root taper or gusset, a tilt off the bed (the Angle turns
   about the plate's normal only), and persistence.
 
+
+## 44. Upstream sync 2026-10-27 - 441 commits, 14 conflicts (branch `sync/upstream-20261027`)
+
+Second mainline sync, from `109d09e0b8` (2026-10-15) to `6d2869c430` (2026-10-27), 441 commits,
+1066 files. Merge commit `73d471ad01`, backup ref `backup/port-integration-20261027`. The record of
+what each conflict decided is `porting/notes/UPSTREAM_SYNC_20261027.md`; this section is the summary.
+
+- **Conflicts.** 14 files / 20 hunks. Twelve were plain unions (BT-1's bed-temperature readout and
+  MA-1's material badge next to upstream's `sync_plate_name_to_print()`; MV-1's extra Move window;
+  PQ-2's inner-wall slowdown next to upstream's new `flush_into_objects` reason; the fff_print test
+  list; `Plater.hpp`; the `filament_id.md` paragraph).
+- **EX-1 stays.** Upstream added reason tooltips to the air-filtration rows but still indexes them
+  with `-1` / `0`, so the bug EX-1 fixes is still there. The port's `256 + variant_index` indices and
+  per-variant `opt_bool` reads are kept, with upstream's `air_filtration_reason` strings on top. It
+  will conflict again next sync.
+- **AS-1 and the drop fix.** Upstream's #16501 replaced the five `if (!mo->auto_drop) continue;`
+  early-outs in `GLCanvas3D.cpp` with an inline `mo->auto_drop &&`, so the object list still gets its
+  sink icon. The port's `!OrcaExt::free_z()` is a different condition and is kept beside it
+  (`mo->auto_drop && !OrcaExt::free_z()`). In the move path the AS-3 Snap & Drag branch stays first
+  and the stock bed snap became its `else if`, which also stops that `continue` from skipping
+  `obj_list()->update_info_items()`.
+- **MCP-1 follows upstream's `unique_ptr`.** `GUI_App::m_http_server` became
+  `std::unique_ptr<HttpServer>`; the `/mcp` router keeps its three-argument body and moves to
+  `m_http_server->`.
+- **SU-1 follows upstream's index loop.** `TreeModelVolumes.cpp` now iterates `outline_pos`; the
+  port's "last processed outline" is the last **non-empty** one (the injected cross-object group can
+  be empty and sorts last), resolved up front as `last_processed_outline_pos`.
+- **PF-9 lost only a comment.** Upstream parallelised the Arachne island loop; the port's
+  interlocking-perimeter work is Classic-only and its note moved above the new `tbb::parallel_for`.
+- **`[BUILDFIX:VS17.8]` re-applied.** `load_config_file` gained `&sliced_info` and
+  `load_project_preset` gained `refresh_unlisted`; both keep their `config_substitution_rule` capture
+  because the installed toolchain is still MSVC 14.38.
+- **Two fallouts the compiler and the suite caught.** (1) Upstream's include trimming
+  (#16840-16843) left `GLGizmoMove.cpp` without `ImGuiWrapper.hpp` and both `OrcaMCP/OrcaMCPCommon.cpp`
+  and `OrcaMCP/OrcaMCPServer.cpp` without `PartPlate.hpp`; `OrcaMCPServer.cpp` also needed
+  `<wx/base64.h>`. (2) `gizmo_tabs` had been bound to bare **V**, which upstream's `toggle_printable`
+  has always owned in the plater context - the new collision test caught it. TB-1 now defaults to
+  **Shift+W** (every bare plater letter is taken, and bare W is what the shortcut test itself uses as
+  its "free chord" example).
+- **Dependency trap, recorded in `porting/BUILD.md`.** `deps/` changed (OpenCV 4.6 -> 4.14, the
+  FreeType dependency removed), and the reconfigure made `dep_OCCT` fail with `C1083` on pre-8.0
+  package paths: OCCT's header collector skips rewriting the generated `include/occt/*.hxx` shims when
+  the first one already exists, so stale ones survive a source-layout change. Deleting that directory
+  plus the `dep_OCCT` configure/build/install/done stamps and rebuilding only that dep fixes it.
+- **Verified.** Release build clean; `ctest -C Release` **2888/2888 pass** (9 skipped, same set as
+  before: the pybind sandbox and tree-grant tests). `verify-markers.ps1` reports OK with the same
+  legacy warnings (23 non-conforming `// ORCAPORT:` comments, no `manifest.tsv` rows for `PF-2` /
+  `PP-2`), which are the deferred items in the sync note. Marker count is unchanged by the merge:
+  1104 in 183 files. Off-by-default G-code is **byte-identical to stock `6d2869c430`** on a Prusa
+  CORE One / PLA fixture - 10443 body lines, zero diff; the fork adds only its own 76 config keys, at
+  their off defaults, to the trailing config dump. (Comparing against the *pre-merge fork* instead is
+  the wrong yardstick now: upstream changed emitted G-code in this range, so the two fork builds
+  differ by 12010 vs 11270 lines on the same fixture.)
