@@ -24,14 +24,24 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- **Open, not merged - needs a runtime test: `port/PF-10-paint-marks`** (commit `d2f932c272`, patch
-  84). Painted support styles run one engine pass each and `merge_duplicate_support_layers()`
-  composed geometry only, so every pass but the first at a `print_z` lost the SU-8/9/10 marks on
-  its layer - with support painting that is the automatic/default pass (it runs last) and every
-  Organic region. Measured: transition speed/flow/temp/fan and the unified woven-layer speed
-  silently did nothing on painted objects while `normal(auto)` / `tree(auto)` (single pass) were
-  fine. The merge now carries the marks; zone family tags are cleared when fills are appended
-  because an untagged entity is emitted nowhere. Notes `PF-10-paint-marks.md`.
+- **Merged 2026-10-30, user-tested: `ff5535758d`** "Merge port/SU-10-interface-split ..." on top of
+  `f452f6d5e4` "Merge port/PF-10-paint-marks ...". Two support-interface fixes found while slicing an
+  organic multimaterial test:
+  `PF-10-paint-marks` (patch 84) - `merge_duplicate_support_layers()` composed geometry only, so
+  every painted pass but the first at a `print_z` lost the SU-8/9/10 marks on its layer (the
+  automatic/default pass runs last, so it was always the victim); the merge now carries
+  `transition_joint`/`transition_area`, `support_weave` and the contact flags, and clears zone family
+  tags when it appends because an untagged entity is emitted nowhere.
+  `SU-10-interface-split` (patch 85) - organic puts a roof contact on nearly every layer of an
+  overhang, and `SupportGeneratorLayerExtruded::could_merge()` compares height and bridging only, so
+  the `TopInterface` of the roof above was absorbed by the contact: the whole footprint printed at
+  0.32 mm / 55 mm/s instead of 0.42 / 120 and the SU-9 weave stage had nothing to weave. The
+  interface is now trimmed against the contact instead of absorbed, and contact speeds are gated by
+  a recorded per-layer footprint. On the test model interface layers at 0.42 mm/120 mm/s went from
+  29 of 379 to 351 of 379. Notes `PF-10-paint-marks.md` and `SU-10-interface-split.md`.
+  **Still open:** SU-9 marks one woven layer per z-contiguous interface run, so a sloped overhang
+  (a contact on every layer) weaves only its bottom layer - 22 woven layers on the test model.
+  Marking per contact would raise that to ~350 and was deliberately left for a decision.
 - **Upstream sync merged, user-tested 2026-10-28:** **`1b7483adcc`** "Merge
   sync/upstream-20261027: upstream/main 6d2869c430 (441 commits) is in", on top of `c7b76a5373`.
   Second mainline sync (`109d09e0b8` -> `6d2869c430`, 441 commits, 1066 files): 14 conflicts in 20
