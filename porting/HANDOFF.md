@@ -24,6 +24,22 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
+- **Merged 2026-10-31, user-tested:** `port/SU-8-object-transition` (patch 86) and
+  `port/SU-10-suggestion` (patch 87). The object-on-interface joint (`transition_object_interface_*`)
+  never fired on tree supports because `SupportCommon.cpp` skipped every contact whose
+  `idx_object_layer_above` was unset, and only the classic engine ever sets it; the object layer is now
+  derived from the contact's `print_z`. Its treatment was then moved from per-path to **per extrusion
+  segment** (classified by the segment midpoint, in both emission loops), because a per-path test
+  either slowed whole perimeter loops or left holes in the contact patch. The fan is zone-scoped: the
+  generator marks the segments over the contact, the cooling buffer forces the joint's value only
+  there and restores its computed layer fan afterwards; the zone is closed at layer start and before
+  support printing. The multimaterial support suggestion (`Tab.cpp`) now also sets
+  `support_interface_top_layers = 4`, `support_interface_contact_speed = 55` and
+  `support_interface_contact_line_width = 0.32` for a non-soluble interface filament, all three being
+  hidden dev keys otherwise. Notes `SU-8-object-transition.md`, `SU-10-interface-split.md`.
+  **Still open:** SU-9 marks one woven layer per z-contiguous interface run, so a sloped overhang
+  (a contact on every layer) weaves only its bottom layer - 22 woven layers on the test model.
+  Marking per contact would raise that to ~350 and was deliberately left for a decision.
 - **Merged 2026-10-30, user-tested: `ff5535758d`** "Merge port/SU-10-interface-split ..." on top of
   `f452f6d5e4` "Merge port/PF-10-paint-marks ...". Two support-interface fixes found while slicing an
   organic multimaterial test:
