@@ -47,6 +47,33 @@ Derive the object layer from the contact's `print_z` when the field is unset, in
 
 Classic supports are unaffected: their contacts already carry the index, which is used as before.
 
+## Follow-up: the footprint is the printed contact, and a path has to be *on* it
+
+The first version of this fix tagged the object layer with `object lslices ∩ nominal contact
+polygons`. On organic support the nominal contact polygons cover a whole overhang while the branch
+under it may touch a small patch, and `GCode::_extrude` treated a path as "in the footprint" when
+**any** of its points was inside - so one small contact patch slowed the whole perimeter loop and the
+whole layer:
+
+| | slowed object moves (at exactly 50 % of the role speed) |
+|---|---|
+| nominal contact + "any point" | 41 581 (outer wall 28 095) |
+
+Two changes:
+
+1. The footprint is now the **printed** contact of that print_z. The toolpath stage records
+   `top_contact_layer.polygons_to_extrude()` per layer (`contact_footprint`) and the joint-2 pass
+   runs after it, intersecting the object layer's `lslices` with that.
+2. A path is treated when **at least half of its points** are inside the footprint, not when any
+   point is. A perimeter loop or infill line that merely clips the patch keeps the normal speed.
+
+Result on the same project: 41 581 -> **2 093** slowed moves, outer wall 28 095 -> **150**, slowed
+layers 135 -> **1**. The temperature delta is untouched (it is a layer property): the +10 commands
+(`M109 S240 T3`, `M109 S255 T1`) still appear on 34 layers.
+
+The residual 2 093 are the paths that really sit on the contact; the cost of the setting is now
+proportional to the contact area instead of the layer area.
+
 ## Verification
 
 - Build: `cmake --build build --config Release --target OrcaSlicer` -> 0 errors.
