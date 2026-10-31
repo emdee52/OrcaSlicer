@@ -114,6 +114,27 @@ lie *mostly* on the contact - which is the correct reading of "only the contact 
 means the effect is subtle. Applying it to the exact part of a path is the per-segment split noted
 in the caveat above, not done.
 
+### Refinement: decided per segment, not per path
+
+A per-path rule cannot express a footprint in either direction. Counting any point inside pulled
+whole perimeter loops in (92 989 outer-wall moves over a whole layer); requiring the majority left
+holes in the patch (1 240 moves in total). Both emission loops in `_extrude` (the plain
+`path.polyline.lines()` one and the segmented/arc one) now classify **each segment by its midpoint**
+and scale that segment's speed and flow, opening and closing the fan zone at the same boundary, so
+the treatment follows the contact edge to within one segment (~0.4 mm) and nothing else moves.
+
+Two state holes had to be closed with it, because the fan markers are consumed by the cooling buffer
+and a zone left open keeps forcing its value:
+
+- a zone left open by the last segment of a layer is now closed explicitly at the start of the next
+  layer (resetting the generator's flag alone left the buffer forcing the old fan over the following
+  block - 20 307 support moves);
+- `extrude_support` closes an open zone before emitting support.
+
+Measured on the goose project (fan = 0): object moves at fan 0 go **1 240 -> 14 434**, concentrated
+in the perimeter and overhang segments that cross the contact, and support leakage drops
+**20 307 -> 2 362**. Same mechanism applies the 50 % speed and 105 % flow to those segments only.
+
 ## Verification
 
 - Build: `cmake --build build --config Release --target OrcaSlicer` -> 0 errors.
