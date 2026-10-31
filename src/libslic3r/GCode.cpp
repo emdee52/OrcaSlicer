@@ -7728,12 +7728,13 @@ LayerResult GCode::process_layer(
                 m_object_layer_over_raft = object_layer_over_raft;
                 // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
                 m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
-                {
-                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
-                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
-                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
-                    if (tfan >= 0)
-                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                // [ORCAPORT:SU-8] The fan override is applied in the footprint by _extrude, not to
+                // the whole layer. Close a zone left open by the previous layer explicitly: resetting
+                // the state without the end marker leaves the cooling buffer forcing the old value,
+                // which is what made the following layer's support print at the transition fan.
+                if (m_transition_fan_zone >= 0) {
+                    gcode += ";_SU8_FAN_ZONE_END\n";
+                    m_transition_fan_zone = -1;
                 }
                 emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
@@ -7783,12 +7784,9 @@ LayerResult GCode::process_layer(
                     m_object_layer_over_raft = false;
                     // [ORCAPORT:SU-8] Interface-on-base / interface-on-object transition tag.
                     m_transition_joint = layers[instance_to_print.layer_id].support_layer->transition_joint;
-                    {
-                        const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
-                                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
-                                       : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
-                        if (tfan >= 0)
-                            gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                    if (m_transition_fan_zone >= 0) {
+                        gcode += ";_SU8_FAN_ZONE_END\n";
+                        m_transition_fan_zone = -1;
                     }
                     emit_transition_temp();
 
@@ -7984,12 +7982,13 @@ LayerResult GCode::process_layer(
                 m_object_layer_over_raft = object_layer_over_raft;
                 // [ORCAPORT:SU-8] Object-on-interface transition tag for this layer.
                 m_transition_joint = layer_to_print.object_layer ? layer_to_print.object_layer->transition_joint : 0;
-                {
-                    const int tfan = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
-                                   : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
-                                   : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
-                    if (tfan >= 0)
-                        gcode += ";SU8_FAN " + std::to_string(tfan) + "\n";
+                // [ORCAPORT:SU-8] The fan override is applied in the footprint by _extrude, not to
+                // the whole layer. Close a zone left open by the previous layer explicitly: resetting
+                // the state without the end marker leaves the cooling buffer forcing the old value,
+                // which is what made the following layer's support print at the transition fan.
+                if (m_transition_fan_zone >= 0) {
+                    gcode += ";_SU8_FAN_ZONE_END\n";
+                    m_transition_fan_zone = -1;
                 }
                 emit_transition_temp();
                 if (m_config.reduce_crossing_wall)
@@ -8369,6 +8368,13 @@ LayerResult GCode::process_layer(
         m_writer.add_object_change_labels(gcode);
 
         gcode += insert_timelapse_gcode();
+    }
+
+    // [ORCAPORT:SU-8] Close an open transition fan zone before the layer reaches the cooling buffer,
+    // so a layer that ends inside the footprint does not leave the fan changed.
+    if (m_transition_fan_zone >= 0) {
+        gcode += ";_SU8_FAN_ZONE_END\n";
+        m_transition_fan_zone = -1;
     }
 
     result.gcode = std::move(gcode);
@@ -9208,8 +9214,15 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
     ScopeGuard restore_precision([this, was_standard_precision] { m_writer.force_standard_precision(was_standard_precision); });
 
     std::string gcode;
-    if (!support_fills.entities.empty()) {
+    // [ORCAPORT:SU-8] A transition fan zone belongs to the object material resting on the interface.
+    // Support printed after those paths would otherwise inherit it (the zone is only closed by the
+    // next outside object segment or at the end of the layer), so close it here.
+    if (m_transition_fan_zone >= 0) {
+        gcode += ";_SU8_FAN_ZONE_END\n";
+        m_transition_fan_zone = -1;
+    }
 
+    if (!support_fills.entities.empty()) {
         std::vector<const ExtrusionEntity*> extrusions;
         extrusions.reserve(support_fills.entities.size());
         for (size_t i = 0; i < support_fills.entities.size(); ++i) {
@@ -9603,28 +9616,50 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         }
     }
 
-    // [ORCAPORT:SU-8] Transition treatment applies only where the two materials meet, not the
-    // whole layer: the layer carries the footprint that touches the other material.
-    bool in_transition_area = m_transition_joint == 0 || m_layer == nullptr || m_layer->transition_area.empty();
-    if (! in_transition_area) {
-        // Any point of the path inside the touching footprint qualifies, so a perimeter that is
-        // partly over the other material is slowed consistently instead of only where it starts.
-        for (const auto &fp : path.polyline.points) {
-            const Point p2(coord_t(fp(0)), coord_t(fp(1)));
-            for (const ExPolygon &e : m_layer->transition_area)
-                if (e.contains(p2)) { in_transition_area = true; break; }
-            if (in_transition_area)
-                break;
+    // [ORCAPORT:SU-8] Transition treatment is applied per segment, further down: the footprint that
+    // touches the other material is a region, and a path (perimeter loop, infill line) usually only
+    // partly sits on it - a per-path test either slowed whole walls or left holes in the patch.
+    // Only the percentages are resolved here; each segment is classified by its midpoint.
+    // The object-on-interface joint is about the object's own material, so support paths keep the
+    // SU-10 contact settings instead.
+    const bool transition_applies = m_transition_joint != 0 &&
+                                    (m_transition_joint != 2 || ! is_support(path.role())) &&
+                                    m_layer != nullptr && ! m_layer->transition_area.empty();
+    const int  transition_speed_pct = m_transition_joint == 1 ? int(m_config.transition_interface_base_speed.value)
+                                    : m_transition_joint == 2 ? int(m_config.transition_object_interface_speed.value)
+                                    :                           int(m_config.transition_interface_object_speed.value);
+    const int  transition_flow_pct  = m_transition_joint == 1 ? int(m_config.transition_interface_base_flow.value)
+                                    : m_transition_joint == 2 ? int(m_config.transition_object_interface_flow.value)
+                                    :                           int(m_config.transition_interface_object_flow.value);
+    const int  transition_fan_pct   = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
+                                    : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
+                                    : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
+    auto in_transition_area = [this](const Point &pt) {
+        for (const ExPolygon &e : m_layer->transition_area)
+            if (e.contains(pt))
+                return true;
+        return false;
+    };
+    // [ORCAPORT:SU-8] One segment of the transition footprint: scale the segment speed and flow when
+    // its midpoint is inside, and open/close the fan zone at the boundary. Used by both emission
+    // paths below (plain lines and the segmented/arc one), so the treatment does not depend on which
+    // one the path takes.
+    auto transition_segment = [&](const Point &a, const Point &b, double base_speed_mm_min, double &dE) -> double {
+        const Point mid((a.x() + b.x()) / 2, (a.y() + b.y()) / 2);
+        const bool  inside = transition_applies && in_transition_area(mid);
+        if (inside && transition_flow_pct != 100)
+            dE *= double(transition_flow_pct) / 100.;
+        // The fan zone is closed for every segment that is not inside, including the paths the joint
+        // does not apply to (support paths under an object-on-interface joint) and layers whose joint
+        // carries no fan value - otherwise a zone opened by an object path stays open over them.
+        if (const int want = inside ? transition_fan_pct : -1; want != m_transition_fan_zone) {
+            gcode += want < 0 ? std::string(";_SU8_FAN_ZONE_END\n")
+                              : ";_SU8_FAN_ZONE_BEGIN " + std::to_string(want) + "\n";
+            m_transition_fan_zone = want;
         }
-    }
-    // [ORCAPORT:SU-8] Transition-layer flow adjustment.
-    if (m_transition_joint != 0 && in_transition_area) {
-        const int fpct = m_transition_joint == 1 ? int(m_config.transition_interface_base_flow.value)
-                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_flow.value)
-                       :                           int(m_config.transition_interface_object_flow.value);
-        if (fpct != 100)
-            _mm3_per_mm *= double(fpct) / 100.;
-    }
+        return (inside && transition_speed_pct != 100) ? base_speed_mm_min * double(transition_speed_pct) / 100.
+                                                       : base_speed_mm_min;
+    };
 
     // Mixed-color sublayer: this path belongs to one sub-layer of a split layer, so scale the
     // flow down to that sub-layer's share of the nominal layer height and report the sub-height
@@ -9779,15 +9814,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         if (skirt_speed > 0.0)
         speed = skirt_speed;
     }
-    // [ORCAPORT:SU-8] Transition-layer slowdown (relative factor <= 100%; applied before the
-    // volumetric cap, which can only reduce it further). Only inside the touching footprint.
-    if (m_transition_joint != 0 && in_transition_area && path.role() != erSkirt && path.role() != erBrim) {
-        const int spct = m_transition_joint == 1 ? int(m_config.transition_interface_base_speed.value)
-                       : m_transition_joint == 2 ? int(m_config.transition_object_interface_speed.value)
-                       :                           int(m_config.transition_interface_object_speed.value);
-        if (spct < 100)
-            speed *= double(spct) / 100.;
-    }
+    // [ORCAPORT:SU-8] Transition-layer slowdown is applied per segment in the emission loop below
+    // (the footprint is a region, not a whole path), after the volumetric cap so the requested
+    // factor is not undone by it.
     //BBS: remove this config
     //else if (this->object_layer_over_raft())
     //    speed = m_config.get_abs_value("first_layer_speed_over_raft", speed);
@@ -10222,6 +10251,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                 double path_length = 0.;
                 double total_length = sloped == nullptr ? 0. : path.polyline.length() * SCALING_FACTOR;
                 double saved_z      = m_writer.get_position().z();
+                // [ORCAPORT:SU-8] Speed currently in effect in this loop, so a transition segment can
+                // lower it and the next outside segment can restore it.
+                double cur_speed    = F;
 
                 for (const Line3& line : path.polyline.lines()) {
                     std::string flow_description;
@@ -10237,6 +10269,11 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                         if (m_config.gcode_comments && oldE > 0 && oldE != dE) {
                             flow_description = description + Slic3r::format(" | Old Flow Value: %0.5f Length: %0.5f",oldE, line_length);
                         }
+                    }
+                    if (const double line_speed = transition_segment(line.a.to_point(), line.b.to_point(), F, dE);
+                        line_speed != cur_speed) {
+                        m_writer.set_speed(gcode, line_speed, "", comment);
+                        cur_speed = line_speed;
                     }
                     tag_belt_band((line.a.x() + line.b.x()) / 2, (line.a.y() + line.b.y()) / 2);
                     if (path.z_contoured) {
@@ -10387,7 +10424,22 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
             if(line_length < EPSILON)
                 continue;
             path_length += line_length;
+            // [ORCAPORT:SU-8] Classify this segment by its midpoint. Both inside or both outside is
+            // unambiguous; a segment crossing the boundary belongs to the region its middle is in, so
+            // the transition edge is at most one segment wide.
+            const bool seg_in_transition = transition_applies &&
+                in_transition_area(Point((pre_processed_point.p.x() + processed_point.p.x()) / 2,
+                                         (pre_processed_point.p.y() + processed_point.p.y()) / 2));
+            // Fan zone first: the marker has to be written before this segment's extrusion, and it is
+            // closed whenever this segment is not treated, whatever joint the path belongs to.
+            if (const int want = seg_in_transition ? transition_fan_pct : -1; want != m_transition_fan_zone) {
+                gcode += want < 0 ? std::string(";_SU8_FAN_ZONE_END\n")
+                                  : ";_SU8_FAN_ZONE_BEGIN " + std::to_string(want) + "\n";
+                m_transition_fan_zone = want;
+            }
             double new_speed = pre_processed_point.speed * 60.0;
+            if (seg_in_transition && transition_speed_pct != 100)
+                new_speed *= double(transition_speed_pct) / 100.;
             
             if ((std::abs(last_set_speed - new_speed) > EPSILON) || (std::abs(_mm3_per_mm - m_last_mm3_mm) > EPSILON)) {
                 // ORCA: Adaptive PA code segment when adjusting PA within the same feature
@@ -10448,6 +10500,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                     flow_description = description + Slic3r::format(" | Old Flow Value: %0.5f Length: %0.5f",oldE, line_length);
                 }
             }
+            // [ORCAPORT:SU-8] Per-segment flow for the transition footprint, applied after the small
+            // area compensation so the joint's value wins.
+            if (seg_in_transition && transition_flow_pct != 100)
+                dE *= double(transition_flow_pct) / 100.;
             if (path.z_contoured) {
                 Vec2d    dest2d = p.head<2>();
                 coordf_t z_diff = unscale_(processed_point.p.z());
