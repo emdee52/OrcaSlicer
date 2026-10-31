@@ -5207,8 +5207,16 @@ void PrintObject::merge_duplicate_support_layers()
             if (!dup_layer->support_fills.empty()) {
                 if (!base_layer->support_islands.empty())
                     clip_extrusion_entities(dup_layer->support_fills.entities, base_layer->support_islands);
-                if (!dup_layer->support_fills.empty())
+                if (!dup_layer->support_fills.empty()) {
+                    // [ORCAPORT:PF-10-paint] support_fills_family is index-paired with the first-level
+                    // entities and an untagged entity is dropped by both readers (GCode support
+                    // emission, ToolOrdering), so appending breaks the pairing. Drop the base layer's
+                    // tags (the dup's are dropped with it): the merged layer then prints with the
+                    // normal support filament instead of losing geometry.
+                    if (!base_layer->support_fills_family.empty())
+                        base_layer->support_fills_family.clear();
                     base_layer->support_fills.append(std::move(dup_layer->support_fills.entities));
+                }
                 dup_layer->support_fills.entities.clear();
             }
             if (!dup_layer->support_islands.empty()) {
@@ -5216,6 +5224,9 @@ void PrintObject::merge_duplicate_support_layers()
                 base_layer->support_islands = union_ex(base_layer->support_islands);
                 dup_layer->support_islands.clear();
             }
+            // [ORCAPORT:PF-10-paint] Keep the later pass's SU-8/9/10 marks; the merge above composes
+            // geometry only.
+            merge_support_layer_marks(*base_layer, *dup_layer);
             delete dup_layer;
             m_support_layers[j] = nullptr;
             ++j;
@@ -5421,6 +5432,9 @@ void PrintObject::_generate_support_material()
                 // style under them.
                 blockers.push_back(EnforcerBlockerType::ENFORCER);
 
+                // Manual on purpose: a painted pass must build under its own painted facets only, and
+                // stNormal / stTree are what turn automatic overhang detection off. A row's engine is
+                // therefore its `is_tree` flag; what it forces is `support_style` and `overrides`.
                 const SupportType type = t->is_tree ? stTree : stNormal;
                 run_pass(t->is_tree, type, t->support_style, &t->overrides, t->state, std::move(blockers));
             }

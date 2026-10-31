@@ -24,6 +24,14 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
+- **Open, not merged - needs a runtime test: `port/PF-10-paint-marks`** (commit `d2f932c272`, patch
+  84). Painted support styles run one engine pass each and `merge_duplicate_support_layers()`
+  composed geometry only, so every pass but the first at a `print_z` lost the SU-8/9/10 marks on
+  its layer - with support painting that is the automatic/default pass (it runs last) and every
+  Organic region. Measured: transition speed/flow/temp/fan and the unified woven-layer speed
+  silently did nothing on painted objects while `normal(auto)` / `tree(auto)` (single pass) were
+  fine. The merge now carries the marks; zone family tags are cleared when fills are appended
+  because an untagged entity is emitted nowhere. Notes `PF-10-paint-marks.md`.
 - **Upstream sync merged, user-tested 2026-10-28:** **`1b7483adcc`** "Merge
   sync/upstream-20261027: upstream/main 6d2869c430 (441 commits) is in", on top of `c7b76a5373`.
   Second mainline sync (`109d09e0b8` -> `6d2869c430`, 441 commits, 1066 files): 14 conflicts in 20

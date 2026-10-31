@@ -63,7 +63,6 @@ std::vector<SupportPaintType> make_default_registry()
         // Amber: the legacy light green was too close to Organic (tree) in the painter palette.
         t.color[0] = 1.f; t.color[1] = 0.65f; t.color[2] = 0.f; t.color[3] = 1.f;
         t.is_tree = false;
-        t.support_type = stNormalAuto;
         t.support_style = smsDefault;
         v.emplace_back(t);
     }
@@ -75,7 +74,6 @@ std::vector<SupportPaintType> make_default_registry()
         t.label = "Snug";
         t.color[0] = 0.4f; t.color[1] = 0.8f; t.color[2] = 1.f;  t.color[3] = 1.f;
         t.is_tree = false;
-        t.support_type = stNormalAuto;
         t.support_style = smsSnug;
         t.rules = { SupportPaintRule{ { hard_term(SupportFeature::Area, 50., INF) }, 1. } };
         t.min_score = 0.5;
@@ -90,7 +88,6 @@ std::vector<SupportPaintType> make_default_registry()
         t.label = "Grid";
         t.color[0] = 0.7f; t.color[1] = 0.5f; t.color[2] = 1.f;  t.color[3] = 1.f;
         t.is_tree = false;
-        t.support_type = stNormalAuto;
         t.support_style = smsGrid;
         t.rules = { SupportPaintRule{ {
             hard_term(SupportFeature::Area,   400., INF),
@@ -109,7 +106,6 @@ std::vector<SupportPaintType> make_default_registry()
         t.label = "Organic";
         t.color[0] = 0.2f; t.color[1] = 0.9f; t.color[2] = 0.4f; t.color[3] = 1.f;
         t.is_tree = true;
-        t.support_type = stTreeAuto;
         t.support_style = smsTreeOrganic;
         t.rules = {
             SupportPaintRule{ { hard_term(SupportFeature::Area,    0., 30.),
@@ -129,7 +125,6 @@ std::vector<SupportPaintType> make_default_registry()
         t.label = "NeoWave";
         t.color[0] = 0.f; t.color[1] = 0.8f; t.color[2] = 0.8f; t.color[3] = 1.f;
         t.is_tree = false;
-        t.support_type = stWaveSupport;
         t.support_style = smsDefault;
         t.overrides.force_base_pattern      = true; t.overrides.base_pattern      = smpNone;
         t.overrides.force_interface_pattern = true; t.overrides.interface_pattern = smipWave;

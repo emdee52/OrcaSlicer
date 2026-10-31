@@ -30,6 +30,7 @@
 // Not self-contained: its inline constructor uses PrintObject, PrintRegion, SlicingParameters and
 // Geometry, so it must follow the headers (pulled in via test_helpers.hpp) that define them.
 #include "libslic3r/Support/SupportParameters.hpp"
+#include "libslic3r/Support/SupportCommon.hpp" // [ORCAPORT:PF-10-paint] merge_support_layer_marks
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Print.hpp"
 
@@ -617,4 +618,75 @@ TEST_CASE("Bottom weave with three or more interface layers still weaves", "[Sup
     }));
     REQUIRE(support_interface_layer_count(g) > 0);
     REQUIRE_FALSE(support_layers_with_both_roles(g).empty());
+}
+
+// [ORCAPORT:PF-10-paint] A painted support style runs its own engine pass, so several support layers
+// share a print_z and are merged. The merge composes fills and islands only; the per-layer SU-8/9/10
+// marks have to be carried over explicitly or the automatic/default pass (which runs last) silently
+// loses its transition, woven-layer and contact treatment.
+static ExPolygon test_footprint(double x0, double x1)
+{
+    ExPolygon square;
+    square.contour.points = { Point::new_scale(x0, 0.), Point::new_scale(x1, 0.),
+                              Point::new_scale(x1, 10.), Point::new_scale(x0, 10.) };
+    return square;
+}
+
+static bool footprint_covers(const ExPolygons &area, const Point &pt)
+{
+    for (const ExPolygon &e : area)
+        if (e.contains(pt))
+            return true;
+    return false;
+}
+
+TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatment", "[SupportMaterial]")
+{
+    Print    print;
+    Model    model;
+    init_print({ cube(20.) }, print, model, DynamicPrintConfig::full_print_config());
+    REQUIRE(! print.objects().empty());
+    PrintObject  *object = print.get_object(0);
+    // Two passes' layers for the same print_z, as the painted multi-pass dispatcher leaves them.
+    SupportLayer *base   = object->add_support_layer(0, 0, 0.2, 0.4);
+    SupportLayer *dup    = object->add_support_layer(1, 0, 0.2, 0.4);
+    dup->support_weave          = true;
+    dup->support_contact_top    = true;
+    dup->support_contact_bottom = true;
+    dup->transition_joint       = 1;
+    dup->transition_area        = { test_footprint(0., 10.) };
+
+    SECTION("weave and contact marks reach the merged layer") {
+        merge_support_layer_marks(*base, *dup);
+        REQUIRE(base->support_weave);
+        REQUIRE(base->support_contact_top);
+        REQUIRE(base->support_contact_bottom);
+    }
+
+    SECTION("a transition the merged layer has none of is taken over") {
+        merge_support_layer_marks(*base, *dup);
+        REQUIRE(base->transition_joint == 1);
+        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
+    }
+
+    SECTION("two tagged passes keep one joint and cover both footprints") {
+        base->transition_joint = 3;
+        base->transition_area  = { test_footprint(20., 30.) };
+        merge_support_layer_marks(*base, *dup);
+        REQUIRE(base->transition_joint == 3);
+        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(25., 5.)));
+        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
+    }
+
+    SECTION("an untagged later pass leaves the merged layer's treatment alone") {
+        dup->transition_joint = 0;
+        dup->transition_area.clear();
+        base->transition_joint = 3;
+        base->transition_area  = { test_footprint(20., 30.) };
+        merge_support_layer_marks(*base, *dup);
+        REQUIRE(base->transition_joint == 3);
+        REQUIRE(base->transition_area.size() == 1);
+        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(25., 5.)));
+        REQUIRE_FALSE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
+    }
 }
