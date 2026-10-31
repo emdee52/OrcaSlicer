@@ -2195,8 +2195,20 @@ void generate_support_toolpaths(
                 // If no loops are allowed, we treat the contact layer exactly as a generic interface layer.
                 // Merge interface_layer into top_contact_layer, as the top_contact_layer is not synchronized and therefore it will be used
                 // to trim other layers.
-                if (top_contact_layer.could_merge(interface_layer) && ! raft_layer)
-                    top_contact_layer.merge(std::move(interface_layer));
+                // [ORCAPORT:SU-10] ... but never a TopInterface layer. Organic support puts a roof contact on
+                // every layer of a sloped overhang, so a contact and the interface of the roof above share a
+                // print_z and this merge (which only compares height and bridging) absorbed the interface:
+                // the whole footprint was then extruded as a contact - support_interface_contact_line_width,
+                // contact flow, the layer-wide contact speed - and the SU-9 weave stage found no interface
+                // layer left to weave. Trim the interface against the contact instead and keep it separate.
+                if (top_contact_layer.could_merge(interface_layer) && ! raft_layer) {
+                    if (interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
+                        interface_layer.set_polygons_to_extrude(
+                            diff(interface_layer.polygons_to_extrude(), top_contact_layer.polygons_to_extrude()));
+                    } else {
+                        top_contact_layer.merge(std::move(interface_layer));
+                    }
+                }
             }
             // Orca: Organic bottom contacts are projection seeds, not same-layer toolpaths.
             // Do not merge them into another same-layer support region.
@@ -2430,10 +2442,16 @@ void generate_support_toolpaths(
             }
             // [ORCAPORT:SU-10] Contact layers that touch the object: top contact (support under the
             // object) and bottom contact (support on top of an object). Each has its own override.
-            if (! top_contact_layer.empty())
+            // The footprint is recorded too: the speed override is applied per path inside it, not
+            // to the whole layer (see GCode::_extrude).
+            if (! top_contact_layer.empty()) {
                 support_layer.support_contact_top = true;
-            if (! bottom_contact_layer.empty())
+                support_layer.support_contact_top_area = union_ex(top_contact_layer.polygons_to_extrude());
+            }
+            if (! bottom_contact_layer.empty()) {
                 support_layer.support_contact_bottom = true;
+                support_layer.support_contact_bottom_area = union_ex(bottom_contact_layer.polygons_to_extrude());
+            }
             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
             if (!organic_tree)
                 extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);

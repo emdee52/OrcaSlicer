@@ -6641,6 +6641,8 @@ LayerResult GCode::process_layer(
     // [ORCAPORT:SU-10] Interface contact layers (touch the object): top and bottom.
     m_support_contact_top    = support_layer != nullptr && support_layer->support_contact_top;
     m_support_contact_bottom = support_layer != nullptr && support_layer->support_contact_bottom;
+    m_support_contact_top_area    = support_layer != nullptr ? &support_layer->support_contact_top_area    : nullptr;
+    m_support_contact_bottom_area = support_layer != nullptr ? &support_layer->support_contact_bottom_area : nullptr;
     // A per-layer nozzle grouping can move the active filament to another variant column on a
     // layer boundary without a toolchange, so re-resolve the writer's config column here.
     if (Extruder *cur_filament = m_writer.filament())
@@ -9690,10 +9692,25 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     if (m_weave_layer && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface))
         speed = NOZZLE_CONFIG(support_interface_speed);
     // [ORCAPORT:SU-10] Absolute speeds for the interface contact layers (touch the object).
+    // The footprint, not the layer, decides: organic puts a contact on a different region of nearly
+    // every layer, and a layer-wide flag made the rest of that layer's support print at contact speed.
     if (is_support(path.role())) {
-        if (m_support_contact_top && m_config.support_interface_contact_speed.value > 0)
+        auto in_area = [&path](const ExPolygons &area) {
+            for (const auto &fp : path.polyline.points) {
+                const Point p2(coord_t(fp(0)), coord_t(fp(1)));
+                for (const ExPolygon &e : area)
+                    if (e.contains(p2))
+                        return true;
+            }
+            return false;
+        };
+        const ExPolygons *top_area    = m_support_contact_top_area;
+        const ExPolygons *bottom_area = m_support_contact_bottom_area;
+        if (m_support_contact_top && m_config.support_interface_contact_speed.value > 0 &&
+            (top_area == nullptr || top_area->empty() || in_area(*top_area)))
             speed = float(m_config.support_interface_contact_speed.value);
-        else if (m_support_contact_bottom && m_config.support_interface_bottom_contact_speed.value > 0)
+        else if (m_support_contact_bottom && m_config.support_interface_bottom_contact_speed.value > 0 &&
+                 (bottom_area == nullptr || bottom_area->empty() || in_area(*bottom_area)))
             speed = float(m_config.support_interface_bottom_contact_speed.value);
     }
     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly

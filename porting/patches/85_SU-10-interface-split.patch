@@ -1,0 +1,135 @@
+From 7bb374919b8550b21edb49594e1bfca4ce3abfb7 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Fri, 30 Oct 2026 22:28:31 -0600
+Subject: [PATCH] port(SU-10): a top interface layer is no longer absorbed by a
+ same-z contact, and contact speeds are per footprint
+
+Organic support puts a roof contact on every layer of a sloped overhang, so a TopContact and the TopInterface of the roof above share a print_z. could_merge() compares height and bridging only, so the interface was merged into the contact: the whole footprint printed with support_interface_contact_line_width and contact flow, the layer-wide contact speed applied to everything else on the layer, and the SU-9 weave stage found no interface layer to weave. Trim the interface against the contact instead of absorbing it, and gate the contact speed by a recorded per-layer footprint (like transition_area). On the test model interface layers at 0.42mm/120mm/s go from 29 of 379 to 351 of 379.
+---
+ src/libslic3r/GCode.cpp                 | 21 ++++++++++++++++++--
+ src/libslic3r/GCode.hpp                 |  4 ++++
+ src/libslic3r/Layer.hpp                 |  5 +++++
+ src/libslic3r/Support/SupportCommon.cpp | 26 +++++++++++++++++++++----
+ 4 files changed, 50 insertions(+), 6 deletions(-)
+
+diff --git a/src/libslic3r/GCode.cpp b/src/libslic3r/GCode.cpp
+index df6904b857..225baac3ff 100644
+--- a/src/libslic3r/GCode.cpp
++++ b/src/libslic3r/GCode.cpp
+@@ -6641,6 +6641,8 @@ LayerResult GCode::process_layer(
+     // [ORCAPORT:SU-10] Interface contact layers (touch the object): top and bottom.
+     m_support_contact_top    = support_layer != nullptr && support_layer->support_contact_top;
+     m_support_contact_bottom = support_layer != nullptr && support_layer->support_contact_bottom;
++    m_support_contact_top_area    = support_layer != nullptr ? &support_layer->support_contact_top_area    : nullptr;
++    m_support_contact_bottom_area = support_layer != nullptr ? &support_layer->support_contact_bottom_area : nullptr;
+     // A per-layer nozzle grouping can move the active filament to another variant column on a
+     // layer boundary without a toolchange, so re-resolve the writer's config column here.
+     if (Extruder *cur_filament = m_writer.filament())
+@@ -9690,10 +9692,25 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
+     if (m_weave_layer && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface))
+         speed = NOZZLE_CONFIG(support_interface_speed);
+     // [ORCAPORT:SU-10] Absolute speeds for the interface contact layers (touch the object).
++    // The footprint, not the layer, decides: organic puts a contact on a different region of nearly
++    // every layer, and a layer-wide flag made the rest of that layer's support print at contact speed.
+     if (is_support(path.role())) {
+-        if (m_support_contact_top && m_config.support_interface_contact_speed.value > 0)
++        auto in_area = [&path](const ExPolygons &area) {
++            for (const auto &fp : path.polyline.points) {
++                const Point p2(coord_t(fp(0)), coord_t(fp(1)));
++                for (const ExPolygon &e : area)
++                    if (e.contains(p2))
++                        return true;
++            }
++            return false;
++        };
++        const ExPolygons *top_area    = m_support_contact_top_area;
++        const ExPolygons *bottom_area = m_support_contact_bottom_area;
++        if (m_support_contact_top && m_config.support_interface_contact_speed.value > 0 &&
++            (top_area == nullptr || top_area->empty() || in_area(*top_area)))
+             speed = float(m_config.support_interface_contact_speed.value);
+-        else if (m_support_contact_bottom && m_config.support_interface_bottom_contact_speed.value > 0)
++        else if (m_support_contact_bottom && m_config.support_interface_bottom_contact_speed.value > 0 &&
++                 (bottom_area == nullptr || bottom_area->empty() || in_area(*bottom_area)))
+             speed = float(m_config.support_interface_bottom_contact_speed.value);
+     }
+     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
+diff --git a/src/libslic3r/GCode.hpp b/src/libslic3r/GCode.hpp
+index 8880007938..dbc970f526 100644
+--- a/src/libslic3r/GCode.hpp
++++ b/src/libslic3r/GCode.hpp
+@@ -873,6 +873,10 @@ protected:
+     // [ORCAPORT:SU-10] Current support layer holds a contact that touches the object.
+     bool                                m_support_contact_top;
+     bool                                m_support_contact_bottom;
++    // [ORCAPORT:SU-10] Footprint of that contact. Null or empty = the whole layer (older callers and
++    // a layer whose contact area was not recorded keep the layer-wide behaviour).
++    const ExPolygons                   *m_support_contact_top_area { nullptr };
++    const ExPolygons                   *m_support_contact_bottom_area { nullptr };
+     //double                              m_volumetric_speed;
+     // Support for the extrusion role markers. Which marker is active?
+     ExtrusionRole                       m_last_extrusion_role;
+diff --git a/src/libslic3r/Layer.hpp b/src/libslic3r/Layer.hpp
+index 7d3471f8de..d7244efd22 100644
+--- a/src/libslic3r/Layer.hpp
++++ b/src/libslic3r/Layer.hpp
+@@ -174,6 +174,11 @@ public:
+     // Each can have its own speed/line-width override.
+     bool                support_contact_top { false };
+     bool                support_contact_bottom { false };
++    // [ORCAPORT:SU-10] Footprint of that contact. The contact speed override applies only inside it,
++    // because organic support puts a contact on a different region of nearly every layer and a
++    // layer-wide override slowed the whole support on those layers.
++    ExPolygons          support_contact_top_area;
++    ExPolygons          support_contact_bottom_area;
+ 
+     // Collection of expolygons generated by slicing the possibly multiple meshes of the source geometry
+     // (with possibly differing extruder ID and slicing parameters) and merged.
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index bcb1c5ecd3..d93fe57c49 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -2195,8 +2195,20 @@ void generate_support_toolpaths(
+                 // If no loops are allowed, we treat the contact layer exactly as a generic interface layer.
+                 // Merge interface_layer into top_contact_layer, as the top_contact_layer is not synchronized and therefore it will be used
+                 // to trim other layers.
+-                if (top_contact_layer.could_merge(interface_layer) && ! raft_layer)
+-                    top_contact_layer.merge(std::move(interface_layer));
++                // [ORCAPORT:SU-10] ... but never a TopInterface layer. Organic support puts a roof contact on
++                // every layer of a sloped overhang, so a contact and the interface of the roof above share a
++                // print_z and this merge (which only compares height and bridging) absorbed the interface:
++                // the whole footprint was then extruded as a contact - support_interface_contact_line_width,
++                // contact flow, the layer-wide contact speed - and the SU-9 weave stage found no interface
++                // layer left to weave. Trim the interface against the contact instead and keep it separate.
++                if (top_contact_layer.could_merge(interface_layer) && ! raft_layer) {
++                    if (interface_layer.layer->layer_type == SupporLayerType::TopInterface) {
++                        interface_layer.set_polygons_to_extrude(
++                            diff(interface_layer.polygons_to_extrude(), top_contact_layer.polygons_to_extrude()));
++                    } else {
++                        top_contact_layer.merge(std::move(interface_layer));
++                    }
++                }
+             }
+             // Orca: Organic bottom contacts are projection seeds, not same-layer toolpaths.
+             // Do not merge them into another same-layer support region.
+@@ -2430,10 +2442,16 @@ void generate_support_toolpaths(
+             }
+             // [ORCAPORT:SU-10] Contact layers that touch the object: top contact (support under the
+             // object) and bottom contact (support on top of an object). Each has its own override.
+-            if (! top_contact_layer.empty())
++            // The footprint is recorded too: the speed override is applied per path inside it, not
++            // to the whole layer (see GCode::_extrude).
++            if (! top_contact_layer.empty()) {
+                 support_layer.support_contact_top = true;
+-            if (! bottom_contact_layer.empty())
++                support_layer.support_contact_top_area = union_ex(top_contact_layer.polygons_to_extrude());
++            }
++            if (! bottom_contact_layer.empty()) {
+                 support_layer.support_contact_bottom = true;
++                support_layer.support_contact_bottom_area = union_ex(bottom_contact_layer.polygons_to_extrude());
++            }
+             extrude_interface(top_contact_layer,    raft_layer ? InterfaceLayerType::RaftContact : top_interfaces ? InterfaceLayerType::TopContact : InterfaceLayerType::InterfaceAsBase);
+             if (!organic_tree)
+                 extrude_interface(bottom_contact_layer, bottom_interfaces ? InterfaceLayerType::BottomContact : InterfaceLayerType::InterfaceAsBase);
+-- 
+2.43.0.windows.1
+

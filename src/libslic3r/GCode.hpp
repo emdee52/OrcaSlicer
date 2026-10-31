@@ -873,6 +873,10 @@ protected:
     // [ORCAPORT:SU-10] Current support layer holds a contact that touches the object.
     bool                                m_support_contact_top;
     bool                                m_support_contact_bottom;
+    // [ORCAPORT:SU-10] Footprint of that contact. Null or empty = the whole layer (older callers and
+    // a layer whose contact area was not recorded keep the layer-wide behaviour).
+    const ExPolygons                   *m_support_contact_top_area { nullptr };
+    const ExPolygons                   *m_support_contact_bottom_area { nullptr };
     //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;
