@@ -690,3 +690,25 @@ TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatme
         REQUIRE_FALSE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
     }
 }
+
+// [ORCAPORT:SU-8] The object-on-interface treatment is tagged on the object layer above a top
+// contact. The classic engine records that object layer on the contact (idx_object_layer_above);
+// the tree engine never does, so the tag has to be derived from the contact's print_z - otherwise
+// organic support never gets the treatment at all.
+TEST_CASE("An organic contact tags the object layer above it for the object-on-interface treatment",
+          "[SupportMaterial]")
+{
+    const std::string g = slice({ support_capital() }, {
+        { "enable_support",                     1 },
+        { "support_type",                       "tree(auto)" },
+        { "support_style",                      "organic" },
+        { "support_top_z_distance",             0 },
+        { "support_interface_top_layers",       3 },
+        { "transition_object_interface_enable", 1 },
+        { "transition_object_interface_layers", 2 },
+        // Any non-negative fan value makes the generator write the marker, so the marker is the
+        // cheapest proof that the object layer was tagged at all.
+        { "transition_object_interface_fan",    0 },
+    });
+    REQUIRE(g.find(";SU8_FAN 0") != std::string::npos);
+}

@@ -2087,12 +2087,35 @@ void generate_support_toolpaths(
         if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
             const int n = std::max(1, config.transition_object_interface_layers.value);
             for (const SupportGeneratorLayer *l : top_contacts) {
-                if (l == nullptr || l->polygons.empty() || l->idx_object_layer_above == size_t(-1))
+                if (l == nullptr || l->polygons.empty())
                     continue;
-                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k) {
-                    Layer *ol = object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)));
-                    ol->transition_joint = 2;
-                    ol->transition_area  = union_ex(intersection(ol->lslices, l->polygons));
+                // [ORCAPORT:SU-8] The classic engine records the object layer a contact supports
+                // (idx_object_layer_above); the tree engine allocates its contacts through
+                // InterfacePlacer::add_roof_unguarded and never does, so every organic / slim /
+                // strong / hybrid contact was skipped here and the object-on-interface treatment
+                // never applied to tree supports at all. A support layer's print_z is its top, so
+                // the object layer above it is the first one that starts higher.
+                size_t idx_above = l->idx_object_layer_above;
+                if (idx_above == size_t(-1)) {
+                    const LayerPtrs &obj_layers = object_for_families->layers();
+                    auto it = std::upper_bound(obj_layers.begin(), obj_layers.end(), l->print_z + EPSILON,
+                                               [](coordf_t z, const Layer *layer) { return z < layer->print_z; });
+                    if (it == obj_layers.end())
+                        continue;
+                    idx_above = size_t(it - obj_layers.begin());
+                }
+                for (int k = 0; k < n && idx_above + size_t(k) < object_for_families->layer_count(); ++ k) {
+                    Layer *ol = object_for_families->get_layer(int(idx_above + size_t(k)));
+                    // With layers > 1 the same object layer is reached from two contacts, so the
+                    // footprints accumulate instead of the last contact replacing them.
+                    ExPolygons area = union_ex(intersection(ol->lslices, l->polygons));
+                    if (ol->transition_joint == 2 && ! ol->transition_area.empty()) {
+                        append(ol->transition_area, std::move(area));
+                        ol->transition_area = union_ex(ol->transition_area);
+                    } else {
+                        ol->transition_joint = 2;
+                        ol->transition_area  = std::move(area);
+                    }
                 }
             }
         }
