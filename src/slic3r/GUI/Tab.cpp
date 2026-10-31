@@ -2445,6 +2445,8 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
             if (!is_soluble_filament(interface_filament_id)) {
                 msg_text = _L("When using support material for the support interface, we recommend the following settings:\n"
                               "0 top and bottom Z distance, 0 interface spacing, interlaced rectilinear pattern and disable independent support layer height.");
+                msg_text += "\n" + _L("This also sets 4 support interface top layers, a 55 mm/s top contact interface speed "
+                                      "and a 0.32 mm top contact interface line width.");
                 msg_text += "\n\n" + _L("Change these settings automatically\?\nYes - Change these settings automatically.\nNo  - Do not change these settings for me.");
             } else {
                 msg_text = _L("When using soluble material for the support interface, we recommend the following settings:\n"
@@ -2466,6 +2468,15 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
                 new_conf.set_key_value("support_bottom_interface_spacing", new ConfigOptionFloat(0));
                 new_conf.set_key_value("support_interface_pattern", new ConfigOptionEnum<SupportMaterialInterfacePattern>(SupportMaterialInterfacePattern::smipRectilinearInterlaced));
                 new_conf.set_key_value("independent_support_layer_height", new ConfigOptionBool(false));
+                // [ORCAPORT:SU-10] A different (non-soluble) interface material bonds better with more
+                // interface layers and a denser, slower contact layer: 4 interface layers, 55 mm/s and
+                // a 0.32 mm contact line width, matching what the fork ships as the multimaterial
+                // support recipe. The contact keys are hidden (comDevelop) in the UI.
+                if (!is_soluble_filament(interface_filament_id)) {
+                    new_conf.set_key_value("support_interface_top_layers", new ConfigOptionInt(4));
+                    new_conf.set_key_value("support_interface_contact_speed", new ConfigOptionFloat(55));
+                    new_conf.set_key_value("support_interface_contact_line_width", new ConfigOptionFloatOrPercent(0.32, false));
+                }
                 if ((filament_type == "PLA" && has_filaments({"TPU", "TPU-AMS"})) || (is_soluble_filament(interface_filament_id) && !is_soluble_filament(filament_id)))
                     new_conf.set_key_value("support_filament", new ConfigOptionInt(interface_filament_id + 1));
                 m_config_manipulation.apply(m_config, &new_conf);
