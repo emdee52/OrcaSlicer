@@ -98,6 +98,22 @@ Limits worth knowing: the part fan is one airflow, so switching it over a small 
 air is blown, not what the previous layer experienced; and the transition temperature cannot follow
 this granularity - nozzle temperature is a whole-layer property.
 
+### Refinement: the fan follows the same containment rule as speed/flow
+
+The first version let the fan zone open when *any* point of a path was inside the footprint (on the
+theory that fan is airflow rather than a material change). On the goose project a contact patch is
+routinely touched by the perimeter loop, so whole walls landed in the zone: 92 989 outer-wall and
+51 217 inner-wall moves out of 152 036 in-zone object moves. The fan now uses the same
+majority-of-points rule as speed and flow, and the object-on-interface joint no longer applies to
+support paths at all (its subject is the object material resting on the interface; the support side
+has the SU-10 contact settings). In-zone object moves drop to 1 240, and the zone still fires where
+paths really sit on the contact (overhang walls, bottom skin).
+
+Consequence to expect: on a model with small contacts the fan override is now sparse - a path has to
+lie *mostly* on the contact - which is the correct reading of "only the contact area", but it also
+means the effect is subtle. Applying it to the exact part of a path is the per-segment split noted
+in the caveat above, not done.
+
 ## Verification
 
 - Build: `cmake --build build --config Release --target OrcaSlicer` -> 0 errors.
