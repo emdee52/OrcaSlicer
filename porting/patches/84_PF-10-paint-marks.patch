@@ -1,0 +1,263 @@
+From d2f932c27242e550e587db4b09b515412d24e203 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Fri, 30 Oct 2026 19:26:39 -0600
+Subject: [PATCH] port(PF-10-paint-marks): merged support passes keep their
+ transition, weave and contact marks
+
+merge_duplicate_support_layers composed fills and islands only, so every pass but the first at a print_z lost the SU-8/9/10 marks recorded on its layer - with support painting that is the automatic/default pass (which runs last) and every tree region. Carry the marks onto the merged layer, and drop the base layer's zone family tags when appending so untagged fills are not emitted nowhere. The paint row's support_type field was dead data (the dispatcher forces the manual engine on purpose); drop it and say so.
+---
+ src/libslic3r/OrcaExt/SupportPaintTypes.cpp |  5 --
+ src/libslic3r/OrcaExt/SupportPaintTypes.hpp |  7 +-
+ src/libslic3r/PrintObject.cpp               | 16 ++++-
+ src/libslic3r/Support/SupportCommon.cpp     | 26 ++++++++
+ src/libslic3r/Support/SupportCommon.hpp     |  4 ++
+ tests/fff_print/test_support_material.cpp   | 72 +++++++++++++++++++++
+ 6 files changed, 122 insertions(+), 8 deletions(-)
+
+diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
+index 83b9fb1448..f424dbeca0 100644
+--- a/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
++++ b/src/libslic3r/OrcaExt/SupportPaintTypes.cpp
+@@ -63,7 +63,6 @@ std::vector<SupportPaintType> make_default_registry()
+         // Amber: the legacy light green was too close to Organic (tree) in the painter palette.
+         t.color[0] = 1.f; t.color[1] = 0.65f; t.color[2] = 0.f; t.color[3] = 1.f;
+         t.is_tree = false;
+-        t.support_type = stNormalAuto;
+         t.support_style = smsDefault;
+         v.emplace_back(t);
+     }
+@@ -75,7 +74,6 @@ std::vector<SupportPaintType> make_default_registry()
+         t.label = "Snug";
+         t.color[0] = 0.4f; t.color[1] = 0.8f; t.color[2] = 1.f;  t.color[3] = 1.f;
+         t.is_tree = false;
+-        t.support_type = stNormalAuto;
+         t.support_style = smsSnug;
+         t.rules = { SupportPaintRule{ { hard_term(SupportFeature::Area, 50., INF) }, 1. } };
+         t.min_score = 0.5;
+@@ -90,7 +88,6 @@ std::vector<SupportPaintType> make_default_registry()
+         t.label = "Grid";
+         t.color[0] = 0.7f; t.color[1] = 0.5f; t.color[2] = 1.f;  t.color[3] = 1.f;
+         t.is_tree = false;
+-        t.support_type = stNormalAuto;
+         t.support_style = smsGrid;
+         t.rules = { SupportPaintRule{ {
+             hard_term(SupportFeature::Area,   400., INF),
+@@ -109,7 +106,6 @@ std::vector<SupportPaintType> make_default_registry()
+         t.label = "Organic";
+         t.color[0] = 0.2f; t.color[1] = 0.9f; t.color[2] = 0.4f; t.color[3] = 1.f;
+         t.is_tree = true;
+-        t.support_type = stTreeAuto;
+         t.support_style = smsTreeOrganic;
+         t.rules = {
+             SupportPaintRule{ { hard_term(SupportFeature::Area,    0., 30.),
+@@ -129,7 +125,6 @@ std::vector<SupportPaintType> make_default_registry()
+         t.label = "NeoWave";
+         t.color[0] = 0.f; t.color[1] = 0.8f; t.color[2] = 0.8f; t.color[3] = 1.f;
+         t.is_tree = false;
+-        t.support_type = stWaveSupport;
+         t.support_style = smsDefault;
+         t.overrides.force_base_pattern      = true; t.overrides.base_pattern      = smpNone;
+         t.overrides.force_interface_pattern = true; t.overrides.interface_pattern = smipWave;
+diff --git a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
+index caf77e7e06..d6b518d84b 100644
+--- a/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
++++ b/src/libslic3r/OrcaExt/SupportPaintTypes.hpp
+@@ -94,9 +94,12 @@ struct SupportPaintType
+     const char          *label{""};
+     // Prepare-view colour (RGBA).
+     float                color[4]{0.f, 0.f, 0.f, 1.f};
+-    // Engine dispatch. `is_tree` selects TreeSupport; otherwise the Normal/classic engine.
++    // Engine dispatch. `is_tree` selects TreeSupport; otherwise the Normal/classic engine. The
++    // dispatcher always runs a row as a manual pass (stNormal / stTree), so only the facets painted
++    // with this state generate support; a row therefore cannot ask for automatic overhang detection
++    // (stNormalAuto / stTreeAuto / stWaveSupport), and what a row does force is `support_style` plus
++    // `overrides`.
+     bool                 is_tree{false};
+-    SupportType          support_type{stNormalAuto};
+     SupportMaterialStyle support_style{smsDefault};
+     // Forced object-config overrides applied only to this painted region's engine pass.
+     SupportPaintOverrides overrides;
+diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
+index c006ec143b..acdbc4ab63 100644
+--- a/src/libslic3r/PrintObject.cpp
++++ b/src/libslic3r/PrintObject.cpp
+@@ -5207,8 +5207,16 @@ void PrintObject::merge_duplicate_support_layers()
+             if (!dup_layer->support_fills.empty()) {
+                 if (!base_layer->support_islands.empty())
+                     clip_extrusion_entities(dup_layer->support_fills.entities, base_layer->support_islands);
+-                if (!dup_layer->support_fills.empty())
++                if (!dup_layer->support_fills.empty()) {
++                    // [ORCAPORT:PF-10-paint] support_fills_family is index-paired with the first-level
++                    // entities and an untagged entity is dropped by both readers (GCode support
++                    // emission, ToolOrdering), so appending breaks the pairing. Drop the base layer's
++                    // tags (the dup's are dropped with it): the merged layer then prints with the
++                    // normal support filament instead of losing geometry.
++                    if (!base_layer->support_fills_family.empty())
++                        base_layer->support_fills_family.clear();
+                     base_layer->support_fills.append(std::move(dup_layer->support_fills.entities));
++                }
+                 dup_layer->support_fills.entities.clear();
+             }
+             if (!dup_layer->support_islands.empty()) {
+@@ -5216,6 +5224,9 @@ void PrintObject::merge_duplicate_support_layers()
+                 base_layer->support_islands = union_ex(base_layer->support_islands);
+                 dup_layer->support_islands.clear();
+             }
++            // [ORCAPORT:PF-10-paint] Keep the later pass's SU-8/9/10 marks; the merge above composes
++            // geometry only.
++            merge_support_layer_marks(*base_layer, *dup_layer);
+             delete dup_layer;
+             m_support_layers[j] = nullptr;
+             ++j;
+@@ -5421,6 +5432,9 @@ void PrintObject::_generate_support_material()
+                 // style under them.
+                 blockers.push_back(EnforcerBlockerType::ENFORCER);
+ 
++                // Manual on purpose: a painted pass must build under its own painted facets only, and
++                // stNormal / stTree are what turn automatic overhang detection off. A row's engine is
++                // therefore its `is_tree` flag; what it forces is `support_style` and `overrides`.
+                 const SupportType type = t->is_tree ? stTree : stNormal;
+                 run_pass(t->is_tree, type, t->support_style, &t->overrides, t->state, std::move(blockers));
+             }
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index cffd5f7fa9..bcb1c5ecd3 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -1563,6 +1563,32 @@ SupportGeneratorLayersPtr generate_support_layers(
+     return layers_sorted;
+ }
+ 
++// [ORCAPORT:PF-10-paint] Carry a later painted pass's per-layer support marks onto the layer it is
++// merged into. merge_duplicate_support_layers() composes fills and islands only, so without this
++// the SU-8/9/10 treatment recorded on that layer - transition speed/flow/temperature, the unified
++// woven-layer speed, the contact speed overrides - is lost for every pass except the first one at a
++// given print_z, which is the whole automatic/default pass (it runs last) and every tree pass.
++// shortcut: a Layer carries one transition joint, so two passes that tag different joints at the
++// same print_z share one treatment; upgrade to a per-layer joint list if that shows up in a print.
++void merge_support_layer_marks(SupportLayer &base, const SupportLayer &dup)
++{
++    base.support_weave          |= dup.support_weave;
++    base.support_contact_top    |= dup.support_contact_top;
++    base.support_contact_bottom |= dup.support_contact_bottom;
++
++    if (dup.transition_joint == 0)
++        return;
++    if (base.transition_joint == 0) {
++        base.transition_joint = dup.transition_joint;
++        base.transition_area  = dup.transition_area;
++        return;
++    }
++    // Both passes tagged this layer: keep the first joint and widen its footprint, so the other
++    // pass's paths still get a transition treatment instead of none.
++    base.transition_area.insert(base.transition_area.end(), dup.transition_area.begin(), dup.transition_area.end());
++    base.transition_area = union_ex(base.transition_area);
++}
++
+ // [ORCAPORT:SU-5] Split a support layer's extrusions between families by CLIPPING the polylines
+ // (not tagging a whole path by one of its points: a fill path can cross the seam between two zones,
+ // and clipping is exact). A clipped loop becomes an open path, which only happens at a material
+diff --git a/src/libslic3r/Support/SupportCommon.hpp b/src/libslic3r/Support/SupportCommon.hpp
+index 1e5f01d2f0..3463cb1e1c 100644
+--- a/src/libslic3r/Support/SupportCommon.hpp
++++ b/src/libslic3r/Support/SupportCommon.hpp
+@@ -107,6 +107,10 @@ void generate_support_toolpaths(
+     const SupportGeneratorLayersPtr   	&base_interface_layers,
+     PrintObject                         *object_for_families = nullptr); // [ORCAPORT:SU-5] [ORCAPORT:SU-8]
+ 
++// [ORCAPORT:PF-10-paint] Carry a later painted pass's per-layer support marks onto the layer it is
++// merged into. See the definition for why the merge would otherwise lose them.
++void merge_support_layer_marks(SupportLayer &base, const SupportLayer &dup);
++
+ // FN_HIGHER_EQUAL: the provided object pointer has a Z value >= of an internal threshold.
+ // Find the first item with Z value >= of an internal threshold of fn_higher_equal.
+ // If no vec item with Z value >= of an internal threshold of fn_higher_equal is found, return vec.size()
+diff --git a/tests/fff_print/test_support_material.cpp b/tests/fff_print/test_support_material.cpp
+index ab8d48a910..9306a84340 100644
+--- a/tests/fff_print/test_support_material.cpp
++++ b/tests/fff_print/test_support_material.cpp
+@@ -30,6 +30,7 @@
+ // Not self-contained: its inline constructor uses PrintObject, PrintRegion, SlicingParameters and
+ // Geometry, so it must follow the headers (pulled in via test_helpers.hpp) that define them.
+ #include "libslic3r/Support/SupportParameters.hpp"
++#include "libslic3r/Support/SupportCommon.hpp" // [ORCAPORT:PF-10-paint] merge_support_layer_marks
+ #include "libslic3r/Config.hpp"
+ #include "libslic3r/Print.hpp"
+ 
+@@ -618,3 +619,74 @@ TEST_CASE("Bottom weave with three or more interface layers still weaves", "[Sup
+     REQUIRE(support_interface_layer_count(g) > 0);
+     REQUIRE_FALSE(support_layers_with_both_roles(g).empty());
+ }
++
++// [ORCAPORT:PF-10-paint] A painted support style runs its own engine pass, so several support layers
++// share a print_z and are merged. The merge composes fills and islands only; the per-layer SU-8/9/10
++// marks have to be carried over explicitly or the automatic/default pass (which runs last) silently
++// loses its transition, woven-layer and contact treatment.
++static ExPolygon test_footprint(double x0, double x1)
++{
++    ExPolygon square;
++    square.contour.points = { Point::new_scale(x0, 0.), Point::new_scale(x1, 0.),
++                              Point::new_scale(x1, 10.), Point::new_scale(x0, 10.) };
++    return square;
++}
++
++static bool footprint_covers(const ExPolygons &area, const Point &pt)
++{
++    for (const ExPolygon &e : area)
++        if (e.contains(pt))
++            return true;
++    return false;
++}
++
++TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatment", "[SupportMaterial]")
++{
++    Print    print;
++    Model    model;
++    init_print({ cube(20.) }, print, model, DynamicPrintConfig::full_print_config());
++    REQUIRE(! print.objects().empty());
++    PrintObject  *object = print.get_object(0);
++    // Two passes' layers for the same print_z, as the painted multi-pass dispatcher leaves them.
++    SupportLayer *base   = object->add_support_layer(0, 0, 0.2, 0.4);
++    SupportLayer *dup    = object->add_support_layer(1, 0, 0.2, 0.4);
++    dup->support_weave          = true;
++    dup->support_contact_top    = true;
++    dup->support_contact_bottom = true;
++    dup->transition_joint       = 1;
++    dup->transition_area        = { test_footprint(0., 10.) };
++
++    SECTION("weave and contact marks reach the merged layer") {
++        merge_support_layer_marks(*base, *dup);
++        REQUIRE(base->support_weave);
++        REQUIRE(base->support_contact_top);
++        REQUIRE(base->support_contact_bottom);
++    }
++
++    SECTION("a transition the merged layer has none of is taken over") {
++        merge_support_layer_marks(*base, *dup);
++        REQUIRE(base->transition_joint == 1);
++        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
++    }
++
++    SECTION("two tagged passes keep one joint and cover both footprints") {
++        base->transition_joint = 3;
++        base->transition_area  = { test_footprint(20., 30.) };
++        merge_support_layer_marks(*base, *dup);
++        REQUIRE(base->transition_joint == 3);
++        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(25., 5.)));
++        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
++    }
++
++    SECTION("an untagged later pass leaves the merged layer's treatment alone") {
++        dup->transition_joint = 0;
++        dup->transition_area.clear();
++        base->transition_joint = 3;
++        base->transition_area  = { test_footprint(20., 30.) };
++        merge_support_layer_marks(*base, *dup);
++        REQUIRE(base->transition_joint == 3);
++        REQUIRE(base->transition_area.size() == 1);
++        REQUIRE(footprint_covers(base->transition_area, Point::new_scale(25., 5.)));
++        REQUIRE_FALSE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
++    }
++}
+-- 
+2.43.0.windows.1
+
