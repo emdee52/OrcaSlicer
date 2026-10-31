@@ -348,15 +348,17 @@ public:
         DynamicConfig   *config;
         int              from;
         int              to;
-        bool             left_to_right;
-        NozzleVolumeType nozzle;
+        // Labels of the two nozzle columns as the variant switch names them.
+        wxString         from_label;
+        wxString         to_label;
     };
 
     // show unsaved changes when preset is switching
     UnsavedChangesDialog(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, bool no_transfer = false);
     // show unsaved changes for all another cases
     UnsavedChangesDialog(const wxString& caption, const wxString& header, const std::string& app_config_key, int act_buttons);
-    UnsavedChangesDialog(const wxString &caption, const wxString &header, DynamicConfig *config, int from, int to, bool left_to_right, NozzleVolumeType nozzle);
+    UnsavedChangesDialog(const wxString &caption, const wxString &header, DynamicConfig *config, int from, int to,
+                         const wxString &from_label, const wxString &to_label);
     ~UnsavedChangesDialog() override = default;
 
     int ShowModal() override;
