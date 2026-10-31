@@ -241,6 +241,7 @@ public:
         m_layer(nullptr),
         m_object_layer_over_raft(false),
         m_transition_joint(0),
+        m_transition_fan_zone(-1),
         m_weave_layer(false),
         m_support_contact_top(false),
         m_support_contact_bottom(false),
@@ -863,6 +864,9 @@ protected:
     // [ORCAPORT:SU-8] Transition joint of the layer currently being extruded
     // (0 = none, 1 = interface-on-base, 2 = object-on-interface, 3 = interface-on-object).
     int                                 m_transition_joint;
+    // [ORCAPORT:SU-8] Fan value of the transition zone currently open in this layer, -1 = closed.
+    // The zone runs while extrusions lie inside the footprint that touches the other material.
+    int                                 m_transition_fan_zone;
     // [ORCAPORT:SU-8] Last nozzle temperature commanded by the transition treatment, per filament
     // id. A nozzle is shared between objects on the plate, so the desired temperature is computed
     // per extrusion context and only re-emitted when it differs from what was last set.

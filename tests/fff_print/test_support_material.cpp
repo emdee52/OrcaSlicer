@@ -694,8 +694,10 @@ TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatme
 // [ORCAPORT:SU-8] The object-on-interface treatment is tagged on the object layer above a top
 // contact. The classic engine records that object layer on the contact (idx_object_layer_above);
 // the tree engine never does, so the tag has to be derived from the contact's print_z - otherwise
-// organic support never gets the treatment at all.
-TEST_CASE("An organic contact tags the object layer above it for the object-on-interface treatment",
+// organic support never gets the treatment at all. The fan is area-scoped, so the proof that the
+// layer was tagged is a real fan command with the requested value, emitted where the object rests
+// on the contact instead of at the start of the layer.
+TEST_CASE("An organic contact tags the object layer above it for the object-on-interface fan",
           "[SupportMaterial]")
 {
     const std::string g = slice({ support_capital() }, {
@@ -705,10 +707,12 @@ TEST_CASE("An organic contact tags the object layer above it for the object-on-i
         { "support_top_z_distance",             0 },
         { "support_interface_top_layers",       3 },
         { "transition_object_interface_enable", 1 },
-        { "transition_object_interface_layers", 2 },
-        // Any non-negative fan value makes the generator write the marker, so the marker is the
-        // cheapest proof that the object layer was tagged at all.
-        { "transition_object_interface_fan",    0 },
+        { "transition_object_interface_layers", 1 },
+        // 7 % maps to M106 S17, a value the normal cooling ramp does not produce on this fixture.
+        { "transition_object_interface_fan",    7 },
     });
-    REQUIRE(g.find(";SU8_FAN 0") != std::string::npos);
+    // Zone markers are consumed by the cooling buffer and the old layer-wide marker is gone.
+    REQUIRE(g.find(";_SU8_FAN_ZONE") == std::string::npos);
+    REQUIRE(g.find(";SU8_FAN ") == std::string::npos);
+    REQUIRE(g.find("M106 S17") != std::string::npos);
 }

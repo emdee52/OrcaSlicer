@@ -95,6 +95,10 @@ struct CoolingLine
         // Belt printers: extrusions within the first-layer band above the belt.
         TYPE_BELT_BAND_START           = 1 << 21,
         TYPE_BELT_BAND_END             = 1 << 22,
+        // [ORCAPORT:SU-8] Area-scoped transition fan: the joint's fan value applies only while
+        // extruding inside the touching footprint (see GCode::_extrude).
+        TYPE_SU8_FAN_ZONE_BEGIN        = 1 << 23,
+        TYPE_SU8_FAN_ZONE_END          = 1 << 24,
     };
 
     CoolingLine(unsigned int type, size_t  line_start, size_t  line_end) :
@@ -559,6 +563,10 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             line.type = CoolingLine::TYPE_BELT_BAND_START;
         } else if (boost::starts_with(sline, ";_BELT_BAND_END")) {
             line.type = CoolingLine::TYPE_BELT_BAND_END;
+        } else if (boost::starts_with(sline, ";_SU8_FAN_ZONE_BEGIN")) {
+            line.type = CoolingLine::TYPE_SU8_FAN_ZONE_BEGIN;
+        } else if (boost::starts_with(sline, ";_SU8_FAN_ZONE_END")) {
+            line.type = CoolingLine::TYPE_SU8_FAN_ZONE_END;
         } else if (boost::starts_with(sline, "G4 ")) {
             // Parse the wait time.
             line.type = CoolingLine::TYPE_G4;
@@ -757,16 +765,15 @@ std::string CoolingBuffer::apply_layer_cooldown(
     int  supp_interface_fan_speed = 0;
     bool ironing_fan_control= false; // ORCA: Add support for ironing fan speed control
     int  ironing_fan_speed   = 0; // ORCA: Add support for ironing fan speed control
-    // [ORCAPORT:SU-8] Forced part-cooling fan for a transition layer. The G-code generator emits
-    // a ";SU8_FAN <percent>" marker on such a layer; -1 means no override.
-    int  transition_fan = -1;
-    if (const size_t p = gcode.rfind(";SU8_FAN "); p != std::string::npos)
-        transition_fan = int(std::atoi(gcode.c_str() + p + 9));
+    // [ORCAPORT:SU-8] Area-scoped transition fan. GCode::_extrude marks the extrusions that lie
+    // inside the footprint where the object rests on the other material; the joint's fan value is
+    // forced only inside that zone, and the layer's own fan is restored after it.
+    int  su8_zone_fan = -1;
     auto change_extruder_set_fan = [ this, layer_id, layer_time, &new_gcode, part_cooling_fan_min_pwm,
         &overhang_fan_control, &overhang_fan_speed,
         &internal_bridge_fan_control, &internal_bridge_fan_speed,
         &supp_interface_fan_control, &supp_interface_fan_speed,
-        &ironing_fan_control, &ironing_fan_speed, transition_fan
+        &ironing_fan_control, &ironing_fan_speed
     ](bool immediately_apply) {
 #define EXTRUDER_CONFIG(OPT) m_config.OPT.get_at(m_current_extruder)
         // The per-variant options take the extruder variant the filament prints with on this layer
@@ -878,15 +885,9 @@ std::string CoolingBuffer::apply_layer_cooldown(
             ironing_fan_control = false; // ORCA: Add support for ironing fan speed control
             ironing_fan_speed = 0; // ORCA: Add support for ironing fan speed control
         }
-        // [ORCAPORT:SU-8] Transition-layer fan override wins over the computed layer fan and the
-        // role-based fan markers, so the requested speed is held for the whole layer.
-        if (transition_fan >= 0) {
-            fan_speed_new               = float(transition_fan);
-            overhang_fan_control        = false;
-            internal_bridge_fan_control = false;
-            supp_interface_fan_control  = false;
-            ironing_fan_control         = false;
-        }
+        // [ORCAPORT:SU-8] The transition fan is no longer a layer-wide override: it is applied in a
+        // zone by the loop below (the extrusions resting on the other material), so the computed
+        // layer fan and the role markers stay in charge everywhere else.
         // A tool change may keep the same configured base fan speed while the physical fan is
         // still running at the previous filament's overhang speed. Restore the base speed before
         // emitting G-code for the new tool in that case.
@@ -991,6 +992,14 @@ std::string CoolingBuffer::apply_layer_cooldown(
         } else if (line->type & CoolingLine::TYPE_BELT_BAND_END) {
             m_belt_band_active = false;
             need_set_fan       = true;
+        } else if (line->type & CoolingLine::TYPE_SU8_FAN_ZONE_BEGIN) {
+            // [ORCAPORT:SU-8] Enter the footprint where the object rests on the other material.
+            su8_zone_fan = std::atoi(line_start + sizeof(";_SU8_FAN_ZONE_BEGIN ") - 1);
+            need_set_fan = true;
+        } else if (line->type & CoolingLine::TYPE_SU8_FAN_ZONE_END) {
+            // Leaving it restores whatever the layer fan and the role markers ask for.
+            su8_zone_fan = -1;
+            need_set_fan = true;
         }
         else if (line->type & CoolingLine::TYPE_EXTRUDE_END) {
             // Just remove this comment.
@@ -1092,6 +1101,10 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 // layers of a flat bed do. Leaving the band falls through to the branches below.
                 set_fan(0);
                 fan_speed_change_requests[CoolingLine::TYPE_FORCE_RESUME_FAN] = false;
+            } else if (su8_zone_fan >= 0) {
+                // [ORCAPORT:SU-8] Inside the footprint the joint's fan value wins over the layer fan
+                // and over any role marker; END restores them.
+                set_fan(su8_zone_fan);
             } else if (fan_speed_change_requests[CoolingLine::TYPE_OVERHANG_FAN_START]){
                 set_fan(overhang_fan_speed);
             } else if (fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START]){ // ORCA: Add support for separate internal bridge fan speed control
