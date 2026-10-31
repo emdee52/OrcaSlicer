@@ -94,9 +94,12 @@ struct SupportPaintType
     const char          *label{""};
     // Prepare-view colour (RGBA).
     float                color[4]{0.f, 0.f, 0.f, 1.f};
-    // Engine dispatch. `is_tree` selects TreeSupport; otherwise the Normal/classic engine.
+    // Engine dispatch. `is_tree` selects TreeSupport; otherwise the Normal/classic engine. The
+    // dispatcher always runs a row as a manual pass (stNormal / stTree), so only the facets painted
+    // with this state generate support; a row therefore cannot ask for automatic overhang detection
+    // (stNormalAuto / stTreeAuto / stWaveSupport), and what a row does force is `support_style` plus
+    // `overrides`.
     bool                 is_tree{false};
-    SupportType          support_type{stNormalAuto};
     SupportMaterialStyle support_style{smsDefault};
     // Forced object-config overrides applied only to this painted region's engine pass.
     SupportPaintOverrides overrides;

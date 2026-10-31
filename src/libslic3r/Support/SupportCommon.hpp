@@ -107,6 +107,10 @@ void generate_support_toolpaths(
     const SupportGeneratorLayersPtr   	&base_interface_layers,
     PrintObject                         *object_for_families = nullptr); // [ORCAPORT:SU-5] [ORCAPORT:SU-8]
 
+// [ORCAPORT:PF-10-paint] Carry a later painted pass's per-layer support marks onto the layer it is
+// merged into. See the definition for why the merge would otherwise lose them.
+void merge_support_layer_marks(SupportLayer &base, const SupportLayer &dup);
+
 // FN_HIGHER_EQUAL: the provided object pointer has a Z value >= of an internal threshold.
 // Find the first item with Z value >= of an internal threshold of fn_higher_equal.
 // If no vec item with Z value >= of an internal threshold of fn_higher_equal is found, return vec.size()

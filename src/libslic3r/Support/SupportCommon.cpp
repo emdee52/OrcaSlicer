@@ -1563,6 +1563,32 @@ SupportGeneratorLayersPtr generate_support_layers(
     return layers_sorted;
 }
 
+// [ORCAPORT:PF-10-paint] Carry a later painted pass's per-layer support marks onto the layer it is
+// merged into. merge_duplicate_support_layers() composes fills and islands only, so without this
+// the SU-8/9/10 treatment recorded on that layer - transition speed/flow/temperature, the unified
+// woven-layer speed, the contact speed overrides - is lost for every pass except the first one at a
+// given print_z, which is the whole automatic/default pass (it runs last) and every tree pass.
+// shortcut: a Layer carries one transition joint, so two passes that tag different joints at the
+// same print_z share one treatment; upgrade to a per-layer joint list if that shows up in a print.
+void merge_support_layer_marks(SupportLayer &base, const SupportLayer &dup)
+{
+    base.support_weave          |= dup.support_weave;
+    base.support_contact_top    |= dup.support_contact_top;
+    base.support_contact_bottom |= dup.support_contact_bottom;
+
+    if (dup.transition_joint == 0)
+        return;
+    if (base.transition_joint == 0) {
+        base.transition_joint = dup.transition_joint;
+        base.transition_area  = dup.transition_area;
+        return;
+    }
+    // Both passes tagged this layer: keep the first joint and widen its footprint, so the other
+    // pass's paths still get a transition treatment instead of none.
+    base.transition_area.insert(base.transition_area.end(), dup.transition_area.begin(), dup.transition_area.end());
+    base.transition_area = union_ex(base.transition_area);
+}
+
 // [ORCAPORT:SU-5] Split a support layer's extrusions between families by CLIPPING the polylines
 // (not tagging a whole path by one of its points: a fill path can cross the seam between two zones,
 // and clipping is exact). A clipped loop becomes an open path, which only happens at a material
