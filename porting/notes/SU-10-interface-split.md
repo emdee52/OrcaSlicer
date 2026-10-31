@@ -91,8 +91,26 @@ one layer per slope is woven. Marking per contact instead would weave roughly ev
 (~350 instead of 22) - a large change in material mixing and tool changes, so it is deliberately
 not in this patch.
 
+## Follow-up: the suggestion dialog sets the recipe too
+
+Switching the support interface to a different non-soluble filament pops a suggestion (`Tab.cpp`,
+`on_value_change` for `support_interface_filament`) that already zeroes the Z distances and the
+interface spacing, sets the interlaced rectilinear pattern and disables independent support layer
+height. It now also sets the contact recipe this feature exists for:
+
+| key | value |
+|---|---|
+| `support_interface_top_layers` | 4 |
+| `support_interface_contact_speed` | 55 mm/s |
+| `support_interface_contact_line_width` | 0.32 mm |
+
+All three are hidden dev keys (`comDevelop`), so they could not be reached from the UI at all. The
+dialog text says what it sets. Soluble interfaces keep the previous auto set, because 4 dense layers
+of a soluble filament is not the same trade-off.
+
 ## Files
 
 - Modified: `src/libslic3r/Support/SupportCommon.cpp`, `src/libslic3r/Layer.hpp`,
-  `src/libslic3r/GCode.cpp`, `src/libslic3r/GCode.hpp`
-- Patch: `porting/patches/85_SU-10-interface-split.patch`
+  `src/libslic3r/GCode.cpp`, `src/libslic3r/GCode.hpp`, `src/slic3r/GUI/Tab.cpp`
+- Patches: `porting/patches/85_SU-10-interface-split.patch`,
+  `porting/patches/87_SU-10-suggestion.patch`
