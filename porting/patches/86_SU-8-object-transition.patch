@@ -1,0 +1,90 @@
+From 78c928cda1934793587086957d80ef8406ad445e Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Fri, 30 Oct 2026 23:21:36 -0600
+Subject: [PATCH] port(SU-8): the object-on-interface joint derives the object
+ layer for tree contacts
+
+Only the classic engine records idx_object_layer_above on a top contact, so every organic/slim/strong/hybrid contact was skipped in the joint-2 block and transition_object_interface speed/flow/fan/temperature never applied to tree supports. Derive the object layer from the contact print_z when the field is unset (upper_bound over PrintObject::layers(); a support layer print_z is its top, which also holds with a non-zero top z distance), and accumulate the footprint when layers > 1 so two contacts are not overwritten. Classic contacts keep their recorded index. Test: organic slice must emit the ;SU8_FAN marker.
+---
+ src/libslic3r/Support/SupportCommon.cpp   | 33 +++++++++++++++++++----
+ tests/fff_print/test_support_material.cpp | 22 +++++++++++++++
+ 2 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/src/libslic3r/Support/SupportCommon.cpp b/src/libslic3r/Support/SupportCommon.cpp
+index d93fe57c49..0a2a714785 100644
+--- a/src/libslic3r/Support/SupportCommon.cpp
++++ b/src/libslic3r/Support/SupportCommon.cpp
+@@ -2087,12 +2087,35 @@ void generate_support_toolpaths(
+         if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
+             const int n = std::max(1, config.transition_object_interface_layers.value);
+             for (const SupportGeneratorLayer *l : top_contacts) {
+-                if (l == nullptr || l->polygons.empty() || l->idx_object_layer_above == size_t(-1))
++                if (l == nullptr || l->polygons.empty())
+                     continue;
+-                for (int k = 0; k < n && l->idx_object_layer_above + size_t(k) < object_for_families->layer_count(); ++ k) {
+-                    Layer *ol = object_for_families->get_layer(int(l->idx_object_layer_above + size_t(k)));
+-                    ol->transition_joint = 2;
+-                    ol->transition_area  = union_ex(intersection(ol->lslices, l->polygons));
++                // [ORCAPORT:SU-8] The classic engine records the object layer a contact supports
++                // (idx_object_layer_above); the tree engine allocates its contacts through
++                // InterfacePlacer::add_roof_unguarded and never does, so every organic / slim /
++                // strong / hybrid contact was skipped here and the object-on-interface treatment
++                // never applied to tree supports at all. A support layer's print_z is its top, so
++                // the object layer above it is the first one that starts higher.
++                size_t idx_above = l->idx_object_layer_above;
++                if (idx_above == size_t(-1)) {
++                    const LayerPtrs &obj_layers = object_for_families->layers();
++                    auto it = std::upper_bound(obj_layers.begin(), obj_layers.end(), l->print_z + EPSILON,
++                                               [](coordf_t z, const Layer *layer) { return z < layer->print_z; });
++                    if (it == obj_layers.end())
++                        continue;
++                    idx_above = size_t(it - obj_layers.begin());
++                }
++                for (int k = 0; k < n && idx_above + size_t(k) < object_for_families->layer_count(); ++ k) {
++                    Layer *ol = object_for_families->get_layer(int(idx_above + size_t(k)));
++                    // With layers > 1 the same object layer is reached from two contacts, so the
++                    // footprints accumulate instead of the last contact replacing them.
++                    ExPolygons area = union_ex(intersection(ol->lslices, l->polygons));
++                    if (ol->transition_joint == 2 && ! ol->transition_area.empty()) {
++                        append(ol->transition_area, std::move(area));
++                        ol->transition_area = union_ex(ol->transition_area);
++                    } else {
++                        ol->transition_joint = 2;
++                        ol->transition_area  = std::move(area);
++                    }
+                 }
+             }
+         }
+diff --git a/tests/fff_print/test_support_material.cpp b/tests/fff_print/test_support_material.cpp
+index 9306a84340..8f00630f11 100644
+--- a/tests/fff_print/test_support_material.cpp
++++ b/tests/fff_print/test_support_material.cpp
+@@ -690,3 +690,25 @@ TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatme
+         REQUIRE_FALSE(footprint_covers(base->transition_area, Point::new_scale(5., 5.)));
+     }
+ }
++
++// [ORCAPORT:SU-8] The object-on-interface treatment is tagged on the object layer above a top
++// contact. The classic engine records that object layer on the contact (idx_object_layer_above);
++// the tree engine never does, so the tag has to be derived from the contact's print_z - otherwise
++// organic support never gets the treatment at all.
++TEST_CASE("An organic contact tags the object layer above it for the object-on-interface treatment",
++          "[SupportMaterial]")
++{
++    const std::string g = slice({ support_capital() }, {
++        { "enable_support",                     1 },
++        { "support_type",                       "tree(auto)" },
++        { "support_style",                      "organic" },
++        { "support_top_z_distance",             0 },
++        { "support_interface_top_layers",       3 },
++        { "transition_object_interface_enable", 1 },
++        { "transition_object_interface_layers", 2 },
++        // Any non-negative fan value makes the generator write the marker, so the marker is the
++        // cheapest proof that the object layer was tagged at all.
++        { "transition_object_interface_fan",    0 },
++    });
++    REQUIRE(g.find(";SU8_FAN 0") != std::string::npos);
++}
+-- 
+2.43.0.windows.1
+
