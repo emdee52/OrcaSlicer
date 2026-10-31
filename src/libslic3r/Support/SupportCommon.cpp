@@ -1942,6 +1942,10 @@ void generate_support_toolpaths(
     // and the woven layer(s) whose base thread flush lowers.
     std::vector<char> solid_base_flush(support_layers.size(), 0);
     std::vector<char> flush_thread(support_layers.size(), 0);
+    // [ORCAPORT:SU-8] The interface contact actually printed at each print_z. The object-on-interface
+    // transition is restricted to it: the nominal contact polygons cover a whole organic overhang,
+    // while the printed contact under a wide object layer can be a small patch.
+    std::vector<ExPolygons> contact_footprint(support_layers.size());
     auto z_in = [](const std::vector<coordf_t> &v, coordf_t z) {
         const auto it = std::lower_bound(v.begin(), v.end(), z - EPSILON);
         return it != v.end() && *it <= z + EPSILON;
@@ -2082,49 +2086,16 @@ void generate_support_toolpaths(
                 if (is_bc(support_layers[i]->print_z))
                     mark_support(bcontact_at, i, std::max(1, config.transition_interface_object_layers.value), 3);
         }
-        // B: object layer(s) directly above each top contact, restricted to the footprint that
-        // rests on the contact.
-        if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
-            const int n = std::max(1, config.transition_object_interface_layers.value);
-            for (const SupportGeneratorLayer *l : top_contacts) {
-                if (l == nullptr || l->polygons.empty())
-                    continue;
-                // [ORCAPORT:SU-8] The classic engine records the object layer a contact supports
-                // (idx_object_layer_above); the tree engine allocates its contacts through
-                // InterfacePlacer::add_roof_unguarded and never does, so every organic / slim /
-                // strong / hybrid contact was skipped here and the object-on-interface treatment
-                // never applied to tree supports at all. A support layer's print_z is its top, so
-                // the object layer above it is the first one that starts higher.
-                size_t idx_above = l->idx_object_layer_above;
-                if (idx_above == size_t(-1)) {
-                    const LayerPtrs &obj_layers = object_for_families->layers();
-                    auto it = std::upper_bound(obj_layers.begin(), obj_layers.end(), l->print_z + EPSILON,
-                                               [](coordf_t z, const Layer *layer) { return z < layer->print_z; });
-                    if (it == obj_layers.end())
-                        continue;
-                    idx_above = size_t(it - obj_layers.begin());
-                }
-                for (int k = 0; k < n && idx_above + size_t(k) < object_for_families->layer_count(); ++ k) {
-                    Layer *ol = object_for_families->get_layer(int(idx_above + size_t(k)));
-                    // With layers > 1 the same object layer is reached from two contacts, so the
-                    // footprints accumulate instead of the last contact replacing them.
-                    ExPolygons area = union_ex(intersection(ol->lslices, l->polygons));
-                    if (ol->transition_joint == 2 && ! ol->transition_area.empty()) {
-                        append(ol->transition_area, std::move(area));
-                        ol->transition_area = union_ex(ol->transition_area);
-                    } else {
-                        ol->transition_joint = 2;
-                        ol->transition_area  = std::move(area);
-                    }
-                }
-            }
-        }
+        // B: object layer(s) directly above each top contact. The footprint is filled in after the
+        // toolpath stage, from the support that is actually printed (see below): the nominal contact
+        // polygons cover a whole organic overhang, while the branches under it may touch only a small
+        // part of the object, and tagging the whole cross-section slowed entire object layers.
     }
 
     tbb::parallel_for(tbb::blocked_range<size_t>(n_raft_layers, support_layers.size()),
         [&config, &slicing_params, &support_params, &support_layers, &bottom_contacts, &top_contacts, &intermediate_layers, &interface_layers, &base_interface_layers, &layer_caches, &loop_interface_processor,
             &bbox_object, &angles, &interface_above, &weave_layer, &bottom_cap, &bottom_iface_weave,
-            &solid_base_flush, &flush_thread, n_raft_layers, link_max_length_factor]
+            &solid_base_flush, &flush_thread, &contact_footprint, n_raft_layers, link_max_length_factor]
             (const tbb::blocked_range<size_t>& range) {
         // Indices of the 1st layer in their respective container at the support layer height.
         size_t idx_layer_bottom_contact   = size_t(-1);
@@ -2470,6 +2441,10 @@ void generate_support_toolpaths(
             if (! top_contact_layer.empty()) {
                 support_layer.support_contact_top = true;
                 support_layer.support_contact_top_area = union_ex(top_contact_layer.polygons_to_extrude());
+                // [ORCAPORT:SU-8] Footprint for the object-on-interface transition (see the pass at
+                // the end of this function).
+                if (config.transition_object_interface_enable.value)
+                    contact_footprint[support_layer_id] = support_layer.support_contact_top_area;
             }
             if (! bottom_contact_layer.empty()) {
                 support_layer.support_contact_bottom = true;
@@ -2730,6 +2705,43 @@ void generate_support_toolpaths(
             }
         }
     });
+
+    // [ORCAPORT:SU-8] Object-on-interface footprint. Tag the object layer(s) that rest on printed
+    // support, restricted to where they actually touch it. This has to run after the toolpath stage:
+    // `support_islands` is the support that was really emitted at that print_z, whereas the nominal
+    // contact polygons cover the whole organic overhang, and using those slowed entire object layers
+    // that only had a branch tip under them.
+    if (config.transition_object_interface_enable.value && object_for_families != nullptr) {
+        const int        n          = std::max(1, config.transition_object_interface_layers.value);
+        const LayerPtrs &obj_layers = object_for_families->layers();
+        for (size_t support_layer_id = 0; support_layer_id < support_layers.size(); ++ support_layer_id) {
+            const SupportLayer *sl = support_layers[support_layer_id];
+            if (sl == nullptr || contact_footprint[support_layer_id].empty())
+                continue;
+            // A support layer's print_z is its top, so the object layer above it is the first one
+            // that starts higher. (The classic engine records that layer on the contact as
+            // idx_object_layer_above; the tree engine never does, which is why this mapping exists.)
+            auto it = std::upper_bound(obj_layers.begin(), obj_layers.end(), sl->print_z + EPSILON,
+                                       [](coordf_t z, const Layer *layer) { return z < layer->print_z; });
+            if (it == obj_layers.end())
+                continue;
+            const size_t idx_above = size_t(it - obj_layers.begin());
+            for (int k = 0; k < n && idx_above + size_t(k) < obj_layers.size(); ++ k) {
+                Layer     *ol   = obj_layers[idx_above + size_t(k)];
+                ExPolygons area = intersection_ex(ol->lslices, contact_footprint[support_layer_id]);
+                if (area.empty())
+                    continue;
+                // Two contacts (or layers > 1) reach the same object layer: accumulate the footprints.
+                if (ol->transition_joint == 2 && ! ol->transition_area.empty()) {
+                    append(ol->transition_area, std::move(area));
+                    ol->transition_area = union_ex(ol->transition_area);
+                } else {
+                    ol->transition_joint = 2;
+                    ol->transition_area  = std::move(area);
+                }
+            }
+        }
+    }
 
 #ifndef NDEBUG
     struct Test {

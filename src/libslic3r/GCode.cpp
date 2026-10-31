@@ -9607,15 +9607,17 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     // whole layer: the layer carries the footprint that touches the other material.
     bool in_transition_area = m_transition_joint == 0 || m_layer == nullptr || m_layer->transition_area.empty();
     if (! in_transition_area) {
-        // Any point of the path inside the touching footprint qualifies, so a perimeter that is
-        // partly over the other material is slowed consistently instead of only where it starts.
+        // [ORCAPORT:SU-8] The path must lie mostly inside the footprint. Counting "any point inside"
+        // meant a perimeter loop or an infill line that merely clipped a small contact patch was
+        // slowed along its whole length, which slowed most of an object layer above a branch tip.
+        // A path whose points are mostly inside is the one actually resting on the other material.
+        size_t n_inside = 0;
         for (const auto &fp : path.polyline.points) {
             const Point p2(coord_t(fp(0)), coord_t(fp(1)));
             for (const ExPolygon &e : m_layer->transition_area)
-                if (e.contains(p2)) { in_transition_area = true; break; }
-            if (in_transition_area)
-                break;
+                if (e.contains(p2)) { ++ n_inside; break; }
         }
+        in_transition_area = n_inside * 2 >= path.polyline.points.size();
     }
     // [ORCAPORT:SU-8] Transition-layer flow adjustment.
     if (m_transition_joint != 0 && in_transition_area) {
