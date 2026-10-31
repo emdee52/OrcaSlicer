@@ -9597,12 +9597,14 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
     }
 
     // [ORCAPORT:SU-8] Transition treatment applies only where the two materials meet, not the
-    // whole layer: the layer carries the footprint that touches the other material.
-    // Speed/flow need the path to lie *mostly* inside (a loop that merely clips the patch is not
-    // resting on it); the fan is airflow over the area, so touching it is enough.
+    // whole layer: the layer carries the footprint that touches the other material. The path must
+    // lie mostly inside it - counting "any point inside" pulled whole perimeter loops in, because a
+    // contact patch under a wide object is often touched by the wall - and the object-on-interface
+    // joint is about the object's own material, so support paths are left to the contact settings.
+    const bool transition_applies = m_transition_joint != 0 &&
+                                    (m_transition_joint != 2 || ! is_support(path.role()));
     bool in_transition_area = true;
-    bool any_in_area        = true;
-    if (m_transition_joint != 0 && m_layer != nullptr && ! m_layer->transition_area.empty()) {
+    if (transition_applies && m_layer != nullptr && ! m_layer->transition_area.empty()) {
         size_t n_inside = 0;
         for (const auto &fp : path.polyline.points) {
             const Point p2(coord_t(fp(0)), coord_t(fp(1)));
@@ -9610,7 +9612,6 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
                 if (e.contains(p2)) { ++ n_inside; break; }
         }
         in_transition_area = n_inside * 2 >= path.polyline.points.size();
-        any_in_area        = n_inside > 0;
     }
     // [ORCAPORT:SU-8] Transition-layer flow adjustment.
     if (m_transition_joint != 0 && in_transition_area) {
@@ -9627,7 +9628,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
         const int fan_pct = m_transition_joint == 1 ? int(m_config.transition_interface_base_fan.value)
                           : m_transition_joint == 2 ? int(m_config.transition_object_interface_fan.value)
                           : m_transition_joint == 3 ? int(m_config.transition_interface_object_fan.value) : -1;
-        const int want = (fan_pct >= 0 && any_in_area) ? fan_pct : -1;
+        const int want = (fan_pct >= 0 && in_transition_area) ? fan_pct : -1;
         if (want != m_transition_fan_zone) {
             gcode += want < 0 ? std::string(";_SU8_FAN_ZONE_END\n")
                               : ";_SU8_FAN_ZONE_BEGIN " + std::to_string(want) + "\n";

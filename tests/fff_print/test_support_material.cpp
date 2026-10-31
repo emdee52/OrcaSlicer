@@ -700,7 +700,7 @@ TEST_CASE("Merging duplicate support layers keeps the later pass's layer treatme
 TEST_CASE("An organic contact tags the object layer above it for the object-on-interface fan",
           "[SupportMaterial]")
 {
-    const std::string g = slice({ support_capital() }, {
+    const std::string g = slice({ TestMesh::overhang }, {
         { "enable_support",                     1 },
         { "support_type",                       "tree(auto)" },
         { "support_style",                      "organic" },
