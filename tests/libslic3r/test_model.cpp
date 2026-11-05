@@ -20,6 +20,8 @@
 #include "libslic3r/libslic3r.h"
 // [ORCAPORT:MB-3]
 #include "libslic3r/OrcaExt/MergeParts.hpp"
+// [ORCAPORT:MB-4]
+#include "libslic3r/OrcaExt/SplitParts.hpp"
 
 using namespace Slic3r;
 
@@ -304,4 +306,145 @@ TEST_CASE("Merging refuses anything but two or more model parts", "[Model]")
     CHECK(object->volumes.size() == 3);
 }
 // [ORCAPORT:MB-3] END
+
+// [ORCAPORT:MB-4] BEGIN - move selected parts of one object into their own objects
+namespace {
+
+// Where a part really sits: the instance transform composed with the part's own transform.
+BoundingBoxf3 world_bounding_box(const ModelObject &object, const ModelVolume &volume, size_t instance_idx)
+{
+    REQUIRE(instance_idx < object.instances.size());
+    const Transform3d placement = object.instances[instance_idx]->get_matrix() * volume.get_matrix();
+    return volume.mesh().bounding_box().transformed(placement);
+}
+
+} // namespace
+
+TEST_CASE("Splitting one part off leaves the object's other parts where they were", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+
+    auto cube_at = [](float x) {
+        TriangleMesh mesh = make_cube(10, 10, 10);
+        mesh.translate(x, 0.f, 0.f);
+        return mesh;
+    };
+    object->add_volume(cube_at(0.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(cube_at(20.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(cube_at(40.f), ModelVolumeType::MODEL_PART, false);
+    object->volumes[0]->name = "A";
+    object->volumes[1]->name = "B";
+    object->volumes[2]->name = "C";
+
+    const BoundingBoxf3 part_b_world = world_bounding_box(*object, *object->volumes[1], 0);
+    const BoundingBoxf3 part_c_world = world_bounding_box(*object, *object->volumes[2], 0);
+
+    std::vector<size_t> new_idxs;
+    std::string         error;
+    REQUIRE(OrcaExt::split_parts_to_objects(*object, {2}, new_idxs, error));
+    CHECK(error.empty());
+    REQUIRE(new_idxs.size() == 1);
+    REQUIRE(model.objects.size() == 2);
+
+    // The source object keeps the two parts it was not asked for, in their places.
+    REQUIRE(object->volumes.size() == 2);
+    CHECK(object->volumes[0]->name == "A");
+    CHECK(object->volumes[1]->name == "B");
+    const BoundingBoxf3 kept_b_world = world_bounding_box(*object, *object->volumes[1], 0);
+    CHECK_THAT(kept_b_world.min.x(), Catch::Matchers::WithinAbs(part_b_world.min.x(), 1e-2));
+    CHECK_THAT(kept_b_world.max.x(), Catch::Matchers::WithinAbs(part_b_world.max.x(), 1e-2));
+
+    // The extracted part became its own object, at the place it had, named after the part.
+    const ModelObject *extracted = model.objects[new_idxs.front()];
+    REQUIRE(extracted->volumes.size() == 1);
+    CHECK(extracted->name == "C");
+    CHECK(extracted->instances.size() == 1);
+    const BoundingBoxf3 extracted_world = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
+    CHECK_THAT(extracted_world.min.x(), Catch::Matchers::WithinAbs(part_c_world.min.x(), 1e-2));
+    CHECK_THAT(extracted_world.max.x(), Catch::Matchers::WithinAbs(part_c_world.max.x(), 1e-2));
+    CHECK_THAT(extracted_world.min.z(), Catch::Matchers::WithinAbs(part_c_world.min.z(), 1e-2));
+
+    // The part that was left in the source object did not move either.
+    const BoundingBoxf3 source_a_world = world_bounding_box(*object, *object->volumes[0], 0);
+    CHECK_THAT(source_a_world.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
+    CHECK_THAT(source_a_world.max.x(), Catch::Matchers::WithinAbs(10.0, 1e-2));
+}
+
+TEST_CASE("A split-off part keeps a rotated and translated transform", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+    TriangleMesh other = make_cube(10, 10, 10);
+    other.translate(-30.f, 0.f, 0.f);
+    object->add_volume(std::move(other), ModelVolumeType::MODEL_PART, false);
+    ModelVolume *volume = object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    Geometry::Transformation placement;
+    placement.set_rotation(Vec3d(0., 0., 1.5707963267948966)); // 90 deg about Z
+    placement.set_offset(Vec3d(15., 5., 0.));
+    volume->set_transformation(placement);
+
+    const BoundingBoxf3 part_world = world_bounding_box(*object, *volume, 0);
+
+    std::vector<size_t> new_idxs;
+    std::string         error;
+    REQUIRE(OrcaExt::split_parts_to_objects(*object, {1}, new_idxs, error));
+    REQUIRE(new_idxs.size() == 1);
+    REQUIRE(object->volumes.size() == 1);
+
+    const ModelObject *extracted = model.objects[new_idxs.front()];
+    REQUIRE(extracted->volumes.size() == 1);
+    const BoundingBoxf3 extracted_world = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
+    CHECK_THAT(extracted_world.min.x(), Catch::Matchers::WithinAbs(part_world.min.x(), 1e-2));
+    CHECK_THAT(extracted_world.min.y(), Catch::Matchers::WithinAbs(part_world.min.y(), 1e-2));
+    CHECK_THAT(extracted_world.max.x(), Catch::Matchers::WithinAbs(part_world.max.x(), 1e-2));
+    CHECK_THAT(extracted_world.max.y(), Catch::Matchers::WithinAbs(part_world.max.y(), 1e-2));
+}
+
+TEST_CASE("Splitting a part off when the source has two copies keeps both copies", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    TriangleMesh second = make_cube(10, 10, 10);
+    second.translate(40.f, 0.f, 0.f);
+    object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
+    object->add_instance(*object->instances.front());
+    object->instances.back()->set_offset(Vec3d(0., 30., 0.));
+
+    std::vector<size_t> new_idxs;
+    std::string         error;
+    REQUIRE(OrcaExt::split_parts_to_objects(*object, {1}, new_idxs, error));
+    REQUIRE(new_idxs.size() == 1);
+
+    const ModelObject *extracted = model.objects[new_idxs.front()];
+    REQUIRE(extracted->instances.size() == 2);
+    const BoundingBoxf3 copy0 = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
+    const BoundingBoxf3 copy1 = world_bounding_box(*extracted, *extracted->volumes.front(), 1);
+    CHECK_THAT(copy0.min.x(), Catch::Matchers::WithinAbs(40.0, 1e-2));
+    CHECK_THAT(copy1.min.x(), Catch::Matchers::WithinAbs(40.0, 1e-2));
+    CHECK_THAT(copy1.min.y() - copy0.min.y(), Catch::Matchers::WithinAbs(30.0, 1e-2));
+}
+
+TEST_CASE("Splitting refuses a selection that would leave no model part", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
+
+    std::vector<size_t> new_idxs;
+    std::string         error;
+    CHECK_FALSE(OrcaExt::split_parts_to_objects(*object, {0, 1}, new_idxs, error));
+    CHECK_FALSE(error.empty());
+    CHECK(new_idxs.empty());
+    CHECK_FALSE(OrcaExt::split_parts_to_objects(*object, {2}, new_idxs, error));
+    CHECK(model.objects.size() == 1);
+    CHECK(object->volumes.size() == 3);
+}
+// [ORCAPORT:MB-4] END
 

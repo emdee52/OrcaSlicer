@@ -1656,6 +1656,27 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'slice_all'},
+ {'description': 'Move the given model parts of one object into their own '
+                 'objects, each at its current position, and leave the source '
+                 'object with the parts that were not named - the multi-part '
+                 'counterpart of Split > To Objects. The object must keep at '
+                 'least one model part, so naming all of them is refused. '
+                 'Reports objects/volumes/triangles before and after, the new '
+                 'object ids, and the source part count.',
+  'inputSchema': {'additionalProperties': False,
+                  'properties': {'object_id': {'description': 'Object index '
+                                                              '(0-based).',
+                                               'type': 'integer'},
+                                 'part_ids': {'description': 'Volume indices '
+                                                             'to move into '
+                                                             'their own '
+                                                             'objects (one or '
+                                                             'more).',
+                                              'items': {'type': 'integer'},
+                                              'type': 'array'}},
+                  'required': ['object_id', 'part_ids'],
+                  'type': 'object'},
+  'name': 'split_parts'},
  {'description': 'Suggest the closest achievable 2-3 component filament mix '
                  "for a target color, from the printer's loaded physical "
                  'filaments. Optionally create the mixed slot.',

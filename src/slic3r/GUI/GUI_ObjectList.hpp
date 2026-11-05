@@ -341,6 +341,11 @@ public:
     void                merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs);
     bool                selected_parts_can_be_merged() const;
     // [ORCAPORT:MB-3] END
+    // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+    void                split_selected_parts();
+    bool                can_split_selected_parts() const;
+    bool                selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const;
+    // [ORCAPORT:MB-4] END
     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
     wxDataViewItem      add_settings_item(wxDataViewItem parent_item, const DynamicPrintConfig* config);
 

@@ -1374,7 +1374,7 @@ wxMenu* MenuFactory::append_menu_item_transform(wxMenu* menu, bool multi_selecti
     return sub_menu;
 }
 
-wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts)
+wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts, bool split_parts)
 {
     wxMenu* sub_menu = new wxMenu();
 
@@ -1390,9 +1390,21 @@ wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection,
     }
 
     // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+    // [ORCAPORT:MB-4] the split item below shares this separator with the merge item
+    if ((merge_parts || split_parts) && sub_menu->GetMenuItemCount() > 0)
+        sub_menu->AppendSeparator();
+    // [ORCAPORT:MB-3] END
+
+    // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+    if (split_parts) {
+        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts"), _L("Move the selected parts into their own objects"),
+            [](wxCommandEvent&) { obj_list()->split_selected_parts(); }, "", menu,
+            []() { return obj_list()->can_split_selected_parts(); }, m_parent);
+    }
+    // [ORCAPORT:MB-4] END
+
+    // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
     if (merge_parts) {
-        if (sub_menu->GetMenuItemCount() > 0)
-            sub_menu->AppendSeparator();
         append_menu_item(sub_menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
             [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
             []() { return obj_list()->can_mesh_boolean(); }, m_parent);
@@ -1884,7 +1896,8 @@ void MenuFactory::create_bbl_part_menu()
 
     m_part_transform_menu = append_menu_item_transform(&m_part_menu, false /*multi_selection*/, true /*mirror*/, true /*is_scalable*/);
     append_menu_item_align_distribute(menu);
-    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/);
+    // [ORCAPORT:MB-4] a single selected part can be moved into its own object too
+    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/, false /*merge_parts*/, true /*split_parts*/);
     append_menu_item_edit_text(menu);
     //m_part_geometry_pos = m_part_menu.GetMenuItemCount(); // pos for geometry related items
 
@@ -2263,7 +2276,7 @@ wxMenu* MenuFactory::multi_selection_menu()
         //ORCA switch to sub menus if new items added
         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
         append_menu_item_align_distribute(menu);
-        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/);
+        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/, true /*split_parts*/);
         //append_menu_item_drop(menu);
         //append_menu_item_fix_through_cgal(menu);
         append_menu_items_convert_unit(transform_menu);

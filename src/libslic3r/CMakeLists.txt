@@ -432,6 +432,8 @@ set(lisbslic3r_sources
     OrcaExt/MergeParts.hpp
     OrcaExt/SeamNotch.cpp
     OrcaExt/SeamNotch.hpp
+    OrcaExt/SplitParts.cpp
+    OrcaExt/SplitParts.hpp
     OrcaExt/SupportPaintTypes.cpp
     OrcaExt/SupportPaintTypes.hpp
     OrcaExt/SupportAutoPaint.cpp
