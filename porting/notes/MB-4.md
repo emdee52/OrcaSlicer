@@ -14,10 +14,12 @@ The existing **Split → To Objects** explodes *every* part of the object and de
 
 ## Design
 
-One new action on the multi-part selection: **Split selected parts**, in the right-click **Modify** submenu
-next to *Merge selected parts*. Every selected part becomes its own object in the same model, at exactly the
-place it already occupied, and is removed from the source object; the source keeps every part that was not
-selected, its instances, its transform and its settings.
+One new action on the part selection: **Split selected parts**, in the right-click **Modify** submenu next to
+*Merge selected parts* - on the multi-selection menu when several parts are selected, and on the **part
+menu** when a single part is selected. Every selected part becomes its own object in the same model, at
+exactly the place it already occupied, and is removed from the source object; the source keeps every part
+that was not selected, its instances, its transform and its settings. One part alone is the smallest case:
+"detach this part into its own object".
 
 - **One core function**: `OrcaExt::split_parts_to_objects` (`src/libslic3r/OrcaExt/SplitParts.*`), testable
   without the GUI.
@@ -37,7 +39,8 @@ selected, its instances, its transform and its settings.
 - **Refusals** (nothing changes, the caller gets a reason): no index, an index that is not a `MODEL_PART`
   (negatives/modifiers cannot become their own object), an empty part, or a selection that would leave the
   source without any model part. The last one is why the menu hides the action when every model part is
-  selected - *Split → To Objects* is the action for that case (user decision).
+  selected - *Split → To Objects* is the action for that case (user decision). A single part is accepted:
+  the gate does not require a multi-selection, only that the selection is made of part rows of one object.
 
 ## Where it hooks in
 
@@ -45,8 +48,8 @@ selected, its instances, its transform and its settings.
 |------|------|--------|
 | Core | `src/libslic3r/OrcaExt/SplitParts.{hpp,cpp}` | new files |
 | Core | `src/libslic3r/CMakeLists.txt` | source list entry |
-| GUI | `src/slic3r/GUI/GUI_ObjectList.{hpp,cpp}` | `split_selected_parts()`, `can_split_selected_parts()`, and the shared `selected_parts_of_one_object()` gate that MB-3's merge check now also uses |
-| GUI | `src/slic3r/GUI/GUI_Factories.{hpp,cpp}` | `append_menu_item_modify()` grew a `split_parts` flag; the item sits after the Split group and before "Merge selected parts" |
+| GUI | `src/slic3r/GUI/GUI_ObjectList.{hpp,cpp}` | `split_selected_parts()`, `can_split_selected_parts()`, and the shared `selected_parts_of_one_object()` gate that MB-3's merge check now also uses; it accepts a single selected part row |
+| GUI | `src/slic3r/GUI/GUI_Factories.{hpp,cpp}` | `append_menu_item_modify()` grew a `split_parts` flag; the item sits after the Split group and before "Merge selected parts" in the multi-selection menu, and in the part menu's Modify submenu for a single selected part |
 | MCP | `src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp` | new tool `split_parts(object_id, part_ids)` |
 | MCP | `scripts/tools_schema.py` | regenerated (80 tools) |
 | Test | `tests/libslic3r/test_model.cpp` | 4 cases |
@@ -68,6 +71,10 @@ Marker `[ORCAPORT:MB-4]`.
   `objects_after 3`, source `volumes_before 3` → `volumes_after 1`, `model_parts_after 1`,
   `new_object_ids [1,2]`, source name kept; scene shows the three objects at z 5 / 7.5 / 2.5 (the parts'
   own centres) and each new object named after its part. `slice_all` finishes `idle`.
+- Runtime over MCP, single part (`split_parts(0, [2])` on a fresh 3-part object): `objects_before 1` →
+  `objects_after 2`, source `volumes_before 3` → `volumes_after 2`, `new_object_ids [1]`, `slice_all`
+  `idle`; naming both remaining parts in the same object is refused with the "at least one model part must
+  remain" message, and nothing changes.
 - **Expected new warning**: after the split the extracted parts still share the source's footprint, so the
   plate validator says *"… is too close to others, and collisions may be caused."* That is correct for
   objects that were one solid a moment ago; it is not a defect of the split.

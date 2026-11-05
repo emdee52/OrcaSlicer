@@ -720,3 +720,59 @@ index 0ef34db734..97a4d8607b 100644
 -- 
 2.43.0.windows.1
 
+From 0e2d3857a1c2dbff2de094f5e6d5e11d7ebd6952 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Thu, 5 Nov 2026 16:33:06 -0700
+Subject: [PATCH] port(MB-4): allow splitting a single selected part, and offer
+ it on the part menu
+
+A single part row now works too: selected_parts_of_one_object() no longer
+requires a multi-selection (it only needs one selected volume row), and the
+part menu's Modify submenu carries "Split selected parts", since with one item
+selected the context menu is the part menu, not the multi-selection one. The
+merge action is unaffected (it still needs two parts to fuse).
+
+Checked over MCP on a 3-part cut object: split_parts(0, [2]) -> 1 object
+becomes 2, the source keeps 2 parts, the new object is the extracted one;
+naming both remaining parts is still refused.
+---
+ src/slic3r/GUI/GUI_Factories.cpp  | 3 ++-
+ src/slic3r/GUI/GUI_ObjectList.cpp | 5 +++--
+ 2 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/slic3r/GUI/GUI_Factories.cpp b/src/slic3r/GUI/GUI_Factories.cpp
+index 81037e0690..a4aa14e118 100644
+--- a/src/slic3r/GUI/GUI_Factories.cpp
++++ b/src/slic3r/GUI/GUI_Factories.cpp
+@@ -1896,7 +1896,8 @@ void MenuFactory::create_bbl_part_menu()
+ 
+     m_part_transform_menu = append_menu_item_transform(&m_part_menu, false /*multi_selection*/, true /*mirror*/, true /*is_scalable*/);
+     append_menu_item_align_distribute(menu);
+-    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/);
++    // [ORCAPORT:MB-4] a single selected part can be moved into its own object too
++    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/, false /*merge_parts*/, true /*split_parts*/);
+     append_menu_item_edit_text(menu);
+     //m_part_geometry_pos = m_part_menu.GetMenuItemCount(); // pos for geometry related items
+ 
+diff --git a/src/slic3r/GUI/GUI_ObjectList.cpp b/src/slic3r/GUI/GUI_ObjectList.cpp
+index bce1adf2e2..a024b96146 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.cpp
++++ b/src/slic3r/GUI/GUI_ObjectList.cpp
+@@ -3886,11 +3886,12 @@ bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int
+ {
+     vol_idxs.clear();
+     obj_idx = -1;
+-    if (!multiple_selection())
+-        return false;
+ 
+     wxDataViewItemArray sels;
+     GetSelections(sels);
++    // A single selected part is a valid subject: splitting one part off is the smallest case.
++    if (sels.IsEmpty())
++        return false;
+ 
+     for (const wxDataViewItem &item : sels) {
+         if (!(m_objects_model->GetItemType(item) & itVolume))
+-- 
+2.43.0.windows.1
+
