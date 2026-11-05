@@ -1,0 +1,722 @@
+From edb75580780fcdfb05c64571339e19f438ecc17f Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Thu, 5 Nov 2026 16:20:53 -0700
+Subject: [PATCH] port(MB-4): split only the selected parts into their own
+ objects
+
+New action on a multi-part selection: "Split selected parts" moves exactly the
+selected parts out, each into its own object at its current placement, and the
+source object keeps every part that was not selected. 5 parts, 3 selected ->
+4 items: the object with 2 parts plus 3 single-part objects. The existing
+Split > To Objects (all parts, source removed) is untouched.
+
+- libslic3r/OrcaExt/SplitParts: split_parts_to_objects() creates one object per
+  selected MODEL_PART in the same model - the part's mesh, name, per-part
+  settings and painting travel with it, and each new instance takes the
+  composed transform (instance * part) so the part does not move. The selected
+  volumes are then removed from the source with delete_volume(), which folds
+  the last part's transform into the instances when one part is left.
+- Refused (nothing changes) when the selection would leave the object without
+  a model part, when a selected volume is not a model part, or when it is
+  empty.
+- GUI: the multi-selection menu's Modify submenu gained "Split selected parts"
+  next to "Merge selected parts"; the gate shares its same-object / model-part
+  / not-cut / not-text-SVG check with the merge action and additionally
+  requires at least one model part to remain.
+- MCP: new tool split_parts(object_id, part_ids) for the same path.
+- Tests: four cases - the source and the untouched parts stay put, a rotated
+  and translated part keeps its world placement, both copies of a part follow
+  when the source has two instances, and the refusals.
+
+libslic3r suite 1733/1733; runtime check over MCP on a 3-part cut object
+(1 -> 3 objects, source keeps 1 part, extracted parts at their own z, slice
+idle; the only new warning is the expected "too close to others", since the
+extracted parts still share the source's footprint).
+---
+ scripts/tools_schema.py                  |  21 ++++
+ src/libslic3r/CMakeLists.txt             |   2 +
+ src/libslic3r/OrcaExt/SplitParts.cpp     | 110 +++++++++++++++++
+ src/libslic3r/OrcaExt/SplitParts.hpp     |  32 +++++
+ src/slic3r/GUI/GUI_Factories.cpp         |  20 +++-
+ src/slic3r/GUI/GUI_Factories.hpp         |   2 +-
+ src/slic3r/GUI/GUI_ObjectList.cpp        |  74 +++++++++++-
+ src/slic3r/GUI/GUI_ObjectList.hpp        |   5 +
+ src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp | 109 +++++++++++++++++
+ tests/libslic3r/test_model.cpp           | 143 +++++++++++++++++++++++
+ 10 files changed, 508 insertions(+), 10 deletions(-)
+ create mode 100644 src/libslic3r/OrcaExt/SplitParts.cpp
+ create mode 100644 src/libslic3r/OrcaExt/SplitParts.hpp
+
+diff --git a/scripts/tools_schema.py b/scripts/tools_schema.py
+index d6fced92fd..0a5fb8a128 100644
+--- a/scripts/tools_schema.py
++++ b/scripts/tools_schema.py
+@@ -1656,6 +1656,27 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
+                   'required': [],
+                   'type': 'object'},
+   'name': 'slice_all'},
++ {'description': 'Move the given model parts of one object into their own '
++                 'objects, each at its current position, and leave the source '
++                 'object with the parts that were not named - the multi-part '
++                 'counterpart of Split > To Objects. The object must keep at '
++                 'least one model part, so naming all of them is refused. '
++                 'Reports objects/volumes/triangles before and after, the new '
++                 'object ids, and the source part count.',
++  'inputSchema': {'additionalProperties': False,
++                  'properties': {'object_id': {'description': 'Object index '
++                                                              '(0-based).',
++                                               'type': 'integer'},
++                                 'part_ids': {'description': 'Volume indices '
++                                                             'to move into '
++                                                             'their own '
++                                                             'objects (one or '
++                                                             'more).',
++                                              'items': {'type': 'integer'},
++                                              'type': 'array'}},
++                  'required': ['object_id', 'part_ids'],
++                  'type': 'object'},
++  'name': 'split_parts'},
+  {'description': 'Suggest the closest achievable 2-3 component filament mix '
+                  "for a target color, from the printer's loaded physical "
+                  'filaments. Optionally create the mixed slot.',
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index 66ec55c336..c2ccf9cd2a 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -432,6 +432,8 @@ set(lisbslic3r_sources
+     OrcaExt/MergeParts.hpp
+     OrcaExt/SeamNotch.cpp
+     OrcaExt/SeamNotch.hpp
++    OrcaExt/SplitParts.cpp
++    OrcaExt/SplitParts.hpp
+     OrcaExt/SupportPaintTypes.cpp
+     OrcaExt/SupportPaintTypes.hpp
+     OrcaExt/SupportAutoPaint.cpp
+diff --git a/src/libslic3r/OrcaExt/SplitParts.cpp b/src/libslic3r/OrcaExt/SplitParts.cpp
+new file mode 100644
+index 0000000000..f5766272ab
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/SplitParts.cpp
+@@ -0,0 +1,110 @@
++// [ORCAPORT FILE] SplitParts - move selected parts of one object into their own objects
++// Original work on the fork's own feature loop (MB-4); no Neotko/preFlight source.
++#include "SplitParts.hpp"
++
++#include "../Geometry.hpp"
++#include "../Model.hpp"
++#include "../PrintConfig.hpp"
++#include "../TriangleMesh.hpp"
++
++#include <algorithm>
++
++namespace Slic3r {
++namespace OrcaExt {
++
++bool split_parts_to_objects(ModelObject &object, const std::vector<size_t> &vol_idxs,
++                            std::vector<size_t> &new_object_idxs, std::string &error)
++{
++    new_object_idxs.clear();
++    error.clear();
++
++    Model *model = object.get_model();
++    if (model == nullptr) {
++        error = "the object does not belong to a model";
++        return false;
++    }
++    if (vol_idxs.empty()) {
++        error = "at least one part is needed";
++        return false;
++    }
++
++    std::vector<size_t> sorted = vol_idxs;
++    std::sort(sorted.begin(), sorted.end());
++    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
++
++    size_t model_part_count = 0;
++    for (const ModelVolume *volume : object.volumes)
++        if (volume->is_model_part())
++            ++model_part_count;
++
++    for (size_t vol_idx : sorted) {
++        if (vol_idx >= object.volumes.size()) {
++            error = "part index out of range";
++            return false;
++        }
++        const ModelVolume *volume = object.volumes[vol_idx];
++        if (!volume->is_model_part()) {
++            error = "only model parts can be split into objects";
++            return false;
++        }
++        if (volume->mesh().facets_count() < 3) {
++            error = "a selected part is empty";
++            return false;
++        }
++    }
++    // An object needs at least one solid part to stay in the scene.
++    if (sorted.size() >= model_part_count) {
++        error = "the object would be left without a model part";
++        return false;
++    }
++
++    new_object_idxs.reserve(sorted.size());
++    for (size_t vol_idx : sorted) {
++        const ModelVolume *volume = object.volumes[vol_idx];
++
++        ModelObject *new_object = model->add_object();
++        new_object->name = volume->name.empty() ? object.name : volume->name;
++        new_object->config.assign_config(object.config);
++        new_object->config.apply(volume->config, true);
++
++        // Each copy of the source object becomes a copy of the extracted part, placed exactly
++        // where it was: the instance keeps the source instance's flags and takes the composed
++        // transform (instance * part), so the part needs no transform of its own.
++        for (const ModelInstance *instance : object.instances) {
++            ModelInstance *new_instance = new_object->add_instance(*instance);
++            const Geometry::Transformation placement(instance->get_matrix() * volume->get_matrix());
++            new_instance->set_transformation(placement);
++            new_instance->set_assemble_transformation(placement);
++        }
++
++        // The volume is centred on creation (offset instead of raw mesh coordinates), which does
++        // not touch the triangle order, so the part's painting applies as it is.
++        TriangleMesh  mesh(volume->mesh());
++        ModelVolume  *new_volume = new_object->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART,
++                                                          /*modify_to_center_geometry=*/true);
++        new_volume->supported_facets.assign(volume->supported_facets);
++        new_volume->seam_facets.assign(volume->seam_facets);
++        new_volume->mmu_segmentation_facets.assign(volume->mmu_segmentation_facets);
++        new_volume->fuzzy_skin_facets.assign(volume->fuzzy_skin_facets);
++        new_volume->counterbore_bridge_facets.assign(volume->counterbore_bridge_facets);
++
++        // A single-part object carries its settings on the object, as Split to objects does.
++        new_volume->config.reset();
++        new_volume->source = ModelVolume::Source();
++
++        new_object_idxs.push_back(model->objects.size() - 1);
++    }
++
++    // Descending order keeps the remaining indices valid; when a single part is left,
++    // delete_volume() folds its transform into the instances, which is the invariant a
++    // one-part object needs.
++    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it)
++        object.delete_volume(*it);
++
++    // The object is no longer the file it was loaded from.
++    object.input_file.clear();
++    return true;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/SplitParts.hpp b/src/libslic3r/OrcaExt/SplitParts.hpp
+new file mode 100644
+index 0000000000..cabacce483
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/SplitParts.hpp
+@@ -0,0 +1,32 @@
++// [ORCAPORT FILE] SplitParts - move selected parts of one object into their own objects
++// Original work on the fork's own feature loop (MB-4); no Neotko/preFlight source.
++#ifndef slic3r_OrcaExt_SplitParts_hpp_
++#define slic3r_OrcaExt_SplitParts_hpp_
++
++#include <cstddef>
++#include <string>
++#include <vector>
++
++namespace Slic3r {
++
++class ModelObject;
++
++namespace OrcaExt {
++
++// Replace each of `vol_idxs` (indices into object.volumes, every one of them a MODEL_PART) with
++// its own object in the same model, at its current world position, and remove those parts from
++// `object`. Everything that is not selected stays in `object`: its other parts, its instances,
++// its transform and its settings.
++//
++// Each new object copies the source object's instances (one per copy, like "Split to objects"),
++// takes the part's name and per-part settings, and carries the part's painting unchanged.
++// `new_object_idxs` receives the new object indices in model order. Returns false and explains
++// itself in `error` when nothing was changed - at least one model part must remain in `object`,
++// or the result would be an object without a solid part.
++bool split_parts_to_objects(ModelObject &object, const std::vector<size_t> &vol_idxs,
++                            std::vector<size_t> &new_object_idxs, std::string &error);
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif // slic3r_OrcaExt_SplitParts_hpp_
+diff --git a/src/slic3r/GUI/GUI_Factories.cpp b/src/slic3r/GUI/GUI_Factories.cpp
+index 267eb7eacf..81037e0690 100644
+--- a/src/slic3r/GUI/GUI_Factories.cpp
++++ b/src/slic3r/GUI/GUI_Factories.cpp
+@@ -1374,7 +1374,7 @@ wxMenu* MenuFactory::append_menu_item_transform(wxMenu* menu, bool multi_selecti
+     return sub_menu;
+ }
+ 
+-wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts)
++wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts, bool split_parts)
+ {
+     wxMenu* sub_menu = new wxMenu();
+ 
+@@ -1389,10 +1389,22 @@ wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection,
+             []() { return plater()->can_split(false); }, m_parent);
+     }
+ 
++    // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
++    // [ORCAPORT:MB-4] the split item below shares this separator with the merge item
++    if ((merge_parts || split_parts) && sub_menu->GetMenuItemCount() > 0)
++        sub_menu->AppendSeparator();
++    // [ORCAPORT:MB-3] END
++
++    // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
++    if (split_parts) {
++        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts"), _L("Move the selected parts into their own objects"),
++            [](wxCommandEvent&) { obj_list()->split_selected_parts(); }, "", menu,
++            []() { return obj_list()->can_split_selected_parts(); }, m_parent);
++    }
++    // [ORCAPORT:MB-4] END
++
+     // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+     if (merge_parts) {
+-        if (sub_menu->GetMenuItemCount() > 0)
+-            sub_menu->AppendSeparator();
+         append_menu_item(sub_menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
+             [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
+             []() { return obj_list()->can_mesh_boolean(); }, m_parent);
+@@ -2263,7 +2275,7 @@ wxMenu* MenuFactory::multi_selection_menu()
+         //ORCA switch to sub menus if new items added
+         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
+         append_menu_item_align_distribute(menu);
+-        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/);
++        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/, true /*split_parts*/);
+         //append_menu_item_drop(menu);
+         //append_menu_item_fix_through_cgal(menu);
+         append_menu_items_convert_unit(transform_menu);
+diff --git a/src/slic3r/GUI/GUI_Factories.hpp b/src/slic3r/GUI/GUI_Factories.hpp
+index 8aa3bd1b7d..2ab928206d 100644
+--- a/src/slic3r/GUI/GUI_Factories.hpp
++++ b/src/slic3r/GUI/GUI_Factories.hpp
+@@ -209,7 +209,7 @@ private:
+     void        append_menu_item_plate_name(wxMenu *menu, size_t pos = -1);
+     void        append_menu_item_plate_delete(wxMenu *menu, size_t pos = -1);
+     wxMenu*     append_menu_item_transform(wxMenu* menu, bool multi_selection, bool show_mirror, bool is_scalable);
+-    wxMenu*     append_menu_item_modify(   wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts = false);
++    wxMenu*     append_menu_item_modify(   wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts = false, bool split_parts = false);
+     wxMenu*     append_menu_item_more(     wxMenu* menu, bool multi_selection, bool disk_op, bool export_op);
+ };
+ 
+diff --git a/src/slic3r/GUI/GUI_ObjectList.cpp b/src/slic3r/GUI/GUI_ObjectList.cpp
+index 314a4f74b8..bce1adf2e2 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.cpp
++++ b/src/slic3r/GUI/GUI_ObjectList.cpp
+@@ -21,6 +21,9 @@
+ // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+ #include "libslic3r/OrcaExt/MergeParts.hpp"
+ // [ORCAPORT:MB-3] END
++// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
++#include "libslic3r/OrcaExt/SplitParts.hpp"
++// [ORCAPORT:MB-4] END
+ #include "GLCanvas3D.hpp"
+ #include "Selection.hpp"
+ #include "PartPlate.hpp"
+@@ -3872,13 +3875,23 @@ bool ObjectList::can_mesh_boolean() const
+ // [ORCAPORT:MB-3] BEGIN - gate for merging only the selected parts
+ bool ObjectList::selected_parts_can_be_merged() const
+ {
++    std::vector<size_t> vol_idxs;
++    int                 obj_idx = -1;
++    return selected_parts_of_one_object(vol_idxs, obj_idx) && vol_idxs.size() >= 2;
++}
++// [ORCAPORT:MB-3] END
++
++// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
++bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const
++{
++    vol_idxs.clear();
++    obj_idx = -1;
+     if (!multiple_selection())
+         return false;
+ 
+     wxDataViewItemArray sels;
+     GetSelections(sels);
+ 
+-    int obj_idx = -1;
+     for (const wxDataViewItem &item : sels) {
+         if (!(m_objects_model->GetItemType(item) & itVolume))
+             return false;
+@@ -3887,11 +3900,11 @@ bool ObjectList::selected_parts_can_be_merged() const
+             return false;
+         obj_idx = item_obj_idx;
+     }
+-    if (sels.GetCount() < 2 || obj_idx < 0 || obj_idx >= int(m_objects->size()))
++    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
+         return false;
+ 
+     // A cut object's parts are bound to its cut info, and a text/SVG part would lose the
+-    // properties that make it editable once its mesh is fused with another part.
++    // properties that make it editable once it is moved to another object.
+     const ModelObject *object = (*m_objects)[obj_idx];
+     if (object->is_cut())
+         return false;
+@@ -3903,10 +3916,61 @@ bool ObjectList::selected_parts_can_be_merged() const
+         const ModelVolume *volume = object->volumes[vol_idx];
+         if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
+             return false;
++        vol_idxs.emplace_back(size_t(vol_idx));
+     }
+-    return true;
++    return !vol_idxs.empty();
+ }
+-// [ORCAPORT:MB-3] END
++
++bool ObjectList::can_split_selected_parts() const
++{
++    std::vector<size_t> vol_idxs;
++    int                 obj_idx = -1;
++    if (!selected_parts_of_one_object(vol_idxs, obj_idx))
++        return false;
++
++    // Every model part selected leaves the object without a solid part; Split > To Objects is
++    // the action for that.
++    const ModelObject *object           = (*m_objects)[obj_idx];
++    size_t             model_part_count = 0;
++    for (const ModelVolume *volume : object->volumes)
++        if (volume->is_model_part())
++            ++model_part_count;
++    return vol_idxs.size() < model_part_count;
++}
++
++void ObjectList::split_selected_parts()
++{
++    std::vector<size_t> vol_idxs;
++    int                 obj_idx = -1;
++    if (!selected_parts_of_one_object(vol_idxs, obj_idx))
++        return;
++    ModelObject *object = (*m_objects)[obj_idx];
++
++    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Split selected parts"));
++
++    std::vector<size_t> new_idxs;
++    std::string         error;
++    if (!Slic3r::OrcaExt::split_parts_to_objects(*object, vol_idxs, new_idxs, error)) {
++        wxGetApp().notification_manager()->push_plater_error_notification(_u8L("The selected parts could not be split into objects."));
++        return;
++    }
++
++    // The source object lost volumes, and the new objects were appended to the model.
++    add_volumes_to_object_in_list(obj_idx);
++    update_info_items(obj_idx);
++    changed_object(obj_idx);
++    notify_instance_updated(obj_idx);
++
++    add_objects_to_list(new_idxs);
++
++    wxDataViewItemArray items;
++    for (size_t idx : new_idxs)
++        items.Add(m_objects_model->GetItemById(int(idx)));
++    if (!items.IsEmpty())
++        select_items(items);
++    update_selections_on_canvas();
++}
++// [ORCAPORT:MB-4] END
+ 
+ // NO_PARAMETERS function call means that changed object index will be determine from Selection()
+ void ObjectList::changed_object(const int obj_idx/* = -1*/) const
+diff --git a/src/slic3r/GUI/GUI_ObjectList.hpp b/src/slic3r/GUI/GUI_ObjectList.hpp
+index 326d41546b..e24659d082 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.hpp
++++ b/src/slic3r/GUI/GUI_ObjectList.hpp
+@@ -341,6 +341,11 @@ public:
+     void                merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs);
+     bool                selected_parts_can_be_merged() const;
+     // [ORCAPORT:MB-3] END
++    // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
++    void                split_selected_parts();
++    bool                can_split_selected_parts() const;
++    bool                selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const;
++    // [ORCAPORT:MB-4] END
+     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
+     wxDataViewItem      add_settings_item(wxDataViewItem parent_item, const DynamicPrintConfig* config);
+ 
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+index 6bd9544997..e3c6f13964 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+@@ -3956,6 +3956,115 @@ void OrcaMCPServer::register_builtin_tools()
+         }
+     });
+ 
++    // split_parts - the multi-part counterpart of "Split > To Objects". [ORCAPORT:MB-4]
++    // Moves only the named model parts into their own objects, at their current placement, and
++    // leaves the source object (and every part not named) in place. The single-part case is the
++    // same action with one id: "detach this part into its own object".
++    register_tool({
++        "split_parts",
++        "Move the given model parts of one object into their own objects, each at its current "
++        "position, and leave the source object with the parts that were not named - the "
++        "multi-part counterpart of Split > To Objects. The object must keep at least one model "
++        "part, so naming all of them is refused. Reports objects/volumes/triangles before and "
++        "after, the new object ids, and the source part count.",
++        {
++            {"type", "object"},
++            {"properties", {
++                {"object_id", {
++                    {"type", "integer"},
++                    {"description", "Object index (0-based)."}
++                }},
++                {"part_ids", {
++                    {"type", "array"},
++                    {"items", {{"type", "integer"}}},
++                    {"description", "Volume indices to move into their own objects (one or more)."}
++                }}
++            }},
++            {"required", {"object_id", "part_ids"}}
++        },
++        [](const nlohmann::json& params) -> nlohmann::json {
++            const int        object_id = params["object_id"];
++            std::vector<int> part_ids;
++            if (params.contains("part_ids") && params["part_ids"].is_array())
++                for (const auto &part_id : params["part_ids"])
++                    part_ids.push_back(part_id.get<int>());
++            return run_on_main_thread([object_id, part_ids]() -> nlohmann::json {
++                Plater     *plater   = wxGetApp().plater();
++                ObjectList *obj_list = wxGetApp().obj_list();
++                if (plater == nullptr || obj_list == nullptr)
++                    return {{"status", "error"}, {"error", "No plater or object list"}};
++                Model &model = plater->model();
++                if (object_id < 0 || object_id >= int(model.objects.size()))
++                    return {{"status", "error"}, {"error", "Invalid object_id"}};
++
++                ModelObject *mo = model.objects[object_id];
++                const int    volumes_before     = int(mo->volumes.size());
++                int          model_parts_before = 0;
++                int          triangles_before   = 0;
++                for (const ModelVolume *v : mo->volumes) {
++                    if (v == nullptr)
++                        continue;
++                    triangles_before += int(v->mesh().its.indices.size());
++                    if (v->is_model_part())
++                        ++model_parts_before;
++                }
++
++                if (part_ids.empty())
++                    return {{"status", "error"}, {"error", "part_ids is empty"}, {"volume_count", volumes_before}};
++                std::vector<ObjectVolumeID> ov_ids;
++                for (int part_id : part_ids) {
++                    if (part_id < 0 || part_id >= volumes_before)
++                        return {{"status", "error"}, {"error", "part_ids out of range"}, {"volume_count", volumes_before}};
++                    ov_ids.push_back({mo, mo->volumes[part_id]});
++                }
++
++                // As in boolean_parts: selecting part rows in instance mode pops a modal
++                // "Selection conflicts" dialog that would block this call for good.
++                obj_list->set_selection_mode(ObjectList::SELECTION_MODE::smVolume);
++                obj_list->select_items(ov_ids);
++                if (!obj_list->can_split_selected_parts())
++                    return {{"status", "error"},
++                            {"error", "The selected parts cannot be split off: they must be model parts of one object, "
++                                      "not parts of a cut object, text or SVG, and at least one model part must remain"},
++                            {"volume_count", volumes_before}};
++
++                const int objects_before = int(model.objects.size());
++                obj_list->split_selected_parts();
++                plater->update();
++
++                const int objects_after = int(model.objects.size());
++                nlohmann::json out = {{"status", "ok"},
++                                      {"objects_before", objects_before},
++                                      {"objects_after", objects_after},
++                                      {"source_object_id", object_id},
++                                      {"volumes_before", volumes_before},
++                                      {"model_parts_before", model_parts_before},
++                                      {"split_part_ids", part_ids}};
++                if (object_id < int(model.objects.size())) {
++                    const ModelObject *source = model.objects[object_id];
++                    int volumes_after = 0, model_parts_after = 0, triangles_after = 0;
++                    for (const ModelVolume *v : source->volumes) {
++                        if (v == nullptr)
++                            continue;
++                        triangles_after += int(v->mesh().its.indices.size());
++                        ++volumes_after;
++                        if (v->is_model_part())
++                            ++model_parts_after;
++                    }
++                    out["volumes_after"]      = volumes_after;
++                    out["model_parts_after"]  = model_parts_after;
++                    out["triangles_after"]    = triangles_after;
++                    out["source_name"]        = source->name;
++                }
++                std::vector<int> new_ids;
++                for (int idx = objects_before; idx < objects_after; ++idx)
++                    new_ids.push_back(idx);
++                out["new_object_ids"] = new_ids;
++                return out;
++            });
++        }
++    });
++
+     register_tool({
+         "flatten_object",
+         "Automatically orient an object to lay flat on its best face for printing",
+diff --git a/tests/libslic3r/test_model.cpp b/tests/libslic3r/test_model.cpp
+index 0ef34db734..97a4d8607b 100644
+--- a/tests/libslic3r/test_model.cpp
++++ b/tests/libslic3r/test_model.cpp
+@@ -20,6 +20,8 @@
+ #include "libslic3r/libslic3r.h"
+ // [ORCAPORT:MB-3]
+ #include "libslic3r/OrcaExt/MergeParts.hpp"
++// [ORCAPORT:MB-4]
++#include "libslic3r/OrcaExt/SplitParts.hpp"
+ 
+ using namespace Slic3r;
+ 
+@@ -305,3 +307,144 @@ TEST_CASE("Merging refuses anything but two or more model parts", "[Model]")
+ }
+ // [ORCAPORT:MB-3] END
+ 
++// [ORCAPORT:MB-4] BEGIN - move selected parts of one object into their own objects
++namespace {
++
++// Where a part really sits: the instance transform composed with the part's own transform.
++BoundingBoxf3 world_bounding_box(const ModelObject &object, const ModelVolume &volume, size_t instance_idx)
++{
++    REQUIRE(instance_idx < object.instances.size());
++    const Transform3d placement = object.instances[instance_idx]->get_matrix() * volume.get_matrix();
++    return volume.mesh().bounding_box().transformed(placement);
++}
++
++} // namespace
++
++TEST_CASE("Splitting one part off leaves the object's other parts where they were", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_instance();
++
++    auto cube_at = [](float x) {
++        TriangleMesh mesh = make_cube(10, 10, 10);
++        mesh.translate(x, 0.f, 0.f);
++        return mesh;
++    };
++    object->add_volume(cube_at(0.f), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(cube_at(20.f), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(cube_at(40.f), ModelVolumeType::MODEL_PART, false);
++    object->volumes[0]->name = "A";
++    object->volumes[1]->name = "B";
++    object->volumes[2]->name = "C";
++
++    const BoundingBoxf3 part_b_world = world_bounding_box(*object, *object->volumes[1], 0);
++    const BoundingBoxf3 part_c_world = world_bounding_box(*object, *object->volumes[2], 0);
++
++    std::vector<size_t> new_idxs;
++    std::string         error;
++    REQUIRE(OrcaExt::split_parts_to_objects(*object, {2}, new_idxs, error));
++    CHECK(error.empty());
++    REQUIRE(new_idxs.size() == 1);
++    REQUIRE(model.objects.size() == 2);
++
++    // The source object keeps the two parts it was not asked for, in their places.
++    REQUIRE(object->volumes.size() == 2);
++    CHECK(object->volumes[0]->name == "A");
++    CHECK(object->volumes[1]->name == "B");
++    const BoundingBoxf3 kept_b_world = world_bounding_box(*object, *object->volumes[1], 0);
++    CHECK_THAT(kept_b_world.min.x(), Catch::Matchers::WithinAbs(part_b_world.min.x(), 1e-2));
++    CHECK_THAT(kept_b_world.max.x(), Catch::Matchers::WithinAbs(part_b_world.max.x(), 1e-2));
++
++    // The extracted part became its own object, at the place it had, named after the part.
++    const ModelObject *extracted = model.objects[new_idxs.front()];
++    REQUIRE(extracted->volumes.size() == 1);
++    CHECK(extracted->name == "C");
++    CHECK(extracted->instances.size() == 1);
++    const BoundingBoxf3 extracted_world = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
++    CHECK_THAT(extracted_world.min.x(), Catch::Matchers::WithinAbs(part_c_world.min.x(), 1e-2));
++    CHECK_THAT(extracted_world.max.x(), Catch::Matchers::WithinAbs(part_c_world.max.x(), 1e-2));
++    CHECK_THAT(extracted_world.min.z(), Catch::Matchers::WithinAbs(part_c_world.min.z(), 1e-2));
++
++    // The part that was left in the source object did not move either.
++    const BoundingBoxf3 source_a_world = world_bounding_box(*object, *object->volumes[0], 0);
++    CHECK_THAT(source_a_world.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
++    CHECK_THAT(source_a_world.max.x(), Catch::Matchers::WithinAbs(10.0, 1e-2));
++}
++
++TEST_CASE("A split-off part keeps a rotated and translated transform", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_instance();
++    TriangleMesh other = make_cube(10, 10, 10);
++    other.translate(-30.f, 0.f, 0.f);
++    object->add_volume(std::move(other), ModelVolumeType::MODEL_PART, false);
++    ModelVolume *volume = object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    Geometry::Transformation placement;
++    placement.set_rotation(Vec3d(0., 0., 1.5707963267948966)); // 90 deg about Z
++    placement.set_offset(Vec3d(15., 5., 0.));
++    volume->set_transformation(placement);
++
++    const BoundingBoxf3 part_world = world_bounding_box(*object, *volume, 0);
++
++    std::vector<size_t> new_idxs;
++    std::string         error;
++    REQUIRE(OrcaExt::split_parts_to_objects(*object, {1}, new_idxs, error));
++    REQUIRE(new_idxs.size() == 1);
++    REQUIRE(object->volumes.size() == 1);
++
++    const ModelObject *extracted = model.objects[new_idxs.front()];
++    REQUIRE(extracted->volumes.size() == 1);
++    const BoundingBoxf3 extracted_world = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
++    CHECK_THAT(extracted_world.min.x(), Catch::Matchers::WithinAbs(part_world.min.x(), 1e-2));
++    CHECK_THAT(extracted_world.min.y(), Catch::Matchers::WithinAbs(part_world.min.y(), 1e-2));
++    CHECK_THAT(extracted_world.max.x(), Catch::Matchers::WithinAbs(part_world.max.x(), 1e-2));
++    CHECK_THAT(extracted_world.max.y(), Catch::Matchers::WithinAbs(part_world.max.y(), 1e-2));
++}
++
++TEST_CASE("Splitting a part off when the source has two copies keeps both copies", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_instance();
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    TriangleMesh second = make_cube(10, 10, 10);
++    second.translate(40.f, 0.f, 0.f);
++    object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
++    object->add_instance(*object->instances.front());
++    object->instances.back()->set_offset(Vec3d(0., 30., 0.));
++
++    std::vector<size_t> new_idxs;
++    std::string         error;
++    REQUIRE(OrcaExt::split_parts_to_objects(*object, {1}, new_idxs, error));
++    REQUIRE(new_idxs.size() == 1);
++
++    const ModelObject *extracted = model.objects[new_idxs.front()];
++    REQUIRE(extracted->instances.size() == 2);
++    const BoundingBoxf3 copy0 = world_bounding_box(*extracted, *extracted->volumes.front(), 0);
++    const BoundingBoxf3 copy1 = world_bounding_box(*extracted, *extracted->volumes.front(), 1);
++    CHECK_THAT(copy0.min.x(), Catch::Matchers::WithinAbs(40.0, 1e-2));
++    CHECK_THAT(copy1.min.x(), Catch::Matchers::WithinAbs(40.0, 1e-2));
++    CHECK_THAT(copy1.min.y() - copy0.min.y(), Catch::Matchers::WithinAbs(30.0, 1e-2));
++}
++
++TEST_CASE("Splitting refuses a selection that would leave no model part", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
++
++    std::vector<size_t> new_idxs;
++    std::string         error;
++    CHECK_FALSE(OrcaExt::split_parts_to_objects(*object, {0, 1}, new_idxs, error));
++    CHECK_FALSE(error.empty());
++    CHECK(new_idxs.empty());
++    CHECK_FALSE(OrcaExt::split_parts_to_objects(*object, {2}, new_idxs, error));
++    CHECK(model.objects.size() == 1);
++    CHECK(object->volumes.size() == 3);
++}
++// [ORCAPORT:MB-4] END
++
+-- 
+2.43.0.windows.1
+

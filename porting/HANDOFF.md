@@ -31,6 +31,14 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   losing them. New core `OrcaExt::merge_parts_into_one`, marker `MB-3`, notes `notes/MB-3.md`, patch
   `88_MB-3.patch`. libslic3r suite 1728/1728, MCP `boolean_parts(part_ids)` checked on a 3-part cut
   object (3 -> 2 parts, object id kept, slices clean). Merge it only after the user confirms.
+- **Branch `port/MB-4` is stacked on `port/MB-3` and awaits the user's test:** *Split selected parts*.
+  With one or more part rows selected, the Modify submenu moves exactly those parts into their own
+  objects at their current placement and leaves the rest in the source (5 parts, 3 selected -> 4 items).
+  Hidden when every model part is selected (that is Split > To Objects). New core
+  `OrcaExt::split_parts_to_objects`, marker `MB-4`, notes `notes/MB-4.md`, patch `89_MB-4.patch`.
+  libslic3r suite 1733/1733, MCP `split_parts` checked on a 3-part cut object (1 -> 3 objects, slice
+  idle; the extracted parts still share the source footprint, so the plate validator warns "too close to
+  others" - expected). Merge MB-3 first, then MB-4, once the user confirms both.
 - **Merged 2026-10-31, user-tested:** `port/SU-8-object-transition` (patch 86) and
   `port/SU-10-suggestion` (patch 87). The object-on-interface joint (`transition_object_interface_*`)
   never fired on tree supports because `SupportCommon.cpp` skipped every contact whose
