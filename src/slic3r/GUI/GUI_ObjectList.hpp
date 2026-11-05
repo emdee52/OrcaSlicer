@@ -337,6 +337,10 @@ public:
     void                layers_editing();
 
     void                boolean();    // BBS: Boolean Operation of parts
+    // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+    void                merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs);
+    bool                selected_parts_can_be_merged() const;
+    // [ORCAPORT:MB-3] END
     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
     wxDataViewItem      add_settings_item(wxDataViewItem parent_item, const DynamicPrintConfig* config);
 

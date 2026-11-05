@@ -428,6 +428,8 @@ set(lisbslic3r_sources
     OrcaExt/IdleToolPowerDown.hpp
     OrcaExt/InstanceContact.cpp
     OrcaExt/InstanceContact.hpp
+    OrcaExt/MergeParts.cpp
+    OrcaExt/MergeParts.hpp
     OrcaExt/SeamNotch.cpp
     OrcaExt/SeamNotch.hpp
     OrcaExt/SupportPaintTypes.cpp

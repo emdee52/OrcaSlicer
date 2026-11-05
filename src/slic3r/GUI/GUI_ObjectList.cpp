@@ -18,6 +18,9 @@
 #include "Tab.hpp"
 #include "wxExtensions.hpp"
 #include "libslic3r/Model.hpp"
+// [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+#include "libslic3r/OrcaExt/MergeParts.hpp"
+// [ORCAPORT:MB-3] END
 #include "GLCanvas3D.hpp"
 #include "Selection.hpp"
 #include "PartPlate.hpp"
@@ -3483,6 +3486,13 @@ void ObjectList::boolean()
     if (obj_idxs.empty() && vol_idxs.empty())
         return;
 
+    // [ORCAPORT:MB-3] BEGIN - two or more selected parts of one object are merged in place, the rest of the object stays
+    if (vol_idxs.size() >= 2 && obj_idxs.size() == 1) {
+        merge_selected_parts(obj_idxs.front(), vol_idxs);
+        return;
+    }
+    // [ORCAPORT:MB-3] END
+
     Plater::TakeSnapshot snapshot(wxGetApp().plater(), "boolean");
 
     ModelObject* object = (*m_objects)[obj_idxs.front()];
@@ -3561,6 +3571,57 @@ void ObjectList::boolean()
     // [ORCAPORT:MB-2] Leave the outcome where a caller without a return value can read it.
     wxGetApp().plater()->set_last_object_boolean_report(report);
 }
+
+// [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part, leaving the object intact
+void ObjectList::merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs)
+{
+    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
+        return;
+    ModelObject *object = (*m_objects)[obj_idx];
+
+    std::vector<size_t> vol_idxs;
+    vol_idxs.reserve(ui_vol_idxs.size());
+    for (int ui_vol_idx : ui_vol_idxs) {
+        const int vol_idx = m_objects_model->get_real_volume_index_in_3d(obj_idx, ui_vol_idx);
+        if (vol_idx < 0 || vol_idx >= int(object->volumes.size()))
+            return;
+        vol_idxs.emplace_back(size_t(vol_idx));
+    }
+    std::sort(vol_idxs.begin(), vol_idxs.end());
+    vol_idxs.erase(std::unique(vol_idxs.begin(), vol_idxs.end()), vol_idxs.end());
+    if (vol_idxs.size() < 2)
+        return;
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Merge selected parts"));
+
+    bool        welded = false;
+    std::string error;
+    if (!Slic3r::OrcaExt::merge_parts_into_one(*object, vol_idxs, wxGetApp().app_config->get_bool("keep_painting"), welded, error)) {
+        wxGetApp().notification_manager()->push_plater_error_notification(_u8L("The selected parts could not be merged."));
+        return;
+    }
+
+    // The boolean outcome, for a caller that cannot get a return value (the MCP tool).
+    Plater::ObjectBooleanReport report;
+    report.failed = !welded;
+    if (!welded) {
+        report.message = _u8L("The parts were joined without welding: the overlap between them is not resolved.");
+        wxGetApp().notification_manager()->push_plater_warning_notification(report.message);
+    }
+    wxGetApp().plater()->set_last_object_boolean_report(report);
+
+    // The merged part took the lowest selected index, and the volume rows were rebuilt.
+    const ModelVolume *merged = object->volumes[vol_idxs.front()];
+    const wxDataViewItemArray items = add_volumes_to_object_in_list(
+        obj_idx, [merged](const ModelVolume *volume) { return volume == merged; });
+    update_info_items(obj_idx);
+    changed_object(obj_idx);
+    notify_instance_updated(obj_idx);
+    if (!items.IsEmpty())
+        select_items(items);
+    update_selections_on_canvas();
+}
+// [ORCAPORT:MB-3] END
 
 wxDataViewItem ObjectList::add_layer_root_item(const wxDataViewItem obj_item)
 {
@@ -3795,6 +3856,11 @@ bool ObjectList::can_merge_to_single_object() const
 
 bool ObjectList::can_mesh_boolean() const
 {
+    // [ORCAPORT:MB-3] BEGIN - also offered for two or more selected parts of one object
+    if (selected_parts_can_be_merged())
+        return true;
+    // [ORCAPORT:MB-3] END
+
     int obj_idx = get_selected_obj_idx();
     if (obj_idx < 0)
         return false;
@@ -3802,6 +3868,45 @@ bool ObjectList::can_mesh_boolean() const
     // selected object should be multi mesh
     return (*m_objects)[obj_idx]->volumes.size() > 1 || ((*m_objects)[obj_idx]->volumes.size() == 1 && (*m_objects)[obj_idx]->volumes[0]->is_splittable());
 }
+
+// [ORCAPORT:MB-3] BEGIN - gate for merging only the selected parts
+bool ObjectList::selected_parts_can_be_merged() const
+{
+    if (!multiple_selection())
+        return false;
+
+    wxDataViewItemArray sels;
+    GetSelections(sels);
+
+    int obj_idx = -1;
+    for (const wxDataViewItem &item : sels) {
+        if (!(m_objects_model->GetItemType(item) & itVolume))
+            return false;
+        const int item_obj_idx = m_objects_model->GetObjectIdByItem(item);
+        if (item_obj_idx < 0 || (obj_idx >= 0 && item_obj_idx != obj_idx))
+            return false;
+        obj_idx = item_obj_idx;
+    }
+    if (sels.GetCount() < 2 || obj_idx < 0 || obj_idx >= int(m_objects->size()))
+        return false;
+
+    // A cut object's parts are bound to its cut info, and a text/SVG part would lose the
+    // properties that make it editable once its mesh is fused with another part.
+    const ModelObject *object = (*m_objects)[obj_idx];
+    if (object->is_cut())
+        return false;
+
+    for (const wxDataViewItem &item : sels) {
+        const int vol_idx = m_objects_model->get_real_volume_index_in_3d(obj_idx, m_objects_model->GetVolumeIdByItem(item));
+        if (vol_idx < 0 || vol_idx >= int(object->volumes.size()))
+            return false;
+        const ModelVolume *volume = object->volumes[vol_idx];
+        if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
+            return false;
+    }
+    return true;
+}
+// [ORCAPORT:MB-3] END
 
 // NO_PARAMETERS function call means that changed object index will be determine from Selection()
 void ObjectList::changed_object(const int obj_idx/* = -1*/) const

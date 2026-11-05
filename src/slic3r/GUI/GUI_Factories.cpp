@@ -2254,6 +2254,11 @@ wxMenu* MenuFactory::multi_selection_menu()
         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
         append_menu_item_align_distribute(menu);
         append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/);
+        // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+        append_menu_item(menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
+            [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
+            []() { return obj_list()->can_mesh_boolean(); }, m_parent);
+        // [ORCAPORT:MB-3] END
         //append_menu_item_drop(menu);
         //append_menu_item_fix_through_cgal(menu);
         append_menu_items_convert_unit(transform_menu);

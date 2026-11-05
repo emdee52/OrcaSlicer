@@ -90,14 +90,25 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                  'many of them it could not subtract, so that cut is missing '
                  'and the object holds the union of the model parts), '
                  'boolean_failed and message. The same message is in the app '
-                 'log - get_log_tail.',
+                 'log - get_log_tail. With part_ids (two or more volume '
+                 'indices) only those parts are merged into one part, in '
+                 'place: the object keeps its index, its instances and every '
+                 'part that was not selected, and boolean_failed means the '
+                 'parts could not be welded and were joined as they are.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'object_id': {'description': 'Object index '
                                                               '(0-based). It '
                                                               'must have more '
                                                               'than one '
                                                               'volume.',
-                                               'type': 'integer'}},
+                                               'type': 'integer'},
+                                 'part_ids': {'description': 'Optional: volume '
+                                                             'indices to merge '
+                                                             'into one part '
+                                                             'instead of the '
+                                                             'whole object.',
+                                              'items': {'type': 'integer'},
+                                              'type': 'array'}},
                   'required': ['object_id'],
                   'type': 'object'},
   'name': 'boolean_parts'},

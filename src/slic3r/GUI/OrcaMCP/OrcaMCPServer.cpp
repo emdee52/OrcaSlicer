@@ -3820,6 +3820,8 @@ void OrcaMCPServer::register_builtin_tools()
     // is subtracted in one operation. Reports the object's triangles before and after and what is left,
     // so a boolean that cut nothing is visible; the reason a negative volume could not be subtracted is
     // in the app log (see get_log_tail).
+    // [ORCAPORT:MB-3] With part_ids it instead merges only those parts, in place, and the object keeps
+    // its index, its instances and its other parts.
     register_tool({
         "boolean_parts",
         "Run the object's own Mesh boolean in one shot: union every model part and subtract every "
@@ -3828,20 +3830,34 @@ void OrcaMCPServer::register_builtin_tools()
         "boolean's own outcome: negative_parts (negative volumes handed to the kernel), "
         "negative_parts_not_subtracted (how many of them it could not subtract, so that cut is missing "
         "and the object holds the union of the model parts), boolean_failed and message. The same "
-        "message is in the app log - get_log_tail.",
+        "message is in the app log - get_log_tail. With part_ids (two or more volume indices) only "
+        "those parts are merged into one part, in place: the object keeps its index, its instances and "
+        "every part that was not selected, and boolean_failed means the parts could not be welded and "
+        "were joined as they are.",
         {
             {"type", "object"},
             {"properties", {
                 {"object_id", {
                     {"type", "integer"},
                     {"description", "Object index (0-based). It must have more than one volume."}
+                }},
+                {"part_ids", {
+                    {"type", "array"},
+                    {"items", {{"type", "integer"}}},
+                    {"description", "Optional: volume indices to merge into one part instead of the whole object."}
                 }}
             }},
             {"required", {"object_id"}}
         },
         [](const nlohmann::json& params) -> nlohmann::json {
             const int object_id = params["object_id"];
-            return run_on_main_thread([object_id]() -> nlohmann::json {
+            // [ORCAPORT:MB-3] BEGIN - merge only the listed parts, leaving the object intact
+            std::vector<int> part_ids;
+            if (params.contains("part_ids") && params["part_ids"].is_array())
+                for (const auto &part_id : params["part_ids"])
+                    part_ids.push_back(part_id.get<int>());
+            return run_on_main_thread([object_id, part_ids]() -> nlohmann::json {
+            // [ORCAPORT:MB-3] END
                 Plater *plater = wxGetApp().plater();
                 ObjectList *obj_list = wxGetApp().obj_list();
                 if (plater == nullptr || obj_list == nullptr)
@@ -3864,11 +3880,32 @@ void OrcaMCPServer::register_builtin_tools()
 
                 // Selecting the object in the list is what the menu item relies on: boolean() reads the
                 // list selection, not the canvas one.
-                obj_list->select_item(ObjectVolumeID{mo, nullptr});
-                if (!obj_list->can_mesh_boolean())
-                    return {{"status", "error"},
-                            {"error", "Mesh boolean needs an object with more than one volume"},
-                            {"volume_count", volumes_before}};
+                // [ORCAPORT:MB-3] BEGIN - select the named parts, otherwise the whole object
+                if (part_ids.size() >= 2) {
+                    std::vector<ObjectVolumeID> ov_ids;
+                    for (int part_id : part_ids) {
+                        if (part_id < 0 || part_id >= volumes_before)
+                            return {{"status", "error"},
+                                    {"error", "part_ids out of range"},
+                                    {"volume_count", volumes_before}};
+                        ov_ids.push_back({mo, mo->volumes[part_id]});
+                    }
+                    // Selecting parts without the list's part mode makes its conflict check pop a
+                    // modal "Selection conflicts" dialog, which would block this call for good.
+                    obj_list->set_selection_mode(ObjectList::SELECTION_MODE::smVolume);
+                    obj_list->select_items(ov_ids);
+                    if (!obj_list->can_mesh_boolean())
+                        return {{"status", "error"},
+                                {"error", "The selected parts cannot be merged: they must be two or more model parts of one object, and not parts of a cut object, text or SVG"},
+                                {"volume_count", volumes_before}};
+                } else {
+                    obj_list->select_item(ObjectVolumeID{mo, nullptr});
+                    if (!obj_list->can_mesh_boolean())
+                        return {{"status", "error"},
+                                {"error", "Mesh boolean needs an object with more than one volume"},
+                                {"volume_count", volumes_before}};
+                }
+                // [ORCAPORT:MB-3] END
 
                 const int objects_before = int(model.objects.size());
                 obj_list->boolean();
@@ -3893,7 +3930,11 @@ void OrcaMCPServer::register_builtin_tools()
                     out["warning"] = "A negative part could not be subtracted: the mesh came out without "
                                      "that cut. The object now holds the union of the model parts.";
                 if (!model.objects.empty()) {
-                    const ModelObject *result = model.objects.back();
+                    // [ORCAPORT:MB-3] The partial merge keeps the object (and its index); the
+                    // whole-object one replaces it with a new object at the end of the list.
+                    const int result_idx = int(model.objects.size()) == objects_before ? object_id
+                                                                                     : int(model.objects.size()) - 1;
+                    const ModelObject *result = model.objects[result_idx];
                     int triangles_after = 0, volumes_after = 0;
                     for (const ModelVolume *v : result->volumes) {
                         if (v == nullptr)
@@ -3901,10 +3942,14 @@ void OrcaMCPServer::register_builtin_tools()
                         triangles_after += int(v->mesh().its.indices.size());
                         ++volumes_after;
                     }
-                    out["result_object_id"] = int(model.objects.size()) - 1;
+                    out["result_object_id"] = result_idx;
                     out["result_name"]      = result->name;
                     out["volumes_after"]    = volumes_after;
                     out["triangles_after"]  = triangles_after;
+                    // [ORCAPORT:MB-3] BEGIN - the caller's part list, so a merge can be told from a no-op
+                    if (part_ids.size() >= 2)
+                        out["merged_part_ids"] = part_ids;
+                    // [ORCAPORT:MB-3] END
                 }
                 return out;
             });
