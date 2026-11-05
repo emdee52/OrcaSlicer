@@ -18,9 +18,9 @@ concatenate meshes without applying the parts' transforms or build a new object.
 
 ## Design
 
-One new action on the multi-part selection: **Merge selected parts**. It unions exactly the selected parts
-and replaces them in the object; the object itself, its instances, its transform, its object settings and
-every part that was not selected stay untouched.
+One new action on the multi-part selection: **Merge selected parts**, in the right-click **Modify** submenu
+(next to Split). It unions exactly the selected parts and replaces them in the object; the object itself,
+its instances, its transform, its object settings and every part that was not selected stay untouched.
 
 - **One core function**: `OrcaExt::merge_parts_into_one` (`src/libslic3r/OrcaExt/MergeParts.*`) so the
   behaviour is testable without the GUI. It unions the selected `MODEL_PART` volumes in the **object's own
@@ -55,7 +55,8 @@ parts; they keep subtracting from the merged part where they overlap it).
 | Core | `src/libslic3r/CMakeLists.txt` | source list entry |
 | GUI | `src/slic3r/GUI/GUI_ObjectList.cpp` | `boolean()` takes a partial branch; new `merge_selected_parts()` + `selected_parts_can_be_merged()`; `can_mesh_boolean()` also accepts a part selection |
 | GUI | `src/slic3r/GUI/GUI_ObjectList.hpp` | the two new private methods |
-| GUI | `src/slic3r/GUI/GUI_Factories.cpp` | "Merge selected parts" in the multi-selection (part) menu, gated by `can_mesh_boolean()` |
+| GUI | `src/slic3r/GUI/GUI_Factories.cpp` | "Merge selected parts" inside the **Modify** submenu of the multi-selection menu: `append_menu_item_modify()` grew a `merge_parts` flag and appends the item right after the Split group; gated by `can_mesh_boolean()` |
+| GUI | `src/slic3r/GUI/GUI_Factories.hpp` | the `merge_parts` parameter (default false, so the other menus are unchanged) |
 | MCP | `src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp` | `boolean_parts` gained the optional `part_ids` |
 | MCP | `scripts/tools_schema.py` | regenerated (`python scripts/regen_tools_schema.py`) |
 | Test | `tests/libslic3r/test_model.cpp` | 4 cases |
