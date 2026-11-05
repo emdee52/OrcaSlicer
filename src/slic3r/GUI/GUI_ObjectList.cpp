@@ -3886,11 +3886,12 @@ bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int
 {
     vol_idxs.clear();
     obj_idx = -1;
-    if (!multiple_selection())
-        return false;
 
     wxDataViewItemArray sels;
     GetSelections(sels);
+    // A single selected part is a valid subject: splitting one part off is the smallest case.
+    if (sels.IsEmpty())
+        return false;
 
     for (const wxDataViewItem &item : sels) {
         if (!(m_objects_model->GetItemType(item) & itVolume))

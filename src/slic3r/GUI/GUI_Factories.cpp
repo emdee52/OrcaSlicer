@@ -1896,7 +1896,8 @@ void MenuFactory::create_bbl_part_menu()
 
     m_part_transform_menu = append_menu_item_transform(&m_part_menu, false /*multi_selection*/, true /*mirror*/, true /*is_scalable*/);
     append_menu_item_align_distribute(menu);
-    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/);
+    // [ORCAPORT:MB-4] a single selected part can be moved into its own object too
+    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/, false /*merge_parts*/, true /*split_parts*/);
     append_menu_item_edit_text(menu);
     //m_part_geometry_pos = m_part_menu.GetMenuItemCount(); // pos for geometry related items
 
