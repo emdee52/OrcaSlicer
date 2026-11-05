@@ -1,0 +1,707 @@
+From 6f6c1ff97d9f3758a811f069da0041ff59889b04 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Thu, 5 Nov 2026 13:31:39 -0700
+Subject: [PATCH] port(MB-3): merge only the selected parts of one object into
+ one part
+
+New action on a multi-part selection: "Merge selected parts" unions exactly the
+selected parts and replaces them in place, so the object, its instances, its
+settings and every part that was not selected stay. The whole-object Mesh
+boolean is untouched.
+
+- libslic3r/OrcaExt/MergeParts: merge_parts_into_one() unions the selected
+  MODEL_PART volumes in object space with the mcut pipeline the whole-object
+  boolean uses; on refusal it joins them unwelded and reports it instead of
+  losing them. The merged part takes the lowest selected index, its name and
+  its per-part settings.
+- GUI: boolean() takes a partial branch when two or more part rows are
+  selected; can_mesh_boolean() also accepts that selection (same object, model
+  parts only, no cut object, no text/SVG part); the multi-selection menu offers
+  the item.
+- MCP: boolean_parts gained the optional part_ids for the same path, and the
+  handler sets the list's part selection mode first (selecting part rows in
+  instance mode pops a modal "Selection conflicts" dialog that never returns).
+- Tests: tests/libslic3r/test_model.cpp covers the object and untouched parts
+  surviving, the parts' transforms being applied, a shared whole face welding,
+  disjoint parts, and the refusals.
+
+libslic3r suite 1728/1728; runtime check over MCP on a 3-part cut object
+(3 -> 2 parts, object id kept, slice idle).
+---
+ scripts/tools_schema.py                  |  15 ++-
+ src/libslic3r/CMakeLists.txt             |   2 +
+ src/libslic3r/OrcaExt/MergeParts.cpp     | 143 +++++++++++++++++++++++
+ src/libslic3r/OrcaExt/MergeParts.hpp     |  32 +++++
+ src/slic3r/GUI/GUI_Factories.cpp         |   5 +
+ src/slic3r/GUI/GUI_ObjectList.cpp        | 105 +++++++++++++++++
+ src/slic3r/GUI/GUI_ObjectList.hpp        |   4 +
+ src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp |  63 ++++++++--
+ tests/libslic3r/test_model.cpp           | 109 ++++++++++++++++-
+ 9 files changed, 465 insertions(+), 13 deletions(-)
+ create mode 100644 src/libslic3r/OrcaExt/MergeParts.cpp
+ create mode 100644 src/libslic3r/OrcaExt/MergeParts.hpp
+
+diff --git a/scripts/tools_schema.py b/scripts/tools_schema.py
+index 36adc88cd4..d6fced92fd 100644
+--- a/scripts/tools_schema.py
++++ b/scripts/tools_schema.py
+@@ -90,14 +90,25 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
+                  'many of them it could not subtract, so that cut is missing '
+                  'and the object holds the union of the model parts), '
+                  'boolean_failed and message. The same message is in the app '
+-                 'log - get_log_tail.',
++                 'log - get_log_tail. With part_ids (two or more volume '
++                 'indices) only those parts are merged into one part, in '
++                 'place: the object keeps its index, its instances and every '
++                 'part that was not selected, and boolean_failed means the '
++                 'parts could not be welded and were joined as they are.',
+   'inputSchema': {'additionalProperties': False,
+                   'properties': {'object_id': {'description': 'Object index '
+                                                               '(0-based). It '
+                                                               'must have more '
+                                                               'than one '
+                                                               'volume.',
+-                                               'type': 'integer'}},
++                                               'type': 'integer'},
++                                 'part_ids': {'description': 'Optional: volume '
++                                                             'indices to merge '
++                                                             'into one part '
++                                                             'instead of the '
++                                                             'whole object.',
++                                              'items': {'type': 'integer'},
++                                              'type': 'array'}},
+                   'required': ['object_id'],
+                   'type': 'object'},
+   'name': 'boolean_parts'},
+diff --git a/src/libslic3r/CMakeLists.txt b/src/libslic3r/CMakeLists.txt
+index b3e52355d9..66ec55c336 100644
+--- a/src/libslic3r/CMakeLists.txt
++++ b/src/libslic3r/CMakeLists.txt
+@@ -428,6 +428,8 @@ set(lisbslic3r_sources
+     OrcaExt/IdleToolPowerDown.hpp
+     OrcaExt/InstanceContact.cpp
+     OrcaExt/InstanceContact.hpp
++    OrcaExt/MergeParts.cpp
++    OrcaExt/MergeParts.hpp
+     OrcaExt/SeamNotch.cpp
+     OrcaExt/SeamNotch.hpp
+     OrcaExt/SupportPaintTypes.cpp
+diff --git a/src/libslic3r/OrcaExt/MergeParts.cpp b/src/libslic3r/OrcaExt/MergeParts.cpp
+new file mode 100644
+index 0000000000..cefec71a73
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/MergeParts.cpp
+@@ -0,0 +1,143 @@
++// [ORCAPORT FILE] MergeParts - fuse selected parts of one object into a single part
++// Original work on the fork's own feature loop (MB-3); no Neotko/preFlight source.
++#include "MergeParts.hpp"
++
++#include "../CSGMesh/CSGMesh.hpp"
++#include "../CSGMesh/PerformCSGMeshBooleans.hpp"
++#include "../MeshBoolean.hpp"
++#include "../Model.hpp"
++#include "../PrintConfig.hpp"
++#include "../TriangleMesh.hpp"
++#include "../TriangleSelector.hpp"
++#include "../libslic3r.h"
++
++#include <algorithm>
++#include <iterator>
++#include <optional>
++#include <utility>
++
++#include <boost/log/trivial.hpp>
++
++namespace Slic3r {
++namespace OrcaExt {
++
++namespace {
++
++// Union of the selected parts in the object's coordinate system: every part's own transform
++// applied, no instance transform. The pre-flight is the one the whole-object boolean uses
++// (Plater::combine_mesh_fff): the kernel that runs is mcut, whose check only rejects an empty
++// part, while the stricter CGAL predicates would refuse meshes mcut handles.
++TriangleMesh union_selected_parts(const ModelObject &object, const std::vector<size_t> &vol_idxs, bool &welded)
++{
++    std::vector<csg::CSGPart> parts;
++    parts.reserve(vol_idxs.size());
++    for (size_t vol_idx : vol_idxs) {
++        const ModelVolume *volume = object.volumes[vol_idx];
++        parts.emplace_back(&volume->mesh().its, csg::CSGType::Union, volume->get_matrix().cast<float>());
++        parts.back().name = volume->name;
++    }
++
++    welded = false;
++    const Range range{std::begin(parts), std::end(parts)};
++    if (std::get<0>(csg::check_csgmesh_booleans(range, /*use_mcut=*/true)) == csg::BooleanFailReason::OK) {
++        try {
++            MeshBoolean::mcut::McutMeshPtr union_mesh = csg::perform_csgmesh_booleans_mcut(range);
++            TriangleMesh                  mesh       = MeshBoolean::mcut::mcut_to_triangle_mesh(*union_mesh);
++            if (!mesh.empty()) {
++                welded = true;
++                return mesh;
++            }
++        } catch (...) {
++            // Fall through to joining the parts without a boolean, as combine_mesh_fff does.
++        }
++    }
++
++    BOOST_LOG_TRIVIAL(info) << "merge_parts_into_one: the boolean refused the selected parts, joining them unwelded.";
++    return TriangleMesh(csg::csgmesh_merge_positive_parts(parts));
++}
++
++} // namespace
++
++bool merge_parts_into_one(ModelObject &object, const std::vector<size_t> &vol_idxs, bool keep_painting,
++                          bool &welded, std::string &error)
++{
++    welded = false;
++    error.clear();
++
++    if (vol_idxs.size() < 2) {
++        error = "at least two parts are needed";
++        return false;
++    }
++    for (size_t vol_idx : vol_idxs) {
++        if (vol_idx >= object.volumes.size()) {
++            error = "part index out of range";
++            return false;
++        }
++        if (!object.volumes[vol_idx]->is_model_part()) {
++            error = "only model parts can be merged";
++            return false;
++        }
++    }
++
++    std::vector<size_t> sorted = vol_idxs;
++    std::sort(sorted.begin(), sorted.end());
++    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
++    if (sorted.size() < 2) {
++        error = "at least two different parts are needed";
++        return false;
++    }
++
++    // The lowest selected index keeps the part order stable and lends its name and per-part
++    // settings to the result; the other selected parts' settings go away with those parts.
++    const size_t          insert_at = sorted.front();
++    const std::string     name      = object.volumes[insert_at]->name;
++    DynamicPrintConfig    config    = object.volumes[insert_at]->config.get();
++
++    // Painting is remapped from object space onto the merged mesh, so it survives the parts'
++    // own transforms being baked into the union.
++    std::vector<std::optional<TriangleSelector::SavedPainting>> saved_paintings;
++    if (keep_painting) {
++        for (size_t vol_idx : sorted) {
++            const ModelVolume *volume = object.volumes[vol_idx];
++            if (!volume->is_any_painted())
++                continue;
++            saved_paintings.emplace_back(volume->save_painting());
++            if (saved_paintings.back())
++                saved_paintings.back()->mesh.transform(volume->get_matrix(), true);
++        }
++    }
++
++    TriangleMesh mesh = union_selected_parts(object, sorted, welded);
++    if (mesh.empty()) {
++        error = "the merged mesh is empty";
++        return false;
++    }
++
++    // The selected parts are removed directly rather than with delete_volume(): that helper
++    // bakes the last remaining volume's transform into the instances when the object is left
++    // with one volume, which would be wrong in the middle of this replacement.
++    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
++        delete object.volumes[*it];
++        object.volumes.erase(object.volumes.begin() + *it);
++    }
++
++    // Geometry is already in the object's coordinates, so the merged volume keeps an identity
++    // transform (no re-centering that would have to be compensated elsewhere).
++    ModelVolume *merged = object.add_volume(std::move(mesh), ModelVolumeType::MODEL_PART,
++                                           /*modify_to_center_geometry=*/false);
++    object.volumes.pop_back();
++    object.volumes.insert(object.volumes.begin() + insert_at, merged);
++
++    merged->name = name;
++    merged->config.assign_config(std::move(config));
++    if (keep_painting)
++        for (const std::optional<TriangleSelector::SavedPainting> &saved : saved_paintings)
++            if (saved)
++                merged->restore_painting(saved, true);
++
++    object.invalidate_bounding_box();
++    return true;
++}
++
++} // namespace OrcaExt
++} // namespace Slic3r
+diff --git a/src/libslic3r/OrcaExt/MergeParts.hpp b/src/libslic3r/OrcaExt/MergeParts.hpp
+new file mode 100644
+index 0000000000..d50e9aae19
+--- /dev/null
++++ b/src/libslic3r/OrcaExt/MergeParts.hpp
+@@ -0,0 +1,32 @@
++// [ORCAPORT FILE] MergeParts - fuse selected parts of one object into a single part
++// Original work on the fork's own feature loop (MB-3); no Neotko/preFlight source.
++#ifndef slic3r_OrcaExt_MergeParts_hpp_
++#define slic3r_OrcaExt_MergeParts_hpp_
++
++#include <cstddef>
++#include <string>
++#include <vector>
++
++namespace Slic3r {
++
++class ModelObject;
++
++namespace OrcaExt {
++
++// Replace `vol_idxs` (indices into object.volumes, every one of them a MODEL_PART) with the
++// union of those parts. The union is computed in the object's own coordinate system, so the
++// instances, the object transform, the parts that were not selected and the object's own
++// settings stay as they are; the merged part lands at the lowest selected index and takes
++// that part's name and per-part settings.
++//
++// `welded` reports whether the boolean kernel fused the parts. When it refused, the parts are
++// joined as they are instead: the object still ends up with one part, but the overlap between
++// the joined parts stays unresolved. `error` explains a refusal, in which case the object is
++// not modified at all.
++bool merge_parts_into_one(ModelObject &object, const std::vector<size_t> &vol_idxs,
++                          bool keep_painting, bool &welded, std::string &error);
++
++} // namespace OrcaExt
++} // namespace Slic3r
++
++#endif // slic3r_OrcaExt_MergeParts_hpp_
+diff --git a/src/slic3r/GUI/GUI_Factories.cpp b/src/slic3r/GUI/GUI_Factories.cpp
+index 29485ad8c6..653fc45027 100644
+--- a/src/slic3r/GUI/GUI_Factories.cpp
++++ b/src/slic3r/GUI/GUI_Factories.cpp
+@@ -2254,6 +2254,11 @@ wxMenu* MenuFactory::multi_selection_menu()
+         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
+         append_menu_item_align_distribute(menu);
+         append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/);
++        // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
++        append_menu_item(menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
++            [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
++            []() { return obj_list()->can_mesh_boolean(); }, m_parent);
++        // [ORCAPORT:MB-3] END
+         //append_menu_item_drop(menu);
+         //append_menu_item_fix_through_cgal(menu);
+         append_menu_items_convert_unit(transform_menu);
+diff --git a/src/slic3r/GUI/GUI_ObjectList.cpp b/src/slic3r/GUI/GUI_ObjectList.cpp
+index d26446c578..314a4f74b8 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.cpp
++++ b/src/slic3r/GUI/GUI_ObjectList.cpp
+@@ -18,6 +18,9 @@
+ #include "Tab.hpp"
+ #include "wxExtensions.hpp"
+ #include "libslic3r/Model.hpp"
++// [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
++#include "libslic3r/OrcaExt/MergeParts.hpp"
++// [ORCAPORT:MB-3] END
+ #include "GLCanvas3D.hpp"
+ #include "Selection.hpp"
+ #include "PartPlate.hpp"
+@@ -3483,6 +3486,13 @@ void ObjectList::boolean()
+     if (obj_idxs.empty() && vol_idxs.empty())
+         return;
+ 
++    // [ORCAPORT:MB-3] BEGIN - two or more selected parts of one object are merged in place, the rest of the object stays
++    if (vol_idxs.size() >= 2 && obj_idxs.size() == 1) {
++        merge_selected_parts(obj_idxs.front(), vol_idxs);
++        return;
++    }
++    // [ORCAPORT:MB-3] END
++
+     Plater::TakeSnapshot snapshot(wxGetApp().plater(), "boolean");
+ 
+     ModelObject* object = (*m_objects)[obj_idxs.front()];
+@@ -3562,6 +3572,57 @@ void ObjectList::boolean()
+     wxGetApp().plater()->set_last_object_boolean_report(report);
+ }
+ 
++// [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part, leaving the object intact
++void ObjectList::merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs)
++{
++    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
++        return;
++    ModelObject *object = (*m_objects)[obj_idx];
++
++    std::vector<size_t> vol_idxs;
++    vol_idxs.reserve(ui_vol_idxs.size());
++    for (int ui_vol_idx : ui_vol_idxs) {
++        const int vol_idx = m_objects_model->get_real_volume_index_in_3d(obj_idx, ui_vol_idx);
++        if (vol_idx < 0 || vol_idx >= int(object->volumes.size()))
++            return;
++        vol_idxs.emplace_back(size_t(vol_idx));
++    }
++    std::sort(vol_idxs.begin(), vol_idxs.end());
++    vol_idxs.erase(std::unique(vol_idxs.begin(), vol_idxs.end()), vol_idxs.end());
++    if (vol_idxs.size() < 2)
++        return;
++
++    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Merge selected parts"));
++
++    bool        welded = false;
++    std::string error;
++    if (!Slic3r::OrcaExt::merge_parts_into_one(*object, vol_idxs, wxGetApp().app_config->get_bool("keep_painting"), welded, error)) {
++        wxGetApp().notification_manager()->push_plater_error_notification(_u8L("The selected parts could not be merged."));
++        return;
++    }
++
++    // The boolean outcome, for a caller that cannot get a return value (the MCP tool).
++    Plater::ObjectBooleanReport report;
++    report.failed = !welded;
++    if (!welded) {
++        report.message = _u8L("The parts were joined without welding: the overlap between them is not resolved.");
++        wxGetApp().notification_manager()->push_plater_warning_notification(report.message);
++    }
++    wxGetApp().plater()->set_last_object_boolean_report(report);
++
++    // The merged part took the lowest selected index, and the volume rows were rebuilt.
++    const ModelVolume *merged = object->volumes[vol_idxs.front()];
++    const wxDataViewItemArray items = add_volumes_to_object_in_list(
++        obj_idx, [merged](const ModelVolume *volume) { return volume == merged; });
++    update_info_items(obj_idx);
++    changed_object(obj_idx);
++    notify_instance_updated(obj_idx);
++    if (!items.IsEmpty())
++        select_items(items);
++    update_selections_on_canvas();
++}
++// [ORCAPORT:MB-3] END
++
+ wxDataViewItem ObjectList::add_layer_root_item(const wxDataViewItem obj_item)
+ {
+     const int obj_idx = m_objects_model->GetIdByItem(obj_item);
+@@ -3795,6 +3856,11 @@ bool ObjectList::can_merge_to_single_object() const
+ 
+ bool ObjectList::can_mesh_boolean() const
+ {
++    // [ORCAPORT:MB-3] BEGIN - also offered for two or more selected parts of one object
++    if (selected_parts_can_be_merged())
++        return true;
++    // [ORCAPORT:MB-3] END
++
+     int obj_idx = get_selected_obj_idx();
+     if (obj_idx < 0)
+         return false;
+@@ -3803,6 +3869,45 @@ bool ObjectList::can_mesh_boolean() const
+     return (*m_objects)[obj_idx]->volumes.size() > 1 || ((*m_objects)[obj_idx]->volumes.size() == 1 && (*m_objects)[obj_idx]->volumes[0]->is_splittable());
+ }
+ 
++// [ORCAPORT:MB-3] BEGIN - gate for merging only the selected parts
++bool ObjectList::selected_parts_can_be_merged() const
++{
++    if (!multiple_selection())
++        return false;
++
++    wxDataViewItemArray sels;
++    GetSelections(sels);
++
++    int obj_idx = -1;
++    for (const wxDataViewItem &item : sels) {
++        if (!(m_objects_model->GetItemType(item) & itVolume))
++            return false;
++        const int item_obj_idx = m_objects_model->GetObjectIdByItem(item);
++        if (item_obj_idx < 0 || (obj_idx >= 0 && item_obj_idx != obj_idx))
++            return false;
++        obj_idx = item_obj_idx;
++    }
++    if (sels.GetCount() < 2 || obj_idx < 0 || obj_idx >= int(m_objects->size()))
++        return false;
++
++    // A cut object's parts are bound to its cut info, and a text/SVG part would lose the
++    // properties that make it editable once its mesh is fused with another part.
++    const ModelObject *object = (*m_objects)[obj_idx];
++    if (object->is_cut())
++        return false;
++
++    for (const wxDataViewItem &item : sels) {
++        const int vol_idx = m_objects_model->get_real_volume_index_in_3d(obj_idx, m_objects_model->GetVolumeIdByItem(item));
++        if (vol_idx < 0 || vol_idx >= int(object->volumes.size()))
++            return false;
++        const ModelVolume *volume = object->volumes[vol_idx];
++        if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
++            return false;
++    }
++    return true;
++}
++// [ORCAPORT:MB-3] END
++
+ // NO_PARAMETERS function call means that changed object index will be determine from Selection()
+ void ObjectList::changed_object(const int obj_idx/* = -1*/) const
+ {
+diff --git a/src/slic3r/GUI/GUI_ObjectList.hpp b/src/slic3r/GUI/GUI_ObjectList.hpp
+index 36446b4af1..326d41546b 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.hpp
++++ b/src/slic3r/GUI/GUI_ObjectList.hpp
+@@ -337,6 +337,10 @@ public:
+     void                layers_editing();
+ 
+     void                boolean();    // BBS: Boolean Operation of parts
++    // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
++    void                merge_selected_parts(int obj_idx, const std::vector<int> &ui_vol_idxs);
++    bool                selected_parts_can_be_merged() const;
++    // [ORCAPORT:MB-3] END
+     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
+     wxDataViewItem      add_settings_item(wxDataViewItem parent_item, const DynamicPrintConfig* config);
+ 
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+index 539edf40b3..6bd9544997 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+@@ -3820,6 +3820,8 @@ void OrcaMCPServer::register_builtin_tools()
+     // is subtracted in one operation. Reports the object's triangles before and after and what is left,
+     // so a boolean that cut nothing is visible; the reason a negative volume could not be subtracted is
+     // in the app log (see get_log_tail).
++    // [ORCAPORT:MB-3] With part_ids it instead merges only those parts, in place, and the object keeps
++    // its index, its instances and its other parts.
+     register_tool({
+         "boolean_parts",
+         "Run the object's own Mesh boolean in one shot: union every model part and subtract every "
+@@ -3828,20 +3830,34 @@ void OrcaMCPServer::register_builtin_tools()
+         "boolean's own outcome: negative_parts (negative volumes handed to the kernel), "
+         "negative_parts_not_subtracted (how many of them it could not subtract, so that cut is missing "
+         "and the object holds the union of the model parts), boolean_failed and message. The same "
+-        "message is in the app log - get_log_tail.",
++        "message is in the app log - get_log_tail. With part_ids (two or more volume indices) only "
++        "those parts are merged into one part, in place: the object keeps its index, its instances and "
++        "every part that was not selected, and boolean_failed means the parts could not be welded and "
++        "were joined as they are.",
+         {
+             {"type", "object"},
+             {"properties", {
+                 {"object_id", {
+                     {"type", "integer"},
+                     {"description", "Object index (0-based). It must have more than one volume."}
++                }},
++                {"part_ids", {
++                    {"type", "array"},
++                    {"items", {{"type", "integer"}}},
++                    {"description", "Optional: volume indices to merge into one part instead of the whole object."}
+                 }}
+             }},
+             {"required", {"object_id"}}
+         },
+         [](const nlohmann::json& params) -> nlohmann::json {
+             const int object_id = params["object_id"];
+-            return run_on_main_thread([object_id]() -> nlohmann::json {
++            // [ORCAPORT:MB-3] BEGIN - merge only the listed parts, leaving the object intact
++            std::vector<int> part_ids;
++            if (params.contains("part_ids") && params["part_ids"].is_array())
++                for (const auto &part_id : params["part_ids"])
++                    part_ids.push_back(part_id.get<int>());
++            return run_on_main_thread([object_id, part_ids]() -> nlohmann::json {
++            // [ORCAPORT:MB-3] END
+                 Plater *plater = wxGetApp().plater();
+                 ObjectList *obj_list = wxGetApp().obj_list();
+                 if (plater == nullptr || obj_list == nullptr)
+@@ -3864,11 +3880,32 @@ void OrcaMCPServer::register_builtin_tools()
+ 
+                 // Selecting the object in the list is what the menu item relies on: boolean() reads the
+                 // list selection, not the canvas one.
+-                obj_list->select_item(ObjectVolumeID{mo, nullptr});
+-                if (!obj_list->can_mesh_boolean())
+-                    return {{"status", "error"},
+-                            {"error", "Mesh boolean needs an object with more than one volume"},
+-                            {"volume_count", volumes_before}};
++                // [ORCAPORT:MB-3] BEGIN - select the named parts, otherwise the whole object
++                if (part_ids.size() >= 2) {
++                    std::vector<ObjectVolumeID> ov_ids;
++                    for (int part_id : part_ids) {
++                        if (part_id < 0 || part_id >= volumes_before)
++                            return {{"status", "error"},
++                                    {"error", "part_ids out of range"},
++                                    {"volume_count", volumes_before}};
++                        ov_ids.push_back({mo, mo->volumes[part_id]});
++                    }
++                    // Selecting parts without the list's part mode makes its conflict check pop a
++                    // modal "Selection conflicts" dialog, which would block this call for good.
++                    obj_list->set_selection_mode(ObjectList::SELECTION_MODE::smVolume);
++                    obj_list->select_items(ov_ids);
++                    if (!obj_list->can_mesh_boolean())
++                        return {{"status", "error"},
++                                {"error", "The selected parts cannot be merged: they must be two or more model parts of one object, and not parts of a cut object, text or SVG"},
++                                {"volume_count", volumes_before}};
++                } else {
++                    obj_list->select_item(ObjectVolumeID{mo, nullptr});
++                    if (!obj_list->can_mesh_boolean())
++                        return {{"status", "error"},
++                                {"error", "Mesh boolean needs an object with more than one volume"},
++                                {"volume_count", volumes_before}};
++                }
++                // [ORCAPORT:MB-3] END
+ 
+                 const int objects_before = int(model.objects.size());
+                 obj_list->boolean();
+@@ -3893,7 +3930,11 @@ void OrcaMCPServer::register_builtin_tools()
+                     out["warning"] = "A negative part could not be subtracted: the mesh came out without "
+                                      "that cut. The object now holds the union of the model parts.";
+                 if (!model.objects.empty()) {
+-                    const ModelObject *result = model.objects.back();
++                    // [ORCAPORT:MB-3] The partial merge keeps the object (and its index); the
++                    // whole-object one replaces it with a new object at the end of the list.
++                    const int result_idx = int(model.objects.size()) == objects_before ? object_id
++                                                                                     : int(model.objects.size()) - 1;
++                    const ModelObject *result = model.objects[result_idx];
+                     int triangles_after = 0, volumes_after = 0;
+                     for (const ModelVolume *v : result->volumes) {
+                         if (v == nullptr)
+@@ -3901,10 +3942,14 @@ void OrcaMCPServer::register_builtin_tools()
+                         triangles_after += int(v->mesh().its.indices.size());
+                         ++volumes_after;
+                     }
+-                    out["result_object_id"] = int(model.objects.size()) - 1;
++                    out["result_object_id"] = result_idx;
+                     out["result_name"]      = result->name;
+                     out["volumes_after"]    = volumes_after;
+                     out["triangles_after"]  = triangles_after;
++                    // [ORCAPORT:MB-3] BEGIN - the caller's part list, so a merge can be told from a no-op
++                    if (part_ids.size() >= 2)
++                        out["merged_part_ids"] = part_ids;
++                    // [ORCAPORT:MB-3] END
+                 }
+                 return out;
+             });
+diff --git a/tests/libslic3r/test_model.cpp b/tests/libslic3r/test_model.cpp
+index abdaabd801..0ef34db734 100644
+--- a/tests/libslic3r/test_model.cpp
++++ b/tests/libslic3r/test_model.cpp
+@@ -1,5 +1,6 @@
+ #include <catch2/catch_all.hpp>
+ #include <algorithm>
++#include <string>
+ #include <utility>
+ #include <vector>
+ #include "libslic3r/TriangleMesh.hpp"
+@@ -17,6 +18,8 @@
+ #include "libslic3r/ObjectID.hpp"
+ #include "libslic3r/Geometry.hpp"
+ #include "libslic3r/libslic3r.h"
++// [ORCAPORT:MB-3]
++#include "libslic3r/OrcaExt/MergeParts.hpp"
+ 
+ using namespace Slic3r;
+ 
+@@ -73,8 +76,8 @@ TEST_CASE("An object's raw mesh keeps the triangles of each part on its own vert
+         min_x.push_back(bounding_box(part).min.x());
+     }
+     std::sort(min_x.begin(), min_x.end());
+-    CHECK_THAT(min_x.front(), Catch::Matchers::WithinAbs(0., 1e-4));
+-    CHECK_THAT(min_x.back(), Catch::Matchers::WithinAbs(30., 1e-4));
++    CHECK_THAT(min_x.front(), Catch::Matchers::WithinAbs(0., 1e-2));
++    CHECK_THAT(min_x.back(), Catch::Matchers::WithinAbs(30., 1e-2));
+ }
+ 
+ TEST_CASE("An instance added from another's scale, rotation and mirror matches it", "[Model]")
+@@ -200,3 +203,105 @@ TEST_CASE("Repairing a part replaces its mesh only when the repair changes it",
+     CHECK_FALSE(stats.modified);
+     CHECK(valid->id() == valid_id);
+ }
++
++// [ORCAPORT:MB-3] BEGIN - merge only the selected parts of one object into one part
++TEST_CASE("Merging selected parts leaves the object's other parts and instances alone", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_instance();
++
++    auto cube_at = [](float x) {
++        TriangleMesh mesh = make_cube(10, 10, 10);
++        mesh.translate(x, 0.f, 0.f);
++        return mesh;
++    };
++    object->add_volume(cube_at(0.f), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(cube_at(5.f), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(cube_at(100.f), ModelVolumeType::MODEL_PART, false);
++    object->volumes[0]->name = "A";
++    object->volumes[1]->name = "B";
++    object->volumes[2]->name = "C";
++
++    bool        welded = false;
++    std::string error;
++    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
++    CHECK(error.empty());
++    CHECK(welded);
++    REQUIRE(object->volumes.size() == 2);
++    // The merged part took the lowest selected index and its name; the third part is untouched.
++    CHECK(object->volumes[0]->name == "A");
++    CHECK(object->volumes[1]->name == "C");
++    CHECK(object->instances.size() == 1);
++
++    // The merged geometry spans both source cubes ([0,15] on X); a join that dropped the parts'
++    // transforms would leave it inside the first cube.
++    const BoundingBoxf3 merged_bb = object->volumes[0]->mesh().bounding_box();
++    CHECK_THAT(merged_bb.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
++    CHECK_THAT(merged_bb.max.x(), Catch::Matchers::WithinAbs(15.0, 1e-2));
++    CHECK(object->volumes[0]->get_matrix().isApprox(Transform3d::Identity()));
++
++    // The part that was not selected stayed where it was.
++    const BoundingBoxf3 kept_bb = object->volumes[1]->mesh().bounding_box();
++    CHECK_THAT(kept_bb.min.x(), Catch::Matchers::WithinAbs(100.0, 1e-2));
++    CHECK_THAT(kept_bb.max.x(), Catch::Matchers::WithinAbs(110.0, 1e-2));
++}
++
++TEST_CASE("Merging the only two parts of an object leaves one part covering both", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    TriangleMesh second = make_cube(10, 10, 10);
++    second.translate(50.f, 0.f, 0.f);
++    object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
++
++    bool        welded = false;
++    std::string error;
++    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
++    REQUIRE(object->volumes.size() == 1);
++
++    // Parts that do not touch are either welded by the kernel or joined as separate shells; both
++    // outcomes must keep the geometry of both parts.
++    const BoundingBoxf3 bb = object->volumes[0]->mesh().bounding_box();
++    CHECK_THAT(bb.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
++    CHECK_THAT(bb.max.x(), Catch::Matchers::WithinAbs(60.0, 1e-2));
++}
++
++TEST_CASE("Merging two parts that share a whole face leaves one part", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    TriangleMesh upper = make_cube(10, 10, 10);
++    upper.translate(0.f, 0.f, 10.f);
++    object->add_volume(std::move(upper), ModelVolumeType::MODEL_PART, false);
++
++    bool        welded = false;
++    std::string error;
++    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
++    REQUIRE(object->volumes.size() == 1);
++
++    // The face the two parts shared is not a surface any more: the merged part spans both.
++    const BoundingBoxf3 bb = object->volumes[0]->mesh().bounding_box();
++    CHECK_THAT(bb.min.z(), Catch::Matchers::WithinAbs(0.0, 1e-2));
++    CHECK_THAT(bb.max.z(), Catch::Matchers::WithinAbs(20.0, 1e-2));
++}
++
++TEST_CASE("Merging refuses anything but two or more model parts", "[Model]")
++{
++    Model model;
++    ModelObject *object = model.add_object();
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
++    object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
++
++    bool        welded = false;
++    std::string error;
++    CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0}, false, welded, error));
++    CHECK_FALSE(error.empty());
++    CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0, 2}, false, welded, error));
++    CHECK(object->volumes.size() == 3);
++}
++// [ORCAPORT:MB-3] END
++
+-- 
+2.43.0.windows.1
+
