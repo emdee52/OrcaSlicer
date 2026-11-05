@@ -1374,7 +1374,7 @@ wxMenu* MenuFactory::append_menu_item_transform(wxMenu* menu, bool multi_selecti
     return sub_menu;
 }
 
-wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean)
+wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts)
 {
     wxMenu* sub_menu = new wxMenu();
 
@@ -1388,6 +1388,16 @@ wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection,
             [](wxCommandEvent&) { plater()->split_volume(); }, "menu_split_parts", menu,
             []() { return plater()->can_split(false); }, m_parent);
     }
+
+    // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
+    if (merge_parts) {
+        if (sub_menu->GetMenuItemCount() > 0)
+            sub_menu->AppendSeparator();
+        append_menu_item(sub_menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
+            [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
+            []() { return obj_list()->can_mesh_boolean(); }, m_parent);
+    }
+    // [ORCAPORT:MB-3] END
 
     if(mesh_boolean){
         if(sub_menu->GetMenuItemCount() > 0)
@@ -2253,12 +2263,7 @@ wxMenu* MenuFactory::multi_selection_menu()
         //ORCA switch to sub menus if new items added
         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
         append_menu_item_align_distribute(menu);
-        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/);
-        // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
-        append_menu_item(menu, wxID_ANY, _L("Merge selected parts"), _L("Merge the selected parts into one part"),
-            [](wxCommandEvent&) { obj_list()->boolean(); }, "", menu,
-            []() { return obj_list()->can_mesh_boolean(); }, m_parent);
-        // [ORCAPORT:MB-3] END
+        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/);
         //append_menu_item_drop(menu);
         //append_menu_item_fix_through_cgal(menu);
         append_menu_items_convert_unit(transform_menu);
