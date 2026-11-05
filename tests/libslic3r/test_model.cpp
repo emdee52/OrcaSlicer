@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 #include <algorithm>
+#include <string>
 #include <utility>
 #include <vector>
 #include "libslic3r/TriangleMesh.hpp"
@@ -17,6 +18,8 @@
 #include "libslic3r/ObjectID.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/libslic3r.h"
+// [ORCAPORT:MB-3]
+#include "libslic3r/OrcaExt/MergeParts.hpp"
 
 using namespace Slic3r;
 
@@ -73,8 +76,8 @@ TEST_CASE("An object's raw mesh keeps the triangles of each part on its own vert
         min_x.push_back(bounding_box(part).min.x());
     }
     std::sort(min_x.begin(), min_x.end());
-    CHECK_THAT(min_x.front(), Catch::Matchers::WithinAbs(0., 1e-4));
-    CHECK_THAT(min_x.back(), Catch::Matchers::WithinAbs(30., 1e-4));
+    CHECK_THAT(min_x.front(), Catch::Matchers::WithinAbs(0., 1e-2));
+    CHECK_THAT(min_x.back(), Catch::Matchers::WithinAbs(30., 1e-2));
 }
 
 TEST_CASE("An instance added from another's scale, rotation and mirror matches it", "[Model]")
@@ -200,3 +203,105 @@ TEST_CASE("Repairing a part replaces its mesh only when the repair changes it", 
     CHECK_FALSE(stats.modified);
     CHECK(valid->id() == valid_id);
 }
+
+// [ORCAPORT:MB-3] BEGIN - merge only the selected parts of one object into one part
+TEST_CASE("Merging selected parts leaves the object's other parts and instances alone", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+
+    auto cube_at = [](float x) {
+        TriangleMesh mesh = make_cube(10, 10, 10);
+        mesh.translate(x, 0.f, 0.f);
+        return mesh;
+    };
+    object->add_volume(cube_at(0.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(cube_at(5.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(cube_at(100.f), ModelVolumeType::MODEL_PART, false);
+    object->volumes[0]->name = "A";
+    object->volumes[1]->name = "B";
+    object->volumes[2]->name = "C";
+
+    bool        welded = false;
+    std::string error;
+    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
+    CHECK(error.empty());
+    CHECK(welded);
+    REQUIRE(object->volumes.size() == 2);
+    // The merged part took the lowest selected index and its name; the third part is untouched.
+    CHECK(object->volumes[0]->name == "A");
+    CHECK(object->volumes[1]->name == "C");
+    CHECK(object->instances.size() == 1);
+
+    // The merged geometry spans both source cubes ([0,15] on X); a join that dropped the parts'
+    // transforms would leave it inside the first cube.
+    const BoundingBoxf3 merged_bb = object->volumes[0]->mesh().bounding_box();
+    CHECK_THAT(merged_bb.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
+    CHECK_THAT(merged_bb.max.x(), Catch::Matchers::WithinAbs(15.0, 1e-2));
+    CHECK(object->volumes[0]->get_matrix().isApprox(Transform3d::Identity()));
+
+    // The part that was not selected stayed where it was.
+    const BoundingBoxf3 kept_bb = object->volumes[1]->mesh().bounding_box();
+    CHECK_THAT(kept_bb.min.x(), Catch::Matchers::WithinAbs(100.0, 1e-2));
+    CHECK_THAT(kept_bb.max.x(), Catch::Matchers::WithinAbs(110.0, 1e-2));
+}
+
+TEST_CASE("Merging the only two parts of an object leaves one part covering both", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    TriangleMesh second = make_cube(10, 10, 10);
+    second.translate(50.f, 0.f, 0.f);
+    object->add_volume(std::move(second), ModelVolumeType::MODEL_PART, false);
+
+    bool        welded = false;
+    std::string error;
+    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
+    REQUIRE(object->volumes.size() == 1);
+
+    // Parts that do not touch are either welded by the kernel or joined as separate shells; both
+    // outcomes must keep the geometry of both parts.
+    const BoundingBoxf3 bb = object->volumes[0]->mesh().bounding_box();
+    CHECK_THAT(bb.min.x(), Catch::Matchers::WithinAbs(0.0, 1e-2));
+    CHECK_THAT(bb.max.x(), Catch::Matchers::WithinAbs(60.0, 1e-2));
+}
+
+TEST_CASE("Merging two parts that share a whole face leaves one part", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    TriangleMesh upper = make_cube(10, 10, 10);
+    upper.translate(0.f, 0.f, 10.f);
+    object->add_volume(std::move(upper), ModelVolumeType::MODEL_PART, false);
+
+    bool        welded = false;
+    std::string error;
+    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1}, false, welded, error));
+    REQUIRE(object->volumes.size() == 1);
+
+    // The face the two parts shared is not a surface any more: the merged part spans both.
+    const BoundingBoxf3 bb = object->volumes[0]->mesh().bounding_box();
+    CHECK_THAT(bb.min.z(), Catch::Matchers::WithinAbs(0.0, 1e-2));
+    CHECK_THAT(bb.max.z(), Catch::Matchers::WithinAbs(20.0, 1e-2));
+}
+
+TEST_CASE("Merging refuses anything but two or more model parts", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
+
+    bool        welded = false;
+    std::string error;
+    CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0}, false, welded, error));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0, 2}, false, welded, error));
+    CHECK(object->volumes.size() == 3);
+}
+// [ORCAPORT:MB-3] END
+

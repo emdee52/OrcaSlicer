@@ -24,6 +24,13 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
+- **Branch `port/MB-3` is ready for the user's test, not merged:** *Merge selected parts*. With two or
+  more part rows selected, the multi-selection context menu now offers "Merge selected parts": those
+  parts are unioned (mcut, in object space) and replaced **in place**, so the object, its instances,
+  its settings and the unselected parts stay; a refusal joins them unwelded and says so rather than
+  losing them. New core `OrcaExt::merge_parts_into_one`, marker `MB-3`, notes `notes/MB-3.md`, patch
+  `88_MB-3.patch`. libslic3r suite 1728/1728, MCP `boolean_parts(part_ids)` checked on a 3-part cut
+  object (3 -> 2 parts, object id kept, slices clean). Merge it only after the user confirms.
 - **Merged 2026-10-31, user-tested:** `port/SU-8-object-transition` (patch 86) and
   `port/SU-10-suggestion` (patch 87). The object-on-interface joint (`transition_object_interface_*`)
   never fired on tree supports because `SupportCommon.cpp` skipped every contact whose
