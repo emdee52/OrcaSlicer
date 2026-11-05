@@ -21,6 +21,9 @@
 // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
 #include "libslic3r/OrcaExt/MergeParts.hpp"
 // [ORCAPORT:MB-3] END
+// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+#include "libslic3r/OrcaExt/SplitParts.hpp"
+// [ORCAPORT:MB-4] END
 #include "GLCanvas3D.hpp"
 #include "Selection.hpp"
 #include "PartPlate.hpp"
@@ -3872,13 +3875,23 @@ bool ObjectList::can_mesh_boolean() const
 // [ORCAPORT:MB-3] BEGIN - gate for merging only the selected parts
 bool ObjectList::selected_parts_can_be_merged() const
 {
+    std::vector<size_t> vol_idxs;
+    int                 obj_idx = -1;
+    return selected_parts_of_one_object(vol_idxs, obj_idx) && vol_idxs.size() >= 2;
+}
+// [ORCAPORT:MB-3] END
+
+// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const
+{
+    vol_idxs.clear();
+    obj_idx = -1;
     if (!multiple_selection())
         return false;
 
     wxDataViewItemArray sels;
     GetSelections(sels);
 
-    int obj_idx = -1;
     for (const wxDataViewItem &item : sels) {
         if (!(m_objects_model->GetItemType(item) & itVolume))
             return false;
@@ -3887,11 +3900,11 @@ bool ObjectList::selected_parts_can_be_merged() const
             return false;
         obj_idx = item_obj_idx;
     }
-    if (sels.GetCount() < 2 || obj_idx < 0 || obj_idx >= int(m_objects->size()))
+    if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
         return false;
 
     // A cut object's parts are bound to its cut info, and a text/SVG part would lose the
-    // properties that make it editable once its mesh is fused with another part.
+    // properties that make it editable once it is moved to another object.
     const ModelObject *object = (*m_objects)[obj_idx];
     if (object->is_cut())
         return false;
@@ -3903,10 +3916,61 @@ bool ObjectList::selected_parts_can_be_merged() const
         const ModelVolume *volume = object->volumes[vol_idx];
         if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
             return false;
+        vol_idxs.emplace_back(size_t(vol_idx));
     }
-    return true;
+    return !vol_idxs.empty();
 }
-// [ORCAPORT:MB-3] END
+
+bool ObjectList::can_split_selected_parts() const
+{
+    std::vector<size_t> vol_idxs;
+    int                 obj_idx = -1;
+    if (!selected_parts_of_one_object(vol_idxs, obj_idx))
+        return false;
+
+    // Every model part selected leaves the object without a solid part; Split > To Objects is
+    // the action for that.
+    const ModelObject *object           = (*m_objects)[obj_idx];
+    size_t             model_part_count = 0;
+    for (const ModelVolume *volume : object->volumes)
+        if (volume->is_model_part())
+            ++model_part_count;
+    return vol_idxs.size() < model_part_count;
+}
+
+void ObjectList::split_selected_parts()
+{
+    std::vector<size_t> vol_idxs;
+    int                 obj_idx = -1;
+    if (!selected_parts_of_one_object(vol_idxs, obj_idx))
+        return;
+    ModelObject *object = (*m_objects)[obj_idx];
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Split selected parts"));
+
+    std::vector<size_t> new_idxs;
+    std::string         error;
+    if (!Slic3r::OrcaExt::split_parts_to_objects(*object, vol_idxs, new_idxs, error)) {
+        wxGetApp().notification_manager()->push_plater_error_notification(_u8L("The selected parts could not be split into objects."));
+        return;
+    }
+
+    // The source object lost volumes, and the new objects were appended to the model.
+    add_volumes_to_object_in_list(obj_idx);
+    update_info_items(obj_idx);
+    changed_object(obj_idx);
+    notify_instance_updated(obj_idx);
+
+    add_objects_to_list(new_idxs);
+
+    wxDataViewItemArray items;
+    for (size_t idx : new_idxs)
+        items.Add(m_objects_model->GetItemById(int(idx)));
+    if (!items.IsEmpty())
+        select_items(items);
+    update_selections_on_canvas();
+}
+// [ORCAPORT:MB-4] END
 
 // NO_PARAMETERS function call means that changed object index will be determine from Selection()
 void ObjectList::changed_object(const int obj_idx/* = -1*/) const

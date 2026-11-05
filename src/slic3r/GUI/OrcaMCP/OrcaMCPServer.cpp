@@ -3956,6 +3956,115 @@ void OrcaMCPServer::register_builtin_tools()
         }
     });
 
+    // split_parts - the multi-part counterpart of "Split > To Objects". [ORCAPORT:MB-4]
+    // Moves only the named model parts into their own objects, at their current placement, and
+    // leaves the source object (and every part not named) in place. The single-part case is the
+    // same action with one id: "detach this part into its own object".
+    register_tool({
+        "split_parts",
+        "Move the given model parts of one object into their own objects, each at its current "
+        "position, and leave the source object with the parts that were not named - the "
+        "multi-part counterpart of Split > To Objects. The object must keep at least one model "
+        "part, so naming all of them is refused. Reports objects/volumes/triangles before and "
+        "after, the new object ids, and the source part count.",
+        {
+            {"type", "object"},
+            {"properties", {
+                {"object_id", {
+                    {"type", "integer"},
+                    {"description", "Object index (0-based)."}
+                }},
+                {"part_ids", {
+                    {"type", "array"},
+                    {"items", {{"type", "integer"}}},
+                    {"description", "Volume indices to move into their own objects (one or more)."}
+                }}
+            }},
+            {"required", {"object_id", "part_ids"}}
+        },
+        [](const nlohmann::json& params) -> nlohmann::json {
+            const int        object_id = params["object_id"];
+            std::vector<int> part_ids;
+            if (params.contains("part_ids") && params["part_ids"].is_array())
+                for (const auto &part_id : params["part_ids"])
+                    part_ids.push_back(part_id.get<int>());
+            return run_on_main_thread([object_id, part_ids]() -> nlohmann::json {
+                Plater     *plater   = wxGetApp().plater();
+                ObjectList *obj_list = wxGetApp().obj_list();
+                if (plater == nullptr || obj_list == nullptr)
+                    return {{"status", "error"}, {"error", "No plater or object list"}};
+                Model &model = plater->model();
+                if (object_id < 0 || object_id >= int(model.objects.size()))
+                    return {{"status", "error"}, {"error", "Invalid object_id"}};
+
+                ModelObject *mo = model.objects[object_id];
+                const int    volumes_before     = int(mo->volumes.size());
+                int          model_parts_before = 0;
+                int          triangles_before   = 0;
+                for (const ModelVolume *v : mo->volumes) {
+                    if (v == nullptr)
+                        continue;
+                    triangles_before += int(v->mesh().its.indices.size());
+                    if (v->is_model_part())
+                        ++model_parts_before;
+                }
+
+                if (part_ids.empty())
+                    return {{"status", "error"}, {"error", "part_ids is empty"}, {"volume_count", volumes_before}};
+                std::vector<ObjectVolumeID> ov_ids;
+                for (int part_id : part_ids) {
+                    if (part_id < 0 || part_id >= volumes_before)
+                        return {{"status", "error"}, {"error", "part_ids out of range"}, {"volume_count", volumes_before}};
+                    ov_ids.push_back({mo, mo->volumes[part_id]});
+                }
+
+                // As in boolean_parts: selecting part rows in instance mode pops a modal
+                // "Selection conflicts" dialog that would block this call for good.
+                obj_list->set_selection_mode(ObjectList::SELECTION_MODE::smVolume);
+                obj_list->select_items(ov_ids);
+                if (!obj_list->can_split_selected_parts())
+                    return {{"status", "error"},
+                            {"error", "The selected parts cannot be split off: they must be model parts of one object, "
+                                      "not parts of a cut object, text or SVG, and at least one model part must remain"},
+                            {"volume_count", volumes_before}};
+
+                const int objects_before = int(model.objects.size());
+                obj_list->split_selected_parts();
+                plater->update();
+
+                const int objects_after = int(model.objects.size());
+                nlohmann::json out = {{"status", "ok"},
+                                      {"objects_before", objects_before},
+                                      {"objects_after", objects_after},
+                                      {"source_object_id", object_id},
+                                      {"volumes_before", volumes_before},
+                                      {"model_parts_before", model_parts_before},
+                                      {"split_part_ids", part_ids}};
+                if (object_id < int(model.objects.size())) {
+                    const ModelObject *source = model.objects[object_id];
+                    int volumes_after = 0, model_parts_after = 0, triangles_after = 0;
+                    for (const ModelVolume *v : source->volumes) {
+                        if (v == nullptr)
+                            continue;
+                        triangles_after += int(v->mesh().its.indices.size());
+                        ++volumes_after;
+                        if (v->is_model_part())
+                            ++model_parts_after;
+                    }
+                    out["volumes_after"]      = volumes_after;
+                    out["model_parts_after"]  = model_parts_after;
+                    out["triangles_after"]    = triangles_after;
+                    out["source_name"]        = source->name;
+                }
+                std::vector<int> new_ids;
+                for (int idx = objects_before; idx < objects_after; ++idx)
+                    new_ids.push_back(idx);
+                out["new_object_ids"] = new_ids;
+                return out;
+            });
+        }
+    });
+
     register_tool({
         "flatten_object",
         "Automatically orient an object to lay flat on its best face for printing",
