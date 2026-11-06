@@ -39,6 +39,19 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   libslic3r suite 1733/1733, MCP `split_parts` checked on a 3-part cut object (1 -> 3 objects, slice
   idle; the extracted parts still share the source footprint, so the plate validator warns "too close to
   others" - expected). Merge MB-3 first, then MB-4, once the user confirms both.
+- **MB-3 and MB-4 are merged into `port/integration`** (2026-11-05, `c3eb01e7c2` and `860f757810`), on the
+  user's instruction after testing.
+- **Branch `port/MB-5-6` (batch, stacked on integration) awaits the user's test:**
+  - *MB-5 — Split selected parts to an object*: moves every selected volume (parts, negatives, modifiers,
+    support/Precise Seam volumes) into ONE new object `<source>_parts`, in place; the MB-4 per-part action
+    stays and was renamed "Split selected parts to objects". New `ModelObject::move_volume_to` re-parents
+    volumes instead of copying them. Notes `notes/MB-5.md`, patch `90_MB-5-6.patch`.
+  - *MB-6 — Merge with difference*: the MB-3 merge now also accepts negative volumes, unions the positives,
+    subtracts the negatives and consumes every selected negative; a kernel refusal with negatives selected
+    aborts instead of losing the cut. Notes `notes/MB-6.md`.
+  - libslic3r suite 1736/1736; MCP: `split_parts(one_object=true)` (1 -> 2 objects, source keeps 1 part) and
+    `boolean_parts` with a negative (3 -> 2 volumes, 36 -> 92 triangles on the cut part, slice idle). Both
+    under one patch because the files overlap; both manifest rows point at it.
 - **Merged 2026-10-31, user-tested:** `port/SU-8-object-transition` (patch 86) and
   `port/SU-10-suggestion` (patch 87). The object-on-interface joint (`transition_object_interface_*`)
   never fired on tree supports because `SupportCommon.cpp` skipped every contact whose
