@@ -106,5 +106,69 @@ bool split_parts_to_objects(ModelObject &object, const std::vector<size_t> &vol_
     return true;
 }
 
+bool split_volumes_to_one_object(ModelObject &object, const std::vector<size_t> &vol_idxs,
+                                 size_t &new_object_idx, std::string &error)
+{
+    error.clear();
+
+    Model *model = object.get_model();
+    if (model == nullptr) {
+        error = "the object does not belong to a model";
+        return false;
+    }
+    if (vol_idxs.empty()) {
+        error = "at least one part is needed";
+        return false;
+    }
+
+    std::vector<size_t> sorted = vol_idxs;
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    for (size_t vol_idx : sorted) {
+        if (vol_idx >= object.volumes.size()) {
+            error = "part index out of range";
+            return false;
+        }
+    }
+    // An object needs at least one volume to stay in the scene.
+    if (sorted.size() >= object.volumes.size()) {
+        error = "the object would be left without a volume";
+        return false;
+    }
+
+    ModelObject *new_object = model->add_object();
+    new_object->name = object.name + "_parts";
+    new_object->config.assign_config(object.config);
+
+    // Same instances, same volume transforms: every moved volume keeps its world placement.
+    for (const ModelInstance *instance : object.instances)
+        new_object->add_instance(*instance);
+
+    // The volumes are re-parented rather than copied: their type, name, settings, painting and
+    // text metadata travel untouched, and no ID is duplicated.
+    size_t removed = 0;
+    for (size_t vol_idx : sorted)
+        object.move_volume_to(*new_object, vol_idx - removed++);
+
+    // The source keeps its own volumes; when only one is left it must carry the transform on its
+    // instances instead of itself, the invariant a one-volume object needs. Same as
+    // ModelObject::delete_volume() does after removing parts one by one.
+    if (object.volumes.size() == 1) {
+        ModelVolume *last = object.volumes.front();
+        const Transform3d last_transform = last->get_transformation().get_matrix();
+        for (ModelInstance *instance : object.instances)
+            instance->set_transformation(Geometry::Transformation(instance->get_transformation().get_matrix() * last_transform));
+        last->set_transformation(Geometry::Transformation());
+        last->set_new_unique_id();
+    }
+
+    new_object_idx = model->objects.size() - 1;
+
+    // The source object is no longer the file it was loaded from.
+    object.input_file.clear();
+    return true;
+}
+
 } // namespace OrcaExt
 } // namespace Slic3r

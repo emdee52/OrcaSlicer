@@ -290,18 +290,21 @@ TEST_CASE("Merging two parts that share a whole face leaves one part", "[Model]"
     CHECK_THAT(bb.max.z(), Catch::Matchers::WithinAbs(20.0, 1e-2));
 }
 
-TEST_CASE("Merging refuses anything but two or more model parts", "[Model]")
+TEST_CASE("Merging refuses a selection that has nothing to fuse", "[Model]")
 {
     Model model;
     ModelObject *object = model.add_object();
     object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
-    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
     object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
+    object->add_volume(make_cube(4, 4, 4), ModelVolumeType::PARAMETER_MODIFIER, false);
 
     bool        welded = false;
     std::string error;
+    // One positive on its own, and negatives without a positive to cut.
     CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0}, false, welded, error));
     CHECK_FALSE(error.empty());
+    CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {1}, false, welded, error));
+    // A modifier has no CSG meaning, so a selection that contains one is refused whole.
     CHECK_FALSE(OrcaExt::merge_parts_into_one(*object, {0, 2}, false, welded, error));
     CHECK(object->volumes.size() == 3);
 }
@@ -447,4 +450,111 @@ TEST_CASE("Splitting refuses a selection that would leave no model part", "[Mode
     CHECK(object->volumes.size() == 3);
 }
 // [ORCAPORT:MB-4] END
+
+// [ORCAPORT:MB-6] BEGIN - a merge that also subtracts the selected negative volumes
+TEST_CASE("Merging a part with inside and outside negatives cuts them out and consumes them", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+    object->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    TriangleMesh inside = make_cube(4, 4, 4); // centred on the part
+    object->add_volume(std::move(inside), ModelVolumeType::NEGATIVE_VOLUME, false);
+    TriangleMesh outside = make_cube(4, 4, 4);
+    outside.translate(100.f, 100.f, 100.f); // nowhere near the part
+    object->add_volume(std::move(outside), ModelVolumeType::NEGATIVE_VOLUME, false);
+
+    bool        welded = false;
+    std::string error;
+    REQUIRE(OrcaExt::merge_parts_into_one(*object, {0, 1, 2}, false, welded, error));
+    CHECK(error.empty());
+    CHECK(welded);
+    // Every selected negative is consumed, inside or not; the part keeps the cut of the inside one.
+    REQUIRE(object->volumes.size() == 1);
+    CHECK(object->volumes.front()->is_model_part());
+    CHECK_THAT(its_volume(object->volumes.front()->mesh().its), Catch::Matchers::WithinRel(7936., 1e-3));
+}
+// [ORCAPORT:MB-6] END
+
+// [ORCAPORT:MB-5] BEGIN - move selected volumes of one object into one new object
+TEST_CASE("Moving selected volumes into one object keeps their type and placement", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_instance();
+
+    auto box_at = [](float x, float size) {
+        TriangleMesh mesh = make_cube(size, size, size);
+        mesh.translate(x, 0.f, 0.f);
+        return mesh;
+    };
+    object->add_volume(box_at(0.f, 10.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(box_at(30.f, 10.f), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(box_at(10.f, 4.f), ModelVolumeType::NEGATIVE_VOLUME, false);
+    object->add_volume(box_at(20.f, 6.f), ModelVolumeType::PARAMETER_MODIFIER, false);
+    object->volumes[0]->name = "moved_part";
+    object->volumes[2]->name = "moved_cut";
+    object->volumes[3]->name = "moved_modifier";
+    object->volumes[0]->config.set("extruder", 2);
+
+    const BoundingBoxf3 part_before = world_bounding_box(*object, *object->volumes[0], 0);
+    const BoundingBoxf3 cut_before  = world_bounding_box(*object, *object->volumes[2], 0);
+    const BoundingBoxf3 mod_before  = world_bounding_box(*object, *object->volumes[3], 0);
+    const ObjectID      moved_id    = object->volumes[0]->id();
+
+    size_t      new_idx = 0;
+    std::string error;
+    REQUIRE(OrcaExt::split_volumes_to_one_object(*object, {0, 2, 3}, new_idx, error));
+    CHECK(error.empty());
+    REQUIRE(model.objects.size() == 2);
+    REQUIRE(object->volumes.size() == 1);
+
+    const ModelObject *moved = model.objects[new_idx];
+    CHECK(moved != object);
+    CHECK(moved->name == object->name + "_parts");
+    REQUIRE(moved->volumes.size() == 3);
+    CHECK(moved->instances.size() == 1);
+
+    // Types, names and per-volume settings travel with the volumes.
+    CHECK(moved->volumes[0]->type() == ModelVolumeType::MODEL_PART);
+    CHECK(moved->volumes[1]->type() == ModelVolumeType::NEGATIVE_VOLUME);
+    CHECK(moved->volumes[2]->type() == ModelVolumeType::PARAMETER_MODIFIER);
+    CHECK(moved->volumes[0]->name == "moved_part");
+    CHECK(moved->volumes[1]->name == "moved_cut");
+    CHECK(moved->volumes[2]->name == "moved_modifier");
+    CHECK(moved->volumes[0]->config.extruder() == 2);
+    // The volumes themselves moved, so their identity is preserved (nothing was copied).
+    CHECK(moved->volumes[0]->id() == moved_id);
+
+    // Nothing moved in world space.
+    const BoundingBoxf3 part_after = world_bounding_box(*moved, *moved->volumes[0], 0);
+    const BoundingBoxf3 cut_after  = world_bounding_box(*moved, *moved->volumes[1], 0);
+    const BoundingBoxf3 mod_after  = world_bounding_box(*moved, *moved->volumes[2], 0);
+    CHECK_THAT(part_after.min.x(), Catch::Matchers::WithinAbs(part_before.min.x(), 1e-2));
+    CHECK_THAT(part_after.max.x(), Catch::Matchers::WithinAbs(part_before.max.x(), 1e-2));
+    CHECK_THAT(cut_after.min.x(), Catch::Matchers::WithinAbs(cut_before.min.x(), 1e-2));
+    CHECK_THAT(mod_after.min.x(), Catch::Matchers::WithinAbs(mod_before.min.x(), 1e-2));
+    CHECK_THAT(mod_after.max.x(), Catch::Matchers::WithinAbs(mod_before.max.x(), 1e-2));
+
+    // The part left behind stayed where it was.
+    const BoundingBoxf3 kept = world_bounding_box(*object, *object->volumes.front(), 0);
+    CHECK_THAT(kept.min.x(), Catch::Matchers::WithinAbs(30.0, 1e-2));
+    CHECK_THAT(kept.max.x(), Catch::Matchers::WithinAbs(40.0, 1e-2));
+}
+
+TEST_CASE("Moving every volume of an object is refused", "[Model]")
+{
+    Model model;
+    ModelObject *object = model.add_object();
+    object->add_volume(make_cube(10, 10, 10), ModelVolumeType::MODEL_PART, false);
+    object->add_volume(make_cube(5, 5, 5), ModelVolumeType::NEGATIVE_VOLUME, false);
+
+    size_t      new_idx = 0;
+    std::string error;
+    CHECK_FALSE(OrcaExt::split_volumes_to_one_object(*object, {0, 1}, new_idx, error));
+    CHECK_FALSE(error.empty());
+    CHECK(model.objects.size() == 1);
+    CHECK(object->volumes.size() == 2);
+}
+// [ORCAPORT:MB-5] END
 

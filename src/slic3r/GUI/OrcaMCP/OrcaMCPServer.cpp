@@ -3960,13 +3960,16 @@ void OrcaMCPServer::register_builtin_tools()
     // Moves only the named model parts into their own objects, at their current placement, and
     // leaves the source object (and every part not named) in place. The single-part case is the
     // same action with one id: "detach this part into its own object".
+    // [ORCAPORT:MB-5] one_object=true moves them into ONE new object instead (any volume type).
     register_tool({
         "split_parts",
-        "Move the given model parts of one object into their own objects, each at its current "
+        "Move the given parts of one object into their own objects, each at its current "
         "position, and leave the source object with the parts that were not named - the "
-        "multi-part counterpart of Split > To Objects. The object must keep at least one model "
-        "part, so naming all of them is refused. Reports objects/volumes/triangles before and "
-        "after, the new object ids, and the source part count.",
+        "multi-part counterpart of Split > To Objects. The object must keep at least one volume, "
+        "so naming all of them is refused. With one_object the selected parts (any volume type, "
+        "negatives and modifiers included) move into a single new object instead of one object "
+        "each. Reports objects/volumes/triangles before and after, the new object ids, and the "
+        "source part count.",
         {
             {"type", "object"},
             {"properties", {
@@ -3977,18 +3980,23 @@ void OrcaMCPServer::register_builtin_tools()
                 {"part_ids", {
                     {"type", "array"},
                     {"items", {{"type", "integer"}}},
-                    {"description", "Volume indices to move into their own objects (one or more)."}
+                    {"description", "Volume indices to move out (one or more)."}
+                }},
+                {"one_object", {
+                    {"type", "boolean"},
+                    {"description", "true: move the selected volumes into ONE new object (any volume type); false (default): one object per part."}
                 }}
             }},
             {"required", {"object_id", "part_ids"}}
         },
         [](const nlohmann::json& params) -> nlohmann::json {
             const int        object_id = params["object_id"];
+            const bool       one_object = params.value("one_object", false);
             std::vector<int> part_ids;
             if (params.contains("part_ids") && params["part_ids"].is_array())
                 for (const auto &part_id : params["part_ids"])
                     part_ids.push_back(part_id.get<int>());
-            return run_on_main_thread([object_id, part_ids]() -> nlohmann::json {
+            return run_on_main_thread([object_id, part_ids, one_object]() -> nlohmann::json {
                 Plater     *plater   = wxGetApp().plater();
                 ObjectList *obj_list = wxGetApp().obj_list();
                 if (plater == nullptr || obj_list == nullptr)
@@ -4022,14 +4030,24 @@ void OrcaMCPServer::register_builtin_tools()
                 // "Selection conflicts" dialog that would block this call for good.
                 obj_list->set_selection_mode(ObjectList::SELECTION_MODE::smVolume);
                 obj_list->select_items(ov_ids);
-                if (!obj_list->can_split_selected_parts())
+                if (one_object) {
+                    if (!obj_list->can_split_selected_volumes_to_object())
+                        return {{"status", "error"},
+                                {"error", "The selected parts cannot be moved into one object: they must be volumes of one object, "
+                                          "not part of a cut object, and at least one volume must remain"},
+                                {"volume_count", volumes_before}};
+                } else if (!obj_list->can_split_selected_parts()) {
                     return {{"status", "error"},
                             {"error", "The selected parts cannot be split off: they must be model parts of one object, "
                                       "not parts of a cut object, text or SVG, and at least one model part must remain"},
                             {"volume_count", volumes_before}};
+                }
 
                 const int objects_before = int(model.objects.size());
-                obj_list->split_selected_parts();
+                if (one_object)
+                    obj_list->split_selected_volumes_to_object();
+                else
+                    obj_list->split_selected_parts();
                 plater->update();
 
                 const int objects_after = int(model.objects.size());
@@ -4039,7 +4057,8 @@ void OrcaMCPServer::register_builtin_tools()
                                       {"source_object_id", object_id},
                                       {"volumes_before", volumes_before},
                                       {"model_parts_before", model_parts_before},
-                                      {"split_part_ids", part_ids}};
+                                      {"split_part_ids", part_ids},
+                                      {"one_object", one_object}};
                 if (object_id < int(model.objects.size())) {
                     const ModelObject *source = model.objects[object_id];
                     int volumes_after = 0, model_parts_after = 0, triangles_after = 0;

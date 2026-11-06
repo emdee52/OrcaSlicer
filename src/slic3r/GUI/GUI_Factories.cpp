@@ -1397,11 +1397,19 @@ wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection,
 
     // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
     if (split_parts) {
-        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts"), _L("Move the selected parts into their own objects"),
+        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts to objects"), _L("Move the selected parts into their own objects"),
             [](wxCommandEvent&) { obj_list()->split_selected_parts(); }, "", menu,
             []() { return obj_list()->can_split_selected_parts(); }, m_parent);
     }
     // [ORCAPORT:MB-4] END
+
+    // [ORCAPORT:MB-5] BEGIN - move the selected volumes into one new object
+    if (split_parts) {
+        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts to an object"), _L("Move the selected parts into one new object"),
+            [](wxCommandEvent&) { obj_list()->split_selected_volumes_to_object(); }, "", menu,
+            []() { return obj_list()->can_split_selected_volumes_to_object(); }, m_parent);
+    }
+    // [ORCAPORT:MB-5] END
 
     // [ORCAPORT:MB-3] BEGIN - merge the selected parts of one object into one part
     if (merge_parts) {
