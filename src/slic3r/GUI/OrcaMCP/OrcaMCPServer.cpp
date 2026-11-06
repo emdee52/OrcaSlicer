@@ -4038,8 +4038,9 @@ void OrcaMCPServer::register_builtin_tools()
                                 {"volume_count", volumes_before}};
                 } else if (!obj_list->can_split_selected_parts()) {
                     return {{"status", "error"},
-                            {"error", "The selected parts cannot be split off: they must be model parts of one object, "
-                                      "not parts of a cut object, text or SVG, and at least one model part must remain"},
+                            {"error", "The selected parts cannot be split off one by one: they must be two or more model parts of one object, "
+                                      "not parts of a cut object, text or SVG, and at least one model part must remain. "
+                                      "For a single part use one_object=true."},
                             {"volume_count", volumes_before}};
                 }
 

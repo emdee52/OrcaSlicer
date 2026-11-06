@@ -3962,6 +3962,9 @@ bool ObjectList::can_split_selected_parts() const
     int                 obj_idx = -1;
     if (!selected_parts_of_one_object(vol_idxs, obj_idx))
         return false;
+    // One object per part needs at least two parts; a single part goes through "split to an object".
+    if (vol_idxs.size() < 2)
+        return false;
 
     // Every model part selected leaves the object without a solid part; Split > To Objects is
     // the action for that.
