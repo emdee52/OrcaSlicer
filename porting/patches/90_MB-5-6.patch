@@ -839,3 +839,127 @@ index 97a4d8607b..d02d03e9c5 100644
 -- 
 2.43.0.windows.1
 
+From 59cb945fd14c9dafd67a9fdce400f5f59d3de547 Mon Sep 17 00:00:00 2001
+From: emdee52 <emdee7101@gmail.com>
+Date: Thu, 5 Nov 2026 20:34:52 -0700
+Subject: [PATCH] port(MB-5): one split action per selection; the per-part one
+ needs two parts
+
+"Split selected parts to objects" and "Split selected parts to an object" read
+too alike at a glance, and a single selected part has only one sensible action.
+
+- MB-4's item is "Split selected parts" again and requires two or more selected
+  parts, so it appears where the multi-selection menu does and nowhere else.
+- MB-5's item keeps its name and is the only split action on a single selected
+  part; the part menu shows it alone.
+- append_menu_item_modify grew a split_to_object flag so the two items can be
+  placed independently.
+- MCP split_parts without one_object now refuses a single id with a message that
+  points at one_object=true.
+
+Checked over MCP on a 3-part cut object: split_parts(0,[2]) refused with that
+message, split_parts(0,[2],one_object=true) made 1 object + 1 new object, and
+split_parts(0,[1,2]) still made one object per part.
+---
+ src/slic3r/GUI/GUI_Factories.cpp         | 12 ++++++------
+ src/slic3r/GUI/GUI_Factories.hpp         |  2 +-
+ src/slic3r/GUI/GUI_ObjectList.cpp        |  3 +++
+ src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp |  5 +++--
+ 4 files changed, 13 insertions(+), 9 deletions(-)
+
+diff --git a/src/slic3r/GUI/GUI_Factories.cpp b/src/slic3r/GUI/GUI_Factories.cpp
+index 03a1fcfc1f..9f21ecebdf 100644
+--- a/src/slic3r/GUI/GUI_Factories.cpp
++++ b/src/slic3r/GUI/GUI_Factories.cpp
+@@ -1374,7 +1374,7 @@ wxMenu* MenuFactory::append_menu_item_transform(wxMenu* menu, bool multi_selecti
+     return sub_menu;
+ }
+ 
+-wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts, bool split_parts)
++wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts, bool split_parts, bool split_to_object)
+ {
+     wxMenu* sub_menu = new wxMenu();
+ 
+@@ -1397,14 +1397,14 @@ wxMenu* MenuFactory::append_menu_item_modify(wxMenu* menu, bool multi_selection,
+ 
+     // [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+     if (split_parts) {
+-        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts to objects"), _L("Move the selected parts into their own objects"),
++        append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts"), _L("Move the selected parts into their own objects"),
+             [](wxCommandEvent&) { obj_list()->split_selected_parts(); }, "", menu,
+             []() { return obj_list()->can_split_selected_parts(); }, m_parent);
+     }
+     // [ORCAPORT:MB-4] END
+ 
+     // [ORCAPORT:MB-5] BEGIN - move the selected volumes into one new object
+-    if (split_parts) {
++    if (split_to_object) {
+         append_menu_item(sub_menu, wxID_ANY, _L("Split selected parts to an object"), _L("Move the selected parts into one new object"),
+             [](wxCommandEvent&) { obj_list()->split_selected_volumes_to_object(); }, "", menu,
+             []() { return obj_list()->can_split_selected_volumes_to_object(); }, m_parent);
+@@ -1904,8 +1904,8 @@ void MenuFactory::create_bbl_part_menu()
+ 
+     m_part_transform_menu = append_menu_item_transform(&m_part_menu, false /*multi_selection*/, true /*mirror*/, true /*is_scalable*/);
+     append_menu_item_align_distribute(menu);
+-    // [ORCAPORT:MB-4] a single selected part can be moved into its own object too
+-    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/, false /*merge_parts*/, true /*split_parts*/);
++    // [ORCAPORT:MB-5] a single selected part is the "split to an object" case
++    append_menu_item_modify(&m_part_menu, false /*multi_selection*/, true /*splittable*/, true /*mesh*/, false /*mesh_boolean*/, false /*merge_parts*/, false /*split_parts*/, true /*split_to_object*/);
+     append_menu_item_edit_text(menu);
+     //m_part_geometry_pos = m_part_menu.GetMenuItemCount(); // pos for geometry related items
+ 
+@@ -2284,7 +2284,7 @@ wxMenu* MenuFactory::multi_selection_menu()
+         //ORCA switch to sub menus if new items added
+         auto transform_menu = append_menu_item_transform(menu, true /*multi_selection*/, false /*mirror*/, true /*is_scalable*/);
+         append_menu_item_align_distribute(menu);
+-        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/, true /*split_parts*/);
++        append_menu_item_modify(menu, true /*multi_selection*/, true /*splittable*/, true /*is_mesh*/, false /*mesh_boolean*/, true /*merge_parts*/, true /*split_parts*/, true /*split_to_object*/);
+         //append_menu_item_drop(menu);
+         //append_menu_item_fix_through_cgal(menu);
+         append_menu_items_convert_unit(transform_menu);
+diff --git a/src/slic3r/GUI/GUI_Factories.hpp b/src/slic3r/GUI/GUI_Factories.hpp
+index 2ab928206d..d38d66e142 100644
+--- a/src/slic3r/GUI/GUI_Factories.hpp
++++ b/src/slic3r/GUI/GUI_Factories.hpp
+@@ -209,7 +209,7 @@ private:
+     void        append_menu_item_plate_name(wxMenu *menu, size_t pos = -1);
+     void        append_menu_item_plate_delete(wxMenu *menu, size_t pos = -1);
+     wxMenu*     append_menu_item_transform(wxMenu* menu, bool multi_selection, bool show_mirror, bool is_scalable);
+-    wxMenu*     append_menu_item_modify(   wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts = false, bool split_parts = false);
++    wxMenu*     append_menu_item_modify(   wxMenu* menu, bool multi_selection, bool splittable, bool is_mesh, bool mesh_boolean, bool merge_parts = false, bool split_parts = false, bool split_to_object = false);
+     wxMenu*     append_menu_item_more(     wxMenu* menu, bool multi_selection, bool disk_op, bool export_op);
+ };
+ 
+diff --git a/src/slic3r/GUI/GUI_ObjectList.cpp b/src/slic3r/GUI/GUI_ObjectList.cpp
+index 1fbb49dc46..21b466be9c 100644
+--- a/src/slic3r/GUI/GUI_ObjectList.cpp
++++ b/src/slic3r/GUI/GUI_ObjectList.cpp
+@@ -3962,6 +3962,9 @@ bool ObjectList::can_split_selected_parts() const
+     int                 obj_idx = -1;
+     if (!selected_parts_of_one_object(vol_idxs, obj_idx))
+         return false;
++    // One object per part needs at least two parts; a single part goes through "split to an object".
++    if (vol_idxs.size() < 2)
++        return false;
+ 
+     // Every model part selected leaves the object without a solid part; Split > To Objects is
+     // the action for that.
+diff --git a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+index 8d14f43445..fb72a2c679 100644
+--- a/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
++++ b/src/slic3r/GUI/OrcaMCP/OrcaMCPServer.cpp
+@@ -4038,8 +4038,9 @@ void OrcaMCPServer::register_builtin_tools()
+                                 {"volume_count", volumes_before}};
+                 } else if (!obj_list->can_split_selected_parts()) {
+                     return {{"status", "error"},
+-                            {"error", "The selected parts cannot be split off: they must be model parts of one object, "
+-                                      "not parts of a cut object, text or SVG, and at least one model part must remain"},
++                            {"error", "The selected parts cannot be split off one by one: they must be two or more model parts of one object, "
++                                      "not parts of a cut object, text or SVG, and at least one model part must remain. "
++                                      "For a single part use one_object=true."},
+                             {"volume_count", volumes_before}};
+                 }
+ 
+-- 
+2.43.0.windows.1
+

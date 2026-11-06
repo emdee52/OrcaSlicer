@@ -33,9 +33,10 @@ merged. (MB-4's per-part action stays; the user chose "keep both".)
   object, not a cut object (its cut info and connectors point at the volumes); any volume type allowed.
   `can_split_selected_volumes_to_object()` additionally requires that something stays in the source.
   MB-3's merge gate and MB-4's split gate now share this helper and add their own type rules.
-- **UI**: `Modify → Split selected parts to an object`, next to MB-4's action in the part menu (single
-  selection) and the multi-selection menu. MB-4's item was renamed from "Split selected parts" to
-  **"Split selected parts to objects"** so the two read apart.
+- **UI**: `Modify → Split selected parts to an object`, next to MB-4's action in the multi-selection menu
+  and on its own in the part menu (a single selected part). MB-4's item stays "Split selected parts" and is
+  only offered for two or more selected parts, so the two actions read apart: "Split selected parts" makes
+  one object per part, "Split selected parts to an object" makes one object for the whole selection.
 - **MCP**: `split_parts` gained `one_object: true` (same tool - the actions differ only in where the volumes
   land), and its selection-mode fix is reused.
 
