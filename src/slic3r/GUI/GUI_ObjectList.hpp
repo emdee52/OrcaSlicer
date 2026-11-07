@@ -346,6 +346,11 @@ public:
     bool                can_split_selected_parts() const;
     bool                selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const;
     // [ORCAPORT:MB-4] END
+    // [ORCAPORT:MB-5] BEGIN - move the selected volumes of one object into one new object
+    void                split_selected_volumes_to_object();
+    bool                can_split_selected_volumes_to_object() const;
+    bool                selected_volumes_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const;
+    // [ORCAPORT:MB-5] END
     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
     wxDataViewItem      add_settings_item(wxDataViewItem parent_item, const DynamicPrintConfig* config);
 

@@ -1460,9 +1460,21 @@ ModelVolume* ModelObject::add_volume_with_shared_mesh(const ModelVolume &other, 
     return v;
 }
 
-void ModelObject::delete_volume(size_t idx)
+// [ORCAPORT:MB-5] BEGIN - move a volume into another object without copying it
+void ModelObject::move_volume_to(ModelObject &target, size_t volume_idx)
 {
-    ModelVolumePtrs::iterator i = this->volumes.begin() + idx;
+    assert(volume_idx < this->volumes.size());
+    ModelVolume *volume = this->volumes[volume_idx];
+    this->volumes.erase(this->volumes.begin() + volume_idx);
+    volume->set_model_object(&target);
+    target.volumes.emplace_back(volume);
+    this->invalidate_bounding_box();
+    target.invalidate_bounding_box();
+}
+// [ORCAPORT:MB-5] END
+
+void ModelObject::delete_volume(size_t idx)
+{    ModelVolumePtrs::iterator i = this->volumes.begin() + idx;
     delete *i;
     this->volumes.erase(i);
 

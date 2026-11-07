@@ -26,6 +26,16 @@ namespace OrcaExt {
 bool split_parts_to_objects(ModelObject &object, const std::vector<size_t> &vol_idxs,
                             std::vector<size_t> &new_object_idxs, std::string &error);
 
+// Move `vol_idxs` (indices into object.volumes, any volume type) into ONE new object in the same
+// model and remove them from `object`. The new object keeps the source's instances and object
+// settings, and every moved volume keeps its type, name, settings, painting and transform, so it
+// stays exactly where it was; whatever was not selected stays in `object`.
+//
+// `new_object_idx` receives the new object's index. Returns false with a reason when nothing was
+// changed - at least one volume has to remain in `object`.
+bool split_volumes_to_one_object(ModelObject &object, const std::vector<size_t> &vol_idxs,
+                                 size_t &new_object_idx, std::string &error);
+
 } // namespace OrcaExt
 } // namespace Slic3r
 

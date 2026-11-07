@@ -15,11 +15,14 @@ The existing **Split → To Objects** explodes *every* part of the object and de
 ## Design
 
 One new action on the part selection: **Split selected parts**, in the right-click **Modify** submenu next to
-*Merge selected parts* - on the multi-selection menu when several parts are selected, and on the **part
-menu** when a single part is selected. Every selected part becomes its own object in the same model, at
-exactly the place it already occupied, and is removed from the source object; the source keeps every part
-that was not selected, its instances, its transform and its settings. One part alone is the smallest case:
-"detach this part into its own object".
+*Merge selected parts*, on the multi-selection menu. Every selected part becomes its own object in the same
+model, at exactly the place it already occupied, and is removed from the source object; the source keeps
+every part that was not selected, its instances, its transform and its settings.
+
+Since MB-5 the action needs **two or more** selected parts and is therefore only offered where the
+multi-selection menu appears; a single selected part is the "split selected parts to an object" case
+(MB-5) and the Object List's gate hides this one for it. The core function still accepts a single index
+(its unit tests use that), the restriction lives in `can_split_selected_parts()`.
 
 - **One core function**: `OrcaExt::split_parts_to_objects` (`src/libslic3r/OrcaExt/SplitParts.*`), testable
   without the GUI.

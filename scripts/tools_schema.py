@@ -1656,22 +1656,33 @@ FULL_TOOLS_LIST = [{'description': 'Create a new plate.',
                   'required': [],
                   'type': 'object'},
   'name': 'slice_all'},
- {'description': 'Move the given model parts of one object into their own '
-                 'objects, each at its current position, and leave the source '
-                 'object with the parts that were not named - the multi-part '
+ {'description': 'Move the given parts of one object into their own objects, '
+                 'each at its current position, and leave the source object '
+                 'with the parts that were not named - the multi-part '
                  'counterpart of Split > To Objects. The object must keep at '
-                 'least one model part, so naming all of them is refused. '
-                 'Reports objects/volumes/triangles before and after, the new '
-                 'object ids, and the source part count.',
+                 'least one volume, so naming all of them is refused. With '
+                 'one_object the selected parts (any volume type, negatives '
+                 'and modifiers included) move into a single new object '
+                 'instead of one object each. Reports '
+                 'objects/volumes/triangles before and after, the new object '
+                 'ids, and the source part count.',
   'inputSchema': {'additionalProperties': False,
                   'properties': {'object_id': {'description': 'Object index '
                                                               '(0-based).',
                                                'type': 'integer'},
+                                 'one_object': {'description': 'true: move the '
+                                                               'selected '
+                                                               'volumes into '
+                                                               'ONE new object '
+                                                               '(any volume '
+                                                               'type); false '
+                                                               '(default): one '
+                                                               'object per '
+                                                               'part.',
+                                                'type': 'boolean'},
                                  'part_ids': {'description': 'Volume indices '
-                                                             'to move into '
-                                                             'their own '
-                                                             'objects (one or '
-                                                             'more).',
+                                                             'to move out (one '
+                                                             'or more).',
                                               'items': {'type': 'integer'},
                                               'type': 'array'}},
                   'required': ['object_id', 'part_ids'],

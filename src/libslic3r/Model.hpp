@@ -447,6 +447,11 @@ public:
     ModelVolume*            add_volume(const ModelVolume &volume, TriangleMesh &&mesh);
     ModelVolume*            add_volume_with_shared_mesh(const ModelVolume &other, ModelVolumeType type = ModelVolumeType::MODEL_PART);
     void                    delete_volume(size_t idx);
+    // [ORCAPORT:MB-5] BEGIN - move a volume into another object without copying it
+    // Takes the volume at `volume_idx` out of this object and appends it to `target`, keeping
+    // its identity and all of its data (type, name, settings, painting, text metadata).
+    void                    move_volume_to(ModelObject &target, size_t volume_idx);
+    // [ORCAPORT:MB-5] END
     void                    clear_volumes();
     void                    sort_volumes(bool full_sort);
     bool                    is_multiparts() const { return volumes.size() > 1; }

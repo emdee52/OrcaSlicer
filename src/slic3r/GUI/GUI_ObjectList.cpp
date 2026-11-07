@@ -3873,23 +3873,44 @@ bool ObjectList::can_mesh_boolean() const
 }
 
 // [ORCAPORT:MB-3] BEGIN - gate for merging only the selected parts
+// [ORCAPORT:MB-6] the gate also accepts negative volumes: they are the difference tools
 bool ObjectList::selected_parts_can_be_merged() const
 {
     std::vector<size_t> vol_idxs;
     int                 obj_idx = -1;
-    return selected_parts_of_one_object(vol_idxs, obj_idx) && vol_idxs.size() >= 2;
+    if (!selected_volumes_of_one_object(vol_idxs, obj_idx))
+        return false;
+
+    const ModelObject *object = (*m_objects)[obj_idx];
+    size_t             positives = 0, negatives = 0;
+    for (size_t vol_idx : vol_idxs) {
+        const ModelVolume *volume = object->volumes[vol_idx];
+        if (volume->is_model_part()) {
+            // Fusing a text/SVG part would lose the properties that make it editable.
+            if (volume->is_text() || volume->is_svg())
+                return false;
+            ++positives;
+        } else if (volume->is_negative_volume()) {
+            ++negatives;
+        } else {
+            // Modifiers and support / Precise Seam volumes are not CSG parts.
+            return false;
+        }
+    }
+    // Negatives alone have nothing to cut, a single positive alone has nothing to do.
+    return positives >= 1 && (positives >= 2 || negatives >= 1);
 }
 // [ORCAPORT:MB-3] END
 
-// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
-bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const
+// [ORCAPORT:MB-5] BEGIN - selection gate shared by the assembly part actions
+bool ObjectList::selected_volumes_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const
 {
     vol_idxs.clear();
     obj_idx = -1;
 
     wxDataViewItemArray sels;
     GetSelections(sels);
-    // A single selected part is a valid subject: splitting one part off is the smallest case.
+    // A single selected volume is a valid subject: moving one out is the smallest case.
     if (sels.IsEmpty())
         return false;
 
@@ -3904,8 +3925,7 @@ bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int
     if (obj_idx < 0 || obj_idx >= int(m_objects->size()))
         return false;
 
-    // A cut object's parts are bound to its cut info, and a text/SVG part would lose the
-    // properties that make it editable once it is moved to another object.
+    // A cut object's parts are bound to its cut info and connectors.
     const ModelObject *object = (*m_objects)[obj_idx];
     if (object->is_cut())
         return false;
@@ -3914,12 +3934,26 @@ bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int
         const int vol_idx = m_objects_model->get_real_volume_index_in_3d(obj_idx, m_objects_model->GetVolumeIdByItem(item));
         if (vol_idx < 0 || vol_idx >= int(object->volumes.size()))
             return false;
-        const ModelVolume *volume = object->volumes[vol_idx];
-        if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
-            return false;
         vol_idxs.emplace_back(size_t(vol_idx));
     }
     return !vol_idxs.empty();
+}
+// [ORCAPORT:MB-5] END
+
+// [ORCAPORT:MB-4] BEGIN - move the selected parts of one object into their own objects
+bool ObjectList::selected_parts_of_one_object(std::vector<size_t> &vol_idxs, int &obj_idx) const
+{
+    if (!selected_volumes_of_one_object(vol_idxs, obj_idx))
+        return false;
+
+    const ModelObject *object = (*m_objects)[obj_idx];
+    for (size_t vol_idx : vol_idxs) {
+        const ModelVolume *volume = object->volumes[vol_idx];
+        // A text/SVG part would lose the properties that make it editable in another object.
+        if (!volume->is_model_part() || volume->is_text() || volume->is_svg())
+            return false;
+    }
+    return true;
 }
 
 bool ObjectList::can_split_selected_parts() const
@@ -3927,6 +3961,9 @@ bool ObjectList::can_split_selected_parts() const
     std::vector<size_t> vol_idxs;
     int                 obj_idx = -1;
     if (!selected_parts_of_one_object(vol_idxs, obj_idx))
+        return false;
+    // One object per part needs at least two parts; a single part goes through "split to an object".
+    if (vol_idxs.size() < 2)
         return false;
 
     // Every model part selected leaves the object without a solid part; Split > To Objects is
@@ -3972,6 +4009,50 @@ void ObjectList::split_selected_parts()
     update_selections_on_canvas();
 }
 // [ORCAPORT:MB-4] END
+
+// [ORCAPORT:MB-5] BEGIN - move the selected volumes of one object into one new object
+bool ObjectList::can_split_selected_volumes_to_object() const
+{
+    std::vector<size_t> vol_idxs;
+    int                 obj_idx = -1;
+    if (!selected_volumes_of_one_object(vol_idxs, obj_idx))
+        return false;
+    // Something has to stay in the source object.
+    return vol_idxs.size() < (*m_objects)[obj_idx]->volumes.size();
+}
+
+void ObjectList::split_selected_volumes_to_object()
+{
+    std::vector<size_t> vol_idxs;
+    int                 obj_idx = -1;
+    if (!selected_volumes_of_one_object(vol_idxs, obj_idx))
+        return;
+    ModelObject *object = (*m_objects)[obj_idx];
+
+    Plater::TakeSnapshot snapshot(wxGetApp().plater(), _u8L("Split selected parts to an object"));
+
+    size_t      new_idx = 0;
+    std::string error;
+    if (!Slic3r::OrcaExt::split_volumes_to_one_object(*object, vol_idxs, new_idx, error)) {
+        wxGetApp().notification_manager()->push_plater_error_notification(_u8L("The selected parts could not be moved into a new object."));
+        return;
+    }
+
+    // The source object lost volumes, and the new object was appended to the model.
+    add_volumes_to_object_in_list(obj_idx);
+    update_info_items(obj_idx);
+    changed_object(obj_idx);
+    notify_instance_updated(obj_idx);
+
+    add_objects_to_list({new_idx});
+
+    wxDataViewItemArray items;
+    items.Add(m_objects_model->GetItemById(int(new_idx)));
+    if (!items.IsEmpty())
+        select_items(items);
+    update_selections_on_canvas();
+}
+// [ORCAPORT:MB-5] END
 
 // NO_PARAMETERS function call means that changed object index will be determine from Selection()
 void ObjectList::changed_object(const int obj_idx/* = -1*/) const

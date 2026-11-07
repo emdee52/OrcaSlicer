@@ -13,16 +13,17 @@ class ModelObject;
 
 namespace OrcaExt {
 
-// Replace `vol_idxs` (indices into object.volumes, every one of them a MODEL_PART) with the
-// union of those parts. The union is computed in the object's own coordinate system, so the
-// instances, the object transform, the parts that were not selected and the object's own
-// settings stay as they are; the merged part lands at the lowest selected index and takes
-// that part's name and per-part settings.
+// Replace `vol_idxs` (indices into object.volumes; model parts union together, negative volumes are
+// subtracted) with the boolean result. The boolean is computed in the object's own coordinate
+// system, so the instances, the object transform, the volumes that were not selected and the
+// object's own settings stay as they are; the merged part lands at the lowest selected positive
+// index and takes that part's name and per-part settings. Every selected negative volume is
+// consumed, whether or not it cut anything.
 //
-// `welded` reports whether the boolean kernel fused the parts. When it refused, the parts are
-// joined as they are instead: the object still ends up with one part, but the overlap between
-// the joined parts stays unresolved. `error` explains a refusal, in which case the object is
-// not modified at all.
+// `welded` reports whether the boolean kernel ran. When it refused, the positive parts are joined
+// as they are instead - unless negatives were selected, in which case the function refuses with
+// `error` and changes nothing (the cuts they were there to make would be lost). `error` always
+// explains a refusal, in which case the object is not modified at all.
 bool merge_parts_into_one(ModelObject &object, const std::vector<size_t> &vol_idxs,
                           bool keep_painting, bool &welded, std::string &error);
 
