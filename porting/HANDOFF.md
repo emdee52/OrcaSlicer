@@ -24,34 +24,29 @@ Root `AGENTS.md` has the workspace mission and session protocol.
 - Working branch of record: **`port/integration`** (what to build and branch from). `main` is the
   untouched upstream mirror. `origin` = `https://github.com/emdee52/OrcaSlicer.git`; `upstream`
   push is disabled.
-- **Branch `port/MB-3` is ready for the user's test, not merged:** *Merge selected parts*. With two or
-  more part rows selected, the multi-selection context menu now offers "Merge selected parts": those
-  parts are unioned (mcut, in object space) and replaced **in place**, so the object, its instances,
-  its settings and the unselected parts stay; a refusal joins them unwelded and says so rather than
-  losing them. New core `OrcaExt::merge_parts_into_one`, marker `MB-3`, notes `notes/MB-3.md`, patch
-  `88_MB-3.patch`. libslic3r suite 1728/1728, MCP `boolean_parts(part_ids)` checked on a 3-part cut
-  object (3 -> 2 parts, object id kept, slices clean). Merge it only after the user confirms.
-- **Branch `port/MB-4` is stacked on `port/MB-3` and awaits the user's test:** *Split selected parts*.
-  With one or more part rows selected, the Modify submenu moves exactly those parts into their own
-  objects at their current placement and leaves the rest in the source (5 parts, 3 selected -> 4 items).
-  Hidden when every model part is selected (that is Split > To Objects). New core
-  `OrcaExt::split_parts_to_objects`, marker `MB-4`, notes `notes/MB-4.md`, patch `89_MB-4.patch`.
-  libslic3r suite 1733/1733, MCP `split_parts` checked on a 3-part cut object (1 -> 3 objects, slice
-  idle; the extracted parts still share the source footprint, so the plate validator warns "too close to
-  others" - expected). Merge MB-3 first, then MB-4, once the user confirms both.
+- **MB-3 — Merge selected parts** (merged 2026-11-05, patch `88_MB-3.patch`, notes `notes/MB-3.md`).
+  Two or more selected parts of one object are unioned (mcut, in object space) and replaced **in place**,
+  so the object, its instances, its settings and the unselected parts stay. Negative volumes are accepted
+  too since MB-6: they are subtracted and consumed.
+- **MB-4 — Split selected parts** (merged 2026-11-05, patch `89_MB-4.patch`, notes `notes/MB-4.md`).
+  Two or more selected model parts move into their own objects at their current placement and the rest stay
+  in the source (5 parts, 3 selected -> 4 items). Hidden when every model part is selected (that is
+  Split > To Objects). A single selected part is MB-5's case, not this one.
 - **MB-3 and MB-4 are merged into `port/integration`** (2026-11-05, `c3eb01e7c2` and `860f757810`), on the
   user's instruction after testing.
-- **Branch `port/MB-5-6` (batch, stacked on integration) awaits the user's test:**
+- **MB-5 and MB-6 are merged into `port/integration`** (2026-11-07, `181345904e`), on the user's "merge and push"
+  after testing. The batch branch `port/MB-5-6` stays as its record.
   - *MB-5 — Split selected parts to an object*: moves every selected volume (parts, negatives, modifiers,
-    support/Precise Seam volumes) into ONE new object `<source>_parts`, in place; the MB-4 per-part action
-    stays and was renamed "Split selected parts to objects". New `ModelObject::move_volume_to` re-parents
-    volumes instead of copying them. Notes `notes/MB-5.md`, patch `90_MB-5-6.patch`.
-  - *MB-6 — Merge with difference*: the MB-3 merge now also accepts negative volumes, unions the positives,
+    support/Precise Seam volumes) into ONE new object `<source>_parts`, in place. `ModelObject::move_volume_to`
+    re-parents the volumes instead of copying them. Notes `notes/MB-5.md`, patch `90_MB-5-6.patch`.
+  - *MB-6 — Merge with difference*: the MB-3 merge also accepts negative volumes, unions the positives,
     subtracts the negatives and consumes every selected negative; a kernel refusal with negatives selected
     aborts instead of losing the cut. Notes `notes/MB-6.md`.
-  - libslic3r suite 1736/1736; MCP: `split_parts(one_object=true)` (1 -> 2 objects, source keeps 1 part) and
+  - Labels: MB-4's action is "Split selected parts" and needs two or more selected parts (multi-selection
+    menu only); MB-5's is "Split selected parts to an object" and is the only split action on a single part.
+  - libslic3r suite 1736/1736; MCP: `split_parts(one_object=true)`, `split_parts` per-part, and
     `boolean_parts` with a negative (3 -> 2 volumes, 36 -> 92 triangles on the cut part, slice idle). Both
-    under one patch because the files overlap; both manifest rows point at it.
+    features travel in one patch because the files overlap; both manifest rows point at it.
 - **Merged 2026-10-31, user-tested:** `port/SU-8-object-transition` (patch 86) and
   `port/SU-10-suggestion` (patch 87). The object-on-interface joint (`transition_object_interface_*`)
   never fired on tree supports because `SupportCommon.cpp` skipped every contact whose
