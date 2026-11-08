@@ -126,6 +126,14 @@ Use `-i` to install a self-contained tree (binary + resources) at
   and the `dep_OCCT-configure`/`-build`/`-install`/`-done` stamps under
   `deps/build/dep_OCCT-prefix/src/dep_OCCT-stamp/Release`, then
   `cmake --build deps/build --config Release --target dep_OCCT`. A full `-d -c` is not needed.
+- `dep_EXPAT` fails with `CMake error: The source "...\dep_EXPAT-prefix\src\dep_EXPAT\CMakeLists.txt"
+  does not match the source "...\deps\EXPAT\expat\CMakeLists.txt" used to generate cache` after a
+  sync that changes EXPAT from a vendored tree to a downloaded pin (upstream `7f124c1b0a`, 2026-11):
+  the dep's own build directory still holds a cache from the vendored source. Delete
+  `deps/build/dep_EXPAT-prefix/src/dep_EXPAT-build` and the
+  `dep_EXPAT-configure`/`-build`/`-install`/`-done` stamps under
+  `deps/build/dep_EXPAT-prefix/src/dep_EXPAT-stamp/Release`, then rebuild deps. Same shape as the
+  `dep_OCCT` trap above.
 - Compiler processes stuck: `.\OrcaSlicer\build_win.bat -k`.
 - The script refuses a config or tree it did not create; `-h` lists the valid values.
 - If Strawberry Perl shadows a real CMake, the script reorders `PATH` itself; do not
@@ -162,9 +170,15 @@ not trigger a build. Committing `src/**` does.
 - `port/<id>` - one branch per feature (e.g. `port/MT-1`), branched from
   `port/integration`, merged back when the feature is verified.
 
-To sync with upstream later:
+To sync with upstream later, merge `upstream/main` into a `sync/upstream-<date>` branch taken from
+`port/integration` - **never rebase**. A rebase would replay every port feature on top of upstream
+and turn each one into a conflict resolution; the merge keeps them as the commits they are:
 
 ```powershell
-git -C OrcaSlicer fetch upstream
-git -C OrcaSlicer rebase upstream/main      # on the port branch
+git -C OrcaSlicer fetch upstream main --no-tags
+git -C OrcaSlicer switch -c sync/upstream-<date> port/integration
+git -C OrcaSlicer -c merge.conflictstyle=zdiff3 merge --no-ff upstream/main
 ```
+
+Then resolve, build, run the gates in `porting/notes/UPSTREAM_SYNC_<date>.md`, and only merge the
+sync branch into `port/integration` after the owner has tested it.
