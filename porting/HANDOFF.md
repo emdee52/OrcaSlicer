@@ -15,7 +15,7 @@ lives in `porting/notes/<ID>.md`; this file is the map.
 7. `OrcaSlicer/porting/BUILD.md` before building
 8. `OrcaSlicer/porting/notes/UPSTREAM_SYNC_<date>.md` - the most recent upstream sync: what the
    merge changed, what it deliberately dropped, and what is still open (latest:
-   `notes/UPSTREAM_SYNC_20261027.md`)
+   `notes/UPSTREAM_SYNC_20261108.md`)
 
 Root `AGENTS.md` has the workspace mission and session protocol.
 
@@ -81,6 +81,16 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   **Still open:** SU-9 marks one woven layer per z-contiguous interface run, so a sloped overhang
   (a contact on every layer) weaves only its bottom layer - 22 woven layers on the test model.
   Marking per contact would raise that to ~350 and was deliberately left for a decision.
+- **Upstream sync 2026-11-08: branch `sync/upstream-20261108`, merge `b4efe45661`, NOT merged into
+  `port/integration` yet.** Third mainline sync: `6d2869c430` -> `e23af6d7b0` (191 commits, 883
+  files), the first tip past the 2.6.0-dev bump and past the `v2.5.0` cut. 9 conflicts in 9 hunks,
+  all resolved; markers unchanged at 1212 in 190 files; Release build clean; `ctest` 3232/3233 with
+  one timing-sensitive Moonraker test that passes on re-run; off-by-default G-code byte-identical to
+  stock `e23af6d7b0`. Two behaviour notes: upstream deleted the "realistic view off while painting"
+  block that PF-2b was hooked into (the painter follows upstream now), and `Line3::midpoint()` is the
+  new belt-band API. `deps/` changed - EXPAT is a pinned download and wxWidgets moved - which needs a
+  reconfigure and the `dep_EXPAT` cache trap fix; both are in `porting/BUILD.md`. Read
+  `porting/notes/UPSTREAM_SYNC_20261108.md`. Backup ref `backup/port-integration-20261108`.
 - **Upstream sync merged, user-tested 2026-10-28:** **`1b7483adcc`** "Merge
   sync/upstream-20261027: upstream/main 6d2869c430 (441 commits) is in", on top of `c7b76a5373`.
   Second mainline sync (`109d09e0b8` -> `6d2869c430`, 441 commits, 1066 files): 14 conflicts in 20
@@ -264,6 +274,16 @@ is ImGui drawn into the GL canvas and nothing else can look at it.
 
 What is actually left, in priority order:
 
+0. **Test the 2026-11-08 upstream sync** (`sync/upstream-20261108`, merge `b4efe45661`) in the app,
+   then merge it into `port/integration` and fast-forward `main` to `e23af6d7b0` - `main` is 441
+   commits behind `origin/main` too, so the push carries both. The per-feature MCP pass for the
+   features this merge touched (SU-8/9/10, PF-1, BT-1, MA-1, AS-1, MB-3/4/5) is the review the owner
+   still owes the sync.
+0b. **The patch series is stale**: 73 of the 90 `porting/patches/*.patch` files fail
+   `git apply --check -R` on `port/integration` and failed identically before the 2026-11-08 sync, so
+   no sync broke them. Regenerating them means rebasing ~70 feature branches; treat it as its own
+   piece of work, not as part of a sync. `porting/notes/UPSTREAM_SYNC_20261108.md` records how the
+   measurement was made.
 0. **PP-5's two bugs are DONE and merged** as `21aa42f159` (user-tested 2026-10-17; `libslic3r`
    suite 103170/103170). `docs/handoff.md` section 37 has the narrative and `porting/notes/PP-5.md`
    the per-bug detail; MCP-3, the gizmo tool that made the reproducer scriptable, is in
