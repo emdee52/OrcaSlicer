@@ -81,9 +81,11 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   **Still open:** SU-9 marks one woven layer per z-contiguous interface run, so a sloped overhang
   (a contact on every layer) weaves only its bottom layer - 22 woven layers on the test model.
   Marking per contact would raise that to ~350 and was deliberately left for a decision.
-- **Upstream sync 2026-11-19, on `sync/upstream-20261119`, NOT merged yet:** merge `3df45c66a0`
-  "Merge upstream/main (123 commits, 8db30fdb) into the fork", on top of `port/integration`
-  `7d3133df54`. Fourth mainline sync: `e23af6d7b0` -> `8db30fdb30` (123 commits, 498 files).
+- **Upstream sync merged 2026-11-20: `sync/upstream-20261119` -> `port/integration`**, merge
+  "Merge sync/upstream-20261119: upstream/main 8db30fdb30 (123 commits) is in", on top of
+  `port/integration` `7d3133df54`. Fourth mainline sync: `e23af6d7b0` -> `8db30fdb30` (123 commits,
+  498 files). Merged on the user's instruction after the build, `ctest` and the equivalence check;
+  the in-app pass on the touched features is still wanted (see the note's "Left open").
   16 conflicts in 48 regions, all resolved. Release build clean, `ctest` **3561/3561**, markers
   unchanged at 1192 in 190 files, CLI slice of the 20 mm box produces healthy G-code.
   Two behaviour notes: upstream moved the per-role flow ratios into `extrusion_mm3_per_mm()` and
@@ -91,8 +93,7 @@ Root `AGENTS.md` has the workspace mission and session protocol.
   go through `feature_speed()` to survive `enable_volumetric_speeds`); and upstream #17461 rewrote
   the nozzle-sync path, which **supersedes `76d0fe6dcf`'s "All" entry** - the copy now goes to every
   compatible tool from the dialog, upstream's way. Read `porting/notes/UPSTREAM_SYNC_20261119.md`.
-  Backup ref `backup/port-integration-20261119`. Merge into `port/integration` only after the user
-  tests the build.
+  Backup ref `backup/port-integration-20261119`.
 - **Upstream sync merged 2026-11-09: `ee12996678`** "Merge sync/upstream-20261108: upstream/main
   e23af6d7b0 (191 commits) is in", on top of the `e901eb8e1a` sync branch (merge `b4efe45661`).
   Third mainline sync: `6d2869c430` -> `e23af6d7b0` (191 commits, 883 files), the first tip past
