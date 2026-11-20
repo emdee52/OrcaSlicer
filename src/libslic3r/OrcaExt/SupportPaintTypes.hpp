@@ -150,6 +150,11 @@ void register_support_paint_type(const SupportPaintType &type);
 // Lookup by paint state, or nullptr when the state is not a registered support type.
 const SupportPaintType *support_paint_type(EnforcerBlockerType state);
 
+// The highest state any registered support type uses (never below BLOCKER). A TriangleSelector
+// loading support paint must pass this as its max state: the loader resets every state above the
+// one it is given to NONE, which silently drops a typed paint (see GLGizmoFdmSupports).
+EnforcerBlockerType support_paint_max_state();
+
 // Legacy generic enforcer/blocker states (object style / exclusion), never style-forcing.
 inline constexpr EnforcerBlockerType SUPPORT_PAINT_DEFAULT = EnforcerBlockerType::ENFORCER;
 inline constexpr EnforcerBlockerType SUPPORT_PAINT_BLOCKER = EnforcerBlockerType::BLOCKER;

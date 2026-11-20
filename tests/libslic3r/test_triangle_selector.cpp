@@ -5,6 +5,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/OrcaExt/SupportPaintTypes.hpp"
 
 #include <algorithm>
 #include "libslic3r/libslic3r.h"
@@ -27,8 +28,7 @@ static int nibble_at(const std::vector<bool> &bitstream, size_t nibble_idx)
     return n;
 }
 
-TEST_CASE("Every extruder state survives a serialize/deserialize round trip", "[TriangleSelector]")
-{
+TEST_CASE("Every extruder state survives a serialize/deserialize round trip", "[TriangleSelector]"){
     const TriangleMesh mesh      = test_mesh();
     const int          max_state = int(EnforcerBlockerType::ExtruderMax);
     REQUIRE(int(mesh.its.indices.size()) >= max_state);
@@ -44,6 +44,36 @@ TEST_CASE("Every extruder state survives a serialize/deserialize round trip", "[
         INFO("Extruder " << state);
         REQUIRE(restored.has_facets(EnforcerBlockerType(state)));
         REQUIRE(restored.num_facets(EnforcerBlockerType(state)) == 1);
+    }
+}
+
+// The support painter loads a volume's paint with a max state, and the loader resets every state
+// above it to NONE. Support types (Snug/Grid/Organic/NeoWave) live above BLOCKER, so a cap of
+// BLOCKER made a typed paint vanish from the gizmo and, through its write-back, from the model.
+TEST_CASE("A typed support paint survives the max state the painter loads with", "[TriangleSelector]")
+{
+    const TriangleMesh mesh = test_mesh();
+
+    for (const OrcaExt::SupportPaintType &type : OrcaExt::support_paint_types()) {
+        if (int(type.state) <= int(EnforcerBlockerType::BLOCKER))
+            continue;
+        INFO("Support type " << type.label);
+        REQUIRE(int(OrcaExt::support_paint_max_state()) >= int(type.state));
+
+        TriangleSelector painted(mesh);
+        painted.set_facet(0, type.state);
+        const TriangleSelector::TriangleSplittingData data = painted.serialize();
+
+        // The cap the gizmo used to pass: the paint is reset to NONE.
+        TriangleSelector clamped(mesh);
+        clamped.deserialize(data, true, EnforcerBlockerType::BLOCKER);
+        CHECK_FALSE(clamped.has_facets(type.state));
+
+        // The cap it passes now: the paint loads unchanged.
+        TriangleSelector restored(mesh);
+        restored.deserialize(data, true, OrcaExt::support_paint_max_state());
+        REQUIRE(restored.has_facets(type.state));
+        CHECK(restored.num_facets(type.state) == 1);
     }
 }
 

@@ -761,17 +761,12 @@ void GLGizmoFdmSupports::update_from_model_object(bool first_update)
     int volume_id = -1;
     // [ORCAPORT:PF-10-paint] Colour table indexed by paint state, covering every registered
     // support type (the patch renderer indexes by state), plus the legacy enforcer/blocker.
-    std::vector<ColorRGBA> ebt_colors;
-    {
-        size_t max_state = (size_t) EnforcerBlockerType::BLOCKER;
-        for (const auto &t : Slic3r::OrcaExt::support_paint_types())
-            max_state = std::max(max_state, (size_t) t.state);
-        ebt_colors.assign(max_state + 1, GLVolume::NEUTRAL_COLOR);
-        ebt_colors[(size_t) EnforcerBlockerType::ENFORCER] = TriangleSelectorGUI::enforcers_color;
-        ebt_colors[(size_t) EnforcerBlockerType::BLOCKER]  = TriangleSelectorGUI::blockers_color;
-        for (const auto &t : Slic3r::OrcaExt::support_paint_types())
-            ebt_colors[(size_t) t.state] = ColorRGBA(t.color[0], t.color[1], t.color[2], t.color[3]);
-    }
+    const EnforcerBlockerType max_paint_state = Slic3r::OrcaExt::support_paint_max_state();
+    std::vector<ColorRGBA>    ebt_colors(size_t(max_paint_state) + 1, GLVolume::NEUTRAL_COLOR);
+    ebt_colors[(size_t) EnforcerBlockerType::ENFORCER] = TriangleSelectorGUI::enforcers_color;
+    ebt_colors[(size_t) EnforcerBlockerType::BLOCKER]  = TriangleSelectorGUI::blockers_color;
+    for (const auto &t : Slic3r::OrcaExt::support_paint_types())
+        ebt_colors[(size_t) t.state] = ColorRGBA(t.color[0], t.color[1], t.color[2], t.color[3]);
     for (const ModelVolume* mv : mo->volumes) {
         if (! mv->is_model_part())
             continue;
@@ -782,8 +777,10 @@ void GLGizmoFdmSupports::update_from_model_object(bool first_update)
         const TriangleMesh* mesh = &mv->mesh();
         m_triangle_selectors.emplace_back(std::make_unique<TriangleSelectorPatch>(*mesh, ebt_colors));
         // Reset of TriangleSelector is done inside TriangleSelectorGUI's constructor, so we don't need it to perform it again in deserialize().
-        // The colour table has NONE/ENFORCER/BLOCKER only: a higher state in the file is reset to NONE.
-        m_triangle_selectors.back()->deserialize(mv->supported_facets.get_data(), false, EnforcerBlockerType::BLOCKER);
+        // The loader resets every state above the one it is given to NONE, so the cap must cover the
+        // whole registry: a typed paint (Snug/Grid/Organic/NeoWave) is above BLOCKER, and capping at
+        // BLOCKER made it vanish from this gizmo and then, through update_model_object(), from the model.
+        m_triangle_selectors.back()->deserialize(mv->supported_facets.get_data(), false, max_paint_state);
         m_triangle_selectors.back()->request_update_render_data();
 
         //BBS: add timestamp logic

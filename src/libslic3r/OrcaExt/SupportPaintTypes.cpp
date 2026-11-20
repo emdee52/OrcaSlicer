@@ -278,6 +278,15 @@ const SupportPaintType *support_paint_type(EnforcerBlockerType state)
     return nullptr;
 }
 
+EnforcerBlockerType support_paint_max_state()
+{
+    EnforcerBlockerType max_state = SUPPORT_PAINT_BLOCKER;
+    for (const SupportPaintType &t : registry())
+        if (t.state > max_state)
+            max_state = t.state;
+    return max_state;
+}
+
 bool has_painted_support_styles(const PrintObject &object)
 {
     const ModelObject *mo = object.model_object();
