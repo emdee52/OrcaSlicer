@@ -51,6 +51,22 @@ servers are reachable, do not set it.
 Verified on this machine: `curl --ssl-no-revoke https://github.com` returns 200, and
 `file(DOWNLOAD ... TLS_VERIFY OFF)` succeeds, while the default fails with SSL error 35.
 
+**Exception - the bundled uv (upstream `6bf8892f4c`, 2026-11).** `CMakeLists.txt:212` fetches uv
+with `file(DOWNLOAD ... TLS_VERIFY ON)` hardcoded, so `CMAKE_TLS_VERIFY=0` does *not* cover it and
+the app configure dies with `Failed to download uv: "SSL connect error"` before anything compiles.
+Do not edit upstream's file: fetch the pinned archive out of band, verify it against the
+`ORCA_UV_SHA256_*` pin, and CMake then skips the download because the binary is already in place.
+
+```powershell
+$dir="$repo\build\.uv\0.13.7"; New-Item -ItemType Directory -Force $dir | Out-Null
+curl.exe -sSL --ssl-no-revoke -o "$dir\uv.zip" `
+  https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-pc-windows-msvc.zip
+(Get-FileHash "$dir\uv.zip" -Algorithm SHA256).Hash   # must equal ORCA_UV_SHA256_x86_64-pc-windows-msvc
+Expand-Archive "$dir\uv.zip" -DestinationPath $dir -Force; Remove-Item "$dir\uv.zip"
+```
+
+The path is version-scoped, so a version bump needs the same step at the new version.
+
 ## First build (the long one)
 
 `OrcaSlicer/deps/build` does not exist yet, so the first run downloads and compiles every
