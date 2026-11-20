@@ -2436,8 +2436,10 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
             if (!is_soluble_filament(interface_filament_id)) {
                 msg_text = _L("When using support material for the support interface, we recommend the following settings:\n"
                               "0 top and bottom Z distance, 0 interface spacing, interlaced rectilinear pattern and disable independent support layer height.");
-                msg_text += "\n" + _L("This also sets 4 support interface top layers, a 55 mm/s top contact interface speed "
-                                      "and a 0.32 mm top contact interface line width.");
+                msg_text += "\n" + _L("This also sets 4 support interface top layers, a 55 mm/s top contact interface speed, "
+                                      "a 0.32 mm top contact interface line width, a woven interface with a woven bottom "
+                                      "interface and flush, and a 1-layer transition on the object layers above the "
+                                      "interface at 50% speed and 105% flow.");
                 msg_text += "\n\n" + _L("Change these settings automatically\?\nYes - Change these settings automatically.\nNo  - Do not change these settings for me.");
             } else {
                 msg_text = _L("When using soluble material for the support interface, we recommend the following settings:\n"
@@ -2467,6 +2469,18 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
                     new_conf.set_key_value("support_interface_top_layers", new ConfigOptionInt(4));
                     new_conf.set_key_value("support_interface_contact_speed", new ConfigOptionFloat(55));
                     new_conf.set_key_value("support_interface_contact_line_width", new ConfigOptionFloatOrPercent(0.32, false));
+                    // A non-bonding interface is keyed to the base mechanically: both weaves interlock
+                    // the two materials, and the first object layers over the interface are printed
+                    // slower and slightly over-extruded so they bond to it. Bottom layers follow the
+                    // top stack, which is what gives the bottom weave its two layers.
+                    new_conf.set_key_value("support_interface_bottom_layers",       new ConfigOptionInt(-1));
+                    new_conf.set_key_value("support_interface_weave_enable",        new ConfigOptionBool(true));
+                    new_conf.set_key_value("support_interface_bottom_weave_enable", new ConfigOptionBool(true));
+                    new_conf.set_key_value("support_interface_weave_flush",         new ConfigOptionBool(true));
+                    new_conf.set_key_value("transition_object_interface_enable",    new ConfigOptionBool(true));
+                    new_conf.set_key_value("transition_object_interface_layers",    new ConfigOptionInt(1));
+                    new_conf.set_key_value("transition_object_interface_speed",     new ConfigOptionInt(50));
+                    new_conf.set_key_value("transition_object_interface_flow",      new ConfigOptionInt(105));
                 }
                 if ((filament_type == "PLA" && has_filaments({"TPU", "TPU-AMS"})) || (is_soluble_filament(interface_filament_id) && !is_soluble_filament(filament_id)))
                     new_conf.set_key_value("support_filament", new ConfigOptionInt(interface_filament_id + 1));
@@ -9542,8 +9556,9 @@ void Tab::sync_excluder()
         return;
 
     // A dual-nozzle printer has a single counterpart to copy to, so the copy starts straight away.
-    // A printer with more tools asks which of them receives the copy.
-    int dest_extruder = targets.front();
+    // A printer with more tools asks which of them receives the copy, offering every compatible tool
+    // at once as the last entry.
+    std::vector<int> dest_extruders{ targets.front() };
     if (targets.size() > 1) {
         std::vector<std::pair<int, int>> items; // menu item id, extruder id
         wxMenu menu;
@@ -9552,18 +9567,26 @@ void Tab::sync_excluder()
             menu.Append(item_id, extruder_switch_label(target, get_actual_nozzle_volume_type(target)));
             items.emplace_back(item_id, target);
         }
-        const int picked = GetPopupMenuSelectionFromUser(menu);
+        const int all_item = wxWindow::NewControlId();
+        menu.Append(all_item, _L("All"));
+        const int  picked = GetPopupMenuSelectionFromUser(menu);
         const auto item   = std::find_if(items.begin(), items.end(),
                                          [picked](const std::pair<int, int> &i) { return i.first == picked; });
-        if (item == items.end())
+        if (picked == all_item)
+            dest_extruders = targets;
+        else if (item != items.end())
+            dest_extruders = { item->second };
+        else
             return;
-        dest_extruder = item->second;
     }
 
     const NozzleVolumeType active_nozzle = get_actual_nozzle_volume_type(active_index);
     const int from_index = get_index_for_extruder(active_index, active_nozzle);
-    const int dest_index = get_index_for_extruder(dest_extruder, active_nozzle);
-    if (from_index < 0 || dest_index < 0) // no variant column for this nozzle on one of the extruders
+    std::vector<int> dest_indexes;
+    for (int dest_extruder : dest_extruders)
+        if (const int dest_index = get_index_for_extruder(dest_extruder, active_nozzle); dest_index >= 0)
+            dest_indexes.push_back(dest_index);
+    if (from_index < 0 || dest_indexes.empty()) // no variant column for this nozzle on one of the extruders
         return;
     auto dirty_options = m_presets->current_dirty_options(true);
     DynamicConfig config_origin, config_to_apply;
@@ -9590,8 +9613,9 @@ void Tab::sync_excluder()
             auto key = opt.substr(0, n - 1);
             auto option = dynamic_cast<ConfigOptionVectorBase*>(m_config->option(key));
             auto option2 = dynamic_cast<ConfigOptionVectorBase*>(option->clone());
-            for (int s = 0; s < stride; ++s)
-                option2->set_at(option, dest_index + s, from_index + s);
+            for (int dest_index : dest_indexes)
+                for (int s = 0; s < stride; ++s)
+                    option2->set_at(option, dest_index + s, from_index + s);
             if (*option == *option2) {
                 delete option2;
                 continue;
@@ -9607,11 +9631,17 @@ void Tab::sync_excluder()
     }
 
     const wxString active_label = extruder_switch_label(active_index, active_nozzle);
-    const wxString dest_label   = extruder_switch_label(dest_extruder, get_actual_nozzle_volume_type(dest_extruder));
+    const bool     copy_to_all  = dest_indexes.size() > 1;
+    const wxString dest_label   = copy_to_all ? _L("All")
+                                              : extruder_switch_label(dest_extruders.front(),
+                                                                      get_actual_nozzle_volume_type(dest_extruders.front()));
     wxString title  = wxString::Format(_L("Modify parameters of %s"), active_label);
-    wxString header = wxString::Format(_L("Do you want to modify the following parameters of the %s to that of the %s?"),
-                                       dest_label, active_label);
-    UnsavedChangesDialog dlg(title, header, &config_origin, from_index, dest_index, active_label, dest_label);
+    wxString header = copy_to_all
+        ? wxString::Format(_L("Do you want to modify the following parameters of all compatible nozzles to that of the %s?"),
+                           active_label)
+        : wxString::Format(_L("Do you want to modify the following parameters of the %s to that of the %s?"),
+                           dest_label, active_label);
+    UnsavedChangesDialog dlg(title, header, &config_origin, from_index, dest_indexes.front(), active_label, dest_label);
     dlg.ShowModal();
     if (dlg.transfer_changes()) {
         m_config->apply(config_to_apply);
