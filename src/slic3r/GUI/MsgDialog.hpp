@@ -21,7 +21,7 @@
 #include <wx/statline.h>
 #include <wx/translation.h>
 #include "Widgets/Button.hpp"
-#include "Widgets/CheckBox.hpp"
+#include "Widgets/LabeledCheckBox.hpp"
 #include "Widgets/TextInput.hpp"
 #include "Widgets/HyperLink.hpp"
 #include "BBLStatusBar.hpp"
@@ -116,7 +116,7 @@ protected:
 	wxBoxSizer     *m_logo_column {nullptr};
 	wxStaticBitmap *m_logo_below {nullptr};
     MsgButtonsHash  m_buttons;
-	CheckBox* m_checkbox_dsa{nullptr};
+	LabeledCheckBox* m_checkbox_dsa{nullptr};
     wxString  m_forward_str;
 	// [ORCAPORT:MCP-1] stored for MCP dialog suppression
 	long      m_style{wxOK};

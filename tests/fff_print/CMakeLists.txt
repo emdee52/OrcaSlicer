@@ -4,6 +4,7 @@ add_executable(${_TEST_NAME}_tests
 	test_helpers.cpp
 	test_helpers.hpp
 	test_adaptive_pressure_advance.cpp
+	test_bridge.cpp
 	test_calib.cpp
 	test_cooling.cpp
 	test_extrusion_entity.cpp
@@ -26,6 +27,7 @@ add_executable(${_TEST_NAME}_tests
 	test_orca_first_layer_flow.cpp
 	test_orca_material_automation.cpp
 	test_perforation.cpp
+	test_painted_modifier.cpp
 	test_perimeters.cpp
 	# Seam geometry and pipeline regressions share the existing Print fixtures.
 	test_precise_seam.cpp
