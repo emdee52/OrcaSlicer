@@ -76,5 +76,5 @@ seen; it would also mask the `array bound:error` line that currently identifies 
 |------|--------|
 | Release build (`build_win.bat -s --no-configure`) | clean, 0 errors |
 | `ctest -R` on the new case | passes |
-| full `ctest` | see the commit; no failures outside the known Windows-skipped set |
+| full `ctest` (`build/tests`, Release) | **3562 / 3562 pass** (3561 before this commit, plus the new case), 20 skipped on Windows |
 | in-app round trip (paint Snug/Grid/Organic/NeoWave, reopen, slice) | **pending the user** |
